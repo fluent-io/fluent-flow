@@ -142,7 +142,7 @@ async function handlePullRequest(owner, repo, payload, config) {
             owner,
             repo,
             prNumber,
-            ref: pr.head.ref,
+            ref: pr.base.ref,  // dispatch on base branch (main) where workflow file exists
           });
         } catch (err) {
           console.error({ msg: 'Failed to dispatch review', error: err.message, prNumber });
@@ -192,7 +192,7 @@ async function handlePullRequest(owner, repo, payload, config) {
       // New commits pushed — might want to re-trigger review
       if (config.reviewer?.enabled) {
         try {
-          await dispatchReview({ owner, repo, prNumber, ref: pr.head.ref });
+          await dispatchReview({ owner, repo, prNumber, ref: pr.base.ref });
         } catch (err) {
           console.error({ msg: 'Failed to dispatch review on sync', error: err.message, prNumber });
         }
