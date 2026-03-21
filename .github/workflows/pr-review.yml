@@ -72,6 +72,16 @@ jobs:
       - name: Install Anthropic SDK
         run: npm install @anthropic-ai/sdk@0.27.0 --no-save
 
+      - name: Download review script from fluent-flow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Download the review script from the fluent-flow repo
+          curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github.raw" \
+            -o /tmp/review.mjs \
+            https://api.github.com/repos/fluent-io/fluent-flow/contents/scripts/review.js
+
       - name: Review with Claude
         id: claude_review
         env:
@@ -80,67 +90,6 @@ jobs:
           ATTEMPT: ${{ inputs.attempt }}
           PRIOR_ISSUES: ${{ inputs.prior_issues }}
         run: |
-          cat > /tmp/review.mjs << REVIEW_SCRIPT
-          import Anthropic from '@anthropic-ai/sdk';
-          import fs from 'fs';
-
-          const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-          const diff = fs.readFileSync('/tmp/pr.diff', 'utf8');
-          const prMeta = JSON.parse(fs.readFileSync('/tmp/pr_meta.json', 'utf8'));
-          const attempt = parseInt(process.env.ATTEMPT || '1', 10);
-          const priorIssues = JSON.parse(process.env.PRIOR_ISSUES || '[]');
-
-          // Load prompt from separate file to avoid YAML parsing issues
-          const systemPrompt = fs.readFileSync('/tmp/system_prompt.txt', 'utf8');
-
-          let userContent = 'PR Title: ' + process.env.PR_TITLE + '\\n' +
-                            'Attempt: ' + attempt;
-
-          if (priorIssues.length > 0) {
-            userContent += '\\n\\nPrior review flagged these issues (check if addressed):\\n' +
-                           JSON.stringify(priorIssues, null, 2);
-          }
-
-          userContent += '\\n\\nChanged files: ' + (prMeta.files?.map(f => f.path).join(', ') || 'unknown') +
-                         '\\n\\nDiff:\\n```diff\\n' + diff + '\\n```';
-
-          try {
-            const message = await client.messages.create({
-              model: 'claude-haiku-4-5-20251001',
-              max_tokens: 4096,
-              system: systemPrompt,
-              messages: [{ role: 'user', content: userContent }],
-            });
-
-            const responseText = message.content[0].text.trim();
-
-            let result;
-            try {
-              const clean = responseText.replace(/^```json?\n?/i, '').replace(/\n?```$/, '');
-              result = JSON.parse(clean);
-            } catch (parseErr) {
-              console.error('Failed to parse Claude response as JSON:', responseText);
-              result = {
-                status: 'FAIL',
-                summary: 'Review parsing failed — manual review required',
-                blocking: [{ file: 'unknown', line: 0, issue: 'Automated review failed to parse', fix: 'Manual review required' }],
-                advisory: []
-              };
-            }
-
-            result.attempt = attempt;
-            result.blocking = result.blocking || [];
-            result.advisory = result.advisory || [];
-
-            fs.writeFileSync('/tmp/review_result.json', JSON.stringify(result, null, 2));
-            console.log('Review result:', JSON.stringify(result));
-          } catch (err) {
-            console.error('Claude API error:', err.message);
-            process.exit(1);
-          }
-REVIEW_SCRIPT
-
           # Write system prompt to separate file
           cat > /tmp/system_prompt.txt << 'PROMPT'
 You are a senior software engineer performing a thorough code review. Your job is to review the provided PR diff and identify issues with two severity levels:
@@ -175,7 +124,33 @@ Rules:
 - Output ONLY the JSON object, no markdown, no explanation
 PROMPT
 
-          node /tmp/review.mjs
+          cat > /tmp/run_review.mjs << 'RUN_SCRIPT'
+          import { reviewPR } from '/tmp/review.mjs';
+          import fs from 'fs';
+
+          const diff = fs.readFileSync('/tmp/pr.diff', 'utf8');
+          const prMeta = JSON.parse(fs.readFileSync('/tmp/pr_meta.json', 'utf8'));
+          const attempt = parseInt(process.env.ATTEMPT || '1', 10);
+          const priorIssues = JSON.parse(process.env.PRIOR_ISSUES || '[]');
+          const systemPrompt = fs.readFileSync('/tmp/system_prompt.txt', 'utf8');
+
+          try {
+            const result = await reviewPR({
+              diff,
+              prMeta,
+              attempt,
+              priorIssues,
+              systemPrompt,
+            });
+            fs.writeFileSync('/tmp/review_result.json', JSON.stringify(result, null, 2));
+            console.log('Review result:', JSON.stringify(result));
+          } catch (err) {
+            console.error('Review failed:', err.message);
+            process.exit(1);
+          }
+          RUN_SCRIPT
+
+          node /tmp/run_review.mjs
 
       - name: Post review to PR
         env:
