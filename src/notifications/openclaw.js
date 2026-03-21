@@ -19,7 +19,7 @@ export async function wakeAgent({ agentId, text, wakeMode = 'now', deliver = tru
     return;
   }
 
-  const payload = { agentId, text, wakeMode, deliver };
+  const payload = { agentId, message: text, wakeMode, deliver };
 
   const headers = { 'Content-Type': 'application/json' };
   if (OPENCLAW_WEBHOOK_TOKEN) {
