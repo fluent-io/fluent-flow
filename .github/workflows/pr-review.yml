@@ -94,14 +94,16 @@ jobs:
           // Load prompt from separate file to avoid YAML parsing issues
           const systemPrompt = fs.readFileSync('/tmp/system_prompt.txt', 'utf8');
 
-          let userContent = \`PR Title: \${process.env.PR_TITLE}
-Attempt: \${attempt}\`;
+          let userContent = 'PR Title: ' + process.env.PR_TITLE + '\\n' +
+                            'Attempt: ' + attempt;
 
           if (priorIssues.length > 0) {
-            userContent += \`\\n\\nPrior review flagged these issues (check if addressed):\\n\${JSON.stringify(priorIssues, null, 2)}\`;
+            userContent += '\\n\\nPrior review flagged these issues (check if addressed):\\n' +
+                           JSON.stringify(priorIssues, null, 2);
           }
 
-          userContent += \`\\n\\nChanged files: \${prMeta.files?.map(f => f.path).join(', ') || 'unknown'}\\n\\nDiff:\\n\\\`\\\`\\\`diff\\n\${diff}\\n\\\`\\\`\\\`\`;
+          userContent += '\\n\\nChanged files: ' + (prMeta.files?.map(f => f.path).join(', ') || 'unknown') +
+                         '\\n\\nDiff:\\n```diff\\n' + diff + '\\n```';
 
           try {
             const message = await client.messages.create({
@@ -115,7 +117,7 @@ Attempt: \${attempt}\`;
 
             let result;
             try {
-              const clean = responseText.replace(/^\\\`\\\`\\\`json?\\n?/i, '').replace(/\\n?\\\`\\\`\\\`$/, '');
+              const clean = responseText.replace(/^```json?\n?/i, '').replace(/\n?```$/, '');
               result = JSON.parse(clean);
             } catch (parseErr) {
               console.error('Failed to parse Claude response as JSON:', responseText);
