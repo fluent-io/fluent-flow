@@ -72,7 +72,7 @@ jobs:
       - name: Install Anthropic SDK
         run: npm install @anthropic-ai/sdk@0.27.0 --no-save
 
-      - name: Download review script from fluent-flow
+      - name: Download scripts from fluent-flow
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -81,6 +81,14 @@ jobs:
             -H "Accept: application/vnd.github.raw" \
             -o /tmp/review.mjs \
             https://api.github.com/repos/fluent-io/fluent-flow/contents/scripts/review.js
+          
+          # Download the post-review script
+          curl -s -H "Authorization: Bearer \$GH_TOKEN" \
+            -H "Accept: application/vnd.github.raw" \
+            -o /tmp/post-review.sh \
+            https://api.github.com/repos/fluent-io/fluent-flow/contents/scripts/post-review.sh
+          
+          chmod +x /tmp/post-review.sh
 
       - name: Review with Claude
         id: claude_review
@@ -124,75 +132,15 @@ jobs:
       - name: Post review to PR
         env:
           GH_TOKEN: ${{ github.token }}
-          ATTEMPT: ${{ inputs.attempt }}
         run: |
-          # Read result and extract fields
-          RESULT=\$(cat /tmp/review_result.json)
-          STATUS=\$(echo "\$RESULT" | jq -r '.status')
-          SUMMARY=\$(echo "\$RESULT" | jq -r '.summary')
-          BLOCKING_COUNT=\$(echo "\$RESULT" | jq '.blocking | length')
-          ADVISORY_COUNT=\$(echo "\$RESULT" | jq '.advisory | length')
-
-          # Build header
-          if [ "\$STATUS" = "PASS" ]; then
-            HEADER="## ✅ Automated Review: PASSED (Attempt ${{ inputs.attempt }})"
-            REVIEW_EVENT="APPROVE"
-          else
-            HEADER="## ❌ Automated Review: FAILED (Attempt ${{ inputs.attempt }})"
-            REVIEW_EVENT="REQUEST_CHANGES"
-          fi
-
-          # Start building body
-          BODY="\${HEADER}
-
-**Summary:** \${SUMMARY}
-**Blocking issues:** \${BLOCKING_COUNT} | **Advisory notes:** \${ADVISORY_COUNT}"
-
-          # Add blocking issues if any
-          if [ "\$BLOCKING_COUNT" -gt 0 ]; then
-            BLOCKING_TEXT=\$(echo "\$RESULT" | jq -r '.blocking[] | "- **\\(.file):\\(.line)** — \\(.issue)\\\\n  > Fix: \\(.fix)"')
-            BODY="\${BODY}
-
-### 🚫 Blocking Issues
-
-\${BLOCKING_TEXT}"
-          fi
-
-          # Add advisory notes if any
-          if [ "\$ADVISORY_COUNT" -gt 0 ]; then
-            ADVISORY_TEXT=\$(echo "\$RESULT" | jq -r '.advisory[] | "- **\\(.file):\\(.line)** — \\(.issue)\\\\n  > Suggestion: \\(.suggestion)"')
-            BODY="\${BODY}
-
-### 💡 Advisory Notes
-
-\${ADVISORY_TEXT}"
-          fi
-
-          # Add machine-readable result
-          MACHINE_RESULT=\$(echo "\$RESULT" | jq -c '.')
-          BODY="\${BODY}
-
-<!-- reviewer-result: \${MACHINE_RESULT} -->"
-
-          # Post review
-          if [ "\$STATUS" = "PASS" ]; then
-            gh pr review ${{ inputs.pr_number }} --body "\$BODY" --approve 2>/dev/null || \
-            gh pr comment ${{ inputs.pr_number }} --body "\$BODY"
-          else
-            gh pr review ${{ inputs.pr_number }} --body "\$BODY" --request-changes 2>/dev/null || \
-            gh pr comment ${{ inputs.pr_number }} --body "\$BODY"
-          fi
+          /tmp/post-review.sh "${{ inputs.pr_number }}" "${{ inputs.attempt }}" /tmp/review_result.json
 
       - name: Notify Fluent Flow service
         if: ${{ secrets.FLUENT_FLOW_URL != '' }}
         env:
           FLUENT_FLOW_URL: ${{ secrets.FLUENT_FLOW_URL }}
         run: |
-          RESULT=\$(cat /tmp/review_result.json)
           curl -sf -X POST "\${FLUENT_FLOW_URL}/api/review/result" \
             -H "Content-Type: application/json" \
-            -d "{
-              \"repo\": \"${{ github.repository }}\",
-              \"pr_number\": ${{ inputs.pr_number }},
-              \"result\": \${RESULT}
-            }" || echo "Warning: Failed to notify Fluent Flow service"
+            -d "{\"repo\":\"${{ github.repository }}\",\"pr_number\":${{ inputs.pr_number }},\"result\":\$(cat /tmp/review_result.json)}" \
+            || echo "Warning: Failed to notify Fluent Flow service"
