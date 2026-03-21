@@ -48,7 +48,8 @@ export const DefaultsConfigSchema = z.object({
 });
 
 export const RepoConfigSchema = z.object({
-  project_id: z.string().optional(),
+  project_id: z.string().optional(),           // single project (backward compat)
+  project_ids: z.array(z.string()).optional(),  // multiple projects (preferred)
   agent_id: z.string().optional(),
   reviewer: ReviewerConfigSchema.partial().optional(),
   pause: PauseConfigSchema.partial().optional(),
@@ -57,7 +58,15 @@ export const RepoConfigSchema = z.object({
 
 export const MergedConfigSchema = DefaultsConfigSchema.extend({
   project_id: z.string().optional(),
+  project_ids: z.array(z.string()).optional(),
   agent_id: z.string().optional(),
+}).transform((config) => {
+  // Normalize: merge project_id into project_ids for a single list
+  const ids = [...(config.project_ids ?? [])];
+  if (config.project_id && !ids.includes(config.project_id)) {
+    ids.push(config.project_id);
+  }
+  return { ...config, project_ids: ids.length > 0 ? ids : undefined };
 });
 
 /**

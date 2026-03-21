@@ -267,9 +267,12 @@ export async function executeTransition({
 
   console.log({ msg: 'State transition recorded', repo: repoKey, issueNumber, fromState, toState, triggerType });
 
-  // Update GitHub Projects v2 (non-blocking)
-  if (!skipProjectUpdate && config.project_id) {
-    await updateProjectCard(repoKey, issueNumber, toState, config.project_id);
+  // Update GitHub Projects v2 (non-blocking, all projects)
+  if (!skipProjectUpdate) {
+    const projectIds = config.project_ids ?? (config.project_id ? [config.project_id] : []);
+    await Promise.allSettled(
+      projectIds.map((pid) => updateProjectCard(repoKey, issueNumber, toState, pid))
+    );
   }
 
   return { transition, fromState, toState };
@@ -292,11 +295,12 @@ export async function attemptTransitionToDone({ owner, repo, issueNumber, actor,
       `⚠️ **Transition to Done blocked**: This issue cannot be moved to Done without a merged pull request.\n\nPlease merge a linked PR first, then the issue will automatically transition to Done.`
     );
 
-    // Move the project card back to the current state
+    // Move the project card back to the current state (all projects)
     const config = await resolveConfig(owner, repo);
-    if (config.project_id) {
-      await updateProjectCard(repoKey, issueNumber, fromState, config.project_id);
-    }
+    const projectIds = config.project_ids ?? (config.project_id ? [config.project_id] : []);
+    await Promise.allSettled(
+      projectIds.map((pid) => updateProjectCard(repoKey, issueNumber, fromState, pid))
+    );
 
     console.log({ msg: 'Reverted invalid Done transition', repo: repoKey, issueNumber, fromState });
     return { reverted: true };
