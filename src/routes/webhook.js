@@ -4,6 +4,7 @@ import { resolveConfig, invalidateConfig } from '../config/loader.js';
 import { executeTransition, autoTransition, getCurrentState } from '../engine/state-machine.js';
 import { recordPause, processResume, parseResumeCommand, getActivePause } from '../engine/pause-manager.js';
 import { dispatchReview, handleReviewResult, getRetryRecord } from '../engine/review-manager.js';
+import { wakeAgent } from '../notifications/openclaw.js';
 import { getLinkedPR, getPR } from '../github/rest.js';
 
 const router = Router();
@@ -168,6 +169,16 @@ async function handlePullRequest(owner, repo, payload, config) {
           });
         } catch (err) {
           console.warn({ msg: 'Could not transition to Done on merge', error: err.message, issueNumber });
+        }
+
+        // Notify agent that PR was merged so it can pick up the next issue
+        if (config.agent_id) {
+          await wakeAgent({
+            agentId: config.agent_id,
+            text: `PR merged: ${owner}/${repo}#${prNumber} — issue #${issueNumber} is Done. Pick up the next issue.`,
+            wakeMode: 'now',
+            deliver: true,
+          });
         }
       } else if (!pr.merged && issueNumber) {
         // PR closed without merge → move back to In Progress
