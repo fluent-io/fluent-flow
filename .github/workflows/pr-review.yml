@@ -6,12 +6,12 @@ on:
       pr_number:
         description: "Pull request number to review"
         required: true
-        type: number
+        type: string
       attempt:
         description: "Review attempt number (for retry tracking)"
         required: false
-        type: number
-        default: 1
+        type: string
+        default: "1"
       prior_issues:
         description: "JSON array of issues from prior attempts"
         required: false
