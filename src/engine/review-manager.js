@@ -128,6 +128,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
       prNumber,
       attempt,
       issues: allIssues,
+      delivery: config.delivery ?? {},
     });
   }
 

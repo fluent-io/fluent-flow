@@ -178,6 +178,7 @@ async function handlePullRequest(owner, repo, payload, config) {
             text: `PR merged: ${owner}/${repo}#${prNumber} — issue #${issueNumber} is Done. Pick up the next issue.`,
             wakeMode: 'now',
             deliver: true,
+            delivery: config.delivery ?? {},
           });
         }
       } else if (!pr.merged && issueNumber) {
