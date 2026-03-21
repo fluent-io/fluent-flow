@@ -21,9 +21,6 @@ on:
       ANTHROPIC_API_KEY:
         description: "Anthropic API key for Claude"
         required: true
-      FLUENT_FLOW_URL:
-        description: "Fluent Flow service URL"
-        required: false
 
 jobs:
   review:
