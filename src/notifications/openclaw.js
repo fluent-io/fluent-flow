@@ -3,6 +3,7 @@
  */
 
 const OPENCLAW_WEBHOOK_URL = process.env.OPENCLAW_WEBHOOK_URL;
+const OPENCLAW_WEBHOOK_TOKEN = process.env.OPENCLAW_WEBHOOK_TOKEN;
 
 /**
  * Wake an agent via OpenClaw webhook.
@@ -20,10 +21,15 @@ export async function wakeAgent({ agentId, text, wakeMode = 'now', deliver = tru
 
   const payload = { agentId, text, wakeMode, deliver };
 
+  const headers = { 'Content-Type': 'application/json' };
+  if (OPENCLAW_WEBHOOK_TOKEN) {
+    headers['Authorization'] = `Bearer ${OPENCLAW_WEBHOOK_TOKEN}`;
+  }
+
   try {
     const response = await fetch(OPENCLAW_WEBHOOK_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(payload),
     });
 
