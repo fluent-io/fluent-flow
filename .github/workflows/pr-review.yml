@@ -136,11 +136,14 @@ jobs:
           /tmp/post-review.sh "${{ inputs.pr_number }}" "${{ inputs.attempt }}" /tmp/review_result.json
 
       - name: Notify Fluent Flow service
-        if: ${{ secrets.FLUENT_FLOW_URL != '' }}
         env:
           FLUENT_FLOW_URL: ${{ secrets.FLUENT_FLOW_URL }}
         run: |
-          curl -sf -X POST "\${FLUENT_FLOW_URL}/api/review/result" \
-            -H "Content-Type: application/json" \
-            -d "{\"repo\":\"${{ github.repository }}\",\"pr_number\":${{ inputs.pr_number }},\"result\":\$(cat /tmp/review_result.json)}" \
-            || echo "Warning: Failed to notify Fluent Flow service"
+          if [ -n "\${FLUENT_FLOW_URL}" ]; then
+            curl -sf -X POST "\${FLUENT_FLOW_URL}/api/review/result" \
+              -H "Content-Type: application/json" \
+              -d "{\"repo\":\"${{ github.repository }}\",\"pr_number\":${{ inputs.pr_number }},\"result\":\$(cat /tmp/review_result.json)}" \
+              || echo "Warning: Failed to notify Fluent Flow service"
+          else
+            echo "FLUENT_FLOW_URL not set, skipping notification"
+          fi
