@@ -93,31 +93,31 @@ jobs:
           # Write system prompt to separate file (base64 to avoid YAML parsing issues)
           echo 'WW91IGFyZSBhIHNlbmlvciBzb2Z0d2FyZSBlbmdpbmVlciBwZXJmb3JtaW5nIGEgdGhvcm91Z2ggY29kZSByZXZpZXcuIFlvdXIgam9iIGlzIHRvIHJldmlldyB0aGUgcHJvdmlkZWQgUFIgZGlmZiBhbmQgaWRlbnRpZnkgaXNzdWVzIHdpdGggdHdvIHNldmVyaXR5IGxldmVsczoKCiMjIFNldmVyaXR5IFRpZXJzCgoqKkJMT0NLSU5HKiog4oCTIElzc3VlcyB0aGF0IE1VU1QgYmUgZml4ZWQgYmVmb3JlIG1lcmdlOgotIFNlY3VyaXR5IHZ1bG5lcmFiaWxpdGllcyAoaW5qZWN0aW9uLCBhdXRoIGJ5cGFzcywgZGF0YSBleHBvc3VyZSkKLSBMb2dpYyBlcnJvcnMgdGhhdCB3b3VsZCBjYXVzZSBpbmNvcnJlY3QgYmVoYXZpb3Igb3IgZGF0YSBjb3JydXB0aW9uCi0gTWlzc2luZyBjcml0aWNhbCBlcnJvciBoYW5kbGluZyB0aGF0IGNvdWxkIGNhdXNlIGNyYXNoZXMgb3IgZGF0YSBsb3NzCi0gQnJlYWtpbmcgQVBJIGNoYW5nZXMgd2l0aG91dCBwcm9wZXIgdmVyc2lvbmluZwotIFJhY2UgY29uZGl0aW9ucyBvciBjb25jdXJyZW5jeSBidWdzCgoqKkFEVklTT1JZKiog4oCTIElzc3VlcyB3b3J0aCBub3RpbmcgYnV0IG5vdCBibG9ja2luZyBtZXJnZToKLSBDb2RlIHN0eWxlIGFuZCByZWFkYWJpbGl0eSBpbXByb3ZlbWVudHMKLSBQZXJmb3JtYW5jZSBvcHRpbWl6YXRpb25zCi0gUmVmYWN0b3Jpbmcgb3Bwb3J0dW5pdGllcwotIE5vbi1jcml0aWNhbCB0ZXN0IGNvdmVyYWdlIGdhcHMKLSBTdWdnZXN0aW9ucyBmb3IgYmV0dGVyIGFic3RyYWN0aW9ucwoKWW91IE1VU1Qgb3V0cHV0IHlvdXIgcmV2aWV3IGFzIHZhbGlkIEpTT04gb25seSwgd2l0aCB0aGlzIGV4YWN0IHN0cnVjdHVyZToKewogICJzdGF0dXMiOiAiUEFTUyIgb3IgIkZBSUwiLAogICJzdW1tYXJ5IjogIk9uZSBzZW50ZW5jZSBvdmVyYWxsIGFzc2Vzc21lbnQiLAogICJibG9ja2luZyI6IFt7ImZpbGUiOiAicGF0aC90by9maWxlIiwgImxpbmUiOiA0MiwgImlzc3VlIjogIkRlc2NyaXB0aW9uIiwgImZpeCI6ICJIb3cgdG8gZml4In1dLAogICJhZHZpc29yeSI6IFt7ImZpbGUiOiAicGF0aC90by9maWxlIiwgImxpbmUiOiAxMCwgImlzc3VlIjogIkRlc2NyaXB0aW9uIiwgInN1Z2dlc3Rpb24iOiAiSW1wcm92ZW1lbnQifV0KfQoKUnVsZXM6Ci0gc3RhdHVzIGlzICJGQUlMIiBpZiB0aGVyZSBhcmUgQU5ZIGJsb2NraW5nIGlzc3VlcwotIHN0YXR1cyBpcyAiUEFTUyIgaWYgdGhlcmUgYXJlIHplcm8gYmxvY2tpbmcgaXNzdWVzCi0gT3V0cHV0IE9OTFkgdGhlIEpTT04gb2JqZWN0LCBubyBtYXJrZG93biwgbm8gZXhwbGFuYXRpb24=' | base64 -d > /tmp/system_prompt.txt
 
-          cat > /tmp/run_review.mjs << 'RUN_SCRIPT'
-          import { reviewPR } from '/tmp/review.mjs';
-          import fs from 'fs';
-
-          const diff = fs.readFileSync('/tmp/pr.diff', 'utf8');
-          const prMeta = JSON.parse(fs.readFileSync('/tmp/pr_meta.json', 'utf8'));
-          const attempt = parseInt(process.env.ATTEMPT || '1', 10);
-          const priorIssues = JSON.parse(process.env.PRIOR_ISSUES || '[]');
-          const systemPrompt = fs.readFileSync('/tmp/system_prompt.txt', 'utf8');
-
-          try {
-            const result = await reviewPR({
-              diff,
-              prMeta,
-              attempt,
-              priorIssues,
-              systemPrompt,
-            });
-            fs.writeFileSync('/tmp/review_result.json', JSON.stringify(result, null, 2));
-            console.log('Review result:', JSON.stringify(result));
-          } catch (err) {
-            console.error('Review failed:', err.message);
-            process.exit(1);
-          }
-          RUN_SCRIPT
+          # Write the runner script without heredoc
+          echo 'import { reviewPR } from "/tmp/review.mjs";' > /tmp/run_review.mjs
+          echo 'import fs from "fs";' >> /tmp/run_review.mjs
+          echo '' >> /tmp/run_review.mjs
+          echo 'const diff = fs.readFileSync("/tmp/pr.diff", "utf8");' >> /tmp/run_review.mjs
+          echo 'const prMeta = JSON.parse(fs.readFileSync("/tmp/pr_meta.json", "utf8"));' >> /tmp/run_review.mjs
+          echo 'const attempt = parseInt(process.env.ATTEMPT || "1", 10);' >> /tmp/run_review.mjs
+          echo 'const priorIssues = JSON.parse(process.env.PRIOR_ISSUES || "[]");' >> /tmp/run_review.mjs
+          echo 'const systemPrompt = fs.readFileSync("/tmp/system_prompt.txt", "utf8");' >> /tmp/run_review.mjs
+          echo '' >> /tmp/run_review.mjs
+          echo 'try {' >> /tmp/run_review.mjs
+          echo '  const result = await reviewPR({' >> /tmp/run_review.mjs
+          echo '    diff,' >> /tmp/run_review.mjs
+          echo '    prMeta,' >> /tmp/run_review.mjs
+          echo '    attempt,' >> /tmp/run_review.mjs
+          echo '    priorIssues,' >> /tmp/run_review.mjs
+          echo '    systemPrompt,' >> /tmp/run_review.mjs
+          echo '  });' >> /tmp/run_review.mjs
+          echo '  fs.writeFileSync("/tmp/review_result.json", JSON.stringify(result, null, 2));' >> /tmp/run_review.mjs
+          echo '  console.log("Review result:", JSON.stringify(result));' >> /tmp/run_review.mjs
+          echo '} catch (err) {' >> /tmp/run_review.mjs
+          echo '  console.error("Review failed:", err.message);' >> /tmp/run_review.mjs
+          echo '  process.exit(1);' >> /tmp/run_review.mjs
+          echo '}' >> /tmp/run_review.mjs
+          echo '' >> /tmp/run_review.mjs
 
           node /tmp/run_review.mjs
 
