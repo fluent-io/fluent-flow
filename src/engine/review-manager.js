@@ -167,18 +167,10 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
     return { action: 'escalate' };
   }
 
-  // Re-dispatch review with prior issues
-  try {
-    await dispatchReview({
-      owner,
-      repo,
-      prNumber,
-      attempt: attempt + 1,
-      priorIssues: blocking,
-    });
-  } catch (err) {
-    console.error({ msg: 'Failed to re-dispatch review', repo: repoKey, prNumber, error: err.message });
-  }
+  // Do NOT re-dispatch here — wait for the agent to push new commits.
+  // The pull_request.synchronize handler will dispatch a fresh review
+  // with last_issues as prior context when new commits arrive.
+  console.log({ msg: 'Review failed — waiting for agent to push fixes', repo: repoKey, prNumber, retryCount: newRetryCount });
 
   return { action: 'fail' };
 }
