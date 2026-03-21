@@ -32,6 +32,76 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+
     steps:
-      - name: Test
-        run: echo "PR number is ${{ inputs.pr_number }}"
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout fluent-flow scripts
+        uses: actions/checkout@v4
+        with:
+          repository: fluent-io/fluent-flow
+          path: fluent-flow-scripts
+          sparse-checkout: scripts
+
+      - name: Fetch PR diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr diff ${{ inputs.pr_number }} --patch 2>/dev/null | head -c 66560 > /tmp/pr.diff
+          if [ ! -s /tmp/pr.diff ]; then
+            echo "ERROR: Could not fetch PR diff" >&2
+            exit 1
+          fi
+          echo "Fetched diff: $(wc -c < /tmp/pr.diff) bytes"
+
+      - name: Fetch PR metadata
+        id: pr_meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr view ${{ inputs.pr_number }} --json title,body,author,baseRefName,headRefName,files > /tmp/pr_meta.json
+          echo "pr_title=$(cat /tmp/pr_meta.json | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"title\"])')" >> $GITHUB_OUTPUT
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Anthropic SDK
+        run: npm install @anthropic-ai/sdk@0.27.0 --no-save
+
+      - name: Review with Claude
+        id: claude_review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_TITLE: ${{ steps.pr_meta.outputs.pr_title }}
+          ATTEMPT: ${{ inputs.attempt }}
+          PRIOR_ISSUES: ${{ inputs.prior_issues }}
+        run: |
+          cp fluent-flow-scripts/scripts/review.js /tmp/review.mjs
+          cp fluent-flow-scripts/scripts/system-prompt.txt /tmp/system_prompt.txt
+          cp fluent-flow-scripts/scripts/run-review.mjs /tmp/run_review.mjs
+          node /tmp/run_review.mjs
+
+      - name: Post review to PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          chmod +x fluent-flow-scripts/scripts/post-review.sh
+          fluent-flow-scripts/scripts/post-review.sh "${{ inputs.pr_number }}" "${{ inputs.attempt }}" /tmp/review_result.json
+
+      - name: Notify Fluent Flow service
+        env:
+          FLUENT_FLOW_URL: ${{ secrets.FLUENT_FLOW_URL }}
+        run: |
+          if [ -n "$FLUENT_FLOW_URL" ]; then
+            curl -sf -X POST "$FLUENT_FLOW_URL/api/review/result" \
+              -H "Content-Type: application/json" \
+              -d "{\"repo\":\"${{ github.repository }}\",\"pr_number\":${{ inputs.pr_number }},\"result\":$(cat /tmp/review_result.json)}" \
+              || echo "Warning: Failed to notify Fluent Flow service"
+          else
+            echo "FLUENT_FLOW_URL not set, skipping notification"
+          fi
