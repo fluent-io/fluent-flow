@@ -44,25 +44,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          DIFF=$(gh pr diff ${{ inputs.pr_number }} --patch 2>/dev/null | head -c 66560)
-          if [ -z "$DIFF" ]; then
+          DIFF=\$(gh pr diff ${{ inputs.pr_number }} --patch 2>/dev/null | head -c 66560)
+          if [ -z "\$DIFF" ]; then
             echo "ERROR: Could not fetch PR diff" >&2
             exit 1
           fi
-          echo "$DIFF" > /tmp/pr.diff
-          DIFF_SIZE=$(wc -c < /tmp/pr.diff)
-          echo "diff_size=${DIFF_SIZE}" >> $GITHUB_OUTPUT
-          echo "Fetched diff: ${DIFF_SIZE} bytes"
+          echo "\$DIFF" > /tmp/pr.diff
+          DIFF_SIZE=\$(wc -c < /tmp/pr.diff)
+          echo "diff_size=\${DIFF_SIZE}" >> \$GITHUB_OUTPUT
+          echo "Fetched diff: \${DIFF_SIZE} bytes"
 
       - name: Fetch PR metadata
         id: pr_meta
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PR_JSON=$(gh pr view ${{ inputs.pr_number }} --json title,body,author,baseRefName,headRefName,files)
-          echo "$PR_JSON" > /tmp/pr_meta.json
-          TITLE=$(echo "$PR_JSON" | jq -r '.title')
-          echo "pr_title=${TITLE}" >> $GITHUB_OUTPUT
+          PR_JSON=\$(gh pr view ${{ inputs.pr_number }} --json title,body,author,baseRefName,headRefName,files)
+          echo "\$PR_JSON" > /tmp/pr_meta.json
+          TITLE=\$(echo "\$PR_JSON" | jq -r '.title')
+          echo "pr_title=\${TITLE}" >> \$GITHUB_OUTPUT
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -77,7 +77,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # Download the review script from the fluent-flow repo
-          curl -s -H "Authorization: Bearer $GH_TOKEN" \
+          curl -s -H "Authorization: Bearer \$GH_TOKEN" \
             -H "Accept: application/vnd.github.raw" \
             -o /tmp/review.mjs \
             https://api.github.com/repos/fluent-io/fluent-flow/contents/scripts/review.js
@@ -126,13 +126,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ATTEMPT: ${{ inputs.attempt }}
         run: |
-          RESULT=$(cat /tmp/review_result.json)
-          STATUS=$(echo "$RESULT" | jq -r '.status')
-          SUMMARY=$(echo "$RESULT" | jq -r '.summary')
-          BLOCKING_COUNT=$(echo "$RESULT" | jq '.blocking | length')
-          ADVISORY_COUNT=$(echo "$RESULT" | jq '.advisory | length')
+          # Read result and extract fields
+          RESULT=\$(cat /tmp/review_result.json)
+          STATUS=\$(echo "\$RESULT" | jq -r '.status')
+          SUMMARY=\$(echo "\$RESULT" | jq -r '.summary')
+          BLOCKING_COUNT=\$(echo "\$RESULT" | jq '.blocking | length')
+          ADVISORY_COUNT=\$(echo "\$RESULT" | jq '.advisory | length')
 
-          if [ "$STATUS" = "PASS" ]; then
+          # Build header
+          if [ "\$STATUS" = "PASS" ]; then
             HEADER="## ✅ Automated Review: PASSED (Attempt ${{ inputs.attempt }})"
             REVIEW_EVENT="APPROVE"
           else
@@ -140,51 +142,57 @@ jobs:
             REVIEW_EVENT="REQUEST_CHANGES"
           fi
 
-          BODY="${HEADER}
+          # Start building body
+          BODY="\${HEADER}
 
-**Summary:** ${SUMMARY}
-**Blocking issues:** ${BLOCKING_COUNT} | **Advisory notes:** ${ADVISORY_COUNT}
-"
+**Summary:** \${SUMMARY}
+**Blocking issues:** \${BLOCKING_COUNT} | **Advisory notes:** \${ADVISORY_COUNT}"
 
-          if [ "$BLOCKING_COUNT" -gt 0 ]; then
-            BODY="${BODY}
+          # Add blocking issues if any
+          if [ "\$BLOCKING_COUNT" -gt 0 ]; then
+            BLOCKING_TEXT=\$(echo "\$RESULT" | jq -r '.blocking[] | "- **\\(.file):\\(.line)** — \\(.issue)\\\\n  > Fix: \\(.fix)"')
+            BODY="\${BODY}
 
 ### 🚫 Blocking Issues
 
-$(echo "$RESULT" | jq -r '.blocking[] | "- **\(.file):\(.line)** — \(.issue)\\n  > Fix: \(.fix)"')
-"
+\${BLOCKING_TEXT}"
           fi
 
-          if [ "$ADVISORY_COUNT" -gt 0 ]; then
-            BODY="${BODY}
+          # Add advisory notes if any
+          if [ "\$ADVISORY_COUNT" -gt 0 ]; then
+            ADVISORY_TEXT=\$(echo "\$RESULT" | jq -r '.advisory[] | "- **\\(.file):\\(.line)** — \\(.issue)\\\\n  > Suggestion: \\(.suggestion)"')
+            BODY="\${BODY}
 
 ### 💡 Advisory Notes
 
-$(echo "$RESULT" | jq -r '.advisory[] | "- **\(.file):\(.line)** — \(.issue)\\n  > Suggestion: \(.suggestion)"')
-"
+\${ADVISORY_TEXT}"
           fi
 
-          MACHINE_RESULT=$(echo "$RESULT" | jq -c '.')
-          BODY="${BODY}
+          # Add machine-readable result
+          MACHINE_RESULT=\$(echo "\$RESULT" | jq -c '.')
+          BODY="\${BODY}
 
-<!-- reviewer-result: ${MACHINE_RESULT} -->"
+<!-- reviewer-result: \${MACHINE_RESULT} -->"
 
-          gh pr review ${{ inputs.pr_number }} \
-            --body "$BODY" \
-            --$( [ "$STATUS" = "PASS" ] && echo "approve" || echo "request-changes" ) \
-            2>/dev/null || \
-          gh pr comment ${{ inputs.pr_number }} --body "$BODY"
+          # Post review
+          if [ "\$STATUS" = "PASS" ]; then
+            gh pr review ${{ inputs.pr_number }} --body "\$BODY" --approve 2>/dev/null || \
+            gh pr comment ${{ inputs.pr_number }} --body "\$BODY"
+          else
+            gh pr review ${{ inputs.pr_number }} --body "\$BODY" --request-changes 2>/dev/null || \
+            gh pr comment ${{ inputs.pr_number }} --body "\$BODY"
+          fi
 
       - name: Notify Fluent Flow service
         if: ${{ secrets.FLUENT_FLOW_URL != '' }}
         env:
           FLUENT_FLOW_URL: ${{ secrets.FLUENT_FLOW_URL }}
         run: |
-          RESULT=$(cat /tmp/review_result.json)
-          curl -sf -X POST "${FLUENT_FLOW_URL}/api/review/result" \
+          RESULT=\$(cat /tmp/review_result.json)
+          curl -sf -X POST "\${FLUENT_FLOW_URL}/api/review/result" \
             -H "Content-Type: application/json" \
             -d "{
               \"repo\": \"${{ github.repository }}\",
               \"pr_number\": ${{ inputs.pr_number }},
-              \"result\": ${RESULT}
+              \"result\": \${RESULT}
             }" || echo "Warning: Failed to notify Fluent Flow service"
