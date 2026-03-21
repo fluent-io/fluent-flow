@@ -39,30 +39,25 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Fetch PR diff
-        id: fetch_diff
+      - name: Download all scripts from fluent-flow
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          DIFF=\$(gh pr diff ${{ inputs.pr_number }} --patch 2>/dev/null | head -c 66560)
-          if [ -z "\$DIFF" ]; then
-            echo "ERROR: Could not fetch PR diff" >&2
-            exit 1
-          fi
-          echo "\$DIFF" > /tmp/pr.diff
-          DIFF_SIZE=\$(wc -c < /tmp/pr.diff)
-          echo "diff_size=\${DIFF_SIZE}" >> \$GITHUB_OUTPUT
-          echo "Fetched diff: \${DIFF_SIZE} bytes"
+          # Download all scripts from the fluent-flow repo
+          for script in review.js post-review.sh fetch-pr.sh; do
+            curl -s -H "Authorization: Bearer \$GH_TOKEN" \
+              -H "Accept: application/vnd.github.raw" \
+              -o "/tmp/\$script" \
+              "https://api.github.com/repos/fluent-io/fluent-flow/contents/scripts/\$script"
+          done
+          chmod +x /tmp/post-review.sh /tmp/fetch-pr.sh
 
-      - name: Fetch PR metadata
-        id: pr_meta
+      - name: Fetch PR data
+        id: fetch_pr
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          PR_JSON=\$(gh pr view ${{ inputs.pr_number }} --json title,body,author,baseRefName,headRefName,files)
-          echo "\$PR_JSON" > /tmp/pr_meta.json
-          TITLE=\$(echo "\$PR_JSON" | jq -r '.title')
-          echo "pr_title=\${TITLE}" >> \$GITHUB_OUTPUT
+          /tmp/fetch-pr.sh "${{ inputs.pr_number }}" /tmp/pr.diff /tmp/pr_meta.json
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -94,7 +89,7 @@ jobs:
         id: claude_review
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          PR_TITLE: ${{ steps.pr_meta.outputs.pr_title }}
+          PR_TITLE: ${{ steps.fetch_pr.outputs.pr_title }}
           ATTEMPT: ${{ inputs.attempt }}
           PRIOR_ISSUES: ${{ inputs.prior_issues }}
         run: |
