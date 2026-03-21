@@ -135,6 +135,9 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   if (newRetryCount >= maxRetries) {
     console.log({ msg: 'Max review retries reached — escalating', repo: repoKey, prNumber, retryCount: newRetryCount });
 
+    // Reset retry counter so future pushes start a fresh review cycle
+    await resetRetries(repoKey, prNumber);
+
     // Add needs-human label to trigger pause
     try {
       if (issueNumber) {
@@ -206,3 +209,4 @@ export async function resetRetries(repo, prNumber) {
     [repo, prNumber]
   );
 }
+
