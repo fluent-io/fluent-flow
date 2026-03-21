@@ -1,0 +1,20 @@
+services:
+  fluent-flow:
+    build: .
+    container_name: fluent-flow
+    ports:
+      - "3847:3847"
+    environment:
+      DATABASE_URL: postgres://fluentflow:password@n8n-postgres-1:5432/fluentflow
+      GITHUB_TOKEN: ${GITHUB_TOKEN}
+      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
+      OPENCLAW_WEBHOOK_URL: http://openclaw-victor:18789/hooks/agent
+      PORT: 3847
+      CONFIG_CACHE_TTL_MS: 300000
+    networks:
+      - openclaw-net
+    restart: unless-stopped
+
+networks:
+  openclaw-net:
+    external: true

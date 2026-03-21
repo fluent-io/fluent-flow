@@ -1,0 +1,247 @@
+name: PR Review (Fluent Flow)
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: "Pull request number to review"
+        required: true
+        type: number
+      attempt:
+        description: "Review attempt number (for retry tracking)"
+        required: false
+        type: number
+        default: 1
+      prior_issues:
+        description: "JSON array of issues from prior attempts"
+        required: false
+        type: string
+        default: "[]"
+    secrets:
+      ANTHROPIC_API_KEY:
+        description: "Anthropic API key for Claude"
+        required: true
+      FLUENT_FLOW_URL:
+        description: "Fluent Flow service URL to post review results"
+        required: false
+
+jobs:
+  review:
+    name: Automated Code Review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch PR diff
+        id: fetch_diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Fetch raw diff, limit to 65KB to avoid prompt injection via large diffs
+          DIFF=$(gh pr diff ${{ inputs.pr_number }} --patch 2>/dev/null | head -c 66560)
+          if [ -z "$DIFF" ]; then
+            echo "ERROR: Could not fetch PR diff" >&2
+            exit 1
+          fi
+          # Write to file to avoid shell quoting issues
+          echo "$DIFF" > /tmp/pr.diff
+          DIFF_SIZE=$(wc -c < /tmp/pr.diff)
+          echo "diff_size=${DIFF_SIZE}" >> $GITHUB_OUTPUT
+          echo "Fetched diff: ${DIFF_SIZE} bytes"
+
+      - name: Fetch PR metadata
+        id: pr_meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_JSON=$(gh pr view ${{ inputs.pr_number }} --json title,body,author,baseRefName,headRefName,files)
+          echo "$PR_JSON" > /tmp/pr_meta.json
+          TITLE=$(echo "$PR_JSON" | jq -r '.title')
+          echo "pr_title=${TITLE}" >> $GITHUB_OUTPUT
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Anthropic SDK
+        run: npm install @anthropic-ai/sdk@0.27.0 --no-save
+
+      - name: Review with Claude
+        id: claude_review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_TITLE: ${{ steps.pr_meta.outputs.pr_title }}
+          ATTEMPT: ${{ inputs.attempt }}
+          PRIOR_ISSUES: ${{ inputs.prior_issues }}
+        run: |
+          cat > /tmp/review.mjs << 'REVIEW_SCRIPT'
+          import Anthropic from '@anthropic-ai/sdk';
+          import fs from 'fs';
+
+          const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+          const diff = fs.readFileSync('/tmp/pr.diff', 'utf8');
+          const prMeta = JSON.parse(fs.readFileSync('/tmp/pr_meta.json', 'utf8'));
+          const attempt = parseInt(process.env.ATTEMPT || '1', 10);
+          const priorIssues = JSON.parse(process.env.PRIOR_ISSUES || '[]');
+
+          const systemPrompt = `You are a senior software engineer performing a thorough code review. Your job is to review the provided PR diff and identify issues with two severity levels:
+
+## Severity Tiers
+
+**BLOCKING** — Issues that MUST be fixed before merge:
+- Security vulnerabilities (injection, auth bypass, data exposure)
+- Logic errors that would cause incorrect behavior or data corruption
+- Missing critical error handling that could cause crashes or data loss
+- Breaking API changes without proper versioning
+- Race conditions or concurrency bugs
+
+**ADVISORY** — Issues worth noting but not blocking merge:
+- Code style and readability improvements
+- Performance optimizations
+- Refactoring opportunities
+- Non-critical test coverage gaps
+- Suggestions for better abstractions
+
+You MUST output your review as valid JSON only, with this exact structure:
+{
+  "status": "PASS" or "FAIL",
+  "summary": "One sentence overall assessment",
+  "blocking": [{"file": "path/to/file", "line": 42, "issue": "Description", "fix": "How to fix"}],
+  "advisory": [{"file": "path/to/file", "line": 10, "issue": "Description", "suggestion": "Improvement"}]
+}
+
+Rules:
+- status is "FAIL" if there are ANY blocking issues
+- status is "PASS" if there are zero blocking issues
+- Output ONLY the JSON object, no markdown, no explanation`;
+
+          let userContent = `PR Title: ${process.env.PR_TITLE}
+Attempt: ${attempt}`;
+
+          if (priorIssues.length > 0) {
+            userContent += `\n\nPrior review flagged these issues (check if addressed):\n${JSON.stringify(priorIssues, null, 2)}`;
+          }
+
+          userContent += `\n\nChanged files: ${prMeta.files?.map(f => f.path).join(', ') || 'unknown'}\n\nDiff:\n\`\`\`diff\n${diff}\n\`\`\``;
+
+          try {
+            const message = await client.messages.create({
+              model: 'claude-haiku-4-5-20251001',
+              max_tokens: 4096,
+              system: systemPrompt,
+              messages: [{ role: 'user', content: userContent }],
+            });
+
+            const responseText = message.content[0].text.trim();
+
+            // Parse and validate JSON
+            let result;
+            try {
+              // Strip any accidental markdown code fences
+              const clean = responseText.replace(/^```json?\n?/i, '').replace(/\n?```$/, '');
+              result = JSON.parse(clean);
+            } catch (parseErr) {
+              console.error('Failed to parse Claude response as JSON:', responseText);
+              // Fail safe: treat as failed review
+              result = {
+                status: 'FAIL',
+                summary: 'Review parsing failed — manual review required',
+                blocking: [{ file: 'unknown', line: 0, issue: 'Automated review failed to parse', fix: 'Manual review required' }],
+                advisory: []
+              };
+            }
+
+            // Ensure required fields
+            result.attempt = attempt;
+            result.blocking = result.blocking || [];
+            result.advisory = result.advisory || [];
+
+            fs.writeFileSync('/tmp/review_result.json', JSON.stringify(result, null, 2));
+            console.log('Review result:', JSON.stringify(result));
+          } catch (err) {
+            console.error('Claude API error:', err.message);
+            process.exit(1);
+          }
+          REVIEW_SCRIPT
+          node /tmp/review.mjs
+
+      - name: Post review to PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ATTEMPT: ${{ inputs.attempt }}
+        run: |
+          RESULT=$(cat /tmp/review_result.json)
+          STATUS=$(echo "$RESULT" | jq -r '.status')
+          SUMMARY=$(echo "$RESULT" | jq -r '.summary')
+          BLOCKING_COUNT=$(echo "$RESULT" | jq '.blocking | length')
+          ADVISORY_COUNT=$(echo "$RESULT" | jq '.advisory | length')
+
+          # Build review body
+          if [ "$STATUS" = "PASS" ]; then
+            HEADER="## ✅ Automated Review: PASSED (Attempt ${{ inputs.attempt }})"
+            REVIEW_EVENT="APPROVE"
+          else
+            HEADER="## ❌ Automated Review: FAILED (Attempt ${{ inputs.attempt }})"
+            REVIEW_EVENT="REQUEST_CHANGES"
+          fi
+
+          # Build markdown body
+          BODY="${HEADER}
+
+**Summary:** ${SUMMARY}
+**Blocking issues:** ${BLOCKING_COUNT} | **Advisory notes:** ${ADVISORY_COUNT}
+"
+
+          if [ "$BLOCKING_COUNT" -gt 0 ]; then
+            BODY="${BODY}
+
+### 🚫 Blocking Issues
+
+$(echo "$RESULT" | jq -r '.blocking[] | "- **\(.file):\(.line)** — \(.issue)\n  > Fix: \(.fix)"')
+"
+          fi
+
+          if [ "$ADVISORY_COUNT" -gt 0 ]; then
+            BODY="${BODY}
+
+### 💡 Advisory Notes
+
+$(echo "$RESULT" | jq -r '.advisory[] | "- **\(.file):\(.line)** — \(.issue)\n  > Suggestion: \(.suggestion)"')
+"
+          fi
+
+          # Append machine-readable result comment
+          MACHINE_RESULT=$(echo "$RESULT" | jq -c '.')
+          BODY="${BODY}
+
+<!-- reviewer-result: ${MACHINE_RESULT} -->"
+
+          # Post review
+          gh pr review ${{ inputs.pr_number }} \
+            --body "$BODY" \
+            --$( [ "$STATUS" = "PASS" ] && echo "approve" || echo "request-changes" ) \
+            2>/dev/null || \
+          gh pr comment ${{ inputs.pr_number }} --body "$BODY"
+
+      - name: Notify Fluent Flow service
+        if: ${{ secrets.FLUENT_FLOW_URL != '' }}
+        env:
+          FLUENT_FLOW_URL: ${{ secrets.FLUENT_FLOW_URL }}
+        run: |
+          RESULT=$(cat /tmp/review_result.json)
+          curl -sf -X POST "${FLUENT_FLOW_URL}/api/review/result" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"repo\": \"${{ github.repository }}\",
+              \"pr_number\": ${{ inputs.pr_number }},
+              \"result\": ${RESULT}
+            }" || echo "Warning: Failed to notify Fluent Flow service"
