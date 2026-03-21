@@ -80,7 +80,7 @@ jobs:
           ATTEMPT: ${{ inputs.attempt }}
           PRIOR_ISSUES: ${{ inputs.prior_issues }}
         run: |
-          cat > /tmp/review.mjs << 'REVIEW_SCRIPT'
+          cat > /tmp/review.mjs << REVIEW_SCRIPT
           import Anthropic from '@anthropic-ai/sdk';
           import fs from 'fs';
 
@@ -137,7 +137,7 @@ Attempt: \${attempt}\`;
             console.error('Claude API error:', err.message);
             process.exit(1);
           }
-          REVIEW_SCRIPT
+REVIEW_SCRIPT
 
           # Write system prompt to separate file
           cat > /tmp/system_prompt.txt << 'PROMPT'
