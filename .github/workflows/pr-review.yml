@@ -68,7 +68,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh pr view ${{ inputs.pr_number }} --json title,body,author,baseRefName,headRefName,files > /tmp/pr_meta.json
-          echo "pr_title=$(cat /tmp/pr_meta.json | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"title\"])')" >> $GITHUB_OUTPUT
+          echo "pr_title=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["title"])' < /tmp/pr_meta.json)" >> $GITHUB_OUTPUT
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -85,6 +85,7 @@ jobs:
           PR_TITLE: ${{ steps.pr_meta.outputs.pr_title }}
           ATTEMPT: ${{ inputs.attempt }}
           PRIOR_ISSUES: ${{ inputs.prior_issues }}
+          NODE_PATH: ${{ github.workspace }}/node_modules
         run: |
           cp fluent-flow-scripts/scripts/review.js /tmp/review.mjs
           cp fluent-flow-scripts/scripts/system-prompt.txt /tmp/system_prompt.txt
