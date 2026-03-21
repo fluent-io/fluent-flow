@@ -1,4 +1,4 @@
-import { reviewPR } from '/tmp/review.mjs';
+import { reviewPR } from './review.mjs';
 import fs from 'fs';
 
 const diff = fs.readFileSync('/tmp/pr.diff', 'utf8');

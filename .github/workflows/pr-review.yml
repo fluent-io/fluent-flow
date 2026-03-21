@@ -87,10 +87,10 @@ jobs:
           PRIOR_ISSUES: ${{ inputs.prior_issues }}
           NODE_PATH: ${{ github.workspace }}/node_modules
         run: |
-          cp fluent-flow-scripts/scripts/review.js /tmp/review.mjs
+          cp fluent-flow-scripts/scripts/review.js ./review.mjs
           cp fluent-flow-scripts/scripts/system-prompt.txt /tmp/system_prompt.txt
-          cp fluent-flow-scripts/scripts/run-review.mjs /tmp/run_review.mjs
-          node /tmp/run_review.mjs
+          cp fluent-flow-scripts/scripts/run-review.mjs ./run_review.mjs
+          node ./run_review.mjs
 
       - name: Post review to PR
         env:
