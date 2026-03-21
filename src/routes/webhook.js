@@ -3,7 +3,7 @@ import { webhookSignatureMiddleware } from '../github/webhook-verify.js';
 import { resolveConfig, invalidateConfig } from '../config/loader.js';
 import { executeTransition, autoTransition, getCurrentState } from '../engine/state-machine.js';
 import { recordPause, processResume, parseResumeCommand, getActivePause } from '../engine/pause-manager.js';
-import { dispatchReview, handleReviewResult } from '../engine/review-manager.js';
+import { dispatchReview, handleReviewResult, getRetryRecord } from '../engine/review-manager.js';
 import { getLinkedPR, getPR } from '../github/rest.js';
 
 const router = Router();
@@ -189,10 +189,14 @@ async function handlePullRequest(owner, repo, payload, config) {
     }
 
     case 'synchronize': {
-      // New commits pushed — might want to re-trigger review
+      // New commits pushed — dispatch review with prior issues as context if any
       if (config.reviewer?.enabled) {
         try {
-          await dispatchReview({ owner, repo, prNumber, ref: pr.base.ref });
+          const repoKey = `${owner}/${repo}`;
+          const retryRecord = await getRetryRecord(repoKey, prNumber);
+          const priorIssues = retryRecord?.last_issues ?? [];
+          const attempt = (retryRecord?.retry_count ?? 0) + 1;
+          await dispatchReview({ owner, repo, prNumber, ref: pr.base.ref, attempt, priorIssues });
         } catch (err) {
           console.error({ msg: 'Failed to dispatch review on sync', error: err.message, prNumber });
         }
