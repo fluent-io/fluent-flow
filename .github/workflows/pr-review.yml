@@ -39,12 +39,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Checkout fluent-flow scripts
-        uses: actions/checkout@v4
-        with:
-          repository: fluent-io/fluent-flow
-          path: fluent-flow-scripts
-          sparse-checkout: scripts
+      - name: Download fluent-flow scripts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p fluent-flow-scripts/scripts
+          for f in review.js post-review.sh run-review.mjs system-prompt.txt; do
+            curl -sfL -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github.raw" \
+              "https://api.github.com/repos/fluent-io/fluent-flow/contents/scripts/$f" \
+              -o "fluent-flow-scripts/scripts/$f"
+          done
 
       - name: Fetch PR diff
         env:
