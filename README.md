@@ -127,10 +127,39 @@ jobs:
       FLUENT_FLOW_URL: ${{ secrets.FLUENT_FLOW_URL }}
 ```
 
+## MCP Server
+
+Fluent Flow exposes an MCP endpoint for AI agents (Claude Code, Cursor, etc.) at `POST /mcp`.
+
+### Connect from Claude Code
+
+```bash
+claude mcp add --transport http fluent-flow https://flow.getonit.io/mcp \
+  --header "Authorization: Bearer $FLUENT_FLOW_MCP_TOKEN"
+```
+
+### Available tools
+
+| Tool | Type | Description |
+|------|------|-------------|
+| `get_pending_actions` | Query | Poll for unresolved work items (review failures, pauses, resumes) |
+| `get_current_state` | Query | Get workflow state of an issue |
+| `get_transition_history` | Query | Full state transition history |
+| `get_retry_record` | Query | Review retry record for a PR |
+| `get_active_pause` | Query | Active pause for an issue |
+| `get_config` | Query | Resolved config for a repo |
+| `execute_transition` | Command | Execute a state transition |
+| `dispatch_review` | Command | Trigger automated code review |
+| `record_pause` | Command | Pause an issue (needs human attention) |
+| `process_resume` | Command | Resume a paused issue |
+
+All tools require an `agent_id` parameter. Set `MCP_AUTH_TOKEN` to secure the endpoint.
+
 ## API Reference
 
 | Endpoint | Method | Description |
 |---|---|---|
+| `/mcp` | POST | MCP server (AI agent interface) |
 | `/api/webhook/github` | POST | GitHub webhook receiver |
 | `/api/transition` | POST | Execute a state transition |
 | `/api/pause` | POST | Record a pause |
@@ -212,8 +241,8 @@ Invalid transitions are **reverted** with a comment explaining why.
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
 | `GITHUB_TOKEN` | Yes | GitHub PAT (scopes: `repo`, `read:org`, `project`) |
 | `GITHUB_WEBHOOK_SECRET` | Yes | Webhook signature secret |
-| `OPENCLAW_WEBHOOK_URL` | No | Legacy: OpenClaw agent webhook URL |
-| `OPENCLAW_WEBHOOK_TOKEN` | No | Legacy: OpenClaw auth token |
+| `MCP_AUTH_TOKEN` | No | Bearer token for MCP endpoint auth |
+| `OPENCLAW_WEBHOOK_TOKEN` | No | Agent transport token (referenced in agents.yml) |
 | `PORT` | No | HTTP port (default: 3847) |
 | `CONFIG_CACHE_TTL_MS` | No | Config cache TTL in ms (default: 300000) |
 
