@@ -5,16 +5,34 @@ services:
     ports:
       - "3847:3847"
     environment:
-      DATABASE_URL: postgres://fluentflow:password@n8n-postgres-1:5432/fluentflow
+      DATABASE_URL: ${DATABASE_URL:-postgres://fluentflow:password@postgres:5432/fluentflow}
       GITHUB_TOKEN: ${GITHUB_TOKEN}
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
-      OPENCLAW_WEBHOOK_URL: http://openclaw-victor:18789/hooks/agent
       PORT: 3847
       CONFIG_CACHE_TTL_MS: 300000
+      # Agent transport tokens (referenced by token_env in config/agents.yml)
+      OPENCLAW_WEBHOOK_TOKEN: ${OPENCLAW_WEBHOOK_TOKEN:-}
+    volumes:
+      - ./config:/app/config:ro
     networks:
-      - openclaw-net
+      - fluent-flow-net
     restart: unless-stopped
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fluentflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: fluentflow
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - fluent-flow-net
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+
 networks:
-  openclaw-net:
-    external: true
+  fluent-flow-net:
+    driver: bridge

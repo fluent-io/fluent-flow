@@ -87,8 +87,10 @@ notifications:
 Minimal client repo config (`.github/fluent-flow.yml`):
 ```yaml
 project_id: "PVT_xxx"
-agent_id: "getonit"
+default_agent: "getonit"    # references an agent in config/agents.yml
 ```
+
+Legacy `agent_id` is still supported and normalized to `default_agent` at validation time.
 
 ### State Machine
 
@@ -118,16 +120,57 @@ Resume triggers:
 - Remove `needs-human` label → back to previous_state
 - Drag card on board → validate transition
 
-On resume, wake the agent via POST to OpenClaw webhook:
+On resume, wake the agent via its configured transport (see Agent Notification System below).
+
+### Agent Notification System
+
+Fluent Flow is **agent-agnostic**. It notifies any build agent (OpenClaw, Claude Code, Cursor, Aider, etc.) via pluggable transports.
+
+**Agent Registry** (`config/agents.yml`):
+```yaml
+agents:
+  getonit:
+    transport: webhook
+    url: http://openclaw:18789/hooks/agent
+    token_env: OPENCLAW_WEBHOOK_TOKEN
+  claude-local:
+    transport: webhook
+    url: http://localhost:8080/wake
+    token_env: CLAUDE_LOCAL_TOKEN
+  claude-actions:
+    transport: workflow_dispatch
+    workflow: agent-wake.yml
+    ref: main
 ```
-POST ${OPENCLAW_WEBHOOK_URL}
+
+**Multi-agent per repo**: Multiple agents can work on the same repo simultaneously. Each PR identifies its originating agent via an HTML comment marker:
+```
+<!-- fluent-flow-agent: cursor-agent-1 -->
+```
+
+**Agent ID resolution order** (per notification):
+1. PR body marker: `<!-- fluent-flow-agent: {id} -->`
+2. `config.default_agent` (per-repo config)
+3. `config.agent_id` (legacy backward compat)
+4. `null` → skip notification, log warning
+
+**Standardized wake payload** (all transports receive the same shape):
+```json
 {
-  "agentId": "<from config>",
-  "text": "Resumed: <context>",
+  "agentId": "getonit",
+  "event": "review_failed",
+  "message": "Review FAILED: owner/repo#7 (attempt 2) — 2 blocking issue(s)",
   "wakeMode": "now",
-  "deliver": true
+  "repo": "owner/repo",
+  "prNumber": 7,
+  "attempt": 2,
+  "issues": [{ "file": "...", "line": 10, "issue": "...", "severity": "blocking" }]
 }
 ```
+
+**Transports**:
+- `webhook` — HTTP POST to `url`, `Authorization: Bearer {token from token_env}`
+- `workflow_dispatch` — GitHub Actions workflow_dispatch via GitHub API
 
 ### GitHub Projects v2 Integration
 
@@ -148,7 +191,7 @@ On PR opened:
 On review result:
 1. Parse machine-readable comment: `<!-- reviewer-result: {status, blocking[], advisory[], attempt} -->`
 2. If PASS: enable auto-merge via GraphQL (`enablePullRequestAutoMerge`, squash)
-3. If FAIL: increment retry, notify via OpenClaw webhook
+3. If FAIL: increment retry, notify originating agent via configured transport
 4. If FAIL and attempt >= max_retries: add `needs-human` label → triggers pause
 
 ### Postgres Schema
@@ -230,20 +273,39 @@ services:
     ports:
       - "3847:3847"
     environment:
-      DATABASE_URL: postgres://fluentflow:password@n8n-postgres-1:5432/fluentflow
+      DATABASE_URL: ${DATABASE_URL:-postgres://fluentflow:password@postgres:5432/fluentflow}
       GITHUB_TOKEN: ${GITHUB_TOKEN}
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
-      OPENCLAW_WEBHOOK_URL: http://openclaw-victor:18789/hooks/agent
       PORT: 3847
       CONFIG_CACHE_TTL_MS: 300000
+      OPENCLAW_WEBHOOK_TOKEN: ${OPENCLAW_WEBHOOK_TOKEN:-}
+    volumes:
+      - ./config:/app/config:ro  # agent registry mounted read-only
     networks:
-      - openclaw-net
+      - fluent-flow-net
     restart: unless-stopped
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fluentflow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+      POSTGRES_DB: fluentflow
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - fluent-flow-net
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+
 networks:
-  openclaw-net:
-    external: true
+  fluent-flow-net:
+    driver: bridge
 ```
+
+The `config/` directory is mounted read-only so `agents.yml` can be updated without rebuilding the image. Agent transport tokens are passed as environment variables (referenced by `token_env` in `agents.yml`).
 
 ### Reusable GitHub Action
 
@@ -263,7 +325,9 @@ fluent-flow/
 │   ├── index.js              # Express app entry
 │   ├── config/
 │   │   ├── loader.js         # Config resolver (defaults + repo overrides)
-│   │   └── schema.js         # Config validation (joi or zod)
+│   │   ├── schema.js         # Config validation (zod)
+│   │   ├── agents.js         # Agent registry loader
+│   │   └── env.js            # Startup env var validation
 │   ├── db/
 │   │   ├── client.js         # pg pool
 │   │   └── migrations/
@@ -285,9 +349,14 @@ fluent-flow/
 │   │   ├── rest.js           # GitHub REST client
 │   │   └── webhook-verify.js # Webhook signature verification
 │   └── notifications/
-│       └── openclaw.js       # OpenClaw webhook client
+│       ├── dispatcher.js     # Agent-agnostic notification dispatcher
+│       └── transports/
+│           ├── index.js      # Transport registry
+│           ├── webhook.js    # HTTP POST transport
+│           └── workflow.js   # GitHub Actions workflow_dispatch transport
 ├── config/
-│   └── defaults.yml          # Global default config
+│   ├── defaults.yml          # Global default config
+│   └── agents.yml            # Agent wake transport registry
 ├── prompts/
 │   └── review.md             # PR reviewer prompt (externalised)
 ├── .github/
