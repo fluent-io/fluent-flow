@@ -10,6 +10,9 @@ vi.mock('../../src/notifications/transports/index.js', () => ({
   getTransport: vi.fn(),
 }));
 
+// Mock db client (audit)
+vi.mock('../../src/db/client.js', () => ({ audit: vi.fn() }));
+
 import { getAgentConfig } from '../../src/config/agents.js';
 import { getTransport } from '../../src/notifications/transports/index.js';
 import {
@@ -197,7 +200,7 @@ describe('notifyPause', () => {
       expect.anything(),
       expect.objectContaining({
         event: 'paused',
-        wakeMode: 'next',
+        wakeMode: 'next-heartbeat',
         issueNumber: 42,
         reason: 'agent-stuck',
       }),

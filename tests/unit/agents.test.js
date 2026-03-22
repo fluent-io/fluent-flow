@@ -3,9 +3,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock fs before importing agents.js
 vi.mock('fs', () => ({
   readFileSync: vi.fn(),
+  existsSync: vi.fn(),
 }));
 
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { loadAgents, getAgentConfig, resetAgentsCache } from '../../src/config/agents.js';
 
 const VALID_REGISTRY = `
@@ -14,6 +15,9 @@ agents:
     transport: webhook
     url: http://openclaw:18789/hooks/agent
     token_env: OPENCLAW_WEBHOOK_TOKEN
+    delivery:
+      channel: discord
+      to: "channel:123"
   claude-local:
     transport: webhook
     url: http://localhost:8080/wake
@@ -29,9 +33,15 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+/** Helper: mock a file that exists with content */
+function mockFile(content) {
+  existsSync.mockReturnValue(true);
+  readFileSync.mockReturnValue(content);
+}
+
 describe('loadAgents', () => {
   it('loads and validates agent registry from YAML', () => {
-    readFileSync.mockReturnValue(VALID_REGISTRY);
+    mockFile(VALID_REGISTRY);
     const registry = loadAgents();
     expect(registry.agents.getonit).toBeDefined();
     expect(registry.agents.getonit.transport).toBe('webhook');
@@ -40,28 +50,41 @@ describe('loadAgents', () => {
   });
 
   it('caches on subsequent calls', () => {
-    readFileSync.mockReturnValue(VALID_REGISTRY);
+    mockFile(VALID_REGISTRY);
     loadAgents();
     loadAgents();
     expect(readFileSync).toHaveBeenCalledTimes(1);
   });
 
   it('parses workflow_dispatch transport', () => {
-    readFileSync.mockReturnValue(VALID_REGISTRY);
+    mockFile(VALID_REGISTRY);
     const registry = loadAgents();
     expect(registry.agents['claude-actions'].transport).toBe('workflow_dispatch');
     expect(registry.agents['claude-actions'].workflow).toBe('agent-wake.yml');
     expect(registry.agents['claude-actions'].ref).toBe('main');
   });
 
+  it('parses delivery config on agents', () => {
+    mockFile(VALID_REGISTRY);
+    const registry = loadAgents();
+    expect(registry.agents.getonit.delivery).toEqual({ channel: 'discord', to: 'channel:123' });
+  });
+
   it('accepts empty agents map', () => {
-    readFileSync.mockReturnValue('agents: {}');
+    mockFile('agents: {}');
     const registry = loadAgents();
     expect(registry.agents).toEqual({});
   });
 
+  it('falls back to empty registry when file missing', () => {
+    existsSync.mockReturnValue(false);
+    const registry = loadAgents();
+    expect(registry.agents).toEqual({});
+    expect(readFileSync).not.toHaveBeenCalled();
+  });
+
   it('throws on invalid transport type', () => {
-    readFileSync.mockReturnValue(`
+    mockFile(`
 agents:
   bad:
     transport: carrier_pigeon
@@ -73,22 +96,20 @@ agents:
 
 describe('getAgentConfig', () => {
   it('returns config for registered agent', () => {
-    readFileSync.mockReturnValue(VALID_REGISTRY);
+    mockFile(VALID_REGISTRY);
     const config = getAgentConfig('getonit');
-    expect(config).toEqual({
-      transport: 'webhook',
-      url: 'http://openclaw:18789/hooks/agent',
-      token_env: 'OPENCLAW_WEBHOOK_TOKEN',
-    });
+    expect(config.transport).toBe('webhook');
+    expect(config.url).toBe('http://openclaw:18789/hooks/agent');
+    expect(config.token_env).toBe('OPENCLAW_WEBHOOK_TOKEN');
   });
 
   it('returns null for unregistered agent', () => {
-    readFileSync.mockReturnValue(VALID_REGISTRY);
+    mockFile(VALID_REGISTRY);
     expect(getAgentConfig('nonexistent')).toBeNull();
   });
 
   it('returns null when agentId is null/undefined', () => {
-    readFileSync.mockReturnValue(VALID_REGISTRY);
+    mockFile(VALID_REGISTRY);
     expect(getAgentConfig(null)).toBeNull();
     expect(getAgentConfig(undefined)).toBeNull();
   });

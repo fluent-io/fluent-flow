@@ -5,7 +5,7 @@ import {
 } from '../helpers/mocks.js';
 
 // Mock all external dependencies
-vi.mock('../../src/db/client.js', () => ({ query: vi.fn() }));
+vi.mock('../../src/db/client.js', () => ({ query: vi.fn(), audit: vi.fn() }));
 vi.mock('../../src/config/loader.js', () => ({ resolveConfig: vi.fn() }));
 vi.mock('../../src/github/graphql.js', () => ({
   moveProjectItem: vi.fn(),
