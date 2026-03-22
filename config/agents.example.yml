@@ -1,0 +1,21 @@
+# Agent registry — copy this file to agents.yml and configure your deployment.
+# agents.yml is gitignored. Never commit real URLs, tokens, or channel IDs here.
+#
+# Each key is an agent ID (must match agent_id in .github/fluent-flow.yml).
+# Supported transports: webhook, workflow_dispatch
+#
+# agents:
+#   my-agent:
+#     transport: webhook
+#     url: http://your-openclaw-instance:18789/hooks/agent
+#     token_env: MY_AGENT_WEBHOOK_TOKEN   # env var name holding the bearer token
+#     delivery:
+#       channel: discord                  # optional: channel type
+#       to: "channel:1234567890"         # optional: channel/recipient ID
+#
+#   another-agent:
+#     transport: workflow_dispatch        # trigger a GitHub Actions workflow instead
+#     workflow: agent-run.yml
+#     ref: main
+
+agents: {}

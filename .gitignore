@@ -11,3 +11,8 @@ coverage/
 *.swp
 *.swo
 tmp/
+
+# Deployment-specific overrides — configure locally, never commit
+config/agents.yml
+docker-compose.override.yml
+src/routes/webhook.js.backup

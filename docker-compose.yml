@@ -10,13 +10,10 @@ services:
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
       PORT: 3847
       CONFIG_CACHE_TTL_MS: 300000
-      # Agent transport tokens (referenced by token_env in config/agents.yml)
-      OPENCLAW_WEBHOOK_TOKEN: ${OPENCLAW_WEBHOOK_TOKEN:-}
     volumes:
       - ./config:/app/config:ro
     networks:
       - fluent-flow-net
-      - openclaw-net
     restart: unless-stopped
 
   postgres:
@@ -37,5 +34,3 @@ volumes:
 networks:
   fluent-flow-net:
     driver: bridge
-  openclaw-net:
-    external: true
