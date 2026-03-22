@@ -4,7 +4,7 @@ import { resolveConfig, invalidateConfig } from '../config/loader.js';
 import { executeTransition, autoTransition, getCurrentState } from '../engine/state-machine.js';
 import { recordPause, processResume, parseResumeCommand, getActivePause } from '../engine/pause-manager.js';
 import { dispatchReview, handleReviewResult, getRetryRecord } from '../engine/review-manager.js';
-import { wakeAgent } from '../notifications/openclaw.js';
+import { resolveAgentId, notifyPRMerged } from '../notifications/dispatcher.js';
 import { getLinkedPR, getPR } from '../github/rest.js';
 
 const router = Router();
@@ -171,13 +171,14 @@ async function handlePullRequest(owner, repo, payload, config) {
           console.warn({ msg: 'Could not transition to Done on merge', error: err.message, issueNumber });
         }
 
-        // Notify agent that PR was merged so it can pick up the next issue
-        if (config.agent_id) {
-          await wakeAgent({
-            agentId: config.agent_id,
-            text: `PR merged: ${owner}/${repo}#${prNumber} — issue #${issueNumber} is Done. Pick up the next issue.`,
-            wakeMode: 'now',
-            deliver: true,
+        // Notify the agent that created this PR
+        const agentId = resolveAgentId({ prBody: pr.body, config });
+        if (agentId) {
+          await notifyPRMerged({
+            agentId,
+            repo: `${owner}/${repo}`,
+            prNumber,
+            issueNumber,
             delivery: config.delivery ?? {},
           });
         }
@@ -235,6 +236,7 @@ async function handlePullRequestReview(owner, repo, payload, config) {
     // This is from our automated reviewer
     try {
       const result = JSON.parse(resultMatch[1]);
+      const agentId = resolveAgentId({ prBody: pr.body, config });
       await handleReviewResult({
         owner,
         repo,
@@ -242,6 +244,7 @@ async function handlePullRequestReview(owner, repo, payload, config) {
         issueNumber,
         result,
         reviewSha: pr.head.sha,
+        agentId,
       });
     } catch (err) {
       console.error({ msg: 'Failed to handle automated review result', error: err.message, prNumber });
@@ -265,6 +268,8 @@ async function handleIssues(owner, repo, payload, config) {
   const { action, issue, label } = payload;
   const issueNumber = issue.number;
 
+  const agentId = config.default_agent ?? config.agent_id ?? null;
+
   if (action === 'labeled' && label?.name === 'needs-human') {
     // Pause the issue
     const currentState = await getCurrentState(`${owner}/${repo}`, issueNumber);
@@ -276,6 +281,7 @@ async function handleIssues(owner, repo, payload, config) {
         reason: 'manual',
         context: 'Labeled needs-human',
         actor: payload.sender?.login,
+        agentId,
       });
     }
   } else if (action === 'unlabeled' && label?.name === 'needs-human') {
@@ -287,6 +293,7 @@ async function handleIssues(owner, repo, payload, config) {
         repo,
         issueNumber,
         resumedBy: payload.sender?.login,
+        agentId,
       });
     }
   }
@@ -306,6 +313,7 @@ async function handleIssueComment(owner, repo, payload, config) {
   const { isResume, toState, instructions } = parseResumeCommand(body);
   if (isResume) {
     try {
+      const agentId = config.default_agent ?? config.agent_id ?? null;
       await processResume({
         owner,
         repo,
@@ -313,6 +321,7 @@ async function handleIssueComment(owner, repo, payload, config) {
         toState,
         instructions,
         resumedBy: comment.user?.login,
+        agentId,
       });
     } catch (err) {
       console.warn({ msg: 'Resume command failed', error: err.message, issueNumber });
@@ -326,6 +335,7 @@ async function handleIssueComment(owner, repo, payload, config) {
     try {
       // Find linked PR if any
       const linkedPR = await getLinkedPR(owner, repo, issueNumber);
+      const agentId = config.default_agent ?? config.agent_id ?? null;
       await recordPause({
         owner,
         repo,
@@ -334,6 +344,7 @@ async function handleIssueComment(owner, repo, payload, config) {
         reason: pauseData.reason ?? 'agent-stuck',
         context: pauseData.context,
         actor: comment.user?.login,
+        agentId,
       });
     } catch (err) {
       console.error({ msg: 'Agent pause failed', error: err.message, issueNumber });

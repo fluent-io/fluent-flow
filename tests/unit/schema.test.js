@@ -73,6 +73,11 @@ describe('validateRepoConfig', () => {
     const result = validateRepoConfig({ delivery: { to: 'team-lead' } });
     expect(result.delivery).toEqual({ to: 'team-lead' });
   });
+
+  it('accepts default_agent field', () => {
+    const result = validateRepoConfig({ default_agent: 'getonit' });
+    expect(result.default_agent).toBe('getonit');
+  });
 });
 
 describe('validateMergedConfig', () => {
@@ -116,5 +121,20 @@ describe('validateMergedConfig', () => {
       delivery: { channel: '#builds', to: 'victor' },
     });
     expect(result.delivery).toEqual({ channel: '#builds', to: 'victor' });
+  });
+
+  it('normalizes agent_id to default_agent (backward compat)', () => {
+    const result = validateMergedConfig({ agent_id: 'getonit' });
+    expect(result.default_agent).toBe('getonit');
+  });
+
+  it('prefers explicit default_agent over agent_id', () => {
+    const result = validateMergedConfig({ agent_id: 'old', default_agent: 'new' });
+    expect(result.default_agent).toBe('new');
+  });
+
+  it('leaves default_agent undefined when neither set', () => {
+    const result = validateMergedConfig({});
+    expect(result.default_agent).toBeUndefined();
   });
 });

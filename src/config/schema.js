@@ -55,7 +55,8 @@ const DeliveryConfigSchema = z.object({
 export const RepoConfigSchema = z.object({
   project_id: z.string().optional(),           // single project (backward compat)
   project_ids: z.array(z.string()).optional(),  // multiple projects (preferred)
-  agent_id: z.string().optional(),
+  agent_id: z.string().optional(),              // legacy — use default_agent
+  default_agent: z.string().optional(),          // which registered agent is default for this repo
   reviewer: ReviewerConfigSchema.partial().optional(),
   pause: PauseConfigSchema.partial().optional(),
   notifications: NotificationsConfigSchema.partial().optional(),
@@ -66,6 +67,7 @@ export const MergedConfigSchema = DefaultsConfigSchema.extend({
   project_id: z.string().optional(),
   project_ids: z.array(z.string()).optional(),
   agent_id: z.string().optional(),
+  default_agent: z.string().optional(),
   delivery: DeliveryConfigSchema,
 }).transform((config) => {
   // Normalize: merge project_id into project_ids for a single list
@@ -73,7 +75,9 @@ export const MergedConfigSchema = DefaultsConfigSchema.extend({
   if (config.project_id && !ids.includes(config.project_id)) {
     ids.push(config.project_id);
   }
-  return { ...config, project_ids: ids.length > 0 ? ids : undefined };
+  // Normalize: agent_id -> default_agent (backward compat)
+  const default_agent = config.default_agent ?? config.agent_id ?? undefined;
+  return { ...config, project_ids: ids.length > 0 ? ids : undefined, default_agent };
 });
 
 /**

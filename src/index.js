@@ -2,6 +2,7 @@ import express from 'express';
 import { captureRawBody } from './github/webhook-verify.js';
 import { getPool, closePool, healthCheck, runMigrations } from './db/client.js';
 import { loadDefaults } from './config/loader.js';
+import { loadAgents } from './config/agents.js';
 import { validateEnv } from './config/env.js';
 
 // Routes
@@ -88,7 +89,8 @@ async function start() {
 
     // Validate config
     loadDefaults();
-    console.log({ msg: 'Defaults config loaded' });
+    loadAgents();
+    console.log({ msg: 'Defaults config and agent registry loaded' });
 
     // Run migrations + test DB connection
     await runMigrations();

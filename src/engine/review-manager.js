@@ -3,7 +3,7 @@ import { resolveConfig } from '../config/loader.js';
 import { dispatchWorkflow, addLabel } from '../github/rest.js';
 import { enablePullRequestAutoMerge, getPRNodeId } from '../github/graphql.js';
 import { recordPause } from './pause-manager.js';
-import { notifyReviewFailure } from '../notifications/openclaw.js';
+import { notifyReviewFailure } from '../notifications/dispatcher.js';
 
 /**
  * Get or create a review_retries record for a PR.
@@ -69,7 +69,7 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', atte
  * @param {string} [opts.reviewSha] - Commit SHA the review was for
  * @returns {Promise<{ action: 'pass'|'fail'|'escalate' }>}
  */
-export async function handleReviewResult({ owner, repo, prNumber, issueNumber, result, reviewSha }) {
+export async function handleReviewResult({ owner, repo, prNumber, issueNumber, result, reviewSha, agentId }) {
   const repoKey = `${owner}/${repo}`;
   const config = await resolveConfig(owner, repo);
   const maxRetries = config.reviewer?.max_retries ?? 3;
@@ -120,10 +120,11 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
 
   console.log({ msg: 'Review failed', repo: repoKey, prNumber, attempt, retryCount: newRetryCount, maxRetries });
 
-  // Notify agent of failure
-  if (config.agent_id) {
+  // Notify the agent that created the PR
+  const resolvedAgent = agentId ?? config.default_agent ?? config.agent_id;
+  if (resolvedAgent) {
     await notifyReviewFailure({
-      agentId: config.agent_id,
+      agentId: resolvedAgent,
       repo: repoKey,
       prNumber,
       attempt,
@@ -159,6 +160,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
           reason: 'review-escalation',
           context: `Automated review failed ${newRetryCount} times. Blocking issues:\n${blocking.map((b) => `- ${b.file}:${b.line} — ${b.issue}`).join('\n')}`,
           actor: 'fluent-flow',
+          agentId: resolvedAgent,
         });
       } catch (err) {
         console.error({ msg: 'Failed to record escalation pause', error: err.message });

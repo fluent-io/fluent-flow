@@ -2,7 +2,7 @@ import { query } from '../db/client.js';
 import { resolveConfig } from '../config/loader.js';
 import { executeTransition, getCurrentState } from './state-machine.js';
 import { postComment, addLabel, removeLabel } from '../github/rest.js';
-import { notifyPause, notifyResume } from '../notifications/openclaw.js';
+import { notifyPause, notifyResume } from '../notifications/dispatcher.js';
 
 const NEEDS_HUMAN_LABEL = 'needs-human';
 
@@ -78,9 +78,10 @@ function buildPauseChecklist(reason, context) {
  * @param {string} [opts.actor] - Who triggered the pause
  * @returns {Promise<object>} The created pause record
  */
-export async function recordPause({ owner, repo, issueNumber, prNumber, reason, context, actor }) {
+export async function recordPause({ owner, repo, issueNumber, prNumber, reason, context, actor, agentId }) {
   const repoKey = `${owner}/${repo}`;
   const config = await resolveConfig(owner, repo);
+  const resolvedAgent = agentId ?? config.default_agent ?? config.agent_id ?? null;
   const previousState = await getCurrentState(repoKey, issueNumber);
 
   const { markdown, checklist } = buildPauseChecklist(reason, context);
@@ -99,7 +100,7 @@ export async function recordPause({ owner, repo, issueNumber, prNumber, reason, 
       reason,
       context ?? null,
       JSON.stringify(checklist),
-      config.agent_id ?? null,
+      resolvedAgent,
     ]
   );
   const pause = result.rows[0];
@@ -152,9 +153,9 @@ ${markdown}
   }
 
   // Notify agent
-  if (config.agent_id) {
+  if (resolvedAgent) {
     await notifyPause({
-      agentId: config.agent_id,
+      agentId: resolvedAgent,
       repo: repoKey,
       issueNumber,
       reason,
@@ -241,9 +242,10 @@ export async function getActivePause(repoKey, issueNumber) {
  * @param {string} [opts.resumedBy] - Who triggered the resume
  * @returns {Promise<{ pause: object, targetState: string }>}
  */
-export async function processResume({ owner, repo, issueNumber, toState, instructions, resumedBy }) {
+export async function processResume({ owner, repo, issueNumber, toState, instructions, resumedBy, agentId }) {
   const repoKey = `${owner}/${repo}`;
   const config = await resolveConfig(owner, repo);
+  const resolvedAgent = agentId ?? config.default_agent ?? config.agent_id ?? null;
 
   const pause = await getActivePause(repoKey, issueNumber);
   if (!pause) {
@@ -305,9 +307,9 @@ export async function processResume({ owner, repo, issueNumber, toState, instruc
   }
 
   // Wake agent
-  if (config.agent_id) {
+  if (resolvedAgent) {
     await notifyResume({
-      agentId: config.agent_id,
+      agentId: resolvedAgent,
       repo: repoKey,
       issueNumber,
       resumeInstructions: instructions,
