@@ -7,8 +7,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "vitest run --fileParallelism=false",
+    "test:watch": "vitest --fileParallelism=false"
   },
   "dependencies": {
     "express": "^4.18.2",
