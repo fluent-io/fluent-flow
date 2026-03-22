@@ -159,6 +159,7 @@ ${markdown}
       issueNumber,
       reason,
       context,
+      delivery: config.delivery,
     });
   }
 
@@ -311,6 +312,7 @@ export async function processResume({ owner, repo, issueNumber, toState, instruc
       issueNumber,
       resumeInstructions: instructions,
       targetState,
+      delivery: config.delivery,
     });
   }
 

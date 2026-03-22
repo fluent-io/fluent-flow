@@ -47,6 +47,11 @@ export const DefaultsConfigSchema = z.object({
   notifications: NotificationsConfigSchema.default({}),
 });
 
+const DeliveryConfigSchema = z.object({
+  channel: z.string().optional(),
+  to: z.string().optional(),
+}).optional();
+
 export const RepoConfigSchema = z.object({
   project_id: z.string().optional(),           // single project (backward compat)
   project_ids: z.array(z.string()).optional(),  // multiple projects (preferred)
@@ -54,12 +59,14 @@ export const RepoConfigSchema = z.object({
   reviewer: ReviewerConfigSchema.partial().optional(),
   pause: PauseConfigSchema.partial().optional(),
   notifications: NotificationsConfigSchema.partial().optional(),
+  delivery: DeliveryConfigSchema,
 });
 
 export const MergedConfigSchema = DefaultsConfigSchema.extend({
   project_id: z.string().optional(),
   project_ids: z.array(z.string()).optional(),
   agent_id: z.string().optional(),
+  delivery: DeliveryConfigSchema,
 }).transform((config) => {
   // Normalize: merge project_id into project_ids for a single list
   const ids = [...(config.project_ids ?? [])];

@@ -2,6 +2,7 @@ import express from 'express';
 import { captureRawBody } from './github/webhook-verify.js';
 import { getPool, closePool, healthCheck, runMigrations } from './db/client.js';
 import { loadDefaults } from './config/loader.js';
+import { validateEnv } from './config/env.js';
 
 // Routes
 import webhookRouter from './routes/webhook.js';
@@ -78,6 +79,13 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 // Startup
 async function start() {
   try {
+    // Validate environment
+    const envErrors = validateEnv();
+    if (envErrors.length > 0) {
+      for (const err of envErrors) console.error({ msg: err });
+      throw new Error(`Missing required environment variables: ${envErrors.length} error(s)`);
+    }
+
     // Validate config
     loadDefaults();
     console.log({ msg: 'Defaults config loaded' });
