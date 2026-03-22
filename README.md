@@ -250,44 +250,15 @@ Agent-specific tokens (referenced via `token_env` in `config/agents.yml`) should
 
 ## Architecture
 
-```
-src/
-├── index.js              # Express app entry
-├── config/
-│   ├── loader.js         # Config resolver (defaults + repo overrides)
-│   ├── schema.js         # Zod validation schemas
-│   ├── agents.js         # Agent registry loader
-│   └── env.js            # Startup env var validation
-├── db/
-│   ├── client.js         # pg pool + migrations
-│   └── migrations/
-│       └── 001_initial.sql
-├── engine/
-│   ├── state-machine.js  # Transition validation + execution
-│   ├── pause-manager.js  # Pause/resume logic
-│   └── review-manager.js # Review dispatch + result handling
-├── github/
-│   ├── graphql.js        # GitHub Projects v2 GraphQL client
-│   ├── rest.js           # GitHub REST API client
-│   └── webhook-verify.js # Webhook signature verification
-├── notifications/
-│   ├── dispatcher.js     # Agent-agnostic notification dispatcher
-│   └── transports/
-│       ├── index.js      # Transport registry
-│       ├── webhook.js    # HTTP POST transport
-│       └── workflow.js   # GitHub Actions workflow_dispatch transport
-└── routes/
-    ├── webhook.js        # POST /api/webhook/github
-    ├── transition.js     # POST /api/transition
-    ├── pause.js          # POST /api/pause + /api/resume
-    ├── state.js          # GET /api/state
-    ├── review.js         # Review dispatch + result routes
-    ├── config.js         # GET /api/config
-    └── health.js         # GET /api/health
-config/
-├── defaults.yml          # Global default config
-└── agents.yml            # Agent wake transport registry
-```
+| Directory | Purpose | Docs |
+|-----------|---------|------|
+| [config/](config/README.md) | Global defaults, agent registry, per-repo config | [config/README.md](config/README.md) |
+| [src/engine/](src/engine/README.md) | State machine, review pipeline, pause/resume | [src/engine/README.md](src/engine/README.md) |
+| [src/mcp/](src/mcp/README.md) | MCP server for AI agent integration | [src/mcp/README.md](src/mcp/README.md) |
+| [src/notifications/](src/notifications/README.md) | Agent-agnostic notification dispatcher + transports | [src/notifications/README.md](src/notifications/README.md) |
+| src/github/ | GitHub REST + GraphQL API clients, webhook verification | |
+| src/routes/ | Express route handlers (webhook, transition, pause, state, review, config, health) | |
+| src/db/ | PostgreSQL pool, migrations, audit logging | |
 
 ## License
 
