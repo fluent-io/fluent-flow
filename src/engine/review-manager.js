@@ -1,4 +1,4 @@
-import { query } from '../db/client.js';
+import { query, audit } from '../db/client.js';
 import { resolveConfig } from '../config/loader.js';
 import { dispatchWorkflow, addLabel } from '../github/rest.js';
 import { enablePullRequestAutoMerge, getPRNodeId } from '../github/graphql.js';
@@ -50,6 +50,7 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', atte
   });
 
   console.log({ msg: 'Dispatched pr-review workflow', repo: repoKey, prNumber, attempt });
+  audit('review_dispatched', { repo: repoKey, data: { prNumber, attempt } });
 }
 
 /**
@@ -83,6 +84,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
       if (prNodeId) {
         await enablePullRequestAutoMerge(prNodeId, 'SQUASH');
         console.log({ msg: 'Enabled auto-merge after PASS', repo: repoKey, prNumber });
+      audit('review_result_pass', { repo: repoKey, data: { prNumber, attempt } });
       }
     } catch (err) {
       console.error({ msg: 'Failed to enable auto-merge', repo: repoKey, prNumber, error: err.message });
@@ -136,6 +138,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   // Check if we've hit max retries
   if (newRetryCount >= maxRetries) {
     console.log({ msg: 'Max review retries reached — escalating', repo: repoKey, prNumber, retryCount: newRetryCount });
+    audit('review_escalated', { repo: repoKey, data: { prNumber, attempt, blockingCount: blocking.length } });
 
     // Reset retry counter so future pushes start a fresh review cycle
     await resetRetries(repoKey, prNumber);
@@ -174,6 +177,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   // The pull_request.synchronize handler will dispatch a fresh review
   // with last_issues as prior context when new commits arrive.
   console.log({ msg: 'Review failed — waiting for agent to push fixes', repo: repoKey, prNumber, retryCount: newRetryCount });
+  audit('review_result_fail', { repo: repoKey, data: { prNumber, attempt, retryCount: newRetryCount } });
 
   return { action: 'fail' };
 }

@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { handleCheckRun } from '../github/check-run-handler.js';
+import { audit } from '../db/client.js';
 import { webhookSignatureMiddleware } from '../github/webhook-verify.js';
 import { resolveConfig, invalidateConfig } from '../config/loader.js';
 import { executeTransition, autoTransition, getCurrentState } from '../engine/state-machine.js';
@@ -81,6 +83,7 @@ async function routeWebhookEvent(event, payload) {
   }
 
   console.log({ msg: 'Processing webhook', event, action: payload.action, repo: repo.full_name });
+  audit('webhook_received', { repo: repo.full_name, data: { event, action: payload.action } });
 
   switch (event) {
     case 'pull_request':
@@ -100,6 +103,9 @@ async function routeWebhookEvent(event, payload) {
       break;
     case 'push':
       await handlePush(owner, repoName, payload, config);
+      break;
+    case 'check_run':
+      await handleCheckRun(owner, repoName, payload, config);
       break;
     default:
       console.log({ msg: 'Unhandled event type', event });

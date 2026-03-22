@@ -1,4 +1,4 @@
-import { query } from '../db/client.js';
+import { query, audit } from '../db/client.js';
 import { resolveConfig } from '../config/loader.js';
 import { executeTransition, getCurrentState } from './state-machine.js';
 import { postComment, addLabel, removeLabel } from '../github/rest.js';
@@ -165,6 +165,7 @@ ${markdown}
   }
 
   console.log({ msg: 'Issue paused', repo: repoKey, issueNumber, reason, previousState, pauseId: pause.id });
+  audit('pause_created', { repo: repoKey, actor, data: { issueNumber, reason, previousState, pauseId: pause.id } });
   return pause;
 }
 
@@ -319,5 +320,6 @@ export async function processResume({ owner, repo, issueNumber, toState, instruc
   }
 
   console.log({ msg: 'Issue resumed', repo: repoKey, issueNumber, targetState, resumedBy, pauseId: pause.id });
+  audit('pause_resumed', { repo: repoKey, actor: resumedBy, data: { issueNumber, targetState, pauseId: pause.id } });
   return { pause, targetState };
 }

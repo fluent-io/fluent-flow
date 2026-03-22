@@ -31,11 +31,14 @@ export async function query(text, params) {
 }
 
 export async function runMigrations() {
-  const migrationPath = join(__dirname, 'migrations', '001_initial.sql');
-  const sql = readFileSync(migrationPath, 'utf8');
   const pool = getPool();
-  await pool.query(sql);
-  console.log({ msg: 'Database migrations applied' });
+  const migrations = ['001_initial.sql', '002_audit_log.sql'];
+  for (const file of migrations) {
+    const migrationPath = join(__dirname, 'migrations', file);
+    const sql = readFileSync(migrationPath, 'utf8');
+    await pool.query(sql);
+    console.log({ msg: 'Migration applied', file });
+  }
 }
 
 export async function closePool() {
@@ -49,4 +52,21 @@ export async function closePool() {
 export async function healthCheck() {
   const result = await query('SELECT 1 AS ok');
   return result.rows[0].ok === 1;
+}
+
+/**
+ * Write an audit log entry (fire-and-forget — never throws).
+ * @param {string} eventType - e.g. 'webhook_received', 'state_transition', 'agent_woken'
+ * @param {object} [opts]
+ * @param {string} [opts.repo] - "owner/repo"
+ * @param {string} [opts.actor]
+ * @param {object} [opts.data] - Any additional JSON data
+ */
+export function audit(eventType, { repo, actor, data } = {}) {
+  query(
+    `INSERT INTO audit_log (event_type, repo, actor, data) VALUES ($1, $2, $3, $4)`,
+    [eventType, repo ?? null, actor ?? null, data ? JSON.stringify(data) : null]
+  ).catch((err) => {
+    console.error({ msg: 'audit log write failed', eventType, error: err.message });
+  });
 }

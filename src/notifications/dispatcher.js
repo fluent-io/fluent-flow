@@ -4,6 +4,7 @@
  */
 import { getAgentConfig } from '../config/agents.js';
 import { getTransport } from './transports/index.js';
+import { audit } from '../db/client.js';
 
 /**
  * Extract agent ID from PR body marker.
@@ -62,6 +63,7 @@ export async function dispatch({ agentId, event, payload }) {
   };
 
   await transport.send(agentConfig, fullPayload);
+  audit('agent_woken', { data: { agentId, event } });
 }
 
 /**
@@ -85,7 +87,7 @@ export async function notifyPause({ agentId, repo, issueNumber, reason, context,
   await dispatch({
     agentId,
     event: 'paused',
-    payload: { message, wakeMode: 'next', deliver: true, repo, issueNumber, reason, ...delivery },
+    payload: { message, wakeMode: 'next-heartbeat', deliver: true, repo, issueNumber, reason, ...delivery },
   });
 }
 

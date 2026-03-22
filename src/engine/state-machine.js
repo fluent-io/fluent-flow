@@ -1,4 +1,4 @@
-import { query } from '../db/client.js';
+import { query, audit } from '../db/client.js';
 import { resolveConfig } from '../config/loader.js';
 import { moveProjectItem, findProjectItem } from '../github/graphql.js';
 import { postComment, getIssue } from '../github/rest.js';
@@ -266,6 +266,7 @@ export async function executeTransition({
   });
 
   console.log({ msg: 'State transition recorded', repo: repoKey, issueNumber, fromState, toState, triggerType });
+  audit('state_transition', { repo: repoKey, actor, data: { issueNumber, fromState, toState, triggerType, triggerDetail } });
 
   // Update GitHub Projects v2 (non-blocking, all projects)
   if (!skipProjectUpdate) {

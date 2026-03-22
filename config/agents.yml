@@ -1,1 +1,8 @@
-agents: {}
+agents:
+  getonit:
+    transport: webhook
+    url: http://openclaw-victor:18789/hooks/agent
+    token_env: OPENCLAW_WEBHOOK_TOKEN
+    delivery:
+      channel: discord
+      to: "channel:1477347170200846577"

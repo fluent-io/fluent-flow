@@ -177,3 +177,22 @@ export async function ensureLabel(owner, repo, name, color = 'e11d48', descripti
     throw err;
   }
 }
+
+/**
+ * Get open PRs associated with a commit SHA.
+ * Uses the GitHub Commit Pulls API (requires groot-preview header).
+ * @param {string} owner
+ * @param {string} repo
+ * @param {string} sha - Commit SHA
+ * @returns {Promise<Array>} Array of PR objects
+ */
+export async function getPRsForCommit(owner, repo, sha) {
+  try {
+    return await githubRequest(`/repos/${owner}/${repo}/commits/${sha}/pulls`, {
+      headers: { Accept: 'application/vnd.github.groot-preview+json' },
+    });
+  } catch (err) {
+    console.warn({ msg: 'getPRsForCommit failed', owner, repo, sha, error: err.message });
+    return [];
+  }
+}
