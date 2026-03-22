@@ -17,6 +17,11 @@ on:
         required: false
         type: string
         default: "[]"
+      fluent_flow_repo:
+        description: "Fluent Flow repo to fetch scripts from (owner/repo)"
+        required: false
+        type: string
+        default: "fluent-io/fluent-flow"
     secrets:
       ANTHROPIC_API_KEY:
         description: "Anthropic API key for Claude"
@@ -47,7 +52,7 @@ jobs:
           for f in review.js post-review.sh run-review.mjs system-prompt.txt; do
             curl -sfL -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github.raw" \
-              "https://api.github.com/repos/fluent-io/fluent-flow/contents/scripts/$f" \
+              "https://api.github.com/repos/${{ inputs.fluent_flow_repo }}/contents/scripts/$f" \
               -o "fluent-flow-scripts/scripts/$f"
           done
 

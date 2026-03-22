@@ -262,4 +262,4 @@ config/
 
 ## License
 
-Private — Fluent IO
+[MIT](LICENSE)

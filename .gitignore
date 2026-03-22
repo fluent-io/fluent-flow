@@ -1,3 +1,13 @@
 node_modules/
 .env
+.env.local
+.env.*.local
 *.log
+dist/
+coverage/
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+tmp/
