@@ -2,7 +2,7 @@ import { query, audit } from '../db/client.js';
 import { resolveConfig } from '../config/loader.js';
 import { dispatchWorkflow, addLabel } from '../github/rest.js';
 import { enablePullRequestAutoMerge, getPRNodeId } from '../github/graphql.js';
-import { recordPause } from './pause-manager.js';
+import { recordPause, getActivePause } from './pause-manager.js';
 import { notifyReviewFailure } from '../notifications/dispatcher.js';
 
 /**
@@ -17,13 +17,21 @@ import { notifyReviewFailure } from '../notifications/dispatcher.js';
  * @param {Array} [opts.priorIssues=[]]
  * @returns {Promise<void>}
  */
-export async function dispatchReview({ owner, repo, prNumber, ref = 'main', attempt = 1, priorIssues = [] }) {
+export async function dispatchReview({ owner, repo, prNumber, ref = 'main', attempt = 1, priorIssues = [], issueNumber }) {
   const repoKey = `${owner}/${repo}`;
   const config = await resolveConfig(owner, repo);
 
   if (!config.reviewer?.enabled) {
     console.log({ msg: 'Reviewer disabled for repo', repo: repoKey });
     return;
+  }
+
+  if (issueNumber) {
+    const activePause = await getActivePause(repoKey, issueNumber);
+    if (activePause) {
+      console.log({ msg: 'Skipping review dispatch — issue is paused', repo: repoKey, prNumber, issueNumber, pauseId: activePause.id });
+      return;
+    }
   }
 
   await dispatchWorkflow(owner, repo, 'pr-review.yml', ref, {

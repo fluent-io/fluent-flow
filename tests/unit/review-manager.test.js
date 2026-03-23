@@ -13,14 +13,14 @@ vi.mock('../../src/github/graphql.js', () => ({
   enablePullRequestAutoMerge: vi.fn(),
   getPRNodeId: vi.fn(),
 }));
-vi.mock('../../src/engine/pause-manager.js', () => ({ recordPause: vi.fn() }));
+vi.mock('../../src/engine/pause-manager.js', () => ({ recordPause: vi.fn(), getActivePause: vi.fn() }));
 vi.mock('../../src/notifications/dispatcher.js', () => ({ notifyReviewFailure: vi.fn() }));
 
 import { query } from '../../src/db/client.js';
 import { resolveConfig } from '../../src/config/loader.js';
 import { dispatchWorkflow, addLabel } from '../../src/github/rest.js';
 import { enablePullRequestAutoMerge, getPRNodeId } from '../../src/github/graphql.js';
-import { recordPause } from '../../src/engine/pause-manager.js';
+import { recordPause, getActivePause } from '../../src/engine/pause-manager.js';
 import { notifyReviewFailure } from '../../src/notifications/dispatcher.js';
 import { dispatchReview, handleReviewResult, getRetryRecord } from '../../src/engine/review-manager.js';
 
@@ -58,6 +58,29 @@ describe('dispatchReview', () => {
     await dispatchReview({ owner: TEST_OWNER, repo: TEST_REPO, prNumber: 7 });
 
     expect(dispatchWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('skips dispatch when linked issue has an active pause', async () => {
+    getActivePause.mockResolvedValue({ id: 1, reason: 'agent-stuck' });
+
+    await dispatchReview({ owner: TEST_OWNER, repo: TEST_REPO, prNumber: 7, issueNumber: 42 });
+
+    expect(dispatchWorkflow).not.toHaveBeenCalled();
+  });
+
+  it('dispatches when no active pause exists for issue', async () => {
+    getActivePause.mockResolvedValue(null);
+
+    await dispatchReview({ owner: TEST_OWNER, repo: TEST_REPO, prNumber: 7, issueNumber: 42 });
+
+    expect(dispatchWorkflow).toHaveBeenCalled();
+  });
+
+  it('dispatches without pause check when issueNumber is not provided', async () => {
+    await dispatchReview({ owner: TEST_OWNER, repo: TEST_REPO, prNumber: 7 });
+
+    expect(getActivePause).not.toHaveBeenCalled();
+    expect(dispatchWorkflow).toHaveBeenCalled();
   });
 });
 
