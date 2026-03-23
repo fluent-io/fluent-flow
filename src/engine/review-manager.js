@@ -6,23 +6,6 @@ import { recordPause } from './pause-manager.js';
 import { notifyReviewFailure } from '../notifications/dispatcher.js';
 
 /**
- * Get or create a review_retries record for a PR.
- * @param {string} repo - "owner/repo"
- * @param {number} prNumber
- * @returns {Promise<object>}
- */
-async function getOrCreateRetryRecord(repo, prNumber) {
-  const result = await query(
-    `INSERT INTO review_retries (repo, pr_number)
-     VALUES ($1, $2)
-     ON CONFLICT (repo, pr_number) DO UPDATE SET updated_at = NOW()
-     RETURNING *`,
-    [repo, prNumber]
-  );
-  return result.rows[0];
-}
-
-/**
  * Dispatch the pr-review GitHub Actions workflow for a repository.
  *
  * @param {object} opts
