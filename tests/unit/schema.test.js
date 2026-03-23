@@ -30,6 +30,39 @@ describe('validateDefaults', () => {
   it('rejects non-integer max_retries', () => {
     expect(() => validateDefaults({ reviewer: { max_retries: 2.5 } })).toThrow();
   });
+
+  it('accepts on_failure with model and thinking', () => {
+    const result = validateDefaults({
+      reviewer: { on_failure: { model: 'claude-sonnet-4-6', thinking: 'high' } },
+    });
+    expect(result.reviewer.on_failure).toEqual({ model: 'claude-sonnet-4-6', thinking: 'high' });
+  });
+
+  it('accepts on_failure with only model', () => {
+    const result = validateDefaults({
+      reviewer: { on_failure: { model: 'claude-sonnet-4-6' } },
+    });
+    expect(result.reviewer.on_failure.model).toBe('claude-sonnet-4-6');
+    expect(result.reviewer.on_failure.thinking).toBeUndefined();
+  });
+
+  it('accepts on_failure with only thinking', () => {
+    const result = validateDefaults({
+      reviewer: { on_failure: { thinking: 'medium' } },
+    });
+    expect(result.reviewer.on_failure.thinking).toBe('medium');
+  });
+
+  it('rejects invalid thinking level in on_failure', () => {
+    expect(() => validateDefaults({
+      reviewer: { on_failure: { thinking: 'extreme' } },
+    })).toThrow();
+  });
+
+  it('defaults on_failure to undefined when not provided', () => {
+    const result = validateDefaults({});
+    expect(result.reviewer.on_failure).toBeUndefined();
+  });
 });
 
 describe('validateRepoConfig', () => {
@@ -77,6 +110,13 @@ describe('validateRepoConfig', () => {
   it('accepts default_agent field', () => {
     const result = validateRepoConfig({ default_agent: 'getonit' });
     expect(result.default_agent).toBe('getonit');
+  });
+
+  it('accepts partial reviewer override with on_failure', () => {
+    const result = validateRepoConfig({
+      reviewer: { on_failure: { model: 'claude-sonnet-4-6', thinking: 'low' } },
+    });
+    expect(result.reviewer.on_failure).toEqual({ model: 'claude-sonnet-4-6', thinking: 'low' });
   });
 });
 
@@ -136,5 +176,12 @@ describe('validateMergedConfig', () => {
   it('leaves default_agent undefined when neither set', () => {
     const result = validateMergedConfig({});
     expect(result.default_agent).toBeUndefined();
+  });
+
+  it('preserves on_failure through merged config', () => {
+    const result = validateMergedConfig({
+      reviewer: { on_failure: { model: 'claude-sonnet-4-6', thinking: 'high' } },
+    });
+    expect(result.reviewer.on_failure).toEqual({ model: 'claude-sonnet-4-6', thinking: 'high' });
   });
 });
