@@ -5,7 +5,7 @@ import { webhookSignatureMiddleware } from '../github/webhook-verify.js';
 import { resolveConfig, invalidateConfig } from '../config/loader.js';
 import { executeTransition, autoTransition, getCurrentState } from '../engine/state-machine.js';
 import { recordPause, processResume, parseResumeCommand, getActivePause } from '../engine/pause-manager.js';
-import { dispatchReview, handleReviewResult, getRetryRecord } from '../engine/review-manager.js';
+import { dispatchReview, handleReviewResult, getRetryRecord, resetRetries } from '../engine/review-manager.js';
 import { resolveAgentId, notifyPRMerged } from '../notifications/dispatcher.js';
 import { getLinkedPR, getPR } from '../github/rest.js';
 
@@ -149,7 +149,8 @@ async function handlePullRequest(owner, repo, payload, config) {
             owner,
             repo,
             prNumber,
-            ref: pr.base.ref,  // dispatch on base branch (main) where workflow file exists
+            ref: pr.base.ref,
+            issueNumber,
           });
         } catch (err) {
           console.error({ msg: 'Failed to dispatch review', error: err.message, prNumber });
@@ -159,6 +160,15 @@ async function handlePullRequest(owner, repo, payload, config) {
     }
 
     case 'closed': {
+      // Clean up review retries unconditionally — works even without linked issue
+      const repoKey = `${owner}/${repo}`;
+      try {
+        await resetRetries(repoKey, prNumber);
+        audit('retries_cleared', { repo: repoKey, data: { prNumber, trigger: 'pr_closed' } });
+      } catch (err) {
+        console.warn({ msg: 'Failed to clear retries on PR close', error: err.message, prNumber });
+      }
+
       if (pr.merged && issueNumber) {
         // PR merged → move issue to Done
         try {
@@ -213,9 +223,18 @@ async function handlePullRequest(owner, repo, payload, config) {
         try {
           const repoKey = `${owner}/${repo}`;
           const retryRecord = await getRetryRecord(repoKey, prNumber);
+          const maxRetries = config.reviewer?.max_retries ?? 3;
+          const retryCount = retryRecord?.retry_count ?? 0;
+
+          // Skip if already at max retries — escalation is in progress
+          if (retryCount >= maxRetries) {
+            console.log({ msg: 'Skipping review dispatch — max retries reached', repo: repoKey, prNumber, retryCount, maxRetries });
+            break;
+          }
+
           const priorIssues = retryRecord?.last_issues ?? [];
-          const attempt = (retryRecord?.retry_count ?? 0) + 1;
-          await dispatchReview({ owner, repo, prNumber, ref: pr.base.ref, attempt, priorIssues });
+          const attempt = retryCount + 1;
+          await dispatchReview({ owner, repo, prNumber, ref: pr.base.ref, attempt, priorIssues, issueNumber });
         } catch (err) {
           console.error({ msg: 'Failed to dispatch review on sync', error: err.message, prNumber });
         }
@@ -389,4 +408,5 @@ async function handlePush(owner, repo, payload, config) {
   }
 }
 
+export { handlePullRequest };
 export default router;
