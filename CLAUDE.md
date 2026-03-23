@@ -18,6 +18,7 @@ Read [README.md](README.md) for architecture overview, quick start, API referenc
 - Structured JSON logging: `console.log({ msg: '...' })`
 - Fire-and-forget audit: `audit('event_type', { repo, actor, data })`
 - Tests: Vitest, mocks in `tests/helpers/mocks.js`, run with `npm test`
+- Do not, under any circumstance, include any indication that code was co-authored by Claude Code.
 
 ## Agent notification routing
 
