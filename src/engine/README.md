@@ -29,10 +29,10 @@ Config-driven state transitions with requirement validation.
 
 Automated code review dispatch and retry tracking.
 
-- `dispatchReview({ owner, repo, prNumber, ref, attempt, priorIssues })` — triggers `pr-review.yml` GitHub Actions workflow
+- `dispatchReview({ owner, repo, prNumber, ref, attempt, priorIssues, issueNumber })` — triggers `pr-review.yml` GitHub Actions workflow. If `issueNumber` is provided, checks `getActivePause` first and skips dispatch if the issue is paused.
 - `handleReviewResult({ ..., result, agentId })` — PASS: enable auto-merge. FAIL: increment retry, notify agent with rich issue details and optional `on_failure` model/thinking config. FAIL at max retries: escalate (add `needs-human` label, record pause, reset counter)
 - `getRetryRecord(repo, prNumber)` — query `review_retries` table
-- `resetRetries(repo, prNumber)` — zero out counter after escalation
+- `resetRetries(repo, prNumber)` — zero out counter and clear issues. Called after escalation and unconditionally on PR close to prevent stale retry records.
 
 **Review result flow:** GitHub Actions posts review with `<!-- reviewer-result: {...} -->` → webhook parses → `handleReviewResult` → agent notified or PR auto-merged.
 
