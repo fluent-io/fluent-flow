@@ -206,6 +206,9 @@ default_agent: "getonit"         # Required: default agent for this repo
 reviewer:
   enabled: false                 # Disable auto-review
   max_retries: 5                 # Custom retry limit
+  on_failure:                    # Forwarded to agent when review fails
+    model: claude-sonnet-4-6     # AI model for fix attempts
+    thinking: high               # Thinking level: low, medium, high
 ```
 
 Config is fetched from GitHub on first event, cached with TTL (default 5 min), and invalidated on push to `.github/fluent-flow.yml`.

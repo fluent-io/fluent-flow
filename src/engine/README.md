@@ -30,7 +30,7 @@ Config-driven state transitions with requirement validation.
 Automated code review dispatch and retry tracking.
 
 - `dispatchReview({ owner, repo, prNumber, ref, attempt, priorIssues })` — triggers `pr-review.yml` GitHub Actions workflow
-- `handleReviewResult({ ..., result, agentId })` — PASS: enable auto-merge. FAIL: increment retry, notify agent. FAIL at max retries: escalate (add `needs-human` label, record pause, reset counter)
+- `handleReviewResult({ ..., result, agentId })` — PASS: enable auto-merge. FAIL: increment retry, notify agent with rich issue details and optional `on_failure` model/thinking config. FAIL at max retries: escalate (add `needs-human` label, record pause, reset counter)
 - `getRetryRecord(repo, prNumber)` — query `review_retries` table
 - `resetRetries(repo, prNumber)` — zero out counter after escalation
 
