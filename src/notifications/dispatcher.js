@@ -67,15 +67,59 @@ export async function dispatch({ agentId, event, payload }) {
 }
 
 /**
+ * Format review issues into a rich message string for the agent prompt.
+ * @param {object} opts
+ * @param {string} opts.repo
+ * @param {number} opts.prNumber
+ * @param {number} opts.attempt
+ * @param {Array} [opts.blocking]
+ * @param {Array} [opts.advisory]
+ * @returns {string}
+ */
+export function formatRichMessage({ repo, prNumber, attempt, blocking = [], advisory = [] }) {
+  const summary = `Review FAILED: ${repo}#${prNumber} (attempt ${attempt}) — ${blocking.length} blocking issue(s)`;
+
+  if (blocking.length === 0 && advisory.length === 0) return summary;
+
+  const lines = [summary, ''];
+
+  if (blocking.length > 0) {
+    lines.push('Fix the following blocking issues and push your changes:', '');
+    for (const b of blocking) {
+      lines.push(`- ${b.file}:${b.line} — ${b.issue}`);
+      if (b.fix) lines.push(`  > Fix: ${b.fix}`);
+    }
+  }
+
+  if (advisory.length > 0) {
+    if (blocking.length > 0) lines.push('');
+    lines.push('Advisory (non-blocking):', '');
+    for (const a of advisory) {
+      lines.push(`- ${a.file}:${a.line} — ${a.issue}`);
+      if (a.suggestion) lines.push(`  > Suggestion: ${a.suggestion}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+/**
  * Notify an agent that a review failed.
  */
-export async function notifyReviewFailure({ agentId, repo, prNumber, attempt, issues, delivery = {} }) {
-  const blockingCount = issues?.filter(i => i.severity === 'blocking').length ?? 0;
-  const message = `Review FAILED: ${repo}#${prNumber} (attempt ${attempt}) — ${blockingCount} blocking issue(s)`;
+export async function notifyReviewFailure({ agentId, repo, prNumber, attempt, issues, onFailure, delivery = {} }) {
+  const blocking = issues?.filter(i => i.severity === 'blocking') ?? [];
+  const advisory = issues?.filter(i => i.severity === 'advisory') ?? [];
+  const message = formatRichMessage({ repo, prNumber, attempt, blocking, advisory });
   await dispatch({
     agentId,
     event: 'review_failed',
-    payload: { message, wakeMode: 'now', deliver: true, repo, prNumber, attempt, issues, ...delivery },
+    payload: {
+      message, wakeMode: 'now', deliver: true,
+      repo, prNumber, attempt, issues,
+      ...(onFailure?.model && { model: onFailure.model }),
+      ...(onFailure?.thinking && { thinking: onFailure.thinking }),
+      ...delivery,
+    },
   });
 }
 

@@ -23,6 +23,7 @@ import {
   notifyPause,
   notifyResume,
   notifyPRMerged,
+  formatRichMessage,
 } from '../../src/notifications/dispatcher.js';
 
 beforeEach(() => {
@@ -155,8 +156,87 @@ describe('dispatch', () => {
   });
 });
 
+describe('formatRichMessage', () => {
+  it('formats blocking issues with fix suggestions', () => {
+    const msg = formatRichMessage({
+      repo: 'owner/repo', prNumber: 7, attempt: 2,
+      blocking: [
+        { file: 'src/foo.ts', line: 42, issue: 'Missing null check', fix: 'Add if (!x) return' },
+      ],
+      advisory: [],
+    });
+    expect(msg).toContain('Review FAILED: owner/repo#7 (attempt 2)');
+    expect(msg).toContain('1 blocking issue(s)');
+    expect(msg).toContain('Fix the following blocking issues');
+    expect(msg).toContain('- src/foo.ts:42 — Missing null check');
+    expect(msg).toContain('> Fix: Add if (!x) return');
+  });
+
+  it('formats advisory issues with suggestions', () => {
+    const msg = formatRichMessage({
+      repo: 'owner/repo', prNumber: 7, attempt: 1,
+      blocking: [],
+      advisory: [
+        { file: 'src/bar.ts', line: 10, issue: 'Could use const', suggestion: 'Change let to const' },
+      ],
+    });
+    expect(msg).toContain('0 blocking issue(s)');
+    expect(msg).not.toContain('Fix the following blocking issues');
+    expect(msg).toContain('Advisory (non-blocking):');
+    expect(msg).toContain('- src/bar.ts:10 — Could use const');
+    expect(msg).toContain('> Suggestion: Change let to const');
+  });
+
+  it('formats both blocking and advisory issues', () => {
+    const msg = formatRichMessage({
+      repo: 'owner/repo', prNumber: 3, attempt: 2,
+      blocking: [
+        { file: 'a.js', line: 1, issue: 'Bug', fix: 'Fix it' },
+        { file: 'b.js', line: 2, issue: 'Error' },
+      ],
+      advisory: [
+        { file: 'c.js', line: 3, issue: 'Style', suggestion: 'Rename' },
+      ],
+    });
+    expect(msg).toContain('2 blocking issue(s)');
+    expect(msg).toContain('- a.js:1 — Bug');
+    expect(msg).toContain('> Fix: Fix it');
+    expect(msg).toContain('- b.js:2 — Error');
+    expect(msg).not.toContain('> Fix: undefined');
+    expect(msg).toContain('Advisory (non-blocking):');
+    expect(msg).toContain('- c.js:3 — Style');
+  });
+
+  it('returns summary only when no issues', () => {
+    const msg = formatRichMessage({
+      repo: 'owner/repo', prNumber: 1, attempt: 1,
+      blocking: [], advisory: [],
+    });
+    expect(msg).toBe('Review FAILED: owner/repo#1 (attempt 1) — 0 blocking issue(s)');
+  });
+
+  it('handles undefined blocking and advisory', () => {
+    const msg = formatRichMessage({
+      repo: 'owner/repo', prNumber: 1, attempt: 1,
+    });
+    expect(msg).toContain('Review FAILED: owner/repo#1 (attempt 1)');
+  });
+
+  it('omits fix/suggestion line when field is absent', () => {
+    const msg = formatRichMessage({
+      repo: 'owner/repo', prNumber: 1, attempt: 1,
+      blocking: [{ file: 'x.js', line: 5, issue: 'Problem' }],
+      advisory: [{ file: 'y.js', line: 10, issue: 'Note' }],
+    });
+    expect(msg).toContain('- x.js:5 — Problem');
+    expect(msg).not.toContain('> Fix:');
+    expect(msg).toContain('- y.js:10 — Note');
+    expect(msg).not.toContain('> Suggestion:');
+  });
+});
+
 describe('notifyReviewFailure', () => {
-  it('dispatches review_failed event with correct message', async () => {
+  it('dispatches review_failed event with rich message', async () => {
     const mockSend = vi.fn();
     getAgentConfig.mockReturnValue({ transport: 'webhook', url: 'http://test.com' });
     getTransport.mockReturnValue({ send: mockSend });
@@ -166,19 +246,79 @@ describe('notifyReviewFailure', () => {
       repo: 'owner/repo',
       prNumber: 7,
       attempt: 2,
-      issues: [{ severity: 'blocking', issue: 'bug' }, { severity: 'advisory', issue: 'style' }],
+      issues: [
+        { severity: 'blocking', file: 'x.js', line: 10, issue: 'SQL injection', fix: 'Use parameterized queries' },
+        { severity: 'advisory', file: 'y.js', line: 5, issue: 'naming', suggestion: 'Use camelCase' },
+      ],
     });
 
-    expect(mockSend).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        event: 'review_failed',
-        message: 'Review FAILED: owner/repo#7 (attempt 2) — 1 blocking issue(s)',
-        wakeMode: 'now',
-        prNumber: 7,
-        attempt: 2,
-      }),
-    );
+    const payload = mockSend.mock.calls[0][1];
+    expect(payload.event).toBe('review_failed');
+    expect(payload.message).toContain('Review FAILED: owner/repo#7 (attempt 2)');
+    expect(payload.message).toContain('- x.js:10 — SQL injection');
+    expect(payload.message).toContain('> Fix: Use parameterized queries');
+    expect(payload.message).toContain('- y.js:5 — naming');
+    expect(payload.wakeMode).toBe('now');
+    expect(payload.prNumber).toBe(7);
+    expect(payload.attempt).toBe(2);
+    // Structured issues array still present
+    expect(payload.issues).toHaveLength(2);
+  });
+
+  it('forwards on_failure model and thinking to payload', async () => {
+    const mockSend = vi.fn();
+    getAgentConfig.mockReturnValue({ transport: 'webhook', url: 'http://test.com' });
+    getTransport.mockReturnValue({ send: mockSend });
+
+    await notifyReviewFailure({
+      agentId: 'getonit',
+      repo: 'owner/repo',
+      prNumber: 7,
+      attempt: 1,
+      issues: [{ severity: 'blocking', file: 'x.js', line: 1, issue: 'bug' }],
+      onFailure: { model: 'claude-sonnet-4-6', thinking: 'high' },
+    });
+
+    const payload = mockSend.mock.calls[0][1];
+    expect(payload.model).toBe('claude-sonnet-4-6');
+    expect(payload.thinking).toBe('high');
+  });
+
+  it('omits model and thinking when on_failure is undefined', async () => {
+    const mockSend = vi.fn();
+    getAgentConfig.mockReturnValue({ transport: 'webhook', url: 'http://test.com' });
+    getTransport.mockReturnValue({ send: mockSend });
+
+    await notifyReviewFailure({
+      agentId: 'getonit',
+      repo: 'owner/repo',
+      prNumber: 7,
+      attempt: 1,
+      issues: [],
+    });
+
+    const payload = mockSend.mock.calls[0][1];
+    expect(payload).not.toHaveProperty('model');
+    expect(payload).not.toHaveProperty('thinking');
+  });
+
+  it('omits model when only thinking is set in on_failure', async () => {
+    const mockSend = vi.fn();
+    getAgentConfig.mockReturnValue({ transport: 'webhook', url: 'http://test.com' });
+    getTransport.mockReturnValue({ send: mockSend });
+
+    await notifyReviewFailure({
+      agentId: 'getonit',
+      repo: 'owner/repo',
+      prNumber: 7,
+      attempt: 1,
+      issues: [],
+      onFailure: { thinking: 'medium' },
+    });
+
+    const payload = mockSend.mock.calls[0][1];
+    expect(payload).not.toHaveProperty('model');
+    expect(payload.thinking).toBe('medium');
   });
 });
 
