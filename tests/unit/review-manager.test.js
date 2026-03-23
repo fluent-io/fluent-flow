@@ -147,6 +147,35 @@ describe('handleReviewResult', () => {
         expect.objectContaining({ agentId: 'specific-agent' }),
       );
     });
+
+    it('passes on_failure from config to notifyReviewFailure', async () => {
+      resolveConfig.mockResolvedValue(buildConfig({
+        reviewer: { enabled: true, max_retries: 3, on_failure: { model: 'claude-sonnet-4-6', thinking: 'high' } },
+      }));
+      query.mockResolvedValueOnce({ rows: [makeRetryRecord({ retry_count: 1 })] });
+      query.mockResolvedValue({ rows: [] });
+
+      await handleReviewResult({ ...baseOpts, result: failResult });
+
+      expect(notifyReviewFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          onFailure: { model: 'claude-sonnet-4-6', thinking: 'high' },
+        }),
+      );
+    });
+
+    it('passes undefined onFailure when on_failure not configured', async () => {
+      query.mockResolvedValueOnce({ rows: [makeRetryRecord({ retry_count: 1 })] });
+      query.mockResolvedValue({ rows: [] });
+
+      await handleReviewResult({ ...baseOpts, result: failResult });
+
+      expect(notifyReviewFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          onFailure: undefined,
+        }),
+      );
+    });
   });
 
   describe('ESCALATE (max retries)', () => {

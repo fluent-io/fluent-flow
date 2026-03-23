@@ -34,6 +34,16 @@ transports/
 
 All functions build a human-readable message + structured payload, then call `dispatch()`.
 
+## Review failure message format
+
+`notifyReviewFailure` builds a rich `message` string with full issue details so agents can act on the review feedback. The message includes:
+
+- Summary line with repo, PR number, attempt, and blocking count
+- Blocking issues with file path, line number, description, and fix suggestion
+- Advisory issues with file path, line number, description, and suggestion
+
+The `on_failure` config (`reviewer.on_failure` in `.github/fluent-flow.yml`) forwards `model` and `thinking` fields to the agent's webhook payload, allowing per-repo control of which AI model processes the fix.
+
 ## Transports
 
 ### webhook

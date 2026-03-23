@@ -1,11 +1,17 @@
 import { z } from 'zod';
 
+const OnFailureSchema = z.object({
+  model: z.string().optional(),
+  thinking: z.enum(['low', 'medium', 'high']).optional(),
+});
+
 const ReviewerConfigSchema = z.object({
   enabled: z.boolean().default(true),
   model: z.string().default('claude-haiku'),
   max_retries: z.number().int().min(0).max(10).default(3),
   diff_limit_kb: z.number().int().min(1).max(512).default(65),
   severity_tiers: z.boolean().default(true),
+  on_failure: OnFailureSchema.optional(),
 });
 
 const TransitionRequirementSchema = z.object({
