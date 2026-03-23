@@ -31,6 +31,12 @@ Advisory (non-blocking):
   > Suggestion: Suggested improvement
 ```
 
+**Field name handling:** Blocking issues use `.fix` for the suggested fix, advisory issues use `.suggestion` (per the Zod schema in `src/routes/review.js`). The formatter reads whichever field is present: `issue.fix || issue.suggestion`. Lines with no fix/suggestion omit the `> Fix:` / `> Suggestion:` line.
+
+**Edge cases:**
+- If `issues` is empty or undefined, the message is just the summary line with no issue list.
+- If there are 0 blocking issues (all advisory), the "Fix the following blocking issues" section is omitted.
+
 The structured `issues` array remains in the payload for any consumers that do parse it.
 
 ### 2. Add `reviewer.on_failure` config block
@@ -72,10 +78,47 @@ const ReviewerConfigSchema = z.object({
 });
 ```
 
+## Implementation detail
+
+Updated `notifyReviewFailure` signature:
+
+```javascript
+export async function notifyReviewFailure({ agentId, repo, prNumber, attempt, issues, onFailure, delivery = {} }) {
+  const blocking = issues?.filter(i => i.severity === 'blocking') ?? [];
+  const advisory = issues?.filter(i => i.severity === 'advisory') ?? [];
+  const message = formatRichMessage({ repo, prNumber, attempt, blocking, advisory });
+  await dispatch({
+    agentId,
+    event: 'review_failed',
+    payload: {
+      message, wakeMode: 'now', deliver: true,
+      repo, prNumber, attempt, issues,
+      ...(onFailure?.model && { model: onFailure.model }),
+      ...(onFailure?.thinking && { thinking: onFailure.thinking }),
+      ...delivery,
+    },
+  });
+}
+```
+
+Updated call site in `handleReviewResult`:
+
+```javascript
+await notifyReviewFailure({
+  agentId: resolvedAgent,
+  repo: repoKey,
+  prNumber,
+  attempt,
+  issues: allIssues,
+  onFailure: config.reviewer?.on_failure,
+  delivery: config.delivery ?? {},
+});
+```
+
 ## Data flow
 
-1. `handleReviewResult` (FAIL path) passes `config.reviewer.on_failure` to `notifyReviewFailure`
-2. `notifyReviewFailure` formats the rich message from the `issues` array and includes `on_failure.model` / `on_failure.thinking` as top-level payload fields
+1. `handleReviewResult` (FAIL path) passes `config.reviewer.on_failure` as `onFailure` to `notifyReviewFailure`
+2. `notifyReviewFailure` formats the rich message from the `issues` array (using `.fix` for blocking, `.suggestion` for advisory) and conditionally includes `model` / `thinking` as top-level payload fields
 3. `dispatch` builds the full payload (merging delivery config as before)
 4. Webhook transport sends HTTP POST to OpenClaw
 5. OpenClaw reads `message` (full prompt with issues), `model`, and `thinking`
@@ -85,7 +128,7 @@ const ReviewerConfigSchema = z.object({
 - `src/config/schema.js` — add `OnFailureSchema`, add `on_failure` to `ReviewerConfigSchema`
 - `src/notifications/dispatcher.js` — format rich message, accept and forward `on_failure` options
 - `src/engine/review-manager.js` — pass `on_failure` from config to `notifyReviewFailure`
-- `config/agents.example.yml` — document `on_failure` in example comments
+- `config/defaults.yml` — add commented-out `on_failure` block as documentation
 - `src/notifications/README.md` — document the rich message format and `on_failure` config
 - `config/README.md` — document `on_failure` under reviewer config
 - Tests for schema, dispatcher, and review-manager changes
