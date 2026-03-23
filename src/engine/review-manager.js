@@ -131,6 +131,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
       prNumber,
       attempt,
       issues: allIssues,
+      onFailure: config.reviewer?.on_failure,
       delivery: config.delivery ?? {},
     });
   }
