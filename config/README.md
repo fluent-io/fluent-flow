@@ -38,6 +38,9 @@ project_id: "PVT_xxx"        # GitHub Project v2 ID
 default_agent: "my-agent"     # Default agent for this repo
 reviewer:
   max_retries: 5              # Override default
+  on_failure:                 # Forwarded to agent when review fails
+    model: claude-sonnet-4-6  # AI model for fix attempts
+    thinking: high            # Thinking level: low, medium, high
 ```
 
 ## Resolution
