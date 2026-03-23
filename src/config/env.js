@@ -18,5 +18,9 @@ export function validateEnv(env = process.env) {
     console.warn({ msg: 'GITHUB_WEBHOOK_SECRET not set — webhook signature verification will be skipped' });
   }
 
+  if (!env.MCP_AUTH_TOKEN) {
+    console.warn({ msg: 'MCP_AUTH_TOKEN not set — MCP endpoint will accept unauthenticated requests' });
+  }
+
   return errors;
 }

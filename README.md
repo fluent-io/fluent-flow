@@ -127,10 +127,39 @@ jobs:
       FLUENT_FLOW_URL: ${{ secrets.FLUENT_FLOW_URL }}
 ```
 
+## MCP Server
+
+Fluent Flow exposes an MCP endpoint for AI agents (Claude Code, Cursor, etc.) at `POST /mcp`.
+
+### Connect from Claude Code
+
+```bash
+claude mcp add --transport http fluent-flow https://flow.getonit.io/mcp \
+  --header "Authorization: Bearer $FLUENT_FLOW_MCP_TOKEN"
+```
+
+### Available tools
+
+| Tool | Type | Description |
+|------|------|-------------|
+| `get_pending_actions` | Query | Poll for unresolved work items (review failures, pauses, resumes) |
+| `get_current_state` | Query | Get workflow state of an issue |
+| `get_transition_history` | Query | Full state transition history |
+| `get_retry_record` | Query | Review retry record for a PR |
+| `get_active_pause` | Query | Active pause for an issue |
+| `get_config` | Query | Resolved config for a repo |
+| `execute_transition` | Command | Execute a state transition |
+| `dispatch_review` | Command | Trigger automated code review |
+| `record_pause` | Command | Pause an issue (needs human attention) |
+| `process_resume` | Command | Resume a paused issue |
+
+All tools require an `agent_id` parameter. Set `MCP_AUTH_TOKEN` to secure the endpoint.
+
 ## API Reference
 
 | Endpoint | Method | Description |
 |---|---|---|
+| `/mcp` | POST | MCP server (AI agent interface) |
 | `/api/webhook/github` | POST | GitHub webhook receiver |
 | `/api/transition` | POST | Execute a state transition |
 | `/api/pause` | POST | Record a pause |
@@ -212,8 +241,8 @@ Invalid transitions are **reverted** with a comment explaining why.
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
 | `GITHUB_TOKEN` | Yes | GitHub PAT (scopes: `repo`, `read:org`, `project`) |
 | `GITHUB_WEBHOOK_SECRET` | Yes | Webhook signature secret |
-| `OPENCLAW_WEBHOOK_URL` | No | Legacy: OpenClaw agent webhook URL |
-| `OPENCLAW_WEBHOOK_TOKEN` | No | Legacy: OpenClaw auth token |
+| `MCP_AUTH_TOKEN` | No | Bearer token for MCP endpoint auth |
+| `OPENCLAW_WEBHOOK_TOKEN` | No | Agent transport token (referenced in agents.yml) |
 | `PORT` | No | HTTP port (default: 3847) |
 | `CONFIG_CACHE_TTL_MS` | No | Config cache TTL in ms (default: 300000) |
 
@@ -221,44 +250,15 @@ Agent-specific tokens (referenced via `token_env` in `config/agents.yml`) should
 
 ## Architecture
 
-```
-src/
-├── index.js              # Express app entry
-├── config/
-│   ├── loader.js         # Config resolver (defaults + repo overrides)
-│   ├── schema.js         # Zod validation schemas
-│   ├── agents.js         # Agent registry loader
-│   └── env.js            # Startup env var validation
-├── db/
-│   ├── client.js         # pg pool + migrations
-│   └── migrations/
-│       └── 001_initial.sql
-├── engine/
-│   ├── state-machine.js  # Transition validation + execution
-│   ├── pause-manager.js  # Pause/resume logic
-│   └── review-manager.js # Review dispatch + result handling
-├── github/
-│   ├── graphql.js        # GitHub Projects v2 GraphQL client
-│   ├── rest.js           # GitHub REST API client
-│   └── webhook-verify.js # Webhook signature verification
-├── notifications/
-│   ├── dispatcher.js     # Agent-agnostic notification dispatcher
-│   └── transports/
-│       ├── index.js      # Transport registry
-│       ├── webhook.js    # HTTP POST transport
-│       └── workflow.js   # GitHub Actions workflow_dispatch transport
-└── routes/
-    ├── webhook.js        # POST /api/webhook/github
-    ├── transition.js     # POST /api/transition
-    ├── pause.js          # POST /api/pause + /api/resume
-    ├── state.js          # GET /api/state
-    ├── review.js         # Review dispatch + result routes
-    ├── config.js         # GET /api/config
-    └── health.js         # GET /api/health
-config/
-├── defaults.yml          # Global default config
-└── agents.yml            # Agent wake transport registry
-```
+| Directory | Purpose | Docs |
+|-----------|---------|------|
+| [config/](config/README.md) | Global defaults, agent registry, per-repo config | [config/README.md](config/README.md) |
+| [src/engine/](src/engine/README.md) | State machine, review pipeline, pause/resume | [src/engine/README.md](src/engine/README.md) |
+| [src/mcp/](src/mcp/README.md) | MCP server for AI agent integration | [src/mcp/README.md](src/mcp/README.md) |
+| [src/notifications/](src/notifications/README.md) | Agent-agnostic notification dispatcher + transports | [src/notifications/README.md](src/notifications/README.md) |
+| src/github/ | GitHub REST + GraphQL API clients, webhook verification | |
+| src/routes/ | Express route handlers (webhook, transition, pause, state, review, config, health) | |
+| src/db/ | PostgreSQL pool, migrations, audit logging | |
 
 ## License
 

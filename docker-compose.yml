@@ -10,6 +10,7 @@ services:
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
       PORT: 3847
       CONFIG_CACHE_TTL_MS: 300000
+      MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
     volumes:
       - ./config:/app/config:ro
     networks:

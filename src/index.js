@@ -5,6 +5,10 @@ import { loadDefaults } from './config/loader.js';
 import { loadAgents } from './config/agents.js';
 import { validateEnv } from './config/env.js';
 
+// MCP
+import { mcpHandler, mcpMethodNotAllowed } from './mcp/handler.js';
+import { mcpAuthMiddleware } from './mcp/auth.js';
+
 // Routes
 import webhookRouter from './routes/webhook.js';
 import transitionRouter from './routes/transition.js';
@@ -50,6 +54,11 @@ app.use('/api', stateRouter);
 app.use('/api', reviewRouter);
 app.use('/api', configRouter);
 app.use('/api', healthRouter);
+
+// MCP endpoint
+app.post('/mcp', mcpAuthMiddleware, mcpHandler);
+app.get('/mcp', mcpMethodNotAllowed);
+app.delete('/mcp', mcpMethodNotAllowed);
 
 // 404 handler
 app.use((req, res) => {

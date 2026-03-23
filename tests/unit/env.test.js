@@ -39,12 +39,13 @@ describe('validateEnv', () => {
     spy.mockRestore();
   });
 
-  it('does not warn when GITHUB_WEBHOOK_SECRET is set', () => {
+  it('does not warn when all optional vars are set', () => {
     const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const env = {
       DATABASE_URL: 'postgres://localhost/test',
       GITHUB_TOKEN: 'ghp_test',
       GITHUB_WEBHOOK_SECRET: 'secret',
+      MCP_AUTH_TOKEN: 'token',
     };
     validateEnv(env);
     expect(spy).not.toHaveBeenCalled();
