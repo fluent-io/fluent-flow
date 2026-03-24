@@ -2,11 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { makeTransitionRecord, makePauseRecord } from '../helpers/mocks.js';
 
 vi.mock('../../src/db/client.js', () => ({ query: vi.fn(), audit: vi.fn() }));
-vi.mock('../../src/config/loader.js', () => ({ resolveConfig: vi.fn() }));
+vi.mock('../../src/config/loader.js', () => ({ resolveConfig: vi.fn(), invalidateConfig: vi.fn() }));
 vi.mock('../../src/engine/state-machine.js', () => ({ executeTransition: vi.fn(), getCurrentState: vi.fn() }));
 vi.mock('../../src/engine/review-manager.js', () => ({ dispatchReview: vi.fn() }));
 vi.mock('../../src/engine/pause-manager.js', () => ({ recordPause: vi.fn(), processResume: vi.fn() }));
-vi.mock('../../src/github/rest.js', () => ({ postComment: vi.fn(), addLabel: vi.fn(), removeLabel: vi.fn(), dispatchWorkflow: vi.fn() }));
+vi.mock('../../src/github/rest.js', () => ({ postComment: vi.fn(), addLabel: vi.fn(), removeLabel: vi.fn(), dispatchWorkflow: vi.fn(), getFileExists: vi.fn(), createFile: vi.fn() }));
 vi.mock('../../src/github/graphql.js', () => ({ moveProjectItem: vi.fn(), findProjectItem: vi.fn() }));
 vi.mock('../../src/notifications/dispatcher.js', () => ({ notifyPause: vi.fn(), notifyResume: vi.fn(), notifyReviewFailure: vi.fn() }));
 
@@ -33,12 +33,13 @@ beforeEach(() => {
 });
 
 describe('MCP command tools', () => {
-  it('registers all 4 command tools', () => {
-    expect(server.tools.size).toBe(4);
+  it('registers all 5 command tools', () => {
+    expect(server.tools.size).toBe(5);
     expect(server.tools.has('execute_transition')).toBe(true);
     expect(server.tools.has('dispatch_review')).toBe(true);
     expect(server.tools.has('record_pause')).toBe(true);
     expect(server.tools.has('process_resume')).toBe(true);
+    expect(server.tools.has('onboard_repo')).toBe(true);
   });
 
   it('execute_transition calls engine and returns result', async () => {

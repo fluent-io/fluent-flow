@@ -180,6 +180,40 @@ export async function ensureLabel(owner, repo, name, color = 'e11d48', descripti
 }
 
 /**
+ * Check if a file exists in a repo on the default branch.
+ * @param {string} owner
+ * @param {string} repo
+ * @param {string} path - File path in the repo
+ * @returns {Promise<boolean>} true if the file exists, false on 404
+ */
+export async function getFileExists(owner, repo, path) {
+  try {
+    await githubRequest(`/repos/${owner}/${repo}/contents/${path}`);
+    return true;
+  } catch (err) {
+    if (err.status === 404) return false;
+    throw err;
+  }
+}
+
+/**
+ * Create a file in a repo via the GitHub Contents API.
+ * @param {string} owner
+ * @param {string} repo
+ * @param {string} path - File path to create
+ * @param {string} content - Raw string content (will be base64-encoded)
+ * @param {string} message - Commit message
+ * @returns {Promise<object>} GitHub API response
+ */
+export async function createFile(owner, repo, path, content, message) {
+  const encoded = Buffer.from(content).toString('base64');
+  return githubRequest(`/repos/${owner}/${repo}/contents/${path}`, {
+    method: 'PUT',
+    body: JSON.stringify({ message, content: encoded }),
+  });
+}
+
+/**
  * Get open PRs associated with a commit SHA.
  * Uses the GitHub Commit Pulls API (requires groot-preview header).
  * @param {string} owner
