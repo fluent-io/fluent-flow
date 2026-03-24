@@ -28,6 +28,7 @@ vi.mock('../../src/engine/review-manager.js', () => ({
 vi.mock('../../src/notifications/dispatcher.js', () => ({
   resolveAgentId: vi.fn(),
   notifyPRMerged: vi.fn(),
+  resolveAgentForIssue: vi.fn(),
 }));
 vi.mock('../../src/github/rest.js', () => ({
   getLinkedPR: vi.fn(),
@@ -43,9 +44,10 @@ vi.mock('../../src/github/webhook-verify.js', () => ({
 import { audit } from '../../src/db/client.js';
 import { resolveConfig } from '../../src/config/loader.js';
 import { dispatchReview, getRetryRecord, resetRetries } from '../../src/engine/review-manager.js';
-import { resolveAgentId, notifyPRMerged } from '../../src/notifications/dispatcher.js';
+import { resolveAgentId, notifyPRMerged, resolveAgentForIssue } from '../../src/notifications/dispatcher.js';
 import { executeTransition } from '../../src/engine/state-machine.js';
-import { handlePullRequest } from '../../src/routes/webhook.js';
+import { recordPause, processResume, getActivePause } from '../../src/engine/pause-manager.js';
+import { handlePullRequest, handleIssues, handleIssueComment } from '../../src/routes/webhook.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -174,6 +176,84 @@ describe('handlePullRequest — opened/reopened', () => {
 
     expect(dispatchReview).toHaveBeenCalledWith(
       expect.objectContaining({ issueNumber: 42 }),
+    );
+  });
+});
+
+describe('handleIssues — agent routing', () => {
+  it('uses resolveAgentForIssue when labeling needs-human', async () => {
+    resolveAgentForIssue.mockResolvedValue('resolved-agent');
+    // getCurrentState must not return 'Awaiting Human' for pause to fire
+    const { getCurrentState } = await import('../../src/engine/state-machine.js');
+    getCurrentState.mockResolvedValue('In Review');
+
+    await handleIssues(TEST_OWNER, TEST_REPO, {
+      action: 'labeled',
+      issue: { number: 42 },
+      label: { name: 'needs-human' },
+      sender: { login: 'human' },
+    }, buildConfig());
+
+    expect(resolveAgentForIssue).toHaveBeenCalledWith(TEST_OWNER, TEST_REPO, 42, expect.any(Object));
+    expect(recordPause).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 'resolved-agent' }),
+    );
+  });
+
+  it('uses activePause.agent_id when unlabeling needs-human', async () => {
+    getActivePause.mockResolvedValue({ id: 1, agent_id: 'pause-agent' });
+
+    await handleIssues(TEST_OWNER, TEST_REPO, {
+      action: 'unlabeled',
+      issue: { number: 42 },
+      label: { name: 'needs-human' },
+      sender: { login: 'human' },
+    }, buildConfig());
+
+    expect(processResume).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 'pause-agent' }),
+    );
+    expect(resolveAgentForIssue).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleIssueComment — agent routing', () => {
+  it('uses resolveAgentForIssue for /resume command', async () => {
+    resolveAgentForIssue.mockResolvedValue('resolved-agent');
+    const { parseResumeCommand } = await import('../../src/engine/pause-manager.js');
+    parseResumeCommand.mockReturnValue({ isResume: true, toState: null, instructions: null });
+
+    await handleIssueComment(TEST_OWNER, TEST_REPO, {
+      action: 'created',
+      comment: { body: '/resume', user: { login: 'human' } },
+      issue: { number: 42 },
+    }, buildConfig());
+
+    expect(resolveAgentForIssue).toHaveBeenCalledWith(TEST_OWNER, TEST_REPO, 42, expect.any(Object));
+    expect(processResume).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 'resolved-agent' }),
+    );
+  });
+
+  it('uses resolveAgentForIssue for agent-pause comment', async () => {
+    resolveAgentForIssue.mockResolvedValue('resolved-agent');
+    const { parseResumeCommand } = await import('../../src/engine/pause-manager.js');
+    parseResumeCommand.mockReturnValue({ isResume: false });
+    const { getLinkedPR } = await import('../../src/github/rest.js');
+    getLinkedPR.mockResolvedValue(7);
+
+    await handleIssueComment(TEST_OWNER, TEST_REPO, {
+      action: 'created',
+      comment: {
+        body: '<!-- agent-pause: {"reason": "agent-stuck", "context": "test"} -->',
+        user: { login: 'bot' },
+      },
+      issue: { number: 42 },
+    }, buildConfig());
+
+    expect(resolveAgentForIssue).toHaveBeenCalledWith(TEST_OWNER, TEST_REPO, 42, expect.any(Object));
+    expect(recordPause).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: 'resolved-agent' }),
     );
   });
 });

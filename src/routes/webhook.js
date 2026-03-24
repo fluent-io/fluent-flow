@@ -6,7 +6,7 @@ import { resolveConfig, invalidateConfig } from '../config/loader.js';
 import { executeTransition, autoTransition, getCurrentState } from '../engine/state-machine.js';
 import { recordPause, processResume, parseResumeCommand, getActivePause } from '../engine/pause-manager.js';
 import { dispatchReview, handleReviewResult, getRetryRecord, resetRetries } from '../engine/review-manager.js';
-import { resolveAgentId, notifyPRMerged } from '../notifications/dispatcher.js';
+import { resolveAgentId, notifyPRMerged, resolveAgentForIssue } from '../notifications/dispatcher.js';
 import { getLinkedPR, getPR } from '../github/rest.js';
 
 const router = Router();
@@ -293,12 +293,11 @@ async function handleIssues(owner, repo, payload, config) {
   const { action, issue, label } = payload;
   const issueNumber = issue.number;
 
-  const agentId = config.default_agent ?? config.agent_id ?? null;
-
   if (action === 'labeled' && label?.name === 'needs-human') {
     // Pause the issue
     const currentState = await getCurrentState(`${owner}/${repo}`, issueNumber);
     if (currentState !== 'Awaiting Human') {
+      const agentId = await resolveAgentForIssue(owner, repo, issueNumber, config);
       await recordPause({
         owner,
         repo,
@@ -313,6 +312,7 @@ async function handleIssues(owner, repo, payload, config) {
     // Resume the issue
     const activePause = await getActivePause(`${owner}/${repo}`, issueNumber);
     if (activePause) {
+      const agentId = activePause.agent_id ?? config.default_agent ?? config.agent_id ?? null;
       await processResume({
         owner,
         repo,
@@ -338,7 +338,7 @@ async function handleIssueComment(owner, repo, payload, config) {
   const { isResume, toState, instructions } = parseResumeCommand(body);
   if (isResume) {
     try {
-      const agentId = config.default_agent ?? config.agent_id ?? null;
+      const agentId = await resolveAgentForIssue(owner, repo, issueNumber, config);
       await processResume({
         owner,
         repo,
@@ -360,7 +360,7 @@ async function handleIssueComment(owner, repo, payload, config) {
     try {
       // Find linked PR if any
       const linkedPR = await getLinkedPR(owner, repo, issueNumber);
-      const agentId = config.default_agent ?? config.agent_id ?? null;
+      const agentId = await resolveAgentForIssue(owner, repo, issueNumber, config);
       await recordPause({
         owner,
         repo,
@@ -408,5 +408,5 @@ async function handlePush(owner, repo, payload, config) {
   }
 }
 
-export { handlePullRequest };
+export { handlePullRequest, handleIssues, handleIssueComment };
 export default router;
