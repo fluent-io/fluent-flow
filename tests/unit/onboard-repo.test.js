@@ -43,8 +43,10 @@ describe('onboard_repo tool', () => {
     expect(server.tools.has('onboard_repo')).toBe(true);
   });
 
-  it('returns error if repo is already onboarded', async () => {
-    getFileExists.mockResolvedValue(true);
+  it('returns error if config already exists', async () => {
+    getFileExists.mockImplementation((o, r, path) =>
+      Promise.resolve(path === '.github/fluent-flow.yml')
+    );
 
     const result = await server.call('onboard_repo', {
       owner: 'test-org',
@@ -56,8 +58,42 @@ describe('onboard_repo tool', () => {
     const parsed = JSON.parse(result.content[0].text);
     expect(result.isError).toBe(true);
     expect(parsed.ok).toBe(false);
-    expect(parsed.error).toContain('already onboarded');
+    expect(parsed.code).toBe('ALREADY_ONBOARDED');
     expect(createFile).not.toHaveBeenCalled();
+  });
+
+  it('returns error if workflow already exists', async () => {
+    getFileExists.mockImplementation((o, r, path) =>
+      Promise.resolve(path === '.github/workflows/pr-review.yml')
+    );
+
+    const result = await server.call('onboard_repo', {
+      owner: 'test-org',
+      repo: 'test-repo',
+      default_agent: 'my-agent',
+      agent_id: 'my-agent',
+    });
+
+    const parsed = JSON.parse(result.content[0].text);
+    expect(result.isError).toBe(true);
+    expect(parsed.code).toBe('ALREADY_ONBOARDED');
+    expect(createFile).not.toHaveBeenCalled();
+  });
+
+  it('checks both config and workflow paths', async () => {
+    getFileExists.mockResolvedValue(false);
+    createFile.mockResolvedValue({});
+    invalidateConfig.mockResolvedValue(undefined);
+
+    await server.call('onboard_repo', {
+      owner: 'test-org',
+      repo: 'test-repo',
+      default_agent: 'my-agent',
+      agent_id: 'my-agent',
+    });
+
+    expect(getFileExists).toHaveBeenCalledWith('test-org', 'test-repo', '.github/fluent-flow.yml');
+    expect(getFileExists).toHaveBeenCalledWith('test-org', 'test-repo', '.github/workflows/pr-review.yml');
   });
 
   it('creates config and workflow files on success', async () => {
@@ -75,15 +111,12 @@ describe('onboard_repo tool', () => {
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.ok).toBe(true);
 
-    // Should check if file exists first
-    expect(getFileExists).toHaveBeenCalledWith('test-org', 'test-repo', '.github/fluent-flow.yml');
-
-    // Should create fluent-flow.yml
+    // Should create fluent-flow.yml with valid YAML
     expect(createFile).toHaveBeenCalledWith(
       'test-org',
       'test-repo',
       '.github/fluent-flow.yml',
-      expect.stringContaining('default_agent: "my-agent"'),
+      expect.stringContaining('default_agent: my-agent'),
       'chore: onboard to Fluent Flow',
     );
 
@@ -122,7 +155,24 @@ describe('onboard_repo tool', () => {
 
     // The config file should include project_id
     const configCall = createFile.mock.calls.find(c => c[2] === '.github/fluent-flow.yml');
-    expect(configCall[3]).toContain('project_id: "PVT_abc123"');
+    expect(configCall[3]).toContain('project_id: PVT_abc123');
+  });
+
+  it('safely handles special characters in agent name', async () => {
+    getFileExists.mockResolvedValue(false);
+    createFile.mockResolvedValue({});
+    invalidateConfig.mockResolvedValue(undefined);
+
+    await server.call('onboard_repo', {
+      owner: 'test-org',
+      repo: 'test-repo',
+      default_agent: 'agent "with quotes"\nand: newlines',
+      agent_id: 'my-agent',
+    });
+
+    const configCall = createFile.mock.calls.find(c => c[2] === '.github/fluent-flow.yml');
+    // js-yaml should safely quote/escape the value
+    expect(configCall[3]).not.toContain('\nand: newlines');
   });
 
   it('does not include project_id when not provided', async () => {

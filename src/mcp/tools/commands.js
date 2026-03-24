@@ -2,6 +2,7 @@
  * MCP command tools (side effects). Each wraps an existing engine function.
  */
 import { z } from 'zod';
+import yaml from 'js-yaml';
 import { executeTransition } from '../../engine/state-machine.js';
 import { dispatchReview } from '../../engine/review-manager.js';
 import { recordPause, processResume } from '../../engine/pause-manager.js';
@@ -117,49 +118,59 @@ export function registerCommandTools(server) {
     async ({ owner, repo, default_agent, agent_id, project_id }) => {
       audit('mcp_tool_call', { repo: `${owner}/${repo}`, actor: agent_id, data: { tool: 'onboard_repo' } });
       try {
-        // Check if already onboarded
-        const exists = await getFileExists(owner, repo, '.github/fluent-flow.yml');
-        if (exists) {
+        // Check if either file already exists (GitHub Contents API returns 422 on duplicate)
+        const [configExists, workflowExists] = await Promise.all([
+          getFileExists(owner, repo, '.github/fluent-flow.yml'),
+          getFileExists(owner, repo, '.github/workflows/pr-review.yml'),
+        ]);
+
+        if (configExists || workflowExists) {
+          const message = configExists && workflowExists
+            ? `${owner}/${repo} is already onboarded`
+            : configExists
+              ? `${owner}/${repo} config already exists`
+              : `${owner}/${repo} review workflow already exists`;
           return {
-            content: [{ type: 'text', text: JSON.stringify({ ok: false, error: `${owner}/${repo} is already onboarded` }) }],
+            content: [{ type: 'text', text: JSON.stringify({ ok: false, error: message, code: 'ALREADY_ONBOARDED' }) }],
             isError: true,
           };
         }
 
-        // Build config YAML
-        let configYaml = `default_agent: "${default_agent}"\n`;
-        if (project_id) {
-          configYaml += `project_id: "${project_id}"\n`;
-        }
+        // Build config YAML safely via js-yaml
+        const configObj = { default_agent };
+        if (project_id) configObj.project_id = project_id;
+        const configYaml = yaml.dump(configObj, { lineWidth: -1 });
 
-        // Build workflow YAML
-        const workflowYaml = `name: PR Review
-on:
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        required: true
-        type: string
-      attempt:
-        required: false
-        type: string
-        default: "1"
-      prior_issues:
-        required: false
-        type: string
-        default: "[]"
-
-jobs:
-  review:
-    uses: fluent-io/fluent-flow/.github/workflows/pr-review.yml@main
-    with:
-      pr_number: \${{ inputs.pr_number }}
-      attempt: \${{ inputs.attempt }}
-      prior_issues: \${{ inputs.prior_issues }}
-    secrets:
-      ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
-      FLUENT_FLOW_URL: \${{ secrets.FLUENT_FLOW_URL }}
-`;
+        // Build workflow YAML (static template, no user input)
+        const workflowYaml = [
+          'name: PR Review',
+          'on:',
+          '  workflow_dispatch:',
+          '    inputs:',
+          '      pr_number:',
+          '        required: true',
+          '        type: string',
+          '      attempt:',
+          '        required: false',
+          '        type: string',
+          '        default: "1"',
+          '      prior_issues:',
+          '        required: false',
+          '        type: string',
+          '        default: "[]"',
+          '',
+          'jobs:',
+          '  review:',
+          '    uses: fluent-io/fluent-flow/.github/workflows/pr-review.yml@main',
+          '    with:',
+          '      pr_number: ${{ inputs.pr_number }}',
+          '      attempt: ${{ inputs.attempt }}',
+          '      prior_issues: ${{ inputs.prior_issues }}',
+          '    secrets:',
+          '      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}',
+          '      FLUENT_FLOW_URL: ${{ secrets.FLUENT_FLOW_URL }}',
+          '',
+        ].join('\n');
 
         const commitMessage = 'chore: onboard to Fluent Flow';
 
