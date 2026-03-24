@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { buildConfig, TEST_OWNER, TEST_REPO, TEST_REPO_KEY } from '../helpers/mocks.js';
 
-vi.mock('../../src/logger.js', () => ({
-  default: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
+vi.mock('../../src/logger.js', async () => {
+  const { createMockLogger } = await import('../helpers/mock-logger.js');
+  return { default: createMockLogger() };
+});
 vi.mock('../../src/notifications/dispatcher.js', () => ({
   resolveAgentId: vi.fn(),
   dispatch: vi.fn(),

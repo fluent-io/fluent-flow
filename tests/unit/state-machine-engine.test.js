@@ -4,9 +4,10 @@ import {
   createMockQuery, makeTransitionRecord,
 } from '../helpers/mocks.js';
 
-vi.mock('../../src/logger.js', () => ({
-  default: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
-}));
+vi.mock('../../src/logger.js', async () => {
+  const { createMockLogger } = await import('../helpers/mock-logger.js');
+  return { default: createMockLogger() };
+});
 // Mock all external dependencies
 vi.mock('../../src/db/client.js', () => ({ query: vi.fn(), audit: vi.fn() }));
 vi.mock('../../src/config/loader.js', () => ({ resolveConfig: vi.fn() }));

@@ -1,8 +1,18 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// Reset module cache so LOG_LEVEL takes effect
+let originalLogLevel;
+
 beforeEach(() => {
   vi.resetModules();
+  originalLogLevel = process.env.LOG_LEVEL;
+});
+
+afterEach(() => {
+  if (originalLogLevel === undefined) {
+    delete process.env.LOG_LEVEL;
+  } else {
+    process.env.LOG_LEVEL = originalLogLevel;
+  }
 });
 
 describe('logger', () => {
@@ -24,6 +34,5 @@ describe('logger', () => {
     process.env.LOG_LEVEL = 'debug';
     const { default: logger } = await import('../../src/logger.js');
     expect(logger.level).toBe('debug');
-    delete process.env.LOG_LEVEL;
   });
 });
