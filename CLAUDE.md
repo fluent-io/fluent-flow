@@ -15,7 +15,8 @@ Read [README.md](README.md) for architecture overview, quick start, API referenc
 - ESM imports (`import`/`export`), not CommonJS
 - Raw `pg` queries, no ORM
 - Zod for all validation
-- Structured JSON logging: `console.log({ msg: '...' })`
+- Structured JSON logging via pino: `import logger from './logger.js'; logger.info({ msg: '...' })`
+- `LOG_LEVEL` env var controls log verbosity (default: `info`)
 - Fire-and-forget audit: `audit('event_type', { repo, actor, data })`
 - Tests: Vitest, mocks in `tests/helpers/mocks.js`, run with `npm test`
 - Do not, under any circumstance, include any indication that code was co-authored by Claude Code.
@@ -30,7 +31,7 @@ Notifications route to the agent that created the PR, not just the repo default:
 ## Testing
 
 ```bash
-npm test          # 165 tests, runs sequentially (--fileParallelism=false)
+npm test          # 210 tests, runs sequentially (--fileParallelism=false)
 npm run test:watch
 ```
 

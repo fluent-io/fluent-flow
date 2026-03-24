@@ -4,6 +4,10 @@ import {
   makePauseRecord, makeTransitionRecord,
 } from '../helpers/mocks.js';
 
+vi.mock('../../src/logger.js', async () => {
+  const { createMockLogger } = await import('../helpers/mock-logger.js');
+  return { default: createMockLogger() };
+});
 vi.mock('../../src/db/client.js', () => ({ query: vi.fn(), audit: vi.fn() }));
 vi.mock('../../src/config/loader.js', () => ({ resolveConfig: vi.fn() }));
 vi.mock('../../src/engine/state-machine.js', () => ({

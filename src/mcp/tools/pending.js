@@ -4,6 +4,7 @@
  */
 import { z } from 'zod';
 import { query, audit } from '../../db/client.js';
+import logger from '../../logger.js';
 
 /**
  * Register the get_pending_actions tool on the MCP server.
@@ -96,7 +97,7 @@ export async function getPendingActions(agentId, repoFilter) {
       `UPDATE pauses SET resume_acknowledged_at = NOW()
        WHERE agent_id = $1 AND resumed_at IS NOT NULL AND resume_acknowledged_at IS NULL`,
       [agentId]
-    ).catch(err => console.error({ msg: 'Failed to acknowledge resumes', error: err.message }));
+    ).catch(err => logger.error({ msg: 'Failed to acknowledge resumes', error: err.message }));
   }
 
   return result.rows;

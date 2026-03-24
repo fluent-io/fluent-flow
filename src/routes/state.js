@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { getCurrentState, getTransitionHistory } from '../engine/state-machine.js';
+import logger from '../logger.js';
 
 const router = Router();
 
@@ -28,7 +29,7 @@ router.get('/state/:owner/:repo/:issue', async (req, res) => {
       history,
     });
   } catch (err) {
-    console.error({ msg: 'Failed to get state', owner, repo, issueNumber, error: err.message });
+    logger.error({ msg: 'Failed to get state', owner, repo, issueNumber, error: err.message });
     res.status(500).json({ error: 'Failed to get state', detail: err.message });
   }
 });

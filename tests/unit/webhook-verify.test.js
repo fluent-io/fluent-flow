@@ -1,5 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createHmac } from 'crypto';
+
+vi.mock('../../src/logger.js', async () => {
+  const { createMockLogger } = await import('../helpers/mock-logger.js');
+  return { default: createMockLogger() };
+});
+
 import { verifyWebhookSignature } from '../../src/github/webhook-verify.js';
 
 function sign(body, secret) {

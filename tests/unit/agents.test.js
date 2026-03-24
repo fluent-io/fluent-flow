@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+vi.mock('../../src/logger.js', async () => {
+  const { createMockLogger } = await import('../helpers/mock-logger.js');
+  return { default: createMockLogger() };
+});
+
 // Mock fs before importing agents.js
 vi.mock('fs', () => ({
   readFileSync: vi.fn(),

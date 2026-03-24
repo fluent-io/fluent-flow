@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { recordPause, processResume, getActivePause } from '../engine/pause-manager.js';
+import logger from '../logger.js';
 
 const router = Router();
 
@@ -36,7 +37,7 @@ router.post('/pause', async (req, res) => {
     const pause = await recordPause({ owner, repo, issueNumber: issue_number, prNumber: pr_number, reason, context, actor });
     res.json({ ok: true, pause });
   } catch (err) {
-    console.error({ msg: 'Pause failed', owner, repo, issue_number, error: err.message });
+    logger.error({ msg: 'Pause failed', owner, repo, issue_number, error: err.message });
     res.status(500).json({ error: 'Pause failed', detail: err.message });
   }
 });
@@ -64,7 +65,7 @@ router.post('/resume', async (req, res) => {
     if (err.code === 'NO_ACTIVE_PAUSE') {
       return res.status(404).json({ error: err.message });
     }
-    console.error({ msg: 'Resume failed', owner, repo, issue_number, error: err.message });
+    logger.error({ msg: 'Resume failed', owner, repo, issue_number, error: err.message });
     res.status(500).json({ error: 'Resume failed', detail: err.message });
   }
 });

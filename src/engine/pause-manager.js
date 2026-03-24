@@ -3,6 +3,7 @@ import { resolveConfig } from '../config/loader.js';
 import { executeTransition, getCurrentState } from './state-machine.js';
 import { postComment, addLabel, removeLabel } from '../github/rest.js';
 import { notifyPause, notifyResume } from '../notifications/dispatcher.js';
+import logger from '../logger.js';
 
 const NEEDS_HUMAN_LABEL = 'needs-human';
 
@@ -119,7 +120,7 @@ export async function recordPause({ owner, repo, issueNumber, prNumber, reason, 
         skipProjectUpdate: false,
       });
     } catch (err) {
-      console.warn({ msg: 'Could not transition to Awaiting Human during pause', error: err.message, repo: repoKey, issueNumber });
+      logger.warn({ msg: 'Could not transition to Awaiting Human during pause', error: err.message, repo: repoKey, issueNumber });
     }
   }
 
@@ -127,7 +128,7 @@ export async function recordPause({ owner, repo, issueNumber, prNumber, reason, 
   try {
     await addLabel(owner, repo, issueNumber, NEEDS_HUMAN_LABEL);
   } catch (err) {
-    console.warn({ msg: 'Failed to add needs-human label', error: err.message });
+    logger.warn({ msg: 'Failed to add needs-human label', error: err.message });
   }
 
   // Post checklist comment
@@ -149,7 +150,7 @@ ${markdown}
   try {
     await postComment(owner, repo, issueNumber, commentBody);
   } catch (err) {
-    console.error({ msg: 'Failed to post pause comment', error: err.message });
+    logger.error({ msg: 'Failed to post pause comment', error: err.message });
   }
 
   // Notify agent
@@ -164,7 +165,7 @@ ${markdown}
     });
   }
 
-  console.log({ msg: 'Issue paused', repo: repoKey, issueNumber, reason, previousState, pauseId: pause.id });
+  logger.info({ msg: 'Issue paused', repo: repoKey, issueNumber, reason, previousState, pauseId: pause.id });
   audit('pause_created', { repo: repoKey, actor, data: { issueNumber, reason, previousState, pauseId: pause.id } });
   return pause;
 }
@@ -282,7 +283,7 @@ export async function processResume({ owner, repo, issueNumber, toState, instruc
       metadata: { pauseId: pause.id, instructions },
     });
   } catch (err) {
-    console.error({ msg: 'Failed to transition on resume', error: err.message, targetState });
+    logger.error({ msg: 'Failed to transition on resume', error: err.message, targetState });
     // Don't block resume even if transition fails
   }
 
@@ -290,7 +291,7 @@ export async function processResume({ owner, repo, issueNumber, toState, instruc
   try {
     await removeLabel(owner, repo, issueNumber, NEEDS_HUMAN_LABEL);
   } catch (err) {
-    console.warn({ msg: 'Failed to remove needs-human label', error: err.message });
+    logger.warn({ msg: 'Failed to remove needs-human label', error: err.message });
   }
 
   // Post resume comment
@@ -304,7 +305,7 @@ export async function processResume({ owner, repo, issueNumber, toState, instruc
 *Resumed by @${resumedBy ?? 'system'}*`
     );
   } catch (err) {
-    console.error({ msg: 'Failed to post resume comment', error: err.message });
+    logger.error({ msg: 'Failed to post resume comment', error: err.message });
   }
 
   // Wake agent
@@ -319,7 +320,7 @@ export async function processResume({ owner, repo, issueNumber, toState, instruc
     });
   }
 
-  console.log({ msg: 'Issue resumed', repo: repoKey, issueNumber, targetState, resumedBy, pauseId: pause.id });
+  logger.info({ msg: 'Issue resumed', repo: repoKey, issueNumber, targetState, resumedBy, pauseId: pause.id });
   audit('pause_resumed', { repo: repoKey, actor: resumedBy, data: { issueNumber, targetState, pauseId: pause.id } });
   return { pause, targetState };
 }

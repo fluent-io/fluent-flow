@@ -5,6 +5,7 @@ import yaml from 'js-yaml';
 import { query } from '../db/client.js';
 import { validateDefaults, validateRepoConfig, validateMergedConfig } from './schema.js';
 import { getRepoFileContents } from '../github/rest.js';
+import logger from '../logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -26,7 +27,7 @@ export function loadDefaults() {
   const raw = readFileSync(defaultsPath, 'utf8');
   const parsed = yaml.load(raw);
   defaultsConfig = validateDefaults(parsed);
-  console.log({ msg: 'Loaded defaults config' });
+  logger.info({ msg: 'Loaded defaults config' });
   return defaultsConfig;
 }
 
@@ -72,10 +73,10 @@ async function fetchRepoConfig(owner, repo) {
     return validateRepoConfig(parsed);
   } catch (err) {
     if (err.status === 404 || err.message?.includes('404')) {
-      console.log({ msg: 'No fluent-flow.yml in repo', owner, repo });
+      logger.info({ msg: 'No fluent-flow.yml in repo', owner, repo });
       return null;
     }
-    console.error({ msg: 'Failed to fetch repo config', owner, repo, error: err.message });
+    logger.error({ msg: 'Failed to fetch repo config', owner, repo, error: err.message });
     return null;
   }
 }
@@ -95,7 +96,7 @@ async function getDbCache(repoKey) {
       return result.rows[0].config;
     }
   } catch (err) {
-    console.error({ msg: 'Failed to read config cache from DB', error: err.message });
+    logger.error({ msg: 'Failed to read config cache from DB', error: err.message });
   }
   return null;
 }
@@ -115,7 +116,7 @@ async function setDbCache(repoKey, config) {
       [repoKey, JSON.stringify(config), `${CONFIG_CACHE_TTL_MS} milliseconds`]
     );
   } catch (err) {
-    console.error({ msg: 'Failed to write config cache to DB', error: err.message });
+    logger.error({ msg: 'Failed to write config cache to DB', error: err.message });
   }
 }
 
@@ -177,6 +178,6 @@ export async function invalidateConfig(owner, repo) {
   try {
     await query('DELETE FROM config_cache WHERE repo = $1', [repoKey]);
   } catch (err) {
-    console.error({ msg: 'Failed to invalidate config cache', error: err.message });
+    logger.error({ msg: 'Failed to invalidate config cache', error: err.message });
   }
 }

@@ -1,3 +1,5 @@
+import logger from '../logger.js';
+
 /**
  * Validate required environment variables at startup.
  * Returns an array of error messages (empty = all good).
@@ -15,11 +17,11 @@ export function validateEnv(env = process.env) {
   }
 
   if (!env.GITHUB_WEBHOOK_SECRET) {
-    console.warn({ msg: 'GITHUB_WEBHOOK_SECRET not set — webhook signature verification will be skipped' });
+    logger.warn({ msg: 'GITHUB_WEBHOOK_SECRET not set — webhook signature verification will be skipped' });
   }
 
   if (!env.MCP_AUTH_TOKEN) {
-    console.warn({ msg: 'MCP_AUTH_TOKEN not set — MCP endpoint will accept unauthenticated requests' });
+    logger.warn({ msg: 'MCP_AUTH_TOKEN not set — MCP endpoint will accept unauthenticated requests' });
   }
 
   return errors;

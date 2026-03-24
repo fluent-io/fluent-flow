@@ -1,6 +1,7 @@
 import { resolveAgentId, dispatch } from '../notifications/dispatcher.js';
 import { getPRsForCommit } from './rest.js';
 import { audit } from '../db/client.js';
+import logger from '../logger.js';
 
 /**
  * Handle GitHub check_run events (CI failures).
@@ -31,12 +32,12 @@ export async function handleCheckRun(owner, repoName, payload, config) {
       prBody = prs[0].body;
     }
   } catch (err) {
-    console.warn({ msg: 'Failed to fetch linked PRs for CI failure', repo: `${owner}/${repoName}`, sha: checkRun.head_sha, error: err.message });
+    logger.warn({ msg: 'Failed to fetch linked PRs for CI failure', repo: `${owner}/${repoName}`, sha: checkRun.head_sha, error: err.message });
   }
 
   const agentId = resolveAgentId({ prBody, config });
   if (!agentId) {
-    console.log({ msg: 'No agent_id configured, skipping CI failure notification', repo: `${owner}/${repoName}` });
+    logger.info({ msg: 'No agent_id configured, skipping CI failure notification', repo: `${owner}/${repoName}` });
     return;
   }
 
@@ -52,5 +53,5 @@ export async function handleCheckRun(owner, repoName, payload, config) {
   });
 
   audit('ci_failed', { repo: repoFullName, data: { check: checkRun.name, pr: prNumber, sha: checkRun.head_sha } });
-  console.log({ msg: 'CI failure notification sent', repo: repoFullName, check: checkRun.name, pr: prNumber });
+  logger.info({ msg: 'CI failure notification sent', repo: repoFullName, check: checkRun.name, pr: prNumber });
 }

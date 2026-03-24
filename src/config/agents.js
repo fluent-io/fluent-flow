@@ -3,6 +3,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import yaml from 'js-yaml';
 import { z } from 'zod';
+import logger from '../logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -36,7 +37,7 @@ export function loadAgents() {
   const agentsPath = join(__dirname, '../../config/agents.yml');
 
   if (!existsSync(agentsPath)) {
-    console.warn({ msg: 'config/agents.yml not found — no agents registered. Copy agents.example.yml to agents.yml to configure.' });
+    logger.warn({ msg: 'config/agents.yml not found — no agents registered. Copy agents.example.yml to agents.yml to configure.' });
     agentsRegistry = AgentsRegistrySchema.parse({ agents: {} });
     return agentsRegistry;
   }
@@ -44,7 +45,7 @@ export function loadAgents() {
   const raw = readFileSync(agentsPath, 'utf8');
   const parsed = yaml.load(raw) ?? {};
   agentsRegistry = AgentsRegistrySchema.parse(parsed);
-  console.log({ msg: 'Loaded agent registry', count: Object.keys(agentsRegistry.agents).length });
+  logger.info({ msg: 'Loaded agent registry', count: Object.keys(agentsRegistry.agents).length });
   return agentsRegistry;
 }
 

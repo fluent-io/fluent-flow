@@ -2,6 +2,7 @@
  * Workflow dispatch transport — triggers a GitHub Actions workflow.
  */
 import { dispatchWorkflow } from '../../github/rest.js';
+import logger from '../../logger.js';
 
 /**
  * @param {object} agentConfig - { workflow, ref, owner, repo, ... }
@@ -10,7 +11,7 @@ import { dispatchWorkflow } from '../../github/rest.js';
 export async function send(agentConfig, payload) {
   const { workflow, ref = 'main' } = agentConfig;
   if (!workflow) {
-    console.warn({ msg: 'Workflow transport: no workflow configured', agentId: payload.agentId });
+    logger.warn({ msg: 'Workflow transport: no workflow configured', agentId: payload.agentId });
     return;
   }
 
@@ -25,7 +26,7 @@ export async function send(agentConfig, payload) {
   }
 
   if (!owner || !repo) {
-    console.error({ msg: 'Workflow transport: cannot determine owner/repo', agentId: payload.agentId });
+    logger.error({ msg: 'Workflow transport: cannot determine owner/repo', agentId: payload.agentId });
     return;
   }
 
@@ -36,8 +37,8 @@ export async function send(agentConfig, payload) {
       message: payload.message,
       payload: JSON.stringify(payload),
     });
-    console.log({ msg: 'Agent notified via workflow_dispatch', agentId: payload.agentId, workflow });
+    logger.info({ msg: 'Agent notified via workflow_dispatch', agentId: payload.agentId, workflow });
   } catch (err) {
-    console.error({ msg: 'Workflow transport error', agentId: payload.agentId, error: err.message });
+    logger.error({ msg: 'Workflow transport error', agentId: payload.agentId, error: err.message });
   }
 }
