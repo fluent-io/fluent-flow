@@ -37,6 +37,7 @@ Each tool wraps an existing engine function — no duplicated logic. All tool ca
 | `dispatch_review` | `dispatchReview()` | Trigger automated code review |
 | `record_pause` | `recordPause()` | Pause issue for human attention |
 | `process_resume` | `processResume()` | Resume paused issue |
+| `onboard_repo` | GitHub Contents API | Create config + review workflow on a repo's default branch |
 
 All tools require `agent_id`. Command tools use `triggerType: 'mcp'` for audit trail differentiation.
 

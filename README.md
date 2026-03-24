@@ -74,29 +74,48 @@ agents:
     ref: main
 ```
 
-### 3. Onboard a Repo
+### 3. Set Up Webhook (once per org)
 
-Drop `.github/fluent-flow.yml` in your repo:
+Add an **org-level** webhook pointing to your Fluent Flow instance. This only needs to be done once — it covers all repos in the org.
+
+- **URL:** `https://your-domain/api/webhook/github`
+- **Content type:** `application/json`
+- **Secret:** Must match `GITHUB_WEBHOOK_SECRET`
+- **Events:** `pull_request`, `pull_request_review`, `issues`, `issue_comment`, `projects_v2_item`, `push`, `check_run`
+
+Org webhooks automatically cover all repositories in the organization, including repos created after the webhook was set up.
+
+### 4. Onboard a Repo
+
+For each repo you want Fluent Flow to manage:
+
+**Option A: Use the `onboard_repo` MCP tool (recommended)**
+
+```
+onboard_repo(owner: "fluent-io", repo: "fluent-hive", default_agent: "getonit")
+```
+
+This creates the config file and review workflow on the default branch in one step.
+
+**Option B: Manual setup**
+
+**a)** Add `.github/fluent-flow.yml` to the repo's **default branch** (not a feature branch — Fluent Flow fetches config from the default branch):
 
 ```yaml
 project_id: "PVT_your_project_id"
 default_agent: "getonit"
 ```
 
-That's it. Everything else uses [default config](config/defaults.yml).
+Everything else uses [default config](config/defaults.yml).
 
-### 4. Set Up Webhook
+**b)** Ensure the repo has access to these secrets (set as org secrets or per-repo):
 
-Add an org-level webhook pointing to your Fluent Flow instance:
+| Secret | Description |
+|--------|-------------|
+| `ANTHROPIC_API_KEY` | API key for the AI reviewer |
+| `FLUENT_FLOW_URL` | Your Fluent Flow instance URL (e.g. `https://flow.getonit.io`) |
 
-- **URL:** `https://your-domain/api/webhook/github`
-- **Content type:** `application/json`
-- **Secret:** Must match `GITHUB_WEBHOOK_SECRET`
-- **Events:** `pull_request`, `pull_request_review`, `issues`, `issue_comment`, `projects_v2_item`, `push`
-
-### 5. Add Reusable Review Workflow
-
-In your client repo, create `.github/workflows/pr-review.yml`:
+**c)** Create `.github/workflows/pr-review.yml` — this lets Fluent Flow dispatch reviews via GitHub Actions:
 
 ```yaml
 name: PR Review
@@ -127,6 +146,13 @@ jobs:
       FLUENT_FLOW_URL: ${{ secrets.FLUENT_FLOW_URL }}
 ```
 
+### Troubleshooting
+
+**Review not dispatched on PR open?** Check in order:
+1. Org webhook scope includes the repo (Settings > Webhooks > Edit > check "All repositories" or add the repo)
+2. Webhook Recent Deliveries tab shows the `pull_request` event was sent and got a 200 response
+3. `.github/fluent-flow.yml` exists on the repo's default branch with `reviewer.enabled` not set to `false`
+
 ## MCP Server
 
 Fluent Flow exposes an MCP endpoint for AI agents (Claude Code, Cursor, etc.) at `POST /mcp`.
@@ -152,6 +178,7 @@ claude mcp add --transport http fluent-flow https://flow.getonit.io/mcp \
 | `dispatch_review` | Command | Trigger automated code review |
 | `record_pause` | Command | Pause an issue (needs human attention) |
 | `process_resume` | Command | Resume a paused issue |
+| `onboard_repo` | Command | Create config + review workflow on a repo's default branch |
 
 All tools require an `agent_id` parameter. Set `MCP_AUTH_TOKEN` to secure the endpoint.
 

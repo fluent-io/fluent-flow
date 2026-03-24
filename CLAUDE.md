@@ -31,7 +31,7 @@ Notifications route to the agent that created the PR, not just the repo default:
 ## Testing
 
 ```bash
-npm test          # 210 tests, runs sequentially (--fileParallelism=false)
+npm test          # 218 tests, runs sequentially (--fileParallelism=false)
 npm run test:watch
 ```
 
