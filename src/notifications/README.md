@@ -5,7 +5,7 @@ Agent-agnostic notification dispatcher. Routes wake notifications to the correct
 ## Architecture
 
 ```
-dispatcher.js       — resolveAgentId, dispatch, notify* functions
+dispatcher.js       — resolveAgentId, resolveAgentForIssue, dispatch, notify* functions
 transports/
   index.js          — transport registry (getTransport by name)
   webhook.js        — HTTP POST transport
@@ -14,10 +14,10 @@ transports/
 
 ## How it works
 
-1. **Agent identity** is resolved per-notification via `resolveAgentId({ prBody, config })`:
-   - PR body marker: `<!-- fluent-flow-agent: agent-id -->` (highest priority)
-   - `config.default_agent` (per-repo config)
-   - `config.agent_id` (legacy backward compat)
+1. **Agent identity** is resolved per-notification:
+   - PR-facing handlers use `resolveAgentId({ prBody, config })` — extracts agent from PR body marker `<!-- fluent-flow-agent: agent-id -->`
+   - Issue-facing handlers use `resolveAgentForIssue(owner, repo, issueNumber, config)` — checks active pause `agent_id` → linked PR body marker → config default
+   - Resolution priority: PR body marker > `config.default_agent` > `config.agent_id` (legacy)
 
 2. **Agent config** is looked up from the agent registry (`config/agents.yml`) via `getAgentConfig(agentId)` in `src/config/agents.js`.
 

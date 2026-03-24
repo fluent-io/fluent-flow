@@ -5,6 +5,8 @@
 import { getAgentConfig } from '../config/agents.js';
 import { getTransport } from './transports/index.js';
 import { audit } from '../db/client.js';
+import { getActivePause } from '../engine/pause-manager.js';
+import { getLinkedPR, getPR } from '../github/rest.js';
 
 /**
  * Extract agent ID from PR body marker.
@@ -27,6 +29,40 @@ export function extractAgentId(body) {
  */
 export function resolveAgentId({ prBody, config }) {
   return extractAgentId(prBody) ?? config.default_agent ?? config.agent_id ?? null;
+}
+
+/**
+ * Resolve agent for an issue using all available data sources.
+ * Resolution: active pause agent_id → linked PR body marker → config default.
+ * @param {string} owner
+ * @param {string} repo
+ * @param {number} issueNumber
+ * @param {object} config
+ * @returns {Promise<string|null>}
+ */
+export async function resolveAgentForIssue(owner, repo, issueNumber, config) {
+  const repoKey = `${owner}/${repo}`;
+
+  // 1. Check active pause — cheapest (DB query), most common case
+  const pause = await getActivePause(repoKey, issueNumber);
+  if (pause?.agent_id) {
+    return pause.agent_id;
+  }
+
+  // 2. Check linked PR body marker
+  const linkedPrNumber = await getLinkedPR(owner, repo, issueNumber);
+  if (linkedPrNumber) {
+    try {
+      const pr = await getPR(owner, repo, linkedPrNumber);
+      const fromBody = resolveAgentId({ prBody: pr?.body, config });
+      if (fromBody) return fromBody;
+    } catch (err) {
+      console.warn({ msg: 'Failed to resolve agent from linked PR', error: err.message, repo: repoKey, issueNumber });
+    }
+  }
+
+  // 3. Config fallback
+  return config.default_agent ?? config.agent_id ?? null;
 }
 
 /**
