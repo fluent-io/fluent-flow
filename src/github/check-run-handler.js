@@ -18,24 +18,26 @@ export async function handleCheckRun(owner, repoName, payload, config) {
     return;
   }
 
-  const agentId = resolveAgentId({ config });
-  if (!agentId) {
-    console.log({ msg: 'No agent_id configured, skipping CI failure notification', repo: `${owner}/${repoName}` });
-    return;
-  }
-
   // Try to find linked PR via commit SHA
   let prNumber = null;
   let prTitle = '';
+  let prBody;
 
   try {
     const prs = await getPRsForCommit(owner, repoName, checkRun.head_sha);
     if (prs && prs.length > 0) {
       prNumber = prs[0].number;
       prTitle = prs[0].title;
+      prBody = prs[0].body;
     }
   } catch (err) {
     console.warn({ msg: 'Failed to fetch linked PRs for CI failure', repo: `${owner}/${repoName}`, sha: checkRun.head_sha, error: err.message });
+  }
+
+  const agentId = resolveAgentId({ prBody, config });
+  if (!agentId) {
+    console.log({ msg: 'No agent_id configured, skipping CI failure notification', repo: `${owner}/${repoName}` });
+    return;
   }
 
   const repoFullName = `${owner}/${repoName}`;
