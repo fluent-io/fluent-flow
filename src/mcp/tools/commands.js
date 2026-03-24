@@ -6,6 +6,8 @@ import { executeTransition } from '../../engine/state-machine.js';
 import { dispatchReview } from '../../engine/review-manager.js';
 import { recordPause, processResume } from '../../engine/pause-manager.js';
 import { audit } from '../../db/client.js';
+import { getFileExists, createFile } from '../../github/rest.js';
+import { invalidateConfig } from '../../config/loader.js';
 
 /**
  * Register all command tools on the MCP server.
@@ -98,6 +100,92 @@ export function registerCommandTools(server) {
         return { content: [{ type: 'text', text: JSON.stringify({ ok: true, target_state: result.targetState }) }] };
       } catch (err) {
         return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err.message, code: err.code }) }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    'onboard_repo',
+    'Onboard a GitHub repository to Fluent Flow by creating config and workflow files',
+    {
+      owner: z.string(),
+      repo: z.string(),
+      default_agent: z.string(),
+      agent_id: z.string(),
+      project_id: z.string().optional(),
+    },
+    async ({ owner, repo, default_agent, agent_id, project_id }) => {
+      audit('mcp_tool_call', { repo: `${owner}/${repo}`, actor: agent_id, data: { tool: 'onboard_repo' } });
+      try {
+        // Check if already onboarded
+        const exists = await getFileExists(owner, repo, '.github/fluent-flow.yml');
+        if (exists) {
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ ok: false, error: `${owner}/${repo} is already onboarded` }) }],
+            isError: true,
+          };
+        }
+
+        // Build config YAML
+        let configYaml = `default_agent: "${default_agent}"\n`;
+        if (project_id) {
+          configYaml += `project_id: "${project_id}"\n`;
+        }
+
+        // Build workflow YAML
+        const workflowYaml = `name: PR Review
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+      attempt:
+        required: false
+        type: string
+        default: "1"
+      prior_issues:
+        required: false
+        type: string
+        default: "[]"
+
+jobs:
+  review:
+    uses: fluent-io/fluent-flow/.github/workflows/pr-review.yml@main
+    with:
+      pr_number: \${{ inputs.pr_number }}
+      attempt: \${{ inputs.attempt }}
+      prior_issues: \${{ inputs.prior_issues }}
+    secrets:
+      ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
+      FLUENT_FLOW_URL: \${{ secrets.FLUENT_FLOW_URL }}
+`;
+
+        const commitMessage = 'chore: onboard to Fluent Flow';
+
+        // Create both files
+        await createFile(owner, repo, '.github/fluent-flow.yml', configYaml, commitMessage);
+        await createFile(owner, repo, '.github/workflows/pr-review.yml', workflowYaml, commitMessage);
+
+        // Invalidate config cache so next resolveConfig picks up the new file
+        await invalidateConfig(owner, repo);
+
+        console.log({ msg: 'Repo onboarded to Fluent Flow', owner, repo, default_agent });
+
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: true,
+              message: `${owner}/${repo} onboarded. Add repo secrets: ANTHROPIC_API_KEY, FLUENT_FLOW_URL`,
+            }),
+          }],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err.message }) }],
+          isError: true,
+        };
       }
     }
   );
