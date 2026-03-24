@@ -1,6 +1,7 @@
 /**
  * GitHub GraphQL API client — primarily for GitHub Projects v2 operations.
  */
+import logger from '../logger.js';
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GRAPHQL_URL = 'https://api.github.com/graphql';
@@ -134,7 +135,7 @@ export async function moveProjectItem(projectId, itemNodeId, targetState) {
     optionId,
   });
 
-  console.log({ msg: 'Moved project item', projectId, itemNodeId, targetState });
+  logger.info({ msg: 'Moved project item', projectId, itemNodeId, targetState });
 }
 
 /**
@@ -257,7 +258,7 @@ export async function enablePullRequestAutoMerge(prNodeId, mergeMethod = 'SQUASH
     }
   `, { prId: prNodeId, mergeMethod });
 
-  console.log({ msg: 'Enabled auto-merge', prNodeId, mergeMethod });
+  logger.info({ msg: 'Enabled auto-merge', prNodeId, mergeMethod });
 }
 
 /**

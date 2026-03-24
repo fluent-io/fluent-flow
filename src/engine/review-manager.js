@@ -4,6 +4,7 @@ import { dispatchWorkflow, addLabel } from '../github/rest.js';
 import { enablePullRequestAutoMerge, getPRNodeId } from '../github/graphql.js';
 import { recordPause, getActivePause } from './pause-manager.js';
 import { notifyReviewFailure } from '../notifications/dispatcher.js';
+import logger from '../logger.js';
 
 /**
  * Dispatch the pr-review GitHub Actions workflow for a repository.
@@ -22,14 +23,14 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', atte
   const config = await resolveConfig(owner, repo);
 
   if (!config.reviewer?.enabled) {
-    console.log({ msg: 'Reviewer disabled for repo', repo: repoKey });
+    logger.info({ msg: 'Reviewer disabled for repo', repo: repoKey });
     return;
   }
 
   if (issueNumber) {
     const activePause = await getActivePause(repoKey, issueNumber);
     if (activePause) {
-      console.log({ msg: 'Skipping review dispatch — issue is paused', repo: repoKey, prNumber, issueNumber, pauseId: activePause.id });
+      logger.info({ msg: 'Skipping review dispatch — issue is paused', repo: repoKey, prNumber, issueNumber, pauseId: activePause.id });
       return;
     }
   }
@@ -40,7 +41,7 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', atte
     prior_issues: JSON.stringify(priorIssues),
   });
 
-  console.log({ msg: 'Dispatched pr-review workflow', repo: repoKey, prNumber, attempt });
+  logger.info({ msg: 'Dispatched pr-review workflow', repo: repoKey, prNumber, attempt });
   audit('review_dispatched', { repo: repoKey, data: { prNumber, attempt } });
 }
 
@@ -74,11 +75,11 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
       const prNodeId = await getPRNodeId(owner, repo, prNumber);
       if (prNodeId) {
         await enablePullRequestAutoMerge(prNodeId, 'SQUASH');
-        console.log({ msg: 'Enabled auto-merge after PASS', repo: repoKey, prNumber });
+        logger.info({ msg: 'Enabled auto-merge after PASS', repo: repoKey, prNumber });
       audit('review_result_pass', { repo: repoKey, data: { prNumber, attempt } });
       }
     } catch (err) {
-      console.error({ msg: 'Failed to enable auto-merge', repo: repoKey, prNumber, error: err.message });
+      logger.error({ msg: 'Failed to enable auto-merge', repo: repoKey, prNumber, error: err.message });
     }
 
     // Update retry record to reflect pass
@@ -111,7 +112,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   const retryRecord = retryResult.rows[0];
   const newRetryCount = retryRecord.retry_count;
 
-  console.log({ msg: 'Review failed', repo: repoKey, prNumber, attempt, retryCount: newRetryCount, maxRetries });
+  logger.info({ msg: 'Review failed', repo: repoKey, prNumber, attempt, retryCount: newRetryCount, maxRetries });
 
   // Notify the agent that created the PR
   const resolvedAgent = agentId ?? config.default_agent ?? config.agent_id;
@@ -129,7 +130,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
 
   // Check if we've hit max retries
   if (newRetryCount >= maxRetries) {
-    console.log({ msg: 'Max review retries reached — escalating', repo: repoKey, prNumber, retryCount: newRetryCount });
+    logger.info({ msg: 'Max review retries reached — escalating', repo: repoKey, prNumber, retryCount: newRetryCount });
     audit('review_escalated', { repo: repoKey, data: { prNumber, attempt, blockingCount: blocking.length } });
 
     // Reset retry counter so future pushes start a fresh review cycle
@@ -141,7 +142,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
         await addLabel(owner, repo, issueNumber, 'needs-human');
       }
     } catch (err) {
-      console.error({ msg: 'Failed to add needs-human label on escalation', error: err.message });
+      logger.error({ msg: 'Failed to add needs-human label on escalation', error: err.message });
     }
 
     // Record a pause for the escalation
@@ -158,7 +159,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
           agentId: resolvedAgent,
         });
       } catch (err) {
-        console.error({ msg: 'Failed to record escalation pause', error: err.message });
+        logger.error({ msg: 'Failed to record escalation pause', error: err.message });
       }
     }
 
@@ -168,7 +169,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   // Do NOT re-dispatch here — wait for the agent to push new commits.
   // The pull_request.synchronize handler will dispatch a fresh review
   // with last_issues as prior context when new commits arrive.
-  console.log({ msg: 'Review failed — waiting for agent to push fixes', repo: repoKey, prNumber, retryCount: newRetryCount });
+  logger.info({ msg: 'Review failed — waiting for agent to push fixes', repo: repoKey, prNumber, retryCount: newRetryCount });
   audit('review_result_fail', { repo: repoKey, data: { prNumber, attempt, retryCount: newRetryCount } });
 
   return { action: 'fail' };

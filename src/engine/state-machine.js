@@ -2,6 +2,7 @@ import { query, audit } from '../db/client.js';
 import { resolveConfig } from '../config/loader.js';
 import { moveProjectItem, findProjectItem } from '../github/graphql.js';
 import { postComment, getIssue } from '../github/rest.js';
+import logger from '../logger.js';
 
 // Terminal states — no further transitions allowed
 const TERMINAL_STATES = new Set(['Done']);
@@ -168,7 +169,7 @@ async function updateProjectCard(repo, issueNumber, toState, projectId) {
     }
 
     if (!itemNodeId) {
-      console.warn({ msg: 'Project item not found', repo, issueNumber, projectId });
+      logger.warn({ msg: 'Project item not found', repo, issueNumber, projectId });
       return;
     }
 
@@ -181,7 +182,7 @@ async function updateProjectCard(repo, issueNumber, toState, projectId) {
       [toState, projectId, itemNodeId]
     );
   } catch (err) {
-    console.error({ msg: 'Failed to update project card', repo, issueNumber, toState, error: err.message });
+    logger.error({ msg: 'Failed to update project card', repo, issueNumber, toState, error: err.message });
   }
 }
 
@@ -265,7 +266,7 @@ export async function executeTransition({
     metadata,
   });
 
-  console.log({ msg: 'State transition recorded', repo: repoKey, issueNumber, fromState, toState, triggerType });
+  logger.info({ msg: 'State transition recorded', repo: repoKey, issueNumber, fromState, toState, triggerType });
   audit('state_transition', { repo: repoKey, actor, data: { issueNumber, fromState, toState, triggerType, triggerDetail } });
 
   // Update GitHub Projects v2 (non-blocking, all projects)
@@ -303,7 +304,7 @@ export async function attemptTransitionToDone({ owner, repo, issueNumber, actor,
       projectIds.map((pid) => updateProjectCard(repoKey, issueNumber, fromState, pid))
     );
 
-    console.log({ msg: 'Reverted invalid Done transition', repo: repoKey, issueNumber, fromState });
+    logger.info({ msg: 'Reverted invalid Done transition', repo: repoKey, issueNumber, fromState });
     return { reverted: true };
   }
 
@@ -347,7 +348,7 @@ export async function autoTransition(owner, repo, issueNumber, event, actor, met
   }
 
   if (!targetState) {
-    console.log({ msg: 'No auto transition found', repo: repoKey, issueNumber, fromState, event });
+    logger.info({ msg: 'No auto transition found', repo: repoKey, issueNumber, fromState, event });
     return null;
   }
 

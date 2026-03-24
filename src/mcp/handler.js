@@ -4,6 +4,7 @@
  */
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpServer } from './server.js';
+import logger from '../logger.js';
 
 /**
  * Handle POST /mcp — MCP JSON-RPC over Streamable HTTP.
@@ -21,7 +22,7 @@ export async function mcpHandler(req, res) {
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
   } catch (err) {
-    console.error({ msg: 'MCP handler error', error: err.message });
+    logger.error({ msg: 'MCP handler error', error: err.message });
     if (!res.headersSent) {
       res.status(500).json({ error: 'MCP server error' });
     }

@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { buildConfig, TEST_OWNER, TEST_REPO, TEST_REPO_KEY } from '../helpers/mocks.js';
 
+vi.mock('../../src/logger.js', () => ({
+  default: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+}));
 vi.mock('../../src/notifications/dispatcher.js', () => ({
   resolveAgentId: vi.fn(),
   dispatch: vi.fn(),
@@ -62,10 +65,7 @@ describe('handleCheckRun — agent routing', () => {
     resolveAgentId.mockReturnValue('default-agent');
 
     const config = buildConfig();
-    // Suppress console.warn
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await handleCheckRun(TEST_OWNER, TEST_REPO, basePayload, config);
-    spy.mockRestore();
 
     expect(resolveAgentId).toHaveBeenCalledWith({
       prBody: undefined,

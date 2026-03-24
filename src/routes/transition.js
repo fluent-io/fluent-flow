@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { executeTransition, attemptTransitionToDone } from '../engine/state-machine.js';
+import logger from '../logger.js';
 
 const router = Router();
 
@@ -88,7 +89,7 @@ router.post('/transition', async (req, res) => {
         missing: err.missing,
       });
     }
-    console.error({ msg: 'Transition failed', owner, repo, issue_number, to_state, error: err.message });
+    logger.error({ msg: 'Transition failed', owner, repo, issue_number, to_state, error: err.message });
     res.status(500).json({ error: 'Transition failed', detail: err.message });
   }
 });

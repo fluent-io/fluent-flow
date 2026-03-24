@@ -4,6 +4,7 @@ import { getPool, closePool, healthCheck, runMigrations } from './db/client.js';
 import { loadDefaults } from './config/loader.js';
 import { loadAgents } from './config/agents.js';
 import { validateEnv } from './config/env.js';
+import logger from './logger.js';
 
 // MCP
 import { mcpHandler, mcpMethodNotAllowed } from './mcp/handler.js';
@@ -34,7 +35,7 @@ app.use((req, res, next) => {
   res.on('finish', () => {
     const duration = Date.now() - start;
     if (req.path !== '/api/health') {
-      console.log({
+      logger.info({
         msg: 'request',
         method: req.method,
         path: req.path,
@@ -67,18 +68,18 @@ app.use((req, res) => {
 
 // Error handler
 app.use((err, req, res, _next) => {
-  console.error({ msg: 'Unhandled error', error: err.message, stack: err.stack, path: req.path });
+  logger.error({ msg: 'Unhandled error', error: err.message, stack: err.stack, path: req.path });
   res.status(500).json({ error: 'Internal server error' });
 });
 
 // Graceful shutdown
 async function shutdown(signal) {
-  console.log({ msg: 'Shutting down', signal });
+  logger.info({ msg: 'Shutting down', signal });
   try {
     await closePool();
-    console.log({ msg: 'Database pool closed' });
+    logger.info({ msg: 'Database pool closed' });
   } catch (err) {
-    console.error({ msg: 'Error closing pool', error: err.message });
+    logger.error({ msg: 'Error closing pool', error: err.message });
   }
   process.exit(0);
 }
@@ -92,25 +93,25 @@ async function start() {
     // Validate environment
     const envErrors = validateEnv();
     if (envErrors.length > 0) {
-      for (const err of envErrors) console.error({ msg: err });
+      for (const err of envErrors) logger.error({ msg: err });
       throw new Error(`Missing required environment variables: ${envErrors.length} error(s)`);
     }
 
     // Validate config
     loadDefaults();
     loadAgents();
-    console.log({ msg: 'Defaults config and agent registry loaded' });
+    logger.info({ msg: 'Defaults config and agent registry loaded' });
 
     // Run migrations + test DB connection
     await runMigrations();
     await healthCheck();
-    console.log({ msg: 'Database connected, migrations applied' });
+    logger.info({ msg: 'Database connected, migrations applied' });
 
     app.listen(PORT, '0.0.0.0', () => {
-      console.log({ msg: 'Fluent Flow started', port: PORT, env: process.env.NODE_ENV || 'development' });
+      logger.info({ msg: 'Fluent Flow started', port: PORT, env: process.env.NODE_ENV || 'development' });
     });
   } catch (err) {
-    console.error({ msg: 'Failed to start', error: err.message, stack: err.stack });
+    logger.error({ msg: 'Failed to start', error: err.message, stack: err.stack });
     process.exit(1);
   }
 }

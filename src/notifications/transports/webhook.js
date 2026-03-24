@@ -1,6 +1,7 @@
 /**
  * Webhook transport — sends wake payload via HTTP POST.
  */
+import logger from '../../logger.js';
 
 /**
  * @param {object} agentConfig - { url, token_env, ... }
@@ -9,7 +10,7 @@
 export async function send(agentConfig, payload) {
   const url = agentConfig.url;
   if (!url) {
-    console.warn({ msg: 'Webhook transport: no URL configured', agentId: payload.agentId });
+    logger.warn({ msg: 'Webhook transport: no URL configured', agentId: payload.agentId });
     return;
   }
 
@@ -28,11 +29,11 @@ export async function send(agentConfig, payload) {
 
     if (!response.ok) {
       const body = await response.text().catch(() => '');
-      console.error({ msg: 'Webhook transport failed', status: response.status, agentId: payload.agentId, body });
+      logger.error({ msg: 'Webhook transport failed', status: response.status, agentId: payload.agentId, body });
     } else {
-      console.log({ msg: 'Agent notified via webhook', agentId: payload.agentId, url });
+      logger.info({ msg: 'Agent notified via webhook', agentId: payload.agentId, url });
     }
   } catch (err) {
-    console.error({ msg: 'Webhook transport error', agentId: payload.agentId, error: err.message });
+    logger.error({ msg: 'Webhook transport error', agentId: payload.agentId, error: err.message });
   }
 }

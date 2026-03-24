@@ -7,6 +7,7 @@ import { getTransport } from './transports/index.js';
 import { audit } from '../db/client.js';
 import { getActivePause } from '../engine/pause-manager.js';
 import { getLinkedPR, getPR } from '../github/rest.js';
+import logger from '../logger.js';
 
 /**
  * Extract agent ID from PR body marker.
@@ -57,7 +58,7 @@ export async function resolveAgentForIssue(owner, repo, issueNumber, config) {
       const fromBody = resolveAgentId({ prBody: pr?.body, config });
       if (fromBody) return fromBody;
     } catch (err) {
-      console.warn({ msg: 'Failed to resolve agent from linked PR', error: err.message, repo: repoKey, issueNumber });
+      logger.warn({ msg: 'Failed to resolve agent from linked PR', error: err.message, repo: repoKey, issueNumber });
     }
   }
 
@@ -74,19 +75,19 @@ export async function resolveAgentForIssue(owner, repo, issueNumber, config) {
  */
 export async function dispatch({ agentId, event, payload }) {
   if (!agentId) {
-    console.warn({ msg: 'No agent ID — skipping notification', event });
+    logger.warn({ msg: 'No agent ID — skipping notification', event });
     return;
   }
 
   const agentConfig = getAgentConfig(agentId);
   if (!agentConfig) {
-    console.warn({ msg: 'Agent not found in registry — skipping notification', agentId, event });
+    logger.warn({ msg: 'Agent not found in registry — skipping notification', agentId, event });
     return;
   }
 
   const transport = getTransport(agentConfig.transport);
   if (!transport) {
-    console.error({ msg: 'Unknown transport', transport: agentConfig.transport, agentId });
+    logger.error({ msg: 'Unknown transport', transport: agentConfig.transport, agentId });
     return;
   }
 

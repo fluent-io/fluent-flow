@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { resolveConfig } from '../config/loader.js';
 import { invalidateConfig } from '../config/loader.js';
+import logger from '../logger.js';
 
 const router = Router();
 
@@ -11,7 +12,7 @@ router.get('/config/:owner/:repo', async (req, res) => {
     const config = await resolveConfig(owner, repo);
     res.json({ owner, repo, config });
   } catch (err) {
-    console.error({ msg: 'Failed to resolve config', owner, repo, error: err.message });
+    logger.error({ msg: 'Failed to resolve config', owner, repo, error: err.message });
     res.status(500).json({ error: 'Failed to resolve config', detail: err.message });
   }
 });

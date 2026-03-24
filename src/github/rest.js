@@ -1,6 +1,7 @@
 /**
  * GitHub REST API client using fetch (Node 18+ built-in).
  */
+import logger from '../logger.js';
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const BASE_URL = 'https://api.github.com';
@@ -192,7 +193,7 @@ export async function getPRsForCommit(owner, repo, sha) {
       headers: { Accept: 'application/vnd.github.groot-preview+json' },
     });
   } catch (err) {
-    console.warn({ msg: 'getPRsForCommit failed', owner, repo, sha, error: err.message });
+    logger.warn({ msg: 'getPRsForCommit failed', owner, repo, sha, error: err.message });
     return [];
   }
 }

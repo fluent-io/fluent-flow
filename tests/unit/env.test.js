@@ -1,5 +1,15 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('../../src/logger.js', () => ({
+  default: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+}));
+
+import logger from '../../src/logger.js';
 import { validateEnv } from '../../src/config/env.js';
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 describe('validateEnv', () => {
   it('returns no errors when all required vars set', () => {
@@ -29,18 +39,15 @@ describe('validateEnv', () => {
   });
 
   it('warns but does not error for missing GITHUB_WEBHOOK_SECRET', () => {
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const env = { DATABASE_URL: 'postgres://localhost/test', GITHUB_TOKEN: 'ghp_test' };
     const errors = validateEnv(env);
     expect(errors).toEqual([]);
-    expect(spy).toHaveBeenCalledWith(
+    expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ msg: expect.stringContaining('GITHUB_WEBHOOK_SECRET') })
     );
-    spy.mockRestore();
   });
 
   it('does not warn when all optional vars are set', () => {
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const env = {
       DATABASE_URL: 'postgres://localhost/test',
       GITHUB_TOKEN: 'ghp_test',
@@ -48,7 +55,6 @@ describe('validateEnv', () => {
       MCP_AUTH_TOKEN: 'token',
     };
     validateEnv(env);
-    expect(spy).not.toHaveBeenCalled();
-    spy.mockRestore();
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 });

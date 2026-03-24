@@ -2,6 +2,7 @@ import pg from 'pg';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import logger from '../logger.js';
 
 const { Pool } = pg;
 
@@ -19,7 +20,7 @@ export function getPool() {
     });
 
     pool.on('error', (err) => {
-      console.error({ msg: 'Unexpected pg pool error', error: err.message });
+      logger.error({ msg: 'Unexpected pg pool error', error: err.message });
     });
   }
   return pool;
@@ -37,7 +38,7 @@ export async function runMigrations() {
     const migrationPath = join(__dirname, 'migrations', file);
     const sql = readFileSync(migrationPath, 'utf8');
     await pool.query(sql);
-    console.log({ msg: 'Migration applied', file });
+    logger.info({ msg: 'Migration applied', file });
   }
 }
 
@@ -45,7 +46,7 @@ export async function closePool() {
   if (pool) {
     await pool.end();
     pool = null;
-    console.log({ msg: 'Database pool closed' });
+    logger.info({ msg: 'Database pool closed' });
   }
 }
 
@@ -67,6 +68,6 @@ export function audit(eventType, { repo, actor, data } = {}) {
     `INSERT INTO audit_log (event_type, repo, actor, data) VALUES ($1, $2, $3, $4)`,
     [eventType, repo ?? null, actor ?? null, data ? JSON.stringify(data) : null]
   ).catch((err) => {
-    console.error({ msg: 'audit log write failed', eventType, error: err.message });
+    logger.error({ msg: 'audit log write failed', eventType, error: err.message });
   });
 }

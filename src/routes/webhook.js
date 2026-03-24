@@ -8,6 +8,7 @@ import { recordPause, processResume, parseResumeCommand, getActivePause } from '
 import { dispatchReview, handleReviewResult, getRetryRecord, resetRetries } from '../engine/review-manager.js';
 import { resolveAgentId, notifyPRMerged, resolveAgentForIssue } from '../notifications/dispatcher.js';
 import { getLinkedPR, getPR } from '../github/rest.js';
+import logger from '../logger.js';
 
 const router = Router();
 
@@ -52,7 +53,7 @@ router.post('/webhook/github', webhookSignatureMiddleware, async (req, res) => {
   try {
     await routeWebhookEvent(event, payload);
   } catch (err) {
-    console.error({ msg: 'Webhook processing error', event, error: err.message, stack: err.stack });
+    logger.error({ msg: 'Webhook processing error', event, error: err.message, stack: err.stack });
   }
 });
 
@@ -62,7 +63,7 @@ router.post('/webhook/github', webhookSignatureMiddleware, async (req, res) => {
 async function routeWebhookEvent(event, payload) {
   const repo = payload.repository;
   if (!repo) {
-    console.log({ msg: 'Webhook without repository, skipping', event });
+    logger.info({ msg: 'Webhook without repository, skipping', event });
     return;
   }
 
@@ -73,16 +74,16 @@ async function routeWebhookEvent(event, payload) {
   try {
     config = await resolveConfig(owner, repoName);
   } catch (err) {
-    console.log({ msg: 'No Fluent Flow config for repo, ignoring', repo: repo.full_name, event });
+    logger.info({ msg: 'No Fluent Flow config for repo, ignoring', repo: repo.full_name, event });
     return;
   }
 
   if (!config) {
-    console.log({ msg: 'Repo not onboarded, ignoring', repo: repo.full_name });
+    logger.info({ msg: 'Repo not onboarded, ignoring', repo: repo.full_name });
     return;
   }
 
-  console.log({ msg: 'Processing webhook', event, action: payload.action, repo: repo.full_name });
+  logger.info({ msg: 'Processing webhook', event, action: payload.action, repo: repo.full_name });
   audit('webhook_received', { repo: repo.full_name, data: { event, action: payload.action } });
 
   switch (event) {
@@ -108,7 +109,7 @@ async function routeWebhookEvent(event, payload) {
       await handleCheckRun(owner, repoName, payload, config);
       break;
     default:
-      console.log({ msg: 'Unhandled event type', event });
+      logger.info({ msg: 'Unhandled event type', event });
   }
 }
 
@@ -138,7 +139,7 @@ async function handlePullRequest(owner, repo, payload, config) {
             metadata: { pr_number: prNumber },
           });
         } catch (err) {
-          console.warn({ msg: 'Could not transition to In Review', error: err.message, issueNumber });
+          logger.warn({ msg: 'Could not transition to In Review', error: err.message, issueNumber });
         }
       }
 
@@ -153,7 +154,7 @@ async function handlePullRequest(owner, repo, payload, config) {
             issueNumber,
           });
         } catch (err) {
-          console.error({ msg: 'Failed to dispatch review', error: err.message, prNumber });
+          logger.error({ msg: 'Failed to dispatch review', error: err.message, prNumber });
         }
       }
       break;
@@ -166,7 +167,7 @@ async function handlePullRequest(owner, repo, payload, config) {
         await resetRetries(repoKey, prNumber);
         audit('retries_cleared', { repo: repoKey, data: { prNumber, trigger: 'pr_closed' } });
       } catch (err) {
-        console.warn({ msg: 'Failed to clear retries on PR close', error: err.message, prNumber });
+        logger.warn({ msg: 'Failed to clear retries on PR close', error: err.message, prNumber });
       }
 
       if (pr.merged && issueNumber) {
@@ -184,7 +185,7 @@ async function handlePullRequest(owner, repo, payload, config) {
             metadata: { pr_number: prNumber },
           });
         } catch (err) {
-          console.warn({ msg: 'Could not transition to Done on merge', error: err.message, issueNumber });
+          logger.warn({ msg: 'Could not transition to Done on merge', error: err.message, issueNumber });
         }
 
         // Notify the agent that created this PR
@@ -211,7 +212,7 @@ async function handlePullRequest(owner, repo, payload, config) {
             actor: pr.user?.login,
           });
         } catch (err) {
-          console.warn({ msg: 'Could not transition back to In Progress', error: err.message, issueNumber });
+          logger.warn({ msg: 'Could not transition back to In Progress', error: err.message, issueNumber });
         }
       }
       break;
@@ -228,7 +229,7 @@ async function handlePullRequest(owner, repo, payload, config) {
 
           // Skip if already at max retries — escalation is in progress
           if (retryCount >= maxRetries) {
-            console.log({ msg: 'Skipping review dispatch — max retries reached', repo: repoKey, prNumber, retryCount, maxRetries });
+            logger.info({ msg: 'Skipping review dispatch — max retries reached', repo: repoKey, prNumber, retryCount, maxRetries });
             break;
           }
 
@@ -236,7 +237,7 @@ async function handlePullRequest(owner, repo, payload, config) {
           const attempt = retryCount + 1;
           await dispatchReview({ owner, repo, prNumber, ref: pr.base.ref, attempt, priorIssues, issueNumber });
         } catch (err) {
-          console.error({ msg: 'Failed to dispatch review on sync', error: err.message, prNumber });
+          logger.error({ msg: 'Failed to dispatch review on sync', error: err.message, prNumber });
         }
       }
       break;
@@ -272,7 +273,7 @@ async function handlePullRequestReview(owner, repo, payload, config) {
         agentId,
       });
     } catch (err) {
-      console.error({ msg: 'Failed to handle automated review result', error: err.message, prNumber });
+      logger.error({ msg: 'Failed to handle automated review result', error: err.message, prNumber });
     }
     return;
   }
@@ -349,7 +350,7 @@ async function handleIssueComment(owner, repo, payload, config) {
         agentId,
       });
     } catch (err) {
-      console.warn({ msg: 'Resume command failed', error: err.message, issueNumber });
+      logger.warn({ msg: 'Resume command failed', error: err.message, issueNumber });
     }
     return;
   }
@@ -372,7 +373,7 @@ async function handleIssueComment(owner, repo, payload, config) {
         agentId,
       });
     } catch (err) {
-      console.error({ msg: 'Agent pause failed', error: err.message, issueNumber });
+      logger.error({ msg: 'Agent pause failed', error: err.message, issueNumber });
     }
   }
 }
@@ -384,7 +385,7 @@ async function handleProjectItem(owner, repo, payload, config) {
   // projects_v2_item events have limited info — the changes are in the payload
   // We'd need to query the current state from GraphQL to validate
   // For now, log and handle in future phase
-  console.log({
+  logger.info({
     msg: 'Project item event received',
     action: payload.action,
     repo: `${owner}/${repo}`,
@@ -403,7 +404,7 @@ async function handlePush(owner, repo, payload, config) {
   );
 
   if (configChanged) {
-    console.log({ msg: 'Config file changed, invalidating cache', repo: `${owner}/${repo}` });
+    logger.info({ msg: 'Config file changed, invalidating cache', repo: `${owner}/${repo}` });
     await invalidateConfig(owner, repo);
   }
 }

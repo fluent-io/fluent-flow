@@ -3,6 +3,9 @@ import {
   buildConfig, TEST_OWNER, TEST_REPO, TEST_REPO_KEY, makeRetryRecord,
 } from '../helpers/mocks.js';
 
+vi.mock('../../src/logger.js', () => ({
+  default: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+}));
 vi.mock('../../src/db/client.js', () => ({ query: vi.fn(), audit: vi.fn() }));
 vi.mock('../../src/config/loader.js', () => ({ resolveConfig: vi.fn() }));
 vi.mock('../../src/github/rest.js', () => ({

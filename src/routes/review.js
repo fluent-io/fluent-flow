@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { dispatchReview, handleReviewResult, getRetryRecord } from '../engine/review-manager.js';
+import logger from '../logger.js';
 
 const router = Router();
 
@@ -48,7 +49,7 @@ router.post('/review/dispatch', async (req, res) => {
     await dispatchReview({ owner, repo, prNumber: pr_number, ref });
     res.json({ ok: true, message: `Review dispatched for ${owner}/${repo}#${pr_number}` });
   } catch (err) {
-    console.error({ msg: 'Review dispatch failed', owner, repo, pr_number, error: err.message });
+    logger.error({ msg: 'Review dispatch failed', owner, repo, pr_number, error: err.message });
     res.status(500).json({ error: 'Review dispatch failed', detail: err.message });
   }
 });
@@ -78,7 +79,7 @@ router.post('/review/result', async (req, res) => {
     });
     res.json({ ok: true, action: outcome.action });
   } catch (err) {
-    console.error({ msg: 'Review result handling failed', repo, pr_number, error: err.message });
+    logger.error({ msg: 'Review result handling failed', repo, pr_number, error: err.message });
     res.status(500).json({ error: 'Review result handling failed', detail: err.message });
   }
 });

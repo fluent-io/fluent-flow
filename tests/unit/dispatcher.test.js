@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+vi.mock('../../src/logger.js', () => ({
+  default: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+}));
 vi.mock('../../src/engine/pause-manager.js', () => ({ getActivePause: vi.fn() }));
 vi.mock('../../src/github/rest.js', () => ({ getLinkedPR: vi.fn(), getPR: vi.fn() }));
 
@@ -16,6 +19,7 @@ vi.mock('../../src/notifications/transports/index.js', () => ({
 // Mock db client (audit)
 vi.mock('../../src/db/client.js', () => ({ audit: vi.fn() }));
 
+import logger from '../../src/logger.js';
 import { getAgentConfig } from '../../src/config/agents.js';
 import { getTransport } from '../../src/notifications/transports/index.js';
 import {
@@ -139,26 +143,29 @@ describe('dispatch', () => {
   });
 
   it('skips when agentId is null', async () => {
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await dispatch({ agentId: null, event: 'review_failed', payload: {} });
     expect(getAgentConfig).not.toHaveBeenCalled();
-    spy.mockRestore();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ msg: 'No agent ID — skipping notification' }),
+    );
   });
 
   it('skips when agent not in registry', async () => {
-    const spy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     getAgentConfig.mockReturnValue(null);
     await dispatch({ agentId: 'unknown', event: 'review_failed', payload: {} });
     expect(getTransport).not.toHaveBeenCalled();
-    spy.mockRestore();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ msg: 'Agent not found in registry — skipping notification' }),
+    );
   });
 
   it('skips when transport not found', async () => {
-    const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
     getAgentConfig.mockReturnValue({ transport: 'carrier_pigeon' });
     getTransport.mockReturnValue(null);
     await dispatch({ agentId: 'test', event: 'test', payload: {} });
-    spy.mockRestore();
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ msg: 'Unknown transport' }),
+    );
   });
 });
 

@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+vi.mock('../../src/logger.js', () => ({
+  default: { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn() },
+}));
 vi.mock('../../src/db/client.js', () => ({ query: vi.fn(), audit: vi.fn() }));
 
 import { query } from '../../src/db/client.js';
