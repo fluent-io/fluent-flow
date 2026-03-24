@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+vi.mock('../../src/engine/pause-manager.js', () => ({ getActivePause: vi.fn() }));
+vi.mock('../../src/github/rest.js', () => ({ getLinkedPR: vi.fn(), getPR: vi.fn() }));
+
 // Mock agents registry
 vi.mock('../../src/config/agents.js', () => ({
   getAgentConfig: vi.fn(),
@@ -18,6 +21,7 @@ import { getTransport } from '../../src/notifications/transports/index.js';
 import {
   extractAgentId,
   resolveAgentId,
+  resolveAgentForIssue,
   dispatch,
   notifyReviewFailure,
   notifyPause,
@@ -25,6 +29,8 @@ import {
   notifyPRMerged,
   formatRichMessage,
 } from '../../src/notifications/dispatcher.js';
+import { getActivePause } from '../../src/engine/pause-manager.js';
+import { getLinkedPR, getPR } from '../../src/github/rest.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -396,5 +402,76 @@ describe('notifyPRMerged', () => {
         issueNumber: 42,
       }),
     );
+  });
+});
+
+describe('resolveAgentForIssue', () => {
+  const config = { default_agent: 'default-bot', agent_id: 'legacy-bot' };
+
+  it('returns agent_id from active pause when one exists', async () => {
+    getActivePause.mockResolvedValue({ id: 1, agent_id: 'pause-agent' });
+
+    const result = await resolveAgentForIssue('test-org', 'test-repo', 42, config);
+
+    expect(result).toBe('pause-agent');
+    expect(getLinkedPR).not.toHaveBeenCalled();
+  });
+
+  it('resolves agent from linked PR body when no active pause', async () => {
+    getActivePause.mockResolvedValue(null);
+    getLinkedPR.mockResolvedValue(7);
+    getPR.mockResolvedValue({ body: '<!-- fluent-flow-agent: pr-agent -->' });
+
+    const result = await resolveAgentForIssue('test-org', 'test-repo', 42, config);
+
+    expect(result).toBe('pr-agent');
+  });
+
+  it('falls back to config.default_agent when no pause and no linked PR', async () => {
+    getActivePause.mockResolvedValue(null);
+    getLinkedPR.mockResolvedValue(null);
+
+    const result = await resolveAgentForIssue('test-org', 'test-repo', 42, config);
+
+    expect(result).toBe('default-bot');
+    expect(getPR).not.toHaveBeenCalled();
+  });
+
+  it('falls back to config.default_agent when linked PR has no agent marker', async () => {
+    getActivePause.mockResolvedValue(null);
+    getLinkedPR.mockResolvedValue(7);
+    getPR.mockResolvedValue({ body: 'Fixes #42 — no marker here' });
+
+    const result = await resolveAgentForIssue('test-org', 'test-repo', 42, config);
+
+    expect(result).toBe('default-bot');
+  });
+
+  it('falls back to config.agent_id when no default_agent', async () => {
+    getActivePause.mockResolvedValue(null);
+    getLinkedPR.mockResolvedValue(null);
+
+    const result = await resolveAgentForIssue('test-org', 'test-repo', 42, { agent_id: 'legacy-bot' });
+
+    expect(result).toBe('legacy-bot');
+  });
+
+  it('returns null when nothing available', async () => {
+    getActivePause.mockResolvedValue(null);
+    getLinkedPR.mockResolvedValue(null);
+
+    const result = await resolveAgentForIssue('test-org', 'test-repo', 42, {});
+
+    expect(result).toBeNull();
+  });
+
+  it('handles getActivePause returning pause with null agent_id', async () => {
+    getActivePause.mockResolvedValue({ id: 1, agent_id: null });
+    getLinkedPR.mockResolvedValue(7);
+    getPR.mockResolvedValue({ body: '<!-- fluent-flow-agent: pr-agent -->' });
+
+    const result = await resolveAgentForIssue('test-org', 'test-repo', 42, config);
+
+    expect(result).toBe('pr-agent');
   });
 });
