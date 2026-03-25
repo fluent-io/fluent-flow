@@ -136,7 +136,7 @@ on:
 
 jobs:
   review:
-    uses: fluent-io/fluent-flow/.github/workflows/pr-review.yml@main
+    uses: fluent-io/fluent-flow/.github/workflows/reusable-review.yml@main
     with:
       pr_number: ${{ inputs.pr_number }}
       attempt: ${{ inputs.attempt }}

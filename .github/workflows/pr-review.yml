@@ -1,136 +1,26 @@
-name: PR Review (Fluent Flow)
-
+name: PR Review
 on:
-  workflow_call:
-    inputs:
-      pr_number:
-        description: "Pull request number to review"
-        required: true
-        type: string
-      attempt:
-        description: "Review attempt number"
-        required: false
-        type: string
-        default: "1"
-      prior_issues:
-        description: "JSON array of issues from prior attempts"
-        required: false
-        type: string
-        default: "[]"
-      fluent_flow_repo:
-        description: "Fluent Flow repo to fetch scripts from (owner/repo)"
-        required: false
-        type: string
-        default: "fluent-io/fluent-flow"
-    secrets:
-      ANTHROPIC_API_KEY:
-        description: "Anthropic API key for Claude"
-        required: true
-      FLUENT_FLOW_URL:
-        description: "Fluent Flow service URL"
-        required: false
-
   workflow_dispatch:
     inputs:
       pr_number:
-        description: "Pull request number to review"
         required: true
         type: string
       attempt:
-        description: "Review attempt number"
         required: false
         type: string
         default: "1"
       prior_issues:
-        description: "JSON array of issues from prior attempts"
         required: false
         type: string
         default: "[]"
 
 jobs:
   review:
-    name: Automated Code Review
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Download fluent-flow scripts
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p fluent-flow-scripts/scripts
-          for f in review.js post-review.mjs run-review.mjs system-prompt.txt; do
-            curl -sfL -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Accept: application/vnd.github.raw" \
-              "https://api.github.com/repos/${{ inputs.fluent_flow_repo || 'fluent-io/fluent-flow' }}/contents/scripts/$f" \
-              -o "fluent-flow-scripts/scripts/$f"
-          done
-
-      - name: Fetch PR diff
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh pr diff ${{ inputs.pr_number }} --patch 2>/dev/null | head -c 66560 > /tmp/pr.diff
-          if [ ! -s /tmp/pr.diff ]; then
-            echo "ERROR: Could not fetch PR diff" >&2
-            exit 1
-          fi
-          echo "Fetched diff: $(wc -c < /tmp/pr.diff) bytes"
-
-      - name: Fetch PR metadata
-        id: pr_meta
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh pr view ${{ inputs.pr_number }} --json title,body,author,baseRefName,headRefName,headRefOid,files > /tmp/pr_meta.json
-          echo "pr_title=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["title"])' < /tmp/pr_meta.json)" >> $GITHUB_OUTPUT
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install Anthropic SDK
-        run: npm install @anthropic-ai/sdk@0.27.0 --no-save
-
-      - name: Review with Claude
-        id: claude_review
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          PR_TITLE: ${{ steps.pr_meta.outputs.pr_title }}
-          ATTEMPT: ${{ inputs.attempt }}
-          PRIOR_ISSUES: ${{ inputs.prior_issues }}
-          NODE_PATH: ${{ github.workspace }}/node_modules
-        run: |
-          cp fluent-flow-scripts/scripts/review.js ./review.mjs
-          cp fluent-flow-scripts/scripts/system-prompt.txt /tmp/system_prompt.txt
-          cp fluent-flow-scripts/scripts/run-review.mjs ./run_review.mjs
-          node ./run_review.mjs
-
-      - name: Post review to PR
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-        run: |
-          cp fluent-flow-scripts/scripts/post-review.mjs ./post_review.mjs
-          node ./post_review.mjs "${{ inputs.pr_number }}" "${{ inputs.attempt }}" /tmp/review_result.json
-
-      - name: Notify Fluent Flow service
-        env:
-          FLUENT_FLOW_URL: ${{ secrets.FLUENT_FLOW_URL }}
-        run: |
-          if [ -n "$FLUENT_FLOW_URL" ]; then
-            curl -sf -X POST "$FLUENT_FLOW_URL/api/review/result" \
-              -H "Content-Type: application/json" \
-              -d "{\"repo\":\"${{ github.repository }}\",\"pr_number\":${{ inputs.pr_number }},\"result\":$(cat /tmp/review_result.json)}" \
-              || echo "Warning: Failed to notify Fluent Flow service"
-          else
-            echo "FLUENT_FLOW_URL not set, skipping notification"
-          fi
+    uses: fluent-io/fluent-flow/.github/workflows/reusable-review.yml@main
+    with:
+      pr_number: ${{ inputs.pr_number }}
+      attempt: ${{ inputs.attempt }}
+      prior_issues: ${{ inputs.prior_issues }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      FLUENT_FLOW_URL: ${{ secrets.FLUENT_FLOW_URL }}
