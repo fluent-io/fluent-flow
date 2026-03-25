@@ -18,9 +18,6 @@ vi.mock('../../src/engine/review-manager.js', () => ({
   dispatchReview: vi.fn(),
   getRetryRecord: vi.fn(),
 }));
-vi.mock('../../src/routes/webhook.js', () => ({
-  extractLinkedIssue: vi.fn().mockReturnValue(null),
-}));
 
 import { resolveAgentId, dispatch } from '../../src/notifications/dispatcher.js';
 import { getPRsForCommit, getCheckRunsForCommit } from '../../src/github/rest.js';

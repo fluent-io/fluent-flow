@@ -1,7 +1,6 @@
 import { resolveAgentId, dispatch } from '../notifications/dispatcher.js';
 import { getPRsForCommit, getCheckRunsForCommit } from './rest.js';
 import { dispatchReview, getRetryRecord } from '../engine/review-manager.js';
-import { extractLinkedIssue } from '../routes/webhook.js';
 import { audit } from '../db/client.js';
 import logger from '../logger.js';
 
@@ -15,8 +14,21 @@ function isReviewCheckRun(checkRun) {
 }
 
 /**
+ * Extract issue number linked to a PR from PR body.
+ * Looks for "Fixes #N", "Closes #N", "Resolves #N".
+ * @param {string} body
+ * @returns {number|null}
+ */
+function extractLinkedIssue(body) {
+  if (!body) return null;
+  const match = body.match(/(?:fixes|closes|resolves)\s+#(\d+)/i);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+/**
  * Handle GitHub check_run events.
  * Routes to failure notifications or success-triggered review dispatch.
+ * Ignores review workflow check runs on both paths.
  * @param {string} owner
  * @param {string} repoName
  * @param {object} payload - GitHub webhook payload
@@ -25,6 +37,7 @@ function isReviewCheckRun(checkRun) {
 export async function handleCheckRun(owner, repoName, payload, config) {
   const { action, check_run: checkRun } = payload;
   if (action !== 'completed') return;
+  if (isReviewCheckRun(checkRun)) return;
 
   if (checkRun.conclusion === 'failure') {
     await handleCheckRunFailure(owner, repoName, checkRun, config);
@@ -82,7 +95,6 @@ async function handleCheckRunFailure(owner, repoName, checkRun, config) {
  */
 async function handleCheckRunSuccess(owner, repoName, checkRun, config) {
   if (!config.reviewer?.enabled) return;
-  if (isReviewCheckRun(checkRun)) return;
 
   const triggerCheck = config.reviewer?.trigger_check;
   const repoKey = `${owner}/${repoName}`;

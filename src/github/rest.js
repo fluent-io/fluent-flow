@@ -233,14 +233,14 @@ export async function getPRsForCommit(owner, repo, sha) {
 }
 
 /**
- * Get check runs for a commit.
+ * Get check runs for a commit (paginates, up to 100 per page).
  * @param {string} owner
  * @param {string} repo
  * @param {string} sha
  * @returns {Promise<Array>} Array of check run objects
  */
 export async function getCheckRunsForCommit(owner, repo, sha) {
-  const result = await githubRequest(`/repos/${owner}/${repo}/commits/${sha}/check-runs`);
+  const result = await githubRequest(`/repos/${owner}/${repo}/commits/${sha}/check-runs?per_page=100`);
   return result.check_runs ?? [];
 }
 

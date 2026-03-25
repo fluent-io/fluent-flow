@@ -39,7 +39,7 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', atte
   try {
     const reviews = await getReviews(owner, repo, prNumber);
     const staleReviews = reviews.filter(
-      (r) => r.state === 'CHANGES_REQUESTED' && r.body?.includes('<!-- reviewer-result:')
+      (r) => r.state === 'CHANGES_REQUESTED' && /<!--\s*reviewer-result:/.test(r.body)
     );
     for (const review of staleReviews) {
       try {

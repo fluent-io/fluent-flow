@@ -148,10 +148,11 @@ jobs:
 
 ### Troubleshooting
 
-**Review not dispatched on PR open?** Check in order:
-1. Org webhook scope includes the repo (Settings > Webhooks > Edit > check "All repositories" or add the repo)
-2. Webhook Recent Deliveries tab shows the `pull_request` event was sent and got a 200 response
+**Review not dispatched after CI passes?** Reviews are triggered after CI checks complete successfully, not immediately on PR open. Check in order:
+1. Org webhook scope includes the repo (Settings > Webhooks > Edit)
+2. Webhook Recent Deliveries tab shows a `check_run` event with `action: completed` was sent and got a 200 response
 3. `.github/fluent-flow.yml` exists on the repo's default branch with `reviewer.enabled` not set to `false`
+4. If `reviewer.trigger_check` is set, verify the check run name matches exactly
 
 ## MCP Server
 

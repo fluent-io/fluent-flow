@@ -18,7 +18,7 @@ A VS Code extension that bridges Fluent Flow and Claude Code:
 ```
 PR opened → Fluent Flow reviews → extension shows "3 blocking issues on PR #5"
 → click "Fix" → Claude Code gets the issues + diff context → pushes fixes
-→ Fluent Flow re-reviews on synchronize → pass → auto-merge
+→ Fluent Flow re-reviews after CI passes (check_run.completed) → pass → auto-merge
 ```
 
 ## Architecture
