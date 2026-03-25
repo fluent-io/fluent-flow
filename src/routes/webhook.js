@@ -409,5 +409,5 @@ async function handlePush(owner, repo, payload, config) {
   }
 }
 
-export { handlePullRequest, handleIssues, handleIssueComment };
+export { handlePullRequest, handleIssues, handleIssueComment, extractLinkedIssue };
 export default router;
