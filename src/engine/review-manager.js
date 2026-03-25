@@ -1,6 +1,6 @@
 import { query, audit } from '../db/client.js';
 import { resolveConfig } from '../config/loader.js';
-import { dispatchWorkflow, addLabel } from '../github/rest.js';
+import { dispatchWorkflow, addLabel, getReviews, dismissReview } from '../github/rest.js';
 import { enablePullRequestAutoMerge, getPRNodeId } from '../github/graphql.js';
 import { recordPause, getActivePause } from './pause-manager.js';
 import { notifyReviewFailure } from '../notifications/dispatcher.js';
@@ -33,6 +33,24 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', atte
       logger.info({ msg: 'Skipping review dispatch — issue is paused', repo: repoKey, prNumber, issueNumber, pauseId: activePause.id });
       return;
     }
+  }
+
+  // Dismiss prior Fluent Flow reviews before dispatching new one
+  try {
+    const reviews = await getReviews(owner, repo, prNumber);
+    const staleReviews = reviews.filter(
+      (r) => r.state === 'CHANGES_REQUESTED' && r.body?.includes('<!-- reviewer-result:')
+    );
+    for (const review of staleReviews) {
+      try {
+        await dismissReview(owner, repo, prNumber, review.id, 'Superseded by new review');
+        logger.info({ msg: 'Dismissed stale review', repo: repoKey, prNumber, reviewId: review.id });
+      } catch (err) {
+        logger.warn({ msg: 'Failed to dismiss stale review', repo: repoKey, prNumber, reviewId: review.id, error: err.message });
+      }
+    }
+  } catch (err) {
+    logger.warn({ msg: 'Failed to fetch reviews for dismiss', repo: repoKey, prNumber, error: err.message });
   }
 
   await dispatchWorkflow(owner, repo, 'pr-review.yml', ref, {
@@ -167,8 +185,8 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   }
 
   // Do NOT re-dispatch here — wait for the agent to push new commits.
-  // The pull_request.synchronize handler will dispatch a fresh review
-  // with last_issues as prior context when new commits arrive.
+  // The check_run.completed handler will dispatch a fresh review with last_issues
+  // as prior context when CI passes after the agent pushes new commits.
   logger.info({ msg: 'Review failed — waiting for agent to push fixes', repo: repoKey, prNumber, retryCount: newRetryCount });
   audit('review_result_fail', { repo: repoKey, data: { prNumber, attempt, retryCount: newRetryCount } });
 

@@ -12,6 +12,8 @@ vi.mock('../../src/config/loader.js', () => ({ resolveConfig: vi.fn() }));
 vi.mock('../../src/github/rest.js', () => ({
   dispatchWorkflow: vi.fn(),
   addLabel: vi.fn(),
+  getReviews: vi.fn(),
+  dismissReview: vi.fn(),
 }));
 vi.mock('../../src/github/graphql.js', () => ({
   enablePullRequestAutoMerge: vi.fn(),
@@ -22,7 +24,7 @@ vi.mock('../../src/notifications/dispatcher.js', () => ({ notifyReviewFailure: v
 
 import { query } from '../../src/db/client.js';
 import { resolveConfig } from '../../src/config/loader.js';
-import { dispatchWorkflow, addLabel } from '../../src/github/rest.js';
+import { dispatchWorkflow, addLabel, getReviews, dismissReview } from '../../src/github/rest.js';
 import { enablePullRequestAutoMerge, getPRNodeId } from '../../src/github/graphql.js';
 import { recordPause, getActivePause } from '../../src/engine/pause-manager.js';
 import { notifyReviewFailure } from '../../src/notifications/dispatcher.js';
@@ -84,6 +86,47 @@ describe('dispatchReview', () => {
     await dispatchReview({ owner: TEST_OWNER, repo: TEST_REPO, prNumber: 7 });
 
     expect(getActivePause).not.toHaveBeenCalled();
+    expect(dispatchWorkflow).toHaveBeenCalled();
+  });
+});
+
+describe('dispatchReview — dismiss stale reviews', () => {
+  beforeEach(() => {
+    resolveConfig.mockResolvedValue(buildConfig());
+    getActivePause.mockResolvedValue(null);
+    getReviews.mockResolvedValue([]);
+  });
+
+  it('dismisses prior CHANGES_REQUESTED reviews with reviewer-result marker', async () => {
+    getReviews.mockResolvedValue([
+      { id: 101, state: 'CHANGES_REQUESTED', body: 'Bad code <!-- reviewer-result: {"status":"FAIL"} -->' },
+      { id: 102, state: 'APPROVED', body: 'LGTM <!-- reviewer-result: {"status":"PASS"} -->' },
+      { id: 103, state: 'CHANGES_REQUESTED', body: 'Human review — no marker' },
+    ]);
+
+    await dispatchReview({ owner: TEST_OWNER, repo: TEST_REPO, prNumber: 7 });
+
+    expect(dismissReview).toHaveBeenCalledTimes(1);
+    expect(dismissReview).toHaveBeenCalledWith(TEST_OWNER, TEST_REPO, 7, 101, 'Superseded by new review');
+  });
+
+  it('continues dispatch if dismissReview fails', async () => {
+    getReviews.mockResolvedValue([
+      { id: 101, state: 'CHANGES_REQUESTED', body: '<!-- reviewer-result: {"status":"FAIL"} -->' },
+    ]);
+    dismissReview.mockRejectedValue(new Error('403 Forbidden'));
+
+    await dispatchReview({ owner: TEST_OWNER, repo: TEST_REPO, prNumber: 7 });
+
+    expect(dispatchWorkflow).toHaveBeenCalled();
+  });
+
+  it('does not error when no prior reviews exist', async () => {
+    getReviews.mockResolvedValue([]);
+
+    await dispatchReview({ owner: TEST_OWNER, repo: TEST_REPO, prNumber: 7 });
+
+    expect(dismissReview).not.toHaveBeenCalled();
     expect(dispatchWorkflow).toHaveBeenCalled();
   });
 });
