@@ -4,6 +4,7 @@ reviewer:
   max_retries: 3
   diff_limit_kb: 65
   severity_tiers: true
+  # trigger_check: "lint-and-test"  # check run name that gates review dispatch (omit for all-checks-pass fallback)
   # on_failure:                 # forwarded to agent when review fails
   #   model: claude-sonnet-4-6  # AI model the agent should use for fixes
   #   thinking: high            # thinking level: low, medium, high

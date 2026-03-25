@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateDefaults, validateRepoConfig, validateMergedConfig } from '../../src/config/schema.js';
+import { validateDefaults, validateRepoConfig, validateMergedConfig, ReviewerConfigSchema } from '../../src/config/schema.js';
 
 describe('validateDefaults', () => {
   it('accepts empty object and fills all defaults', () => {
@@ -117,6 +117,26 @@ describe('validateRepoConfig', () => {
       reviewer: { on_failure: { model: 'claude-sonnet-4-6', thinking: 'low' } },
     });
     expect(result.reviewer.on_failure).toEqual({ model: 'claude-sonnet-4-6', thinking: 'low' });
+  });
+});
+
+describe('ReviewerConfigSchema trigger_check', () => {
+  it('accepts optional trigger_check string', () => {
+    const result = ReviewerConfigSchema.parse({ trigger_check: 'lint-and-test' });
+    expect(result.trigger_check).toBe('lint-and-test');
+  });
+
+  it('defaults trigger_check to undefined when not provided', () => {
+    const result = ReviewerConfigSchema.parse({});
+    expect(result.trigger_check).toBeUndefined();
+  });
+
+  it('trigger_check flows through merged config', () => {
+    const result = validateMergedConfig({
+      reviewer: { enabled: true, trigger_check: 'ci' },
+      states: ['Backlog', 'Done'],
+    });
+    expect(result.reviewer.trigger_check).toBe('ci');
   });
 });
 

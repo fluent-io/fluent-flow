@@ -5,7 +5,7 @@ import { webhookSignatureMiddleware } from '../github/webhook-verify.js';
 import { resolveConfig, invalidateConfig } from '../config/loader.js';
 import { executeTransition, autoTransition, getCurrentState } from '../engine/state-machine.js';
 import { recordPause, processResume, parseResumeCommand, getActivePause } from '../engine/pause-manager.js';
-import { dispatchReview, handleReviewResult, getRetryRecord, resetRetries } from '../engine/review-manager.js';
+import { handleReviewResult, resetRetries } from '../engine/review-manager.js';
 import { resolveAgentId, notifyPRMerged, resolveAgentForIssue } from '../notifications/dispatcher.js';
 import { getLinkedPR, getPR } from '../github/rest.js';
 import logger from '../logger.js';
@@ -143,20 +143,6 @@ async function handlePullRequest(owner, repo, payload, config) {
         }
       }
 
-      // Dispatch review if enabled
-      if (config.reviewer?.enabled) {
-        try {
-          await dispatchReview({
-            owner,
-            repo,
-            prNumber,
-            ref: pr.base.ref,
-            issueNumber,
-          });
-        } catch (err) {
-          logger.error({ msg: 'Failed to dispatch review', error: err.message, prNumber });
-        }
-      }
       break;
     }
 
@@ -219,27 +205,7 @@ async function handlePullRequest(owner, repo, payload, config) {
     }
 
     case 'synchronize': {
-      // New commits pushed — dispatch review with prior issues as context if any
-      if (config.reviewer?.enabled) {
-        try {
-          const repoKey = `${owner}/${repo}`;
-          const retryRecord = await getRetryRecord(repoKey, prNumber);
-          const maxRetries = config.reviewer?.max_retries ?? 3;
-          const retryCount = retryRecord?.retry_count ?? 0;
-
-          // Skip if already at max retries — escalation is in progress
-          if (retryCount >= maxRetries) {
-            logger.info({ msg: 'Skipping review dispatch — max retries reached', repo: repoKey, prNumber, retryCount, maxRetries });
-            break;
-          }
-
-          const priorIssues = retryRecord?.last_issues ?? [];
-          const attempt = retryCount + 1;
-          await dispatchReview({ owner, repo, prNumber, ref: pr.base.ref, attempt, priorIssues, issueNumber });
-        } catch (err) {
-          logger.error({ msg: 'Failed to dispatch review on sync', error: err.message, prNumber });
-        }
-      }
+      // Review dispatch moved to check_run.completed handler (CI-gated)
       break;
     }
   }

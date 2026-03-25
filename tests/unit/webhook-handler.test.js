@@ -127,10 +127,8 @@ describe('handlePullRequest — closed', () => {
   });
 });
 
-describe('handlePullRequest — synchronize', () => {
-  it('passes issueNumber from PR body to dispatchReview', async () => {
-    getRetryRecord.mockResolvedValue(makeRetryRecord({ retry_count: 1 }));
-
+describe('handlePullRequest — synchronize (CI-gated)', () => {
+  it('synchronize does not dispatch review or read retry record (CI-gated)', async () => {
     await handlePullRequest(TEST_OWNER, TEST_REPO, {
       action: 'synchronize',
       pull_request: {
@@ -142,31 +140,13 @@ describe('handlePullRequest — synchronize', () => {
       repository: { full_name: TEST_REPO_KEY },
     }, buildConfig());
 
-    expect(dispatchReview).toHaveBeenCalledWith(
-      expect.objectContaining({ issueNumber: 42 }),
-    );
-  });
-
-  it('skips dispatch when retry count >= max_retries', async () => {
-    getRetryRecord.mockResolvedValue(makeRetryRecord({ retry_count: 2 }));
-
-    await handlePullRequest(TEST_OWNER, TEST_REPO, {
-      action: 'synchronize',
-      pull_request: {
-        number: 7, body: 'Fixes #42',
-        base: { ref: 'main' }, head: { sha: 'def456' },
-        user: { login: 'bot' },
-      },
-      sender: { login: 'bot' },
-      repository: { full_name: TEST_REPO_KEY },
-    }, buildConfig({ reviewer: { enabled: true, max_retries: 2 } }));
-
     expect(dispatchReview).not.toHaveBeenCalled();
+    expect(getRetryRecord).not.toHaveBeenCalled();
   });
 });
 
-describe('handlePullRequest — opened/reopened', () => {
-  it('passes issueNumber to dispatchReview', async () => {
+describe('handlePullRequest — opened/reopened (CI-gated)', () => {
+  it('opened does not dispatch review (CI-gated)', async () => {
     await handlePullRequest(TEST_OWNER, TEST_REPO, {
       action: 'opened',
       pull_request: {
@@ -178,9 +158,22 @@ describe('handlePullRequest — opened/reopened', () => {
       repository: { full_name: TEST_REPO_KEY },
     }, buildConfig());
 
-    expect(dispatchReview).toHaveBeenCalledWith(
-      expect.objectContaining({ issueNumber: 42 }),
-    );
+    expect(dispatchReview).not.toHaveBeenCalled();
+  });
+
+  it('reopened does not dispatch review (CI-gated)', async () => {
+    await handlePullRequest(TEST_OWNER, TEST_REPO, {
+      action: 'reopened',
+      pull_request: {
+        number: 7, body: 'Fixes #42',
+        user: { login: 'bot' },
+        base: { ref: 'main' }, head: { sha: 'abc' },
+      },
+      sender: { login: 'bot' },
+      repository: { full_name: TEST_REPO_KEY },
+    }, buildConfig());
+
+    expect(dispatchReview).not.toHaveBeenCalled();
   });
 });
 

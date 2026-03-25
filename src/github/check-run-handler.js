@@ -1,11 +1,34 @@
 import { resolveAgentId, dispatch } from '../notifications/dispatcher.js';
-import { getPRsForCommit } from './rest.js';
+import { getPRsForCommit, getCheckRunsForCommit } from './rest.js';
+import { dispatchReview, getRetryRecord } from '../engine/review-manager.js';
 import { audit } from '../db/client.js';
 import logger from '../logger.js';
 
 /**
- * Handle GitHub check_run events (CI failures).
- * Notifies the configured agent when a check run fails on an open PR.
+ * Check if a check run belongs to the review workflow (should be ignored).
+ * @param {object} checkRun
+ * @returns {boolean}
+ */
+function isReviewCheckRun(checkRun) {
+  return checkRun.app?.slug === 'github-actions' && /\breview\b/i.test(checkRun.name);
+}
+
+/**
+ * Extract issue number linked to a PR from PR body.
+ * Looks for "Fixes #N", "Closes #N", "Resolves #N".
+ * @param {string} body
+ * @returns {number|null}
+ */
+function extractLinkedIssue(body) {
+  if (!body) return null;
+  const match = body.match(/(?:fixes|closes|resolves)\s+#(\d+)/i);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+/**
+ * Handle GitHub check_run events.
+ * Routes to failure notifications or success-triggered review dispatch.
+ * Ignores review workflow check runs on both paths.
  * @param {string} owner
  * @param {string} repoName
  * @param {object} payload - GitHub webhook payload
@@ -13,13 +36,23 @@ import logger from '../logger.js';
  */
 export async function handleCheckRun(owner, repoName, payload, config) {
   const { action, check_run: checkRun } = payload;
+  if (action !== 'completed') return;
+  if (isReviewCheckRun(checkRun)) return;
 
-  // Only process completed failures
-  if (action !== 'completed' || checkRun.conclusion !== 'failure') {
+  if (checkRun.conclusion === 'failure') {
+    await handleCheckRunFailure(owner, repoName, checkRun, config);
     return;
   }
 
-  // Try to find linked PR via commit SHA
+  if (checkRun.conclusion === 'success' || checkRun.conclusion === 'neutral') {
+    await handleCheckRunSuccess(owner, repoName, checkRun, config);
+  }
+}
+
+/**
+ * Handle CI failure — notify the configured agent.
+ */
+async function handleCheckRunFailure(owner, repoName, checkRun, config) {
   let prNumber = null;
   let prTitle = '';
   let prBody;
@@ -54,4 +87,71 @@ export async function handleCheckRun(owner, repoName, payload, config) {
 
   audit('ci_failed', { repo: repoFullName, data: { check: checkRun.name, pr: prNumber, sha: checkRun.head_sha } });
   logger.info({ msg: 'CI failure notification sent', repo: repoFullName, check: checkRun.name, pr: prNumber });
+}
+
+/**
+ * Handle CI success — dispatch automated review if configured.
+ * Uses trigger_check for exact match, or falls back to waiting for all checks to pass.
+ */
+async function handleCheckRunSuccess(owner, repoName, checkRun, config) {
+  if (!config.reviewer?.enabled) return;
+
+  const triggerCheck = config.reviewer?.trigger_check;
+  const repoKey = `${owner}/${repoName}`;
+
+  if (triggerCheck) {
+    if (checkRun.name !== triggerCheck) return;
+  } else {
+    try {
+      const allChecks = await getCheckRunsForCommit(owner, repoName, checkRun.head_sha);
+      const ciChecks = allChecks.filter((c) => !isReviewCheckRun(c));
+      const allPassed = ciChecks.every(
+        (c) => c.status === 'completed' && (c.conclusion === 'success' || c.conclusion === 'neutral')
+      );
+      if (!allPassed) {
+        logger.info({ msg: 'Not all checks passed yet, waiting', repo: repoKey, sha: checkRun.head_sha });
+        return;
+      }
+    } catch (err) {
+      logger.error({ msg: 'Failed to query check runs for fallback', repo: repoKey, error: err.message });
+      return;
+    }
+  }
+
+  let pr = null;
+  try {
+    const prs = await getPRsForCommit(owner, repoName, checkRun.head_sha);
+    if (prs && prs.length > 0) pr = prs[0];
+  } catch (err) {
+    logger.warn({ msg: 'Failed to find linked PR for review dispatch', repo: repoKey, sha: checkRun.head_sha, error: err.message });
+    return;
+  }
+
+  if (!pr) {
+    logger.info({ msg: 'No linked PR for check run, skipping review', repo: repoKey, sha: checkRun.head_sha });
+    return;
+  }
+
+  const maxRetries = config.reviewer?.max_retries ?? 3;
+  const retryRecord = await getRetryRecord(repoKey, pr.number);
+  const retryCount = retryRecord?.retry_count ?? 0;
+
+  if (retryCount >= maxRetries) {
+    logger.info({ msg: 'Skipping review dispatch — max retries reached', repo: repoKey, prNumber: pr.number, retryCount, maxRetries });
+    return;
+  }
+
+  const priorIssues = retryRecord?.last_issues ?? [];
+  const attempt = retryCount + 1;
+  const issueNumber = extractLinkedIssue(pr.body);
+
+  try {
+    await dispatchReview({
+      owner, repo: repoName, prNumber: pr.number,
+      ref: pr.base?.ref ?? 'main', attempt, priorIssues, issueNumber,
+    });
+    logger.info({ msg: 'Review dispatched after CI pass', repo: repoKey, prNumber: pr.number, attempt, trigger: triggerCheck ?? 'all-checks' });
+  } catch (err) {
+    logger.error({ msg: 'Failed to dispatch review after CI pass', repo: repoKey, prNumber: pr.number, error: err.message });
+  }
 }

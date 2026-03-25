@@ -30,6 +30,23 @@ on:
         description: "Fluent Flow service URL"
         required: false
 
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to review"
+        required: true
+        type: string
+      attempt:
+        description: "Review attempt number"
+        required: false
+        type: string
+        default: "1"
+      prior_issues:
+        description: "JSON array of issues from prior attempts"
+        required: false
+        type: string
+        default: "[]"
+
 jobs:
   review:
     name: Automated Code Review
@@ -52,7 +69,7 @@ jobs:
           for f in review.js post-review.sh run-review.mjs system-prompt.txt; do
             curl -sfL -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github.raw" \
-              "https://api.github.com/repos/${{ inputs.fluent_flow_repo }}/contents/scripts/$f" \
+              "https://api.github.com/repos/${{ inputs.fluent_flow_repo || 'fluent-io/fluent-flow' }}/contents/scripts/$f" \
               -o "fluent-flow-scripts/scripts/$f"
           done
 
