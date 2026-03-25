@@ -233,6 +233,7 @@ default_agent: "getonit"         # Required: default agent for this repo
 reviewer:
   enabled: false                 # Disable auto-review
   max_retries: 5                 # Custom retry limit
+  trigger_check: "ci"            # Check run that gates review dispatch (omit to wait for all checks)
   on_failure:                    # Forwarded to agent when review fails
     model: claude-sonnet-4-6     # AI model for fix attempts
     thinking: high               # Thinking level: low, medium, high
