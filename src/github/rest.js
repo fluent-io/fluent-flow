@@ -231,3 +231,41 @@ export async function getPRsForCommit(owner, repo, sha) {
     return [];
   }
 }
+
+/**
+ * Get check runs for a commit.
+ * @param {string} owner
+ * @param {string} repo
+ * @param {string} sha
+ * @returns {Promise<Array>} Array of check run objects
+ */
+export async function getCheckRunsForCommit(owner, repo, sha) {
+  const result = await githubRequest(`/repos/${owner}/${repo}/commits/${sha}/check-runs`);
+  return result.check_runs ?? [];
+}
+
+/**
+ * List reviews on a pull request.
+ * @param {string} owner
+ * @param {string} repo
+ * @param {number} prNumber
+ * @returns {Promise<Array>} Array of review objects
+ */
+export async function getReviews(owner, repo, prNumber) {
+  return githubRequest(`/repos/${owner}/${repo}/pulls/${prNumber}/reviews`);
+}
+
+/**
+ * Dismiss a pull request review.
+ * @param {string} owner
+ * @param {string} repo
+ * @param {number} prNumber
+ * @param {number} reviewId
+ * @param {string} message
+ */
+export async function dismissReview(owner, repo, prNumber, reviewId, message) {
+  return githubRequest(`/repos/${owner}/${repo}/pulls/${prNumber}/reviews/${reviewId}/dismissals`, {
+    method: 'PUT',
+    body: JSON.stringify({ message }),
+  });
+}
