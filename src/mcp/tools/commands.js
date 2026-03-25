@@ -161,7 +161,7 @@ export function registerCommandTools(server) {
           '',
           'jobs:',
           '  review:',
-          '    uses: fluent-io/fluent-flow/.github/workflows/reusable-review.yml@main',
+          '    uses: fluent-io/fluent-flow/.github/workflows/review.yml@main',
           '    with:',
           '      pr_number: ${{ inputs.pr_number }}',
           '      attempt: ${{ inputs.attempt }}',
