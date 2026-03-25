@@ -17,6 +17,31 @@ if (!PR_NUMBER || !REPO || !TOKEN) {
 const result = JSON.parse(fs.readFileSync(RESULT_FILE, 'utf8'));
 const { status, summary, blocking = [], advisory = [] } = result;
 
+// Read PR metadata for HEAD commit SHA (needed for inline comments)
+let commitId = null;
+try {
+  const prMeta = JSON.parse(fs.readFileSync('/tmp/pr_meta.json', 'utf8'));
+  commitId = prMeta.headRefOid ?? null;
+} catch {
+  // Will be fetched from API if not available locally
+}
+
+// Fetch HEAD SHA from API if not in metadata
+if (!commitId) {
+  try {
+    const [owner, repo] = REPO.split('/');
+    const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/pulls/${PR_NUMBER}`, {
+      headers: { Authorization: `Bearer ${TOKEN}`, Accept: 'application/vnd.github+json' },
+    });
+    if (res.ok) {
+      const pr = await res.json();
+      commitId = pr.head.sha;
+    }
+  } catch {
+    console.warn('Could not fetch HEAD SHA, inline comments may fail');
+  }
+}
+
 /**
  * Parse a unified diff to extract which lines are reviewable.
  * Returns a Map of file path → Set of line numbers present in the diff.
@@ -88,11 +113,13 @@ const inlineComments = [];
 const bodyOnlyIssues = [];
 
 for (const issue of blocking) {
-  const line = findReviewableLine(diffLines, issue.file, issue.line);
+  const targetLine = parseInt(issue.line, 10);
+  const line = Number.isNaN(targetLine) ? null : findReviewableLine(diffLines, issue.file, targetLine);
   if (line) {
     inlineComments.push({
       path: issue.file,
       line,
+      side: 'RIGHT',
       body: `**Blocking:** ${issue.issue}\n\n> **Fix:** ${issue.fix}`,
     });
   } else {
@@ -101,11 +128,13 @@ for (const issue of blocking) {
 }
 
 for (const issue of advisory) {
-  const line = findReviewableLine(diffLines, issue.file, issue.line);
+  const targetLine = parseInt(issue.line, 10);
+  const line = Number.isNaN(targetLine) ? null : findReviewableLine(diffLines, issue.file, targetLine);
   if (line) {
     inlineComments.push({
       path: issue.file,
       line,
+      side: 'RIGHT',
       body: `**Advisory:** ${issue.issue}\n\n> **Suggestion:** ${issue.suggestion}`,
     });
   } else {
@@ -151,6 +180,7 @@ const url = `https://api.github.com/repos/${owner}/${repo}/pulls/${PR_NUMBER}/re
 const payload = {
   event,
   body,
+  ...(commitId && { commit_id: commitId }),
   comments: inlineComments,
 };
 

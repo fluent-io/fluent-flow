@@ -89,7 +89,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh pr view ${{ inputs.pr_number }} --json title,body,author,baseRefName,headRefName,files > /tmp/pr_meta.json
+          gh pr view ${{ inputs.pr_number }} --json title,body,author,baseRefName,headRefName,headRefOid,files > /tmp/pr_meta.json
           echo "pr_title=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["title"])' < /tmp/pr_meta.json)" >> $GITHUB_OUTPUT
 
       - name: Setup Node.js
