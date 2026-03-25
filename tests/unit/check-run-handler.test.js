@@ -113,6 +113,16 @@ describe('handleCheckRun — CI success review dispatch', () => {
     expect(dispatchReview).not.toHaveBeenCalled();
   });
 
+  it('matches matrix job names (e.g. "test (20)" matches trigger_check "test")', async () => {
+    const matrixPayload = {
+      action: 'completed',
+      check_run: { conclusion: 'success', name: 'test (20)', head_sha: 'abc123', app: { slug: 'github-actions' } },
+    };
+    const config = buildConfig({ reviewer: { enabled: true, trigger_check: 'test' } });
+    await handleCheckRun(TEST_OWNER, TEST_REPO, matrixPayload, config);
+    expect(dispatchReview).toHaveBeenCalled();
+  });
+
   it('ignores review workflow check runs', async () => {
     const reviewPayload = {
       action: 'completed',

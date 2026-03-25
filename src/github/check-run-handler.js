@@ -100,7 +100,8 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config) {
   const repoKey = `${owner}/${repoName}`;
 
   if (triggerCheck) {
-    if (checkRun.name !== triggerCheck) return;
+    // Use startsWith to handle matrix jobs (e.g. "test (20)" matches "test")
+    if (!checkRun.name.startsWith(triggerCheck)) return;
   } else {
     try {
       const allChecks = await getCheckRunsForCommit(owner, repoName, checkRun.head_sha);

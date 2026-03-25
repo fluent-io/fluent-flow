@@ -125,7 +125,7 @@ describe('onboard_repo tool', () => {
       'test-org',
       'test-repo',
       '.github/workflows/pr-review.yml',
-      expect.stringContaining('uses: fluent-io/fluent-flow/.github/workflows/pr-review.yml@main'),
+      expect.stringContaining('uses: fluent-io/fluent-flow/.github/workflows/review.yml@main'),
       'chore: onboard to Fluent Flow',
     );
 

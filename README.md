@@ -136,7 +136,7 @@ on:
 
 jobs:
   review:
-    uses: fluent-io/fluent-flow/.github/workflows/pr-review.yml@main
+    uses: fluent-io/fluent-flow/.github/workflows/review.yml@main
     with:
       pr_number: ${{ inputs.pr_number }}
       attempt: ${{ inputs.attempt }}
@@ -277,6 +277,9 @@ Invalid transitions are **reverted** with a comment explaining why.
 | `OPENCLAW_WEBHOOK_TOKEN` | No | Agent transport token (referenced in agents.yml) |
 | `PORT` | No | HTTP port (default: 3847) |
 | `CONFIG_CACHE_TTL_MS` | No | Config cache TTL in ms (default: 300000) |
+| `LOG_LEVEL` | No | Log verbosity: `debug`, `info`, `warn`, `error` (default: `info`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | No | OpenTelemetry collector endpoint for log export (e.g. SigNoz) |
+| `OTEL_SERVICE_NAME` | No | Service name for OTel logs (default: `fluent-flow`) |
 
 Agent-specific tokens (referenced via `token_env` in `config/agents.yml`) should also be set.
 
