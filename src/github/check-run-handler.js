@@ -1,6 +1,6 @@
 import { resolveAgentId, dispatch } from '../notifications/dispatcher.js';
 import { getPRsForCommit, getCheckRunsForCommit } from './rest.js';
-import { dispatchReview, getRetryRecord } from '../engine/review-manager.js';
+import { dispatchReview, claimDispatch } from '../engine/review-manager.js';
 import { audit } from '../db/client.js';
 import logger from '../logger.js';
 
@@ -134,16 +134,14 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config) {
   }
 
   const maxRetries = config.reviewer?.max_retries ?? 3;
-  const retryRecord = await getRetryRecord(repoKey, pr.number);
-  const retryCount = retryRecord?.retry_count ?? 0;
-
-  if (retryCount >= maxRetries) {
-    logger.info({ msg: 'Skipping review dispatch — max retries reached', repo: repoKey, prNumber: pr.number, retryCount, maxRetries });
+  const claim = await claimDispatch(repoKey, pr.number, checkRun.head_sha, maxRetries);
+  if (!claim) {
+    logger.info({ msg: 'Skipping review dispatch — duplicate SHA or max retries', repo: repoKey, prNumber: pr.number, sha: checkRun.head_sha });
     return;
   }
 
-  const priorIssues = retryRecord?.last_issues ?? [];
-  const attempt = retryCount + 1;
+  const priorIssues = claim.last_issues ?? [];
+  const attempt = (claim.retry_count ?? 0) + 1;
   const issueNumber = extractLinkedIssue(pr.body);
 
   try {

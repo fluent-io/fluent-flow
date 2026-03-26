@@ -16,12 +16,12 @@ vi.mock('../../src/github/rest.js', () => ({
 vi.mock('../../src/db/client.js', () => ({ audit: vi.fn() }));
 vi.mock('../../src/engine/review-manager.js', () => ({
   dispatchReview: vi.fn(),
-  getRetryRecord: vi.fn(),
+  claimDispatch: vi.fn(),
 }));
 
 import { resolveAgentId, dispatch } from '../../src/notifications/dispatcher.js';
 import { getPRsForCommit, getCheckRunsForCommit } from '../../src/github/rest.js';
-import { dispatchReview, getRetryRecord } from '../../src/engine/review-manager.js';
+import { dispatchReview, claimDispatch } from '../../src/engine/review-manager.js';
 import { handleCheckRun } from '../../src/github/check-run-handler.js';
 
 beforeEach(() => {
@@ -96,7 +96,7 @@ describe('handleCheckRun — CI success review dispatch', () => {
 
   beforeEach(() => {
     getPRsForCommit.mockResolvedValue([prObj]);
-    getRetryRecord.mockResolvedValue(null);
+    claimDispatch.mockResolvedValue({ retry_count: 0, last_issues: null });
   });
 
   it('dispatches review when trigger_check matches', async () => {
@@ -135,7 +135,14 @@ describe('handleCheckRun — CI success review dispatch', () => {
 
   it('skips dispatch when max retries reached', async () => {
     const config = buildConfig({ reviewer: { enabled: true, trigger_check: 'lint-and-test', max_retries: 3 } });
-    getRetryRecord.mockResolvedValue({ retry_count: 3, last_issues: [] });
+    claimDispatch.mockResolvedValue(null);
+    await handleCheckRun(TEST_OWNER, TEST_REPO, successPayload, config);
+    expect(dispatchReview).not.toHaveBeenCalled();
+  });
+
+  it('skips dispatch when claimDispatch returns null (duplicate SHA)', async () => {
+    const config = buildConfig({ reviewer: { enabled: true, trigger_check: 'lint-and-test' } });
+    claimDispatch.mockResolvedValue(null);
     await handleCheckRun(TEST_OWNER, TEST_REPO, successPayload, config);
     expect(dispatchReview).not.toHaveBeenCalled();
   });
@@ -143,7 +150,7 @@ describe('handleCheckRun — CI success review dispatch', () => {
   it('passes priorIssues and attempt from retry record', async () => {
     const config = buildConfig({ reviewer: { enabled: true, trigger_check: 'lint-and-test', max_retries: 3 } });
     const issues = [{ file: 'a.js', issue: 'bad' }];
-    getRetryRecord.mockResolvedValue({ retry_count: 1, last_issues: issues });
+    claimDispatch.mockResolvedValue({ retry_count: 1, last_issues: issues });
     await handleCheckRun(TEST_OWNER, TEST_REPO, successPayload, config);
     expect(dispatchReview).toHaveBeenCalledWith(expect.objectContaining({ attempt: 2, priorIssues: issues }));
   });
@@ -190,7 +197,7 @@ describe('handleCheckRun — fallback all-checks-pass', () => {
 
   beforeEach(() => {
     getPRsForCommit.mockResolvedValue([prObj]);
-    getRetryRecord.mockResolvedValue(null);
+    claimDispatch.mockResolvedValue({ retry_count: 0, last_issues: null });
   });
 
   it('dispatches when all check runs pass (no trigger_check set)', async () => {
