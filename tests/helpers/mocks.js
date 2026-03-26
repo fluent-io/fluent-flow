@@ -102,6 +102,7 @@ export function makeRetryRecord(overrides = {}) {
     retry_count: 1,
     last_issues: null,
     last_review_sha: 'abc123',
+    last_dispatch_sha: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     ...overrides,
