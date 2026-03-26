@@ -239,7 +239,7 @@ export async function claimDispatch(repo, prNumber, sha, maxRetries) {
  */
 export async function resetRetries(repo, prNumber) {
   await query(
-    `UPDATE review_retries SET retry_count = 0, last_issues = NULL, updated_at = NOW()
+    `UPDATE review_retries SET retry_count = 0, last_issues = NULL, last_dispatch_sha = NULL, updated_at = NOW()
      WHERE repo = $1 AND pr_number = $2`,
     [repo, prNumber]
   );
