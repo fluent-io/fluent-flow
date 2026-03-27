@@ -28,7 +28,7 @@ import { dispatchWorkflow, addLabel, getReviews, dismissReview } from '../../src
 import { enablePullRequestAutoMerge, getPRNodeId } from '../../src/github/graphql.js';
 import { recordPause, getActivePause } from '../../src/engine/pause-manager.js';
 import { notifyReviewFailure } from '../../src/notifications/dispatcher.js';
-import { dispatchReview, handleReviewResult, getRetryRecord } from '../../src/engine/review-manager.js';
+import { dispatchReview, handleReviewResult, getRetryRecord, claimDispatch, resetRetries } from '../../src/engine/review-manager.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -303,5 +303,58 @@ describe('getRetryRecord', () => {
   it('returns null when not found', async () => {
     query.mockResolvedValueOnce({ rows: [] });
     expect(await getRetryRecord(TEST_REPO_KEY, 99)).toBeNull();
+  });
+});
+
+describe('claimDispatch', () => {
+  it('returns record on first claim for a new PR (no prior retry row)', async () => {
+    query.mockResolvedValueOnce({ rows: [makeRetryRecord({ retry_count: 0, last_dispatch_sha: 'sha1' })] });
+
+    const result = await claimDispatch(TEST_REPO_KEY, 7, 'sha1', 3);
+
+    expect(result).not.toBeNull();
+    expect(result.retry_count).toBe(0);
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('IS DISTINCT FROM'),
+      [TEST_REPO_KEY, 7, 'sha1', 3],
+    );
+  });
+
+  it('returns null when same SHA already claimed (duplicate)', async () => {
+    query.mockResolvedValueOnce({ rows: [] });
+
+    const result = await claimDispatch(TEST_REPO_KEY, 7, 'sha1', 3);
+
+    expect(result).toBeNull();
+  });
+
+  it('returns null when retry_count >= maxRetries', async () => {
+    query.mockResolvedValueOnce({ rows: [] });
+
+    const result = await claimDispatch(TEST_REPO_KEY, 7, 'sha2', 3);
+
+    expect(result).toBeNull();
+  });
+
+  it('returns record when SHA differs from previous claim', async () => {
+    query.mockResolvedValueOnce({ rows: [makeRetryRecord({ retry_count: 1, last_dispatch_sha: 'sha2' })] });
+
+    const result = await claimDispatch(TEST_REPO_KEY, 7, 'sha2', 3);
+
+    expect(result).not.toBeNull();
+    expect(result.retry_count).toBe(1);
+  });
+});
+
+describe('resetRetries', () => {
+  it('clears retry_count, last_issues, and last_dispatch_sha', async () => {
+    query.mockResolvedValueOnce({ rows: [] });
+
+    await resetRetries(TEST_REPO_KEY, 7);
+
+    expect(query).toHaveBeenCalledWith(
+      expect.stringContaining('last_dispatch_sha = NULL'),
+      [TEST_REPO_KEY, 7],
+    );
   });
 });

@@ -208,13 +208,38 @@ export async function getRetryRecord(repo, prNumber) {
 }
 
 /**
+ * Atomically claim a dispatch slot for a SHA. Returns the retry record if
+ * the claim succeeds (new SHA or first dispatch), or null if the SHA was
+ * already dispatched or max retries reached.
+ *
+ * @param {string} repo - "owner/repo"
+ * @param {number} prNumber
+ * @param {string} sha - Commit SHA to claim
+ * @param {number} maxRetries
+ * @returns {Promise<object|null>}
+ */
+export async function claimDispatch(repo, prNumber, sha, maxRetries) {
+  const result = await query(
+    `INSERT INTO review_retries (repo, pr_number, last_dispatch_sha)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (repo, pr_number) DO UPDATE
+       SET last_dispatch_sha = $3, updated_at = NOW()
+       WHERE review_retries.last_dispatch_sha IS DISTINCT FROM $3
+         AND review_retries.retry_count < $4
+     RETURNING *`,
+    [repo, prNumber, sha, maxRetries]
+  );
+  return result.rows[0] ?? null;
+}
+
+/**
  * Reset the retry counter for a PR (e.g. after a new commit is pushed).
  * @param {string} repo
  * @param {number} prNumber
  */
 export async function resetRetries(repo, prNumber) {
   await query(
-    `UPDATE review_retries SET retry_count = 0, last_issues = NULL, updated_at = NOW()
+    `UPDATE review_retries SET retry_count = 0, last_issues = NULL, last_dispatch_sha = NULL, updated_at = NOW()
      WHERE repo = $1 AND pr_number = $2`,
     [repo, prNumber]
   );
