@@ -25,7 +25,7 @@ The dedup guard lives in the automated path only. Manual dispatches (REST API `/
 
 ## Schema Change
 
-New migration `002_dispatch_dedup.sql`:
+New migration `004_dispatch_dedup.sql`:
 
 ```sql
 ALTER TABLE review_retries ADD COLUMN IF NOT EXISTS last_dispatch_sha TEXT;
@@ -82,7 +82,7 @@ WHERE repo = $1 AND pr_number = $2
 ## Scope
 
 ### Changed files
-- `src/db/migrations/002_dispatch_dedup.sql` — new migration
+- `src/db/migrations/004_dispatch_dedup.sql` — new migration
 - `src/engine/review-manager.js` — add `claimDispatch`, update `resetRetries`
 - `src/github/check-run-handler.js` — use `claimDispatch` instead of `getRetryRecord` read
 

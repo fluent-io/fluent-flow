@@ -1,6 +1,7 @@
 import { resolveAgentId, dispatch } from '../notifications/dispatcher.js';
 import { getPRsForCommit, getCheckRunsForCommit } from './rest.js';
 import { dispatchReview, claimDispatch } from '../engine/review-manager.js';
+import { getActivePause } from '../engine/pause-manager.js';
 import { audit } from '../db/client.js';
 import logger from '../logger.js';
 
@@ -133,6 +134,16 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config) {
     return;
   }
 
+  const issueNumber = extractLinkedIssue(pr.body);
+
+  if (issueNumber) {
+    const activePause = await getActivePause(repoKey, issueNumber);
+    if (activePause) {
+      logger.info({ msg: 'Skipping review dispatch — issue is paused', repo: repoKey, prNumber: pr.number, issueNumber, pauseId: activePause.id });
+      return;
+    }
+  }
+
   const maxRetries = config.reviewer?.max_retries ?? 3;
   const claim = await claimDispatch(repoKey, pr.number, checkRun.head_sha, maxRetries);
   if (!claim) {
@@ -142,7 +153,6 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config) {
 
   const priorIssues = claim.last_issues ?? [];
   const attempt = (claim.retry_count ?? 0) + 1;
-  const issueNumber = extractLinkedIssue(pr.body);
 
   try {
     await dispatchReview({

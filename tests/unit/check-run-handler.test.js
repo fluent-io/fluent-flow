@@ -18,10 +18,14 @@ vi.mock('../../src/engine/review-manager.js', () => ({
   dispatchReview: vi.fn(),
   claimDispatch: vi.fn(),
 }));
+vi.mock('../../src/engine/pause-manager.js', () => ({
+  getActivePause: vi.fn(),
+}));
 
 import { resolveAgentId, dispatch } from '../../src/notifications/dispatcher.js';
 import { getPRsForCommit, getCheckRunsForCommit } from '../../src/github/rest.js';
 import { dispatchReview, claimDispatch } from '../../src/engine/review-manager.js';
+import { getActivePause } from '../../src/engine/pause-manager.js';
 import { handleCheckRun } from '../../src/github/check-run-handler.js';
 
 beforeEach(() => {
@@ -97,6 +101,7 @@ describe('handleCheckRun — CI success review dispatch', () => {
   beforeEach(() => {
     getPRsForCommit.mockResolvedValue([prObj]);
     claimDispatch.mockResolvedValue({ retry_count: 0, last_issues: null });
+    getActivePause.mockResolvedValue(null);
   });
 
   it('dispatches review when trigger_check matches', async () => {
@@ -144,6 +149,16 @@ describe('handleCheckRun — CI success review dispatch', () => {
     const config = buildConfig({ reviewer: { enabled: true, trigger_check: 'lint-and-test' } });
     claimDispatch.mockResolvedValue(null);
     await handleCheckRun(TEST_OWNER, TEST_REPO, successPayload, config);
+    expect(dispatchReview).not.toHaveBeenCalled();
+  });
+
+  it('skips dispatch and claim when linked issue is paused', async () => {
+    const pausedPr = { number: 5, title: 'feat: stuff', body: 'Fixes #42', base: { ref: 'main' } };
+    getPRsForCommit.mockResolvedValue([pausedPr]);
+    getActivePause.mockResolvedValue({ id: 1, reason: 'review-escalation' });
+    const config = buildConfig({ reviewer: { enabled: true, trigger_check: 'lint-and-test' } });
+    await handleCheckRun(TEST_OWNER, TEST_REPO, successPayload, config);
+    expect(claimDispatch).not.toHaveBeenCalled();
     expect(dispatchReview).not.toHaveBeenCalled();
   });
 
@@ -198,6 +213,7 @@ describe('handleCheckRun — fallback all-checks-pass', () => {
   beforeEach(() => {
     getPRsForCommit.mockResolvedValue([prObj]);
     claimDispatch.mockResolvedValue({ retry_count: 0, last_issues: null });
+    getActivePause.mockResolvedValue(null);
   });
 
   it('dispatches when all check runs pass (no trigger_check set)', async () => {
