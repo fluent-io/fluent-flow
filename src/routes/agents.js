@@ -55,8 +55,11 @@ function adminAuth(req, res, next) {
     return next();
   }
   const auth = req.headers.authorization;
-  if (!auth?.startsWith('Bearer ')) {
+  if (!auth) {
     return res.status(401).json({ error: 'Missing Authorization header' });
+  }
+  if (!auth.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Invalid Authorization header: expected Bearer scheme' });
   }
   if (auth.slice(7) !== token) {
     return res.status(403).json({ error: 'Invalid admin authorization token' });

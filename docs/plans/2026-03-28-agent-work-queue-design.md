@@ -108,7 +108,7 @@ CREATE TABLE agent_tokens (
   id            SERIAL PRIMARY KEY,
   org_id        TEXT NOT NULL REFERENCES orgs(id),
   agent_id      TEXT NOT NULL,
-  token_hash    TEXT NOT NULL,                 -- bcrypt/argon2 hash, never store plaintext
+  token_hash    TEXT NOT NULL,                 -- SHA-256 hex digest (safe for high-entropy tokens; slow hash unnecessary)
   label         TEXT,                          -- "victor-laptop", "ci-runner-3"
   created_at    TIMESTAMPTZ DEFAULT now(),
   expires_at    TIMESTAMPTZ,                   -- null = no expiry
