@@ -94,4 +94,26 @@ describe('agent routes', () => {
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ token: 'ff_abc' }));
     });
   });
+
+  describe('validation', () => {
+    it('returns 400 on invalid create agent body', async () => {
+      const res = fakeRes();
+      await handleCreateAgent(adminReq({ id: 'a1', agent_type: 'invalid-type', transport: 'long_poll' }), res);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: 'Validation failed' }));
+    });
+
+    it('returns 400 on missing required fields', async () => {
+      const res = fakeRes();
+      await handleCreateAgent(adminReq({}), res);
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('returns 500 on DB error', async () => {
+      mockGetAgent.mockRejectedValueOnce(new Error('connection refused'));
+      const res = fakeRes();
+      await handleGetAgent(adminReq({}, { id: 'a1' }), res);
+      expect(res.status).toHaveBeenCalledWith(500);
+    });
+  });
 });

@@ -34,3 +34,6 @@ CREATE TABLE IF NOT EXISTS agent_tokens (
 
 CREATE INDEX IF NOT EXISTS idx_agent_tokens_lookup
   ON agent_tokens(org_id, agent_id) WHERE revoked_at IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_tokens_hash_active
+  ON agent_tokens(token_hash) WHERE revoked_at IS NULL;

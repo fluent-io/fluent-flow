@@ -1,10 +1,37 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import { createAgent, getAgent, listAgents, updateAgent, deleteAgent } from '../agents/agent-manager.js';
 import { createToken, listTokens, revokeToken } from '../agents/token-manager.js';
 import { getActiveSessions } from '../agents/session-manager.js';
 import logger from '../logger.js';
 
 const router = Router();
+
+// --- Zod schemas ---
+
+const CreateAgentSchema = z.object({
+  id: z.string().min(1),
+  agent_type: z.enum(['claude-code', 'codex', 'devin', 'openclaw', 'aider', 'custom']),
+  transport: z.enum(['webhook', 'workflow_dispatch', 'long_poll', 'api']),
+  transport_meta: z.record(z.any()).optional(),
+  repos: z.array(z.string()).optional(),
+});
+
+const UpdateAgentSchema = z.object({
+  agent_type: z.enum(['claude-code', 'codex', 'devin', 'openclaw', 'aider', 'custom']).optional(),
+  transport: z.enum(['webhook', 'workflow_dispatch', 'long_poll', 'api']).optional(),
+  transport_meta: z.record(z.any()).optional(),
+  repos: z.array(z.string()).optional(),
+});
+
+const CreateTokenSchema = z.object({
+  label: z.string().optional(),
+  expires_at: z.string().datetime().optional(),
+});
+
+// --- Auth middleware ---
+
+let adminAuthWarningLogged = false;
 
 /**
  * Admin auth middleware.
@@ -13,69 +40,134 @@ const router = Router();
 function adminAuth(req, res, next) {
   const token = process.env.MCP_AUTH_TOKEN;
   if (!token) {
+    if (process.env.NODE_ENV === 'production') {
+      logger.error({ msg: 'Admin API accessed without MCP_AUTH_TOKEN in production' });
+      return res.status(500).json({ error: 'Admin API misconfigured: MCP_AUTH_TOKEN is not set' });
+    }
+    if (!adminAuthWarningLogged) {
+      logger.warn({ msg: 'Admin API running without MCP_AUTH_TOKEN — unauthenticated access enabled (non-production only)' });
+      adminAuthWarningLogged = true;
+    }
     req.adminOrg = 'self-hosted';
     return next();
   }
   const auth = req.headers.authorization;
-  if (!auth?.startsWith('Bearer ') || auth.slice(7) !== token) {
-    return res.status(403).json({ error: 'Unauthorized' });
+  if (!auth?.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Missing Authorization header' });
   }
-  req.adminOrg = process.env.ORG_ID || 'self-hosted';
+  if (auth.slice(7) !== token) {
+    return res.status(403).json({ error: 'Invalid admin authorization token' });
+  }
+  req.adminOrg = 'self-hosted';
   next();
 }
 
+// --- Handlers ---
+
 export async function handleCreateAgent(req, res) {
-  const { id, agent_type, transport, transport_meta, repos } = req.body;
-  const agent = await createAgent({ id, orgId: req.adminOrg, agentType: agent_type, transport, transportMeta: transport_meta, repos });
-  res.status(201).json(agent);
+  try {
+    const parsed = CreateAgentSchema.parse(req.body);
+    const agent = await createAgent({
+      id: parsed.id, orgId: req.adminOrg, agentType: parsed.agent_type,
+      transport: parsed.transport, transportMeta: parsed.transport_meta, repos: parsed.repos,
+    });
+    res.status(201).json(agent);
+  } catch (err) {
+    if (err instanceof z.ZodError) return res.status(400).json({ error: 'Validation failed', details: err.errors });
+    logger.error({ msg: 'Failed to create agent', error: err.message });
+    res.status(500).json({ error: 'Internal server error' });
+  }
 }
 
 export async function handleGetAgent(req, res) {
-  const agent = await getAgent(req.adminOrg, req.params.id);
-  if (!agent) return res.status(404).json({ error: 'Agent not found' });
-  res.json(agent);
+  try {
+    const agent = await getAgent(req.adminOrg, req.params.id);
+    if (!agent) return res.status(404).json({ error: 'Agent not found' });
+    res.json(agent);
+  } catch (err) {
+    logger.error({ msg: 'Failed to get agent', error: err.message });
+    res.status(500).json({ error: 'Internal server error' });
+  }
 }
 
 export async function handleListAgents(req, res) {
-  const agents = await listAgents(req.adminOrg);
-  res.json({ agents });
+  try {
+    const agents = await listAgents(req.adminOrg);
+    res.json({ agents });
+  } catch (err) {
+    logger.error({ msg: 'Failed to list agents', error: err.message });
+    res.status(500).json({ error: 'Internal server error' });
+  }
 }
 
 export async function handleUpdateAgent(req, res) {
-  const { agent_type, transport, transport_meta, repos } = req.body;
-  const agent = await updateAgent(req.adminOrg, req.params.id, {
-    agentType: agent_type, transport, transportMeta: transport_meta, repos,
-  });
-  if (!agent) return res.status(404).json({ error: 'Agent not found' });
-  res.json(agent);
+  try {
+    const parsed = UpdateAgentSchema.parse(req.body);
+    const agent = await updateAgent(req.adminOrg, req.params.id, {
+      agentType: parsed.agent_type, transport: parsed.transport,
+      transportMeta: parsed.transport_meta, repos: parsed.repos,
+    });
+    if (!agent) return res.status(404).json({ error: 'Agent not found' });
+    res.json(agent);
+  } catch (err) {
+    if (err instanceof z.ZodError) return res.status(400).json({ error: 'Validation failed', details: err.errors });
+    logger.error({ msg: 'Failed to update agent', error: err.message });
+    res.status(500).json({ error: 'Internal server error' });
+  }
 }
 
 export async function handleDeleteAgent(req, res) {
-  const deleted = await deleteAgent(req.adminOrg, req.params.id);
-  if (!deleted) return res.status(404).json({ error: 'Agent not found' });
-  res.status(204).end();
+  try {
+    const deleted = await deleteAgent(req.adminOrg, req.params.id);
+    if (!deleted) return res.status(404).json({ error: 'Agent not found' });
+    res.status(204).end();
+  } catch (err) {
+    logger.error({ msg: 'Failed to delete agent', error: err.message });
+    res.status(500).json({ error: 'Internal server error' });
+  }
 }
 
 export async function handleCreateToken(req, res) {
-  const { label, expires_at } = req.body;
-  const result = await createToken(req.adminOrg, req.params.id, label, expires_at);
-  res.status(201).json({ token: result.plaintext, id: result.id });
+  try {
+    const parsed = CreateTokenSchema.parse(req.body);
+    const result = await createToken(req.adminOrg, req.params.id, parsed.label, parsed.expires_at);
+    res.status(201).json({ token: result.plaintext, id: result.id });
+  } catch (err) {
+    if (err instanceof z.ZodError) return res.status(400).json({ error: 'Validation failed', details: err.errors });
+    logger.error({ msg: 'Failed to create token', error: err.message });
+    res.status(500).json({ error: 'Internal server error' });
+  }
 }
 
 export async function handleListTokens(req, res) {
-  const tokens = await listTokens(req.adminOrg, req.params.id);
-  res.json({ tokens });
+  try {
+    const tokens = await listTokens(req.adminOrg, req.params.id);
+    res.json({ tokens });
+  } catch (err) {
+    logger.error({ msg: 'Failed to list tokens', error: err.message });
+    res.status(500).json({ error: 'Internal server error' });
+  }
 }
 
 export async function handleRevokeToken(req, res) {
-  const revoked = await revokeToken(req.adminOrg, parseInt(req.params.tokenId, 10));
-  if (!revoked) return res.status(404).json({ error: 'Token not found' });
-  res.json({ ok: true });
+  try {
+    const revoked = await revokeToken(req.adminOrg, parseInt(req.params.tokenId, 10));
+    if (!revoked) return res.status(404).json({ error: 'Token not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    logger.error({ msg: 'Failed to revoke token', error: err.message });
+    res.status(500).json({ error: 'Internal server error' });
+  }
 }
 
 export async function handleListSessions(req, res) {
-  const sessions = await getActiveSessions(req.adminOrg, req.params.id);
-  res.json({ sessions });
+  try {
+    const sessions = await getActiveSessions(req.adminOrg, req.params.id);
+    res.json({ sessions });
+  } catch (err) {
+    logger.error({ msg: 'Failed to list sessions', error: err.message });
+    res.status(500).json({ error: 'Internal server error' });
+  }
 }
 
 router.use('/agents', adminAuth);

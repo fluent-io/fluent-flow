@@ -62,5 +62,16 @@ describe('org-manager', () => {
       expect(result.id).toBe('self-hosted');
       expect(mockQuery).toHaveBeenCalledTimes(1);
     });
+
+    it('handles concurrent creation (duplicate key) gracefully', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] }); // getOrg returns nothing
+      const dupErr = new Error('duplicate key');
+      dupErr.code = '23505';
+      mockQuery.mockRejectedValueOnce(dupErr); // createOrg fails with duplicate
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 'self-hosted', name: 'Self-Hosted' }] }); // retry getOrg
+      const result = await bootstrapSelfHosted();
+      expect(result.id).toBe('self-hosted');
+      expect(mockQuery).toHaveBeenCalledTimes(3);
+    });
   });
 });

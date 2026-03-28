@@ -40,9 +40,18 @@ export async function bootstrapSelfHosted() {
     logger.info({ msg: 'Self-hosted org already exists', orgId: SELF_HOSTED_ORG_ID });
     return existing;
   }
-  const org = await createOrg(SELF_HOSTED_ORG_ID, 'Self-Hosted');
-  logger.info({ msg: 'Bootstrapped self-hosted org', orgId: SELF_HOSTED_ORG_ID });
-  return org;
+  try {
+    const org = await createOrg(SELF_HOSTED_ORG_ID, 'Self-Hosted');
+    logger.info({ msg: 'Bootstrapped self-hosted org', orgId: SELF_HOSTED_ORG_ID });
+    return org;
+  } catch (err) {
+    // Handle concurrent creation: another instance may have inserted first
+    if (err?.code === '23505') {
+      const org = await getOrg(SELF_HOSTED_ORG_ID);
+      if (org) return org;
+    }
+    throw err;
+  }
 }
 
 export { SELF_HOSTED_ORG_ID };

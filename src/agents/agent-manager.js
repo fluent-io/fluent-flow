@@ -60,12 +60,13 @@ export async function listAgents(orgId) {
 export async function updateAgent(orgId, agentId, fields) {
   const setClauses = [];
   const params = [];
+  const appliedFields = [];
   let idx = 1;
 
-  if (fields.agentType !== undefined) { setClauses.push(`agent_type = $${idx++}`); params.push(fields.agentType); }
-  if (fields.transport !== undefined) { setClauses.push(`transport = $${idx++}`); params.push(fields.transport); }
-  if (fields.transportMeta !== undefined) { setClauses.push(`transport_meta = $${idx++}`); params.push(JSON.stringify(fields.transportMeta)); }
-  if (fields.repos !== undefined) { setClauses.push(`repos = $${idx++}`); params.push(fields.repos); }
+  if (fields.agentType !== undefined) { setClauses.push(`agent_type = $${idx++}`); params.push(fields.agentType); appliedFields.push('agentType'); }
+  if (fields.transport !== undefined) { setClauses.push(`transport = $${idx++}`); params.push(fields.transport); appliedFields.push('transport'); }
+  if (fields.transportMeta !== undefined) { setClauses.push(`transport_meta = $${idx++}`); params.push(JSON.stringify(fields.transportMeta)); appliedFields.push('transportMeta'); }
+  if (fields.repos !== undefined) { setClauses.push(`repos = $${idx++}`); params.push(fields.repos); appliedFields.push('repos'); }
   setClauses.push(`updated_at = NOW()`);
 
   params.push(orgId, agentId);
@@ -74,7 +75,7 @@ export async function updateAgent(orgId, agentId, fields) {
     params
   );
   if (result.rows[0]) {
-    audit('agent_updated', { data: { orgId, agentId, fields: Object.keys(fields) } });
+    audit('agent_updated', { data: { orgId, agentId, fields: appliedFields } });
   }
   return result.rows[0] ?? null;
 }
