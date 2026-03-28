@@ -22,7 +22,10 @@ const UpdateAgentSchema = z.object({
   transport: z.enum(['webhook', 'workflow_dispatch', 'long_poll', 'api']).optional(),
   transport_meta: z.record(z.any()).optional(),
   repos: z.array(z.string()).optional(),
-});
+}).refine(
+  (data) => Object.values(data).some((v) => v !== undefined),
+  { message: 'At least one field must be provided for update' },
+);
 
 const CreateTokenSchema = z.object({
   label: z.string().optional(),
@@ -131,7 +134,8 @@ export async function handleCreateToken(req, res) {
   const parsed = CreateTokenSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
   try {
-    const result = await createToken(req.adminOrg, req.params.id, parsed.data.label, parsed.data.expires_at);
+    const expiresAt = parsed.data.expires_at ? new Date(parsed.data.expires_at) : null;
+    const result = await createToken(req.adminOrg, req.params.id, parsed.data.label, expiresAt);
     res.status(201).json({ token: result.plaintext, id: result.id });
   } catch (err) {
     logger.error({ msg: 'Failed to create token', error: err.message });

@@ -43,16 +43,22 @@ describe('token-manager', () => {
 
   describe('validateToken', () => {
     it('returns org_id and agent_id for valid token', async () => {
-      const hash = hashToken('ff_test123');
+      const validToken = 'ff_' + 'a'.repeat(64);
+      const hash = hashToken(validToken);
       mockQuery.mockResolvedValueOnce({ rows: [{ id: 1, org_id: 'acme', agent_id: 'a1' }] });
-      const result = await validateToken('ff_test123');
+      const result = await validateToken(validToken);
       expect(result).toEqual({ id: 1, org_id: 'acme', agent_id: 'a1' });
       expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('SELECT'), [hash]);
     });
 
     it('returns null for invalid token', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [] });
       expect(await validateToken('ff_bad')).toBeNull();
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('returns null for token without ff_ prefix', async () => {
+      expect(await validateToken('xx_' + 'a'.repeat(64))).toBeNull();
+      expect(mockQuery).not.toHaveBeenCalled();
     });
   });
 

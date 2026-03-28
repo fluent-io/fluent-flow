@@ -43,6 +43,9 @@ export async function createToken(orgId, agentId, label = null, expiresAt = null
  * @returns {Promise<{ id: number, org_id: string, agent_id: string }|null>}
  */
 export async function validateToken(plaintext) {
+  if (!plaintext || !plaintext.startsWith(TOKEN_PREFIX) || plaintext.length !== 67) {
+    return null;
+  }
   const hash = hashToken(plaintext);
   const result = await query(
     `SELECT id, org_id, agent_id FROM agent_tokens
