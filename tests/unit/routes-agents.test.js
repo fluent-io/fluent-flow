@@ -1,0 +1,97 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const mockCreateAgent = vi.fn();
+const mockGetAgent = vi.fn();
+const mockListAgents = vi.fn();
+const mockUpdateAgent = vi.fn();
+const mockDeleteAgent = vi.fn();
+const mockCreateToken = vi.fn();
+const mockListTokens = vi.fn();
+const mockRevokeToken = vi.fn();
+
+vi.mock('../../src/agents/agent-manager.js', () => ({
+  createAgent: (...args) => mockCreateAgent(...args),
+  getAgent: (...args) => mockGetAgent(...args),
+  listAgents: (...args) => mockListAgents(...args),
+  updateAgent: (...args) => mockUpdateAgent(...args),
+  deleteAgent: (...args) => mockDeleteAgent(...args),
+}));
+vi.mock('../../src/agents/token-manager.js', () => ({
+  createToken: (...args) => mockCreateToken(...args),
+  listTokens: (...args) => mockListTokens(...args),
+  revokeToken: (...args) => mockRevokeToken(...args),
+  validateToken: vi.fn(),
+}));
+vi.mock('../../src/agents/session-manager.js', () => ({
+  getActiveSessions: vi.fn().mockResolvedValue([]),
+}));
+vi.mock('../../src/db/client.js', () => ({
+  query: vi.fn().mockResolvedValue({ rows: [] }),
+  audit: vi.fn(),
+}));
+vi.mock('../../src/logger.js', () => ({
+  default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+
+const { handleCreateAgent, handleGetAgent, handleListAgents, handleDeleteAgent, handleCreateToken } = await import('../../src/routes/agents.js');
+
+const adminReq = (body = {}, params = {}) => ({ adminOrg: 'acme', body, params });
+const fakeRes = () => ({ status: vi.fn().mockReturnThis(), json: vi.fn(), end: vi.fn() });
+
+describe('agent routes', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  describe('handleCreateAgent', () => {
+    it('creates an agent and returns 201', async () => {
+      mockCreateAgent.mockResolvedValueOnce({ id: 'a1', org_id: 'acme' });
+      const res = fakeRes();
+      await handleCreateAgent(adminReq({ id: 'a1', agent_type: 'claude-code', transport: 'long_poll' }), res);
+      expect(mockCreateAgent).toHaveBeenCalledWith(expect.objectContaining({ id: 'a1', orgId: 'acme' }));
+      expect(res.status).toHaveBeenCalledWith(201);
+    });
+  });
+
+  describe('handleGetAgent', () => {
+    it('returns agent if found', async () => {
+      mockGetAgent.mockResolvedValueOnce({ id: 'a1' });
+      const res = fakeRes();
+      await handleGetAgent(adminReq({}, { id: 'a1' }), res);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ id: 'a1' }));
+    });
+
+    it('returns 404 if not found', async () => {
+      mockGetAgent.mockResolvedValueOnce(null);
+      const res = fakeRes();
+      await handleGetAgent(adminReq({}, { id: 'missing' }), res);
+      expect(res.status).toHaveBeenCalledWith(404);
+    });
+  });
+
+  describe('handleListAgents', () => {
+    it('returns all agents for org', async () => {
+      mockListAgents.mockResolvedValueOnce([{ id: 'a1' }, { id: 'a2' }]);
+      const res = fakeRes();
+      await handleListAgents(adminReq(), res);
+      expect(res.json).toHaveBeenCalledWith({ agents: [{ id: 'a1' }, { id: 'a2' }] });
+    });
+  });
+
+  describe('handleDeleteAgent', () => {
+    it('returns 204 on success', async () => {
+      mockDeleteAgent.mockResolvedValueOnce(true);
+      const res = fakeRes();
+      await handleDeleteAgent(adminReq({}, { id: 'a1' }), res);
+      expect(res.status).toHaveBeenCalledWith(204);
+    });
+  });
+
+  describe('handleCreateToken', () => {
+    it('returns plaintext token on creation', async () => {
+      mockCreateToken.mockResolvedValueOnce({ plaintext: 'ff_abc', id: 1 });
+      const res = fakeRes();
+      await handleCreateToken(adminReq({ label: 'laptop' }, { id: 'a1' }), res);
+      expect(res.status).toHaveBeenCalledWith(201);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ token: 'ff_abc' }));
+    });
+  });
+});
