@@ -331,14 +331,31 @@ npx fluent-flow-runner --token <token> --server https://flow.example.com
 2. **Registers a session** (inserts into `agent_sessions` with TTL)
 3. **Long-polls** `POST /api/runner/poll` with session ID
 4. **Receives claim payload** when work is assigned
-5. **Executes agent command** — determined by agent_type from registry:
-   - `claude-code`: `claude -p "{prompt}" --allowedTools "Read,Edit,Bash,Write" --output-format json`
+5. **Executes agent command** — determined by agent_type from registry (see Agent Permission Bypass table below):
+   - `claude-code`: `claude -p "{prompt}" --allowedTools "Read,Edit,Bash,Write,Glob,Grep" --output-format json`
    - `codex`: `codex --quiet --approval-mode full-auto -p "{prompt}"`
    - `aider`: `aider --yes --message "{prompt}"`
    - `custom`: uses `command` from `transport_meta`
 6. **Reports result** back to Fluent Flow (`POST /api/runner/claim/:id`)
 7. **Reconnects** and waits for next work item
 8. **Graceful shutdown** on SIGTERM — deregisters session, marks any active claim as `failed`
+
+### Agent Permission Bypass
+
+Most AI coding agents default to interactive mode with human-in-the-loop confirmations. When running autonomously via the runner, these must be bypassed. **The runner handles this, not the agent** — the agent is invoked with the right flags and never needs to "remember" to be autonomous.
+
+| Agent Type | Default Behavior | Autonomous Flag | What It Enables |
+|---|---|---|---|
+| `claude-code` | Prompts for tool approval | `--allowedTools "Read,Edit,Bash,Write,Glob,Grep"` | Whitelist specific tools for auto-approval |
+| `codex` | Prompts for file writes + shell | `--approval-mode full-auto` | Blanket auto-approve all actions |
+| `aider` | Prompts before applying changes | `--yes` | Auto-confirm all file changes |
+| `devin` | Cloud-hosted, fully autonomous | N/A | No local permissions needed |
+| `openclaw` | Autonomous by design | N/A | No restrictions |
+
+**Important considerations:**
+- `claude-code` uses a whitelist (`--allowedTools`) rather than blanket approval — this is safer. The runner should include all tools needed for code fixes but exclude destructive operations. The default set (`Read,Edit,Bash,Write,Glob,Grep`) covers reading, editing, running tests, and searching.
+- `transport_meta.command` can override the default for any agent type — if a team wants to restrict or expand the tool whitelist, they configure it per-agent in the admin API.
+- The runner should log the exact command it executes for audit/debugging purposes.
 
 ### What it does NOT do
 
