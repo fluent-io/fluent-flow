@@ -17,7 +17,8 @@ export function enqueue(sessionId, payload) {
   if (!queue.has(sessionId)) queue.set(sessionId, []);
   const items = queue.get(sessionId);
   if (items.length >= MAX_QUEUE_SIZE) {
-    items.shift(); // drop oldest
+    const dropped = items.shift();
+    logger.warn({ msg: 'Long-poll queue full, dropping oldest payload', sessionId, droppedEvent: dropped?.event });
   }
   items.push(payload);
 }

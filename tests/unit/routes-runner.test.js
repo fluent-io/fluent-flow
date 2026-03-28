@@ -92,8 +92,8 @@ describe('runner routes', () => {
       mockHasPending.mockReturnValueOnce(true);
       mockDequeue.mockReturnValueOnce({ claim_id: 1, message: 'fix it' });
       mockTouchSession.mockResolvedValueOnce();
-      const req = { tokenInfo: { org_id: 'acme', agent_id: 'a1' }, body: { session_id: 10 } };
-      const res = { json: vi.fn() };
+      const req = { tokenInfo: { org_id: 'acme', agent_id: 'a1' }, body: { session_id: 10 }, on: vi.fn() };
+      const res = { json: vi.fn(), headersSent: false };
       await handlePoll(req, res, { pollTimeoutMs: 0 });
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ work: { claim_id: 1, message: 'fix it' } }));
     });
@@ -101,14 +101,14 @@ describe('runner routes', () => {
     it('returns empty if no work after timeout', async () => {
       mockHasPending.mockReturnValue(false);
       mockTouchSession.mockResolvedValue();
-      const req = { tokenInfo: { org_id: 'acme', agent_id: 'a1' }, body: { session_id: 10 } };
-      const res = { json: vi.fn() };
+      const req = { tokenInfo: { org_id: 'acme', agent_id: 'a1' }, body: { session_id: 10 }, on: vi.fn() };
+      const res = { json: vi.fn(), headersSent: false };
       await handlePoll(req, res, { pollTimeoutMs: 0 });
       expect(res.json).toHaveBeenCalledWith({ work: null });
     });
 
     it('returns 400 if session_id is missing', async () => {
-      const req = { tokenInfo: { org_id: 'acme', agent_id: 'a1' }, body: {} };
+      const req = { tokenInfo: { org_id: 'acme', agent_id: 'a1' }, body: {}, on: vi.fn() };
       const res = { status: vi.fn().mockReturnThis(), json: vi.fn() };
       await handlePoll(req, res, { pollTimeoutMs: 0 });
       expect(res.status).toHaveBeenCalledWith(400);
@@ -117,8 +117,8 @@ describe('runner routes', () => {
     it('passes org_id and agent_id to touchSession', async () => {
       mockHasPending.mockReturnValue(false);
       mockTouchSession.mockResolvedValue();
-      const req = { tokenInfo: { org_id: 'acme', agent_id: 'a1' }, body: { session_id: 10 } };
-      const res = { json: vi.fn() };
+      const req = { tokenInfo: { org_id: 'acme', agent_id: 'a1' }, body: { session_id: 10 }, on: vi.fn() };
+      const res = { json: vi.fn(), headersSent: false };
       await handlePoll(req, res, { pollTimeoutMs: 0 });
       expect(mockTouchSession).toHaveBeenCalledWith('acme', 'a1', 10);
     });

@@ -69,40 +69,47 @@ export async function handlePoll(req, res, opts = {}) {
   const sessionId = parsed.data.session_id;
   const pollTimeoutMs = opts.pollTimeoutMs ?? 30000;
 
-  let done = false;
-  const markDone = () => { done = true; };
-  req.on?.('close', markDone);
+  let sent = false;
+  const respond = (data) => {
+    if (sent || res.headersSent) return;
+    sent = true;
+    res.json(data);
+  };
+
+  let closed = false;
+  req.on('close', () => { closed = true; });
 
   try {
     await touchSession(org_id, agent_id, sessionId);
 
     if (hasPending(sessionId)) {
-      if (!done) res.json({ work: dequeue(sessionId) });
+      respond({ work: dequeue(sessionId) });
       return;
     }
 
     if (pollTimeoutMs === 0) {
-      if (!done) res.json({ work: null });
+      respond({ work: null });
       return;
     }
 
     const start = Date.now();
-    while (!done) {
+    while (!closed && !sent) {
       if (hasPending(sessionId)) {
         await touchSession(org_id, agent_id, sessionId);
-        if (!done) res.json({ work: dequeue(sessionId) });
+        respond({ work: dequeue(sessionId) });
         return;
       }
       if (Date.now() - start >= pollTimeoutMs) {
         await touchSession(org_id, agent_id, sessionId);
-        if (!done) res.json({ work: null });
+        respond({ work: null });
         return;
       }
       await sleep(1000);
+      if (closed) return;
     }
   } catch (err) {
     logger.error({ msg: 'Failed to poll', error: err.message });
-    if (!done && !res.headersSent) {
+    if (!sent && !res.headersSent) {
       res.status(500).json({ error: 'Internal server error' });
     }
   }
