@@ -7,6 +7,8 @@ import { getTransport } from './transports/index.js';
 import { audit } from '../db/client.js';
 import { getActivePause } from '../engine/pause-manager.js';
 import { getLinkedPR, getPR } from '../github/rest.js';
+import { getAgent } from '../agents/agent-manager.js';
+import { getActiveClaim } from '../agents/claim-manager.js';
 import logger from '../logger.js';
 
 /**
@@ -79,9 +81,17 @@ export async function dispatch({ agentId, event, payload }) {
     return;
   }
 
-  const agentConfig = getAgentConfig(agentId);
+  // Try YAML first (deprecated fallback), then DB
+  let agentConfig = getAgentConfig(agentId);
   if (!agentConfig) {
-    logger.warn({ msg: 'Agent not found in registry — skipping notification', agentId, event });
+    const dbAgent = await getAgent(payload.orgId ?? 'self-hosted', agentId);
+    if (dbAgent) {
+      agentConfig = { transport: dbAgent.transport, ...dbAgent.transport_meta };
+    }
+  }
+
+  if (!agentConfig) {
+    logger.warn({ msg: 'Agent not found in registry or DB — skipping notification', agentId, event });
     return;
   }
 
@@ -91,10 +101,22 @@ export async function dispatch({ agentId, event, payload }) {
     return;
   }
 
+  // For long_poll agents, resolve session_id from active claim
+  let sessionId = null;
+  if (agentConfig.transport === 'long_poll' && payload.repo && payload.prNumber) {
+    try {
+      const claim = await getActiveClaim(payload.orgId ?? 'self-hosted', payload.repo, payload.prNumber);
+      sessionId = claim?.session_id ?? null;
+    } catch (err) {
+      logger.warn({ msg: 'Failed to resolve session for long-poll', error: err.message });
+    }
+  }
+
   const fullPayload = {
     agentId,
     event,
     ...payload,
+    ...(sessionId && { session_id: sessionId }),
     ...(agentConfig.delivery?.channel && { channel: agentConfig.delivery.channel }),
     ...(agentConfig.delivery?.to && { to: agentConfig.delivery.to }),
   };

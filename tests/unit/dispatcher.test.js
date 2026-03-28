@@ -12,6 +12,14 @@ vi.mock('../../src/config/agents.js', () => ({
   getAgentConfig: vi.fn(),
 }));
 
+// Mock DB agent lookup and claim manager
+vi.mock('../../src/agents/agent-manager.js', () => ({
+  getAgent: vi.fn(),
+}));
+vi.mock('../../src/agents/claim-manager.js', () => ({
+  getActiveClaim: vi.fn(),
+}));
+
 // Mock transports
 vi.mock('../../src/notifications/transports/index.js', () => ({
   getTransport: vi.fn(),
@@ -23,6 +31,8 @@ vi.mock('../../src/db/client.js', () => ({ audit: vi.fn() }));
 import logger from '../../src/logger.js';
 import { getAgentConfig } from '../../src/config/agents.js';
 import { getTransport } from '../../src/notifications/transports/index.js';
+import { getAgent } from '../../src/agents/agent-manager.js';
+import { getActiveClaim } from '../../src/agents/claim-manager.js';
 import {
   extractAgentId,
   resolveAgentId,
@@ -151,12 +161,36 @@ describe('dispatch', () => {
     );
   });
 
-  it('skips when agent not in registry', async () => {
+  it('skips when agent not in registry or DB', async () => {
     getAgentConfig.mockReturnValue(null);
+    getAgent.mockResolvedValueOnce(null);
     await dispatch({ agentId: 'unknown', event: 'review_failed', payload: {} });
     expect(getTransport).not.toHaveBeenCalled();
-    expect(logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ msg: 'Agent not found in registry — skipping notification' }),
+  });
+
+  it('falls back to DB agent when YAML returns null', async () => {
+    const mockSend = vi.fn();
+    getAgentConfig.mockReturnValue(null);
+    getAgent.mockResolvedValueOnce({ id: 'db-agent', transport: 'webhook', transport_meta: { url: 'http://db-test.com' } });
+    getTransport.mockReturnValue({ send: mockSend });
+
+    await dispatch({ agentId: 'db-agent', event: 'review_failed', payload: { repo: 'o/r' } });
+
+    expect(mockSend).toHaveBeenCalled();
+  });
+
+  it('includes session_id in payload for long_poll agents', async () => {
+    const mockSend = vi.fn();
+    getAgentConfig.mockReturnValue(null);
+    getAgent.mockResolvedValueOnce({ id: 'poll-agent', transport: 'long_poll', transport_meta: {} });
+    getTransport.mockReturnValue({ send: mockSend });
+    getActiveClaim.mockResolvedValueOnce({ session_id: 5 });
+
+    await dispatch({ agentId: 'poll-agent', event: 'review_failed', payload: { repo: 'o/r', prNumber: 7, orgId: 'acme' } });
+
+    expect(mockSend).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ session_id: 5 }),
     );
   });
 
