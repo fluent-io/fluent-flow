@@ -3,10 +3,12 @@
  */
 import * as webhook from './webhook.js';
 import * as workflow from './workflow.js';
+import * as longPoll from './long-poll.js';
 
 const registry = new Map([
   ['webhook', webhook],
   ['workflow_dispatch', workflow],
+  ['long_poll', longPoll],
 ]);
 
 /**

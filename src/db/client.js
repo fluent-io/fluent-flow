@@ -33,7 +33,7 @@ export async function query(text, params) {
 
 export async function runMigrations() {
   const pool = getPool();
-  const migrations = ['001_initial.sql', '002_audit_log.sql', '003_mcp_pending.sql', '004_dispatch_dedup.sql', '005_agent_registry.sql'];
+  const migrations = ['001_initial.sql', '002_audit_log.sql', '003_mcp_pending.sql', '004_dispatch_dedup.sql', '005_agent_registry.sql', '006_agent_sessions.sql'];
   for (const file of migrations) {
     const migrationPath = join(__dirname, 'migrations', file);
     const sql = readFileSync(migrationPath, 'utf8');

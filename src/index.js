@@ -20,6 +20,7 @@ import reviewRouter from './routes/review.js';
 import configRouter from './routes/config.js';
 import healthRouter from './routes/health.js';
 import agentsRouter from './routes/agents.js';
+import runnerRouter from './routes/runner.js';
 
 const PORT = parseInt(process.env.PORT || '3847', 10);
 
@@ -58,6 +59,7 @@ app.use('/api', reviewRouter);
 app.use('/api', configRouter);
 app.use('/api', healthRouter);
 app.use('/api', agentsRouter);
+app.use('/api', runnerRouter);
 
 // MCP endpoint
 app.post('/mcp', mcpAuthMiddleware, mcpHandler);
