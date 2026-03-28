@@ -66,14 +66,15 @@ describe('claim-manager', () => {
   });
 
   describe('completeClaim', () => {
-    it('marks claim completed and frees session', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [{ id: 1, session_id: 5, status: 'completed', org_id: 'acme', repo: 'o/r' }] });
-      // Need agent_id to call setSessionStatus — get it from a join or separate query
-      // For now, claim-manager looks up the agent from the session
-      mockQuery.mockResolvedValueOnce({ rows: [{ agent_id: 'a1' }] });
+    it('marks claim completed and frees session atomically', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 1, session_id: 5, session_agent_id: 'a1', status: 'completed', org_id: 'acme' }] });
       mockSetSessionStatus.mockResolvedValueOnce();
       const result = await completeClaim('acme', 'owner/repo', 7, 1);
       expect(result.status).toBe('completed');
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining('SELECT agent_id FROM agent_sessions'),
+        expect.anything()
+      );
       expect(mockSetSessionStatus).toHaveBeenCalledWith('acme', 'a1', 5, 'online');
     });
 
@@ -83,7 +84,7 @@ describe('claim-manager', () => {
     });
 
     it('skips session update if no session_id', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [{ id: 1, session_id: null, status: 'completed' }] });
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 1, session_id: null, session_agent_id: null, status: 'completed' }] });
       const result = await completeClaim('acme', 'owner/repo', 7, 1);
       expect(result.status).toBe('completed');
       expect(mockSetSessionStatus).not.toHaveBeenCalled();
@@ -91,9 +92,8 @@ describe('claim-manager', () => {
   });
 
   describe('failClaim', () => {
-    it('marks claim failed and frees session', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [{ id: 1, session_id: 5, status: 'failed', org_id: 'acme' }] });
-      mockQuery.mockResolvedValueOnce({ rows: [{ agent_id: 'a1' }] });
+    it('marks claim failed and frees session atomically', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 1, session_id: 5, session_agent_id: 'a1', status: 'failed', org_id: 'acme' }] });
       mockSetSessionStatus.mockResolvedValueOnce();
       await failClaim('acme', 'owner/repo', 7, 1);
       expect(mockSetSessionStatus).toHaveBeenCalledWith('acme', 'a1', 5, 'online');
@@ -101,18 +101,29 @@ describe('claim-manager', () => {
   });
 
   describe('expireClaims', () => {
-    it('expires overdue claims and offlines sessions', async () => {
+    it('expires overdue claims and offlines sessions atomically', async () => {
       mockQuery.mockResolvedValueOnce({ rows: [
-        { id: 1, session_id: 5, org_id: 'acme' },
-        { id: 2, session_id: 6, org_id: 'acme' },
+        { id: 1, session_id: 5, session_agent_id: 'a1', org_id: 'acme' },
+        { id: 2, session_id: 6, session_agent_id: 'a2', org_id: 'acme' },
       ]});
-      mockQuery.mockResolvedValueOnce({ rows: [{ agent_id: 'a1' }] });
-      mockQuery.mockResolvedValueOnce({ rows: [{ agent_id: 'a2' }] });
       mockSetSessionStatus.mockResolvedValue();
       const expired = await expireClaims();
       expect(expired).toHaveLength(2);
       expect(mockSetSessionStatus).toHaveBeenCalledWith('acme', 'a1', 5, 'offline');
       expect(mockSetSessionStatus).toHaveBeenCalledWith('acme', 'a2', 6, 'offline');
+    });
+
+    it('continues processing if freeSession throws for one claim', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [
+        { id: 1, session_id: 5, session_agent_id: 'a1', org_id: 'acme' },
+        { id: 2, session_id: 6, session_agent_id: 'a2', org_id: 'acme' },
+      ]});
+      mockSetSessionStatus.mockRejectedValueOnce(new Error('DB error'));
+      mockSetSessionStatus.mockResolvedValueOnce();
+      const expired = await expireClaims();
+      expect(expired).toHaveLength(2);
+      // Second session still freed despite first failing
+      expect(mockSetSessionStatus).toHaveBeenCalledTimes(2);
     });
   });
 

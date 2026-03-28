@@ -5,30 +5,15 @@ import logger from '../logger.js';
 const DEFAULT_CLAIM_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
 /**
- * Look up the agent_id for a session (needed for scoped setSessionStatus).
- * @param {number} sessionId
- * @returns {Promise<string|null>}
- */
-async function getSessionAgentId(sessionId) {
-  const result = await query(
-    `SELECT agent_id FROM agent_sessions WHERE id = $1`,
-    [sessionId]
-  );
-  return result.rows[0]?.agent_id ?? null;
-}
-
-/**
- * Free a session back to online after a claim resolves.
+ * Free a session back to a target status after a claim resolves.
  * @param {string} orgId
  * @param {number} sessionId
+ * @param {string} agentId
  * @param {string} targetStatus
  */
-async function freeSession(orgId, sessionId, targetStatus = 'online') {
-  if (!sessionId) return;
-  const agentId = await getSessionAgentId(sessionId);
-  if (agentId) {
-    await setSessionStatus(orgId, agentId, sessionId, targetStatus);
-  }
+async function freeSession(orgId, sessionId, agentId, targetStatus = 'online') {
+  if (!sessionId || !agentId) return;
+  await setSessionStatus(orgId, agentId, sessionId, targetStatus);
 }
 
 /**
@@ -82,11 +67,11 @@ export async function completeClaim(orgId, repo, prNumber, attempt) {
     `UPDATE agent_claims SET status = 'completed', completed_at = NOW()
      WHERE org_id = $1 AND repo = $2 AND pr_number = $3 AND attempt = $4
        AND status IN ('claimed', 'pending')
-     RETURNING *`,
+     RETURNING *, (SELECT agent_id FROM agent_sessions WHERE id = agent_claims.session_id) AS session_agent_id`,
     [orgId, repo, prNumber, attempt]
   );
   const claim = result.rows[0];
-  if (claim) await freeSession(orgId, claim.session_id, 'online');
+  if (claim) await freeSession(orgId, claim.session_id, claim.session_agent_id, 'online');
   return claim ?? null;
 }
 
@@ -103,11 +88,11 @@ export async function failClaim(orgId, repo, prNumber, attempt) {
     `UPDATE agent_claims SET status = 'failed', completed_at = NOW()
      WHERE org_id = $1 AND repo = $2 AND pr_number = $3 AND attempt = $4
        AND status IN ('claimed', 'pending')
-     RETURNING *`,
+     RETURNING *, (SELECT agent_id FROM agent_sessions WHERE id = agent_claims.session_id) AS session_agent_id`,
     [orgId, repo, prNumber, attempt]
   );
   const claim = result.rows[0];
-  if (claim) await freeSession(orgId, claim.session_id, 'online');
+  if (claim) await freeSession(orgId, claim.session_id, claim.session_agent_id, 'online');
   return claim ?? null;
 }
 
@@ -119,11 +104,15 @@ export async function expireClaims() {
   const result = await query(
     `UPDATE agent_claims SET status = 'expired'
      WHERE status = 'claimed' AND expires_at < NOW()
-     RETURNING *`,
+     RETURNING *, (SELECT agent_id FROM agent_sessions WHERE id = agent_claims.session_id) AS session_agent_id`,
     []
   );
   for (const claim of result.rows) {
-    await freeSession(claim.org_id, claim.session_id, 'offline');
+    try {
+      await freeSession(claim.org_id, claim.session_id, claim.session_agent_id, 'offline');
+    } catch (err) {
+      logger.warn({ msg: 'Failed to free session on claim expiration', error: err.message, sessionId: claim.session_id });
+    }
   }
   if (result.rows.length > 0) {
     logger.info({ msg: 'Claims expired', count: result.rows.length });

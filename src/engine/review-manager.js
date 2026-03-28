@@ -112,7 +112,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
     try {
       await completeClaim(config.org_id ?? 'self-hosted', repoKey, prNumber, attempt);
     } catch (err) {
-      logger.warn({ msg: 'Failed to complete claim on pass', error: err.message });
+      logger.error({ msg: 'Failed to complete claim on pass', error: err.message, repo: repoKey, prNumber });
     }
 
     return { action: 'pass' };

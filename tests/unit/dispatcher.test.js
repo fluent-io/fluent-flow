@@ -194,6 +194,17 @@ describe('dispatch', () => {
     );
   });
 
+  it('does not include session_id for non-long_poll agents', async () => {
+    const mockSend = vi.fn();
+    getAgentConfig.mockReturnValue({ transport: 'webhook', url: 'http://test.com' });
+    getTransport.mockReturnValue({ send: mockSend });
+
+    await dispatch({ agentId: 'test', event: 'review_failed', payload: { repo: 'o/r', prNumber: 7 } });
+
+    const payload = mockSend.mock.calls[0][1];
+    expect(payload).not.toHaveProperty('session_id');
+  });
+
   it('skips when transport not found', async () => {
     getAgentConfig.mockReturnValue({ transport: 'carrier_pigeon' });
     getTransport.mockReturnValue(null);
