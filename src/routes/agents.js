@@ -65,15 +65,15 @@ function adminAuth(req, res, next) {
 // --- Handlers ---
 
 export async function handleCreateAgent(req, res) {
+  const parsed = CreateAgentSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
   try {
-    const parsed = CreateAgentSchema.parse(req.body);
     const agent = await createAgent({
-      id: parsed.id, orgId: req.adminOrg, agentType: parsed.agent_type,
-      transport: parsed.transport, transportMeta: parsed.transport_meta, repos: parsed.repos,
+      id: parsed.data.id, orgId: req.adminOrg, agentType: parsed.data.agent_type,
+      transport: parsed.data.transport, transportMeta: parsed.data.transport_meta, repos: parsed.data.repos,
     });
     res.status(201).json(agent);
   } catch (err) {
-    if (err instanceof z.ZodError) return res.status(400).json({ error: 'Validation failed', details: err.errors });
     logger.error({ msg: 'Failed to create agent', error: err.message });
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -101,16 +101,16 @@ export async function handleListAgents(req, res) {
 }
 
 export async function handleUpdateAgent(req, res) {
+  const parsed = UpdateAgentSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
   try {
-    const parsed = UpdateAgentSchema.parse(req.body);
     const agent = await updateAgent(req.adminOrg, req.params.id, {
-      agentType: parsed.agent_type, transport: parsed.transport,
-      transportMeta: parsed.transport_meta, repos: parsed.repos,
+      agentType: parsed.data.agent_type, transport: parsed.data.transport,
+      transportMeta: parsed.data.transport_meta, repos: parsed.data.repos,
     });
     if (!agent) return res.status(404).json({ error: 'Agent not found' });
     res.json(agent);
   } catch (err) {
-    if (err instanceof z.ZodError) return res.status(400).json({ error: 'Validation failed', details: err.errors });
     logger.error({ msg: 'Failed to update agent', error: err.message });
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -128,12 +128,12 @@ export async function handleDeleteAgent(req, res) {
 }
 
 export async function handleCreateToken(req, res) {
+  const parsed = CreateTokenSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
   try {
-    const parsed = CreateTokenSchema.parse(req.body);
-    const result = await createToken(req.adminOrg, req.params.id, parsed.label, parsed.expires_at);
+    const result = await createToken(req.adminOrg, req.params.id, parsed.data.label, parsed.data.expires_at);
     res.status(201).json({ token: result.plaintext, id: result.id });
   } catch (err) {
-    if (err instanceof z.ZodError) return res.status(400).json({ error: 'Validation failed', details: err.errors });
     logger.error({ msg: 'Failed to create token', error: err.message });
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -151,7 +151,9 @@ export async function handleListTokens(req, res) {
 
 export async function handleRevokeToken(req, res) {
   try {
-    const revoked = await revokeToken(req.adminOrg, parseInt(req.params.tokenId, 10));
+    const tokenId = parseInt(req.params.tokenId, 10);
+    if (Number.isNaN(tokenId)) return res.status(400).json({ error: 'Invalid token ID' });
+    const revoked = await revokeToken(req.adminOrg, tokenId);
     if (!revoked) return res.status(404).json({ error: 'Token not found' });
     res.json({ ok: true });
   } catch (err) {

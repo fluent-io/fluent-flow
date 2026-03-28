@@ -37,3 +37,6 @@ CREATE INDEX IF NOT EXISTS idx_agent_tokens_lookup
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_tokens_hash_active
   ON agent_tokens(token_hash) WHERE revoked_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS idx_agent_tokens_list
+  ON agent_tokens(org_id, agent_id, created_at);
