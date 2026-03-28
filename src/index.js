@@ -4,6 +4,7 @@ import { getPool, closePool, healthCheck, runMigrations } from './db/client.js';
 import { loadDefaults } from './config/loader.js';
 import { loadAgents } from './config/agents.js';
 import { validateEnv } from './config/env.js';
+import { bootstrapSelfHosted } from './agents/org-manager.js';
 import logger from './logger.js';
 
 // MCP
@@ -18,6 +19,7 @@ import stateRouter from './routes/state.js';
 import reviewRouter from './routes/review.js';
 import configRouter from './routes/config.js';
 import healthRouter from './routes/health.js';
+import agentsRouter from './routes/agents.js';
 
 const PORT = parseInt(process.env.PORT || '3847', 10);
 
@@ -55,6 +57,7 @@ app.use('/api', stateRouter);
 app.use('/api', reviewRouter);
 app.use('/api', configRouter);
 app.use('/api', healthRouter);
+app.use('/api', agentsRouter);
 
 // MCP endpoint
 app.post('/mcp', mcpAuthMiddleware, mcpHandler);
@@ -106,6 +109,9 @@ async function start() {
     await runMigrations();
     await healthCheck();
     logger.info({ msg: 'Database connected, migrations applied' });
+
+    // Bootstrap self-hosted org (idempotent)
+    await bootstrapSelfHosted();
 
     app.listen(PORT, '0.0.0.0', () => {
       logger.info({ msg: 'Fluent Flow started', port: PORT, env: process.env.NODE_ENV || 'development' });
