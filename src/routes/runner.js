@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { z } from 'zod';
 import { validateToken } from '../agents/token-manager.js';
 import { registerSession, touchSession } from '../agents/session-manager.js';
 import { completeClaim, failClaim } from '../agents/claim-manager.js';
@@ -8,6 +9,17 @@ import logger from '../logger.js';
 
 const router = Router();
 
+const PollSchema = z.object({
+  session_id: z.number().int().positive(),
+});
+
+const ClaimResultSchema = z.object({
+  status: z.enum(['completed', 'failed']),
+  repo: z.string().min(1),
+  pr_number: z.number().int().positive(),
+  attempt: z.number().int().positive(),
+});
+
 /**
  * Authenticate runner requests via agent token.
  */
@@ -16,12 +28,17 @@ export async function authenticateRunner(req, res, next) {
   if (!auth?.startsWith('Bearer ')) {
     return res.status(401).json({ error: 'Missing Authorization header' });
   }
-  const tokenInfo = await validateToken(auth.slice(7));
-  if (!tokenInfo) {
-    return res.status(403).json({ error: 'Invalid or expired token' });
+  try {
+    const tokenInfo = await validateToken(auth.slice(7));
+    if (!tokenInfo) {
+      return res.status(403).json({ error: 'Invalid or expired token' });
+    }
+    req.tokenInfo = tokenInfo;
+    next();
+  } catch (err) {
+    logger.error({ msg: 'Failed to validate runner token', error: err.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
-  req.tokenInfo = tokenInfo;
-  next();
 }
 
 /**
@@ -39,50 +56,68 @@ export async function handleRegister(req, res) {
   }
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
  * POST /api/runner/poll — long-poll for work.
  */
 export async function handlePoll(req, res, opts = {}) {
-  const sessionId = req.body?.session_id;
+  const parsed = PollSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
+
+  const { org_id, agent_id } = req.tokenInfo;
+  const sessionId = parsed.data.session_id;
   const pollTimeoutMs = opts.pollTimeoutMs ?? 30000;
 
+  let done = false;
+  const markDone = () => { done = true; };
+  req.on?.('close', markDone);
+
   try {
-    await touchSession(sessionId);
+    await touchSession(org_id, agent_id, sessionId);
 
     if (hasPending(sessionId)) {
-      return res.json({ work: dequeue(sessionId) });
+      if (!done) res.json({ work: dequeue(sessionId) });
+      return;
     }
 
     if (pollTimeoutMs === 0) {
-      return res.json({ work: null });
+      if (!done) res.json({ work: null });
+      return;
     }
 
     const start = Date.now();
-    const interval = setInterval(async () => {
+    while (!done) {
       if (hasPending(sessionId)) {
-        clearInterval(interval);
-        await touchSession(sessionId);
-        return res.json({ work: dequeue(sessionId) });
+        await touchSession(org_id, agent_id, sessionId);
+        if (!done) res.json({ work: dequeue(sessionId) });
+        return;
       }
       if (Date.now() - start >= pollTimeoutMs) {
-        clearInterval(interval);
-        await touchSession(sessionId);
-        return res.json({ work: null });
+        await touchSession(org_id, agent_id, sessionId);
+        if (!done) res.json({ work: null });
+        return;
       }
-    }, 1000);
+      await sleep(1000);
+    }
   } catch (err) {
     logger.error({ msg: 'Failed to poll', error: err.message });
-    res.status(500).json({ error: 'Internal server error' });
+    if (!done && !res.headersSent) {
+      res.status(500).json({ error: 'Internal server error' });
+    }
   }
 }
 
 /**
- * POST /api/runner/claim/:id — report claim result.
+ * POST /api/runner/claim — report claim result.
  */
 export async function handleClaimResult(req, res) {
+  const parsed = ClaimResultSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
+
   try {
     const { org_id } = req.tokenInfo;
-    const { status, repo, pr_number, attempt } = req.body;
+    const { status, repo, pr_number, attempt } = parsed.data;
 
     const claim = status === 'completed'
       ? await completeClaim(org_id, repo, pr_number, attempt)
@@ -103,6 +138,6 @@ export async function handleClaimResult(req, res) {
 router.use('/runner', authenticateRunner);
 router.post('/runner/register', handleRegister);
 router.post('/runner/poll', handlePoll);
-router.post('/runner/claim/:id', handleClaimResult);
+router.post('/runner/claim', handleClaimResult);
 
 export default router;

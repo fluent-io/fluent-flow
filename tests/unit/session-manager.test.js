@@ -28,12 +28,12 @@ describe('session-manager', () => {
   });
 
   describe('touchSession', () => {
-    it('updates last_seen_at and extends expires_at', async () => {
+    it('updates last_seen_at and extends expires_at scoped by org and agent', async () => {
       mockQuery.mockResolvedValueOnce({ rowCount: 1 });
-      await touchSession(1);
+      await touchSession('acme', 'a1', 1);
       expect(mockQuery).toHaveBeenCalledWith(
         expect.stringContaining('UPDATE agent_sessions'),
-        expect.arrayContaining([1])
+        expect.arrayContaining(['acme', 'a1', 1])
       );
     });
   });
@@ -78,13 +78,24 @@ describe('session-manager', () => {
   });
 
   describe('setSessionStatus', () => {
-    it('updates session status', async () => {
+    it('updates session status scoped by org and agent', async () => {
       mockQuery.mockResolvedValueOnce({ rowCount: 1 });
-      await setSessionStatus(1, 'busy');
+      await setSessionStatus('acme', 'a1', 1, 'busy');
       expect(mockQuery).toHaveBeenCalledWith(
         expect.stringContaining('UPDATE agent_sessions SET status'),
-        [1, 'busy']
+        ['acme', 'a1', 1, 'busy']
       );
+    });
+  });
+
+  describe('resolveSession', () => {
+    it('handles missing agent_claims table gracefully', async () => {
+      const err = new Error('relation "agent_claims" does not exist');
+      err.code = '42P01';
+      mockQuery.mockRejectedValueOnce(err); // agent_claims query fails
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 3 }] }); // first available
+      const result = await resolveSession('acme', 'a1', 'owner/repo', 7);
+      expect(result).toBe(3);
     });
   });
 });

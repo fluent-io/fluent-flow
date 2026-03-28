@@ -3,6 +3,8 @@
  */
 import logger from '../../logger.js';
 
+const MAX_QUEUE_SIZE = 100;
+
 /** @type {Map<number, Array<object>>} session_id → queued payloads */
 const queue = new Map();
 
@@ -13,7 +15,11 @@ const queue = new Map();
  */
 export function enqueue(sessionId, payload) {
   if (!queue.has(sessionId)) queue.set(sessionId, []);
-  queue.get(sessionId).push(payload);
+  const items = queue.get(sessionId);
+  if (items.length >= MAX_QUEUE_SIZE) {
+    items.shift(); // drop oldest
+  }
+  items.push(payload);
 }
 
 /**

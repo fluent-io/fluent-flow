@@ -25,15 +25,18 @@ export async function registerSession(orgId, agentId, sessionMeta = {}, ttlMs = 
 
 /**
  * Touch a session — refresh last_seen_at and extend expiry.
+ * Scoped by org_id and agent_id for tenant isolation.
+ * @param {string} orgId
+ * @param {string} agentId
  * @param {number} sessionId
  * @param {number} [ttlMs=DEFAULT_SESSION_TTL_MS]
  */
-export async function touchSession(sessionId, ttlMs = DEFAULT_SESSION_TTL_MS) {
+export async function touchSession(orgId, agentId, sessionId, ttlMs = DEFAULT_SESSION_TTL_MS) {
   const expiresAt = new Date(Date.now() + ttlMs).toISOString();
   await query(
-    `UPDATE agent_sessions SET last_seen_at = NOW(), expires_at = $2
-     WHERE id = $1 AND status != 'offline'`,
-    [sessionId, expiresAt]
+    `UPDATE agent_sessions SET last_seen_at = NOW(), expires_at = $4
+     WHERE id = $3 AND org_id = $1 AND agent_id = $2 AND status != 'offline'`,
+    [orgId, agentId, sessionId, expiresAt]
   );
 }
 
@@ -80,21 +83,29 @@ export async function getActiveSessions(orgId, agentId) {
  * @returns {Promise<number|null>} session ID or null
  */
 export async function resolveSession(orgId, agentId, repo, prNumber) {
-  // 1. Previous session affinity
-  const prev = await query(
-    `SELECT session_id FROM agent_claims
-     WHERE org_id = $1 AND repo = $2 AND pr_number = $3
-       AND status IN ('completed', 'expired')
-     ORDER BY attempt DESC LIMIT 1`,
-    [orgId, repo, prNumber]
-  );
-  if (prev.rows[0]?.session_id) {
-    const check = await query(
-      `SELECT id FROM agent_sessions
-       WHERE id = $1 AND status = 'online' AND expires_at > NOW()`,
-      [prev.rows[0].session_id]
+  // 1. Previous session affinity (gracefully handle missing agent_claims table)
+  try {
+    const prev = await query(
+      `SELECT session_id FROM agent_claims
+       WHERE org_id = $1 AND repo = $2 AND pr_number = $3
+         AND status IN ('completed', 'expired')
+       ORDER BY attempt DESC LIMIT 1`,
+      [orgId, repo, prNumber]
     );
-    if (check.rows[0]) return check.rows[0].id;
+    if (prev.rows[0]?.session_id) {
+      const check = await query(
+        `SELECT id FROM agent_sessions
+         WHERE id = $1 AND status = 'online' AND expires_at > NOW()`,
+        [prev.rows[0].session_id]
+      );
+      if (check.rows[0]) return check.rows[0].id;
+    }
+  } catch (err) {
+    if (err?.code === '42P01') {
+      // agent_claims table doesn't exist yet — skip affinity
+    } else {
+      throw err;
+    }
   }
 
   // 2. First available
@@ -108,13 +119,15 @@ export async function resolveSession(orgId, agentId, repo, prNumber) {
 }
 
 /**
- * Update session status.
+ * Update session status. Scoped by org_id and agent_id for tenant isolation.
+ * @param {string} orgId
+ * @param {string} agentId
  * @param {number} sessionId
  * @param {string} status
  */
-export async function setSessionStatus(sessionId, status) {
+export async function setSessionStatus(orgId, agentId, sessionId, status) {
   await query(
-    `UPDATE agent_sessions SET status = $2 WHERE id = $1`,
-    [sessionId, status]
+    `UPDATE agent_sessions SET status = $4 WHERE id = $3 AND org_id = $1 AND agent_id = $2`,
+    [orgId, agentId, sessionId, status]
   );
 }
