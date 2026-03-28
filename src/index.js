@@ -4,6 +4,7 @@ import { getPool, closePool, healthCheck, runMigrations } from './db/client.js';
 import { loadDefaults } from './config/loader.js';
 import { loadAgents } from './config/agents.js';
 import { validateEnv } from './config/env.js';
+import { bootstrapSelfHosted } from './agents/org-manager.js';
 import logger from './logger.js';
 
 // MCP
@@ -106,6 +107,9 @@ async function start() {
     await runMigrations();
     await healthCheck();
     logger.info({ msg: 'Database connected, migrations applied' });
+
+    // Bootstrap self-hosted org (idempotent)
+    await bootstrapSelfHosted();
 
     app.listen(PORT, '0.0.0.0', () => {
       logger.info({ msg: 'Fluent Flow started', port: PORT, env: process.env.NODE_ENV || 'development' });
