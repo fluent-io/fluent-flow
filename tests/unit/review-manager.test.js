@@ -20,7 +20,11 @@ vi.mock('../../src/github/graphql.js', () => ({
   getPRNodeId: vi.fn(),
 }));
 vi.mock('../../src/engine/pause-manager.js', () => ({ recordPause: vi.fn(), getActivePause: vi.fn() }));
-vi.mock('../../src/notifications/dispatcher.js', () => ({ notifyReviewFailure: vi.fn() }));
+vi.mock('../../src/notifications/dispatcher.js', () => ({
+  notifyReviewFailure: vi.fn(),
+  formatRichMessage: vi.fn().mockReturnValue('mock rich message'),
+}));
+vi.mock('../../src/agents/claim-manager.js', () => ({ createClaim: vi.fn(), completeClaim: vi.fn() }));
 
 import { query } from '../../src/db/client.js';
 import { resolveConfig } from '../../src/config/loader.js';
@@ -28,6 +32,7 @@ import { dispatchWorkflow, addLabel, getReviews, dismissReview } from '../../src
 import { enablePullRequestAutoMerge, getPRNodeId } from '../../src/github/graphql.js';
 import { recordPause, getActivePause } from '../../src/engine/pause-manager.js';
 import { notifyReviewFailure } from '../../src/notifications/dispatcher.js';
+import { createClaim, completeClaim } from '../../src/agents/claim-manager.js';
 import { dispatchReview, handleReviewResult, getRetryRecord, claimDispatch, resetRetries } from '../../src/engine/review-manager.js';
 
 beforeEach(() => {
@@ -356,5 +361,61 @@ describe('resetRetries', () => {
       expect.stringContaining('last_dispatch_sha = NULL'),
       [TEST_REPO_KEY, 7],
     );
+  });
+});
+
+describe('claim integration', () => {
+  const baseOpts = {
+    owner: TEST_OWNER,
+    repo: TEST_REPO,
+    prNumber: 7,
+    issueNumber: 42,
+    reviewSha: 'abc123',
+    agentId: 'test-agent',
+  };
+
+  it('creates a claim when review fails', async () => {
+    query.mockResolvedValueOnce({ rows: [makeRetryRecord({ retry_count: 1 })] });
+    query.mockResolvedValue({ rows: [] });
+    createClaim.mockResolvedValueOnce({ id: 1, status: 'claimed' });
+
+    await handleReviewResult({
+      ...baseOpts,
+      result: { status: 'FAIL', blocking: [{ file: 'x.js', line: 1, issue: 'bug' }], advisory: [], attempt: 1 },
+    });
+
+    expect(createClaim).toHaveBeenCalledWith(expect.objectContaining({
+      repo: TEST_REPO_KEY,
+      prNumber: 7,
+      attempt: 1,
+      agentId: 'test-agent',
+    }));
+  });
+
+  it('completes a claim when review passes', async () => {
+    getPRNodeId.mockResolvedValue('PR_NODE_1');
+    enablePullRequestAutoMerge.mockResolvedValue(undefined);
+    query.mockResolvedValue({ rows: [] });
+    completeClaim.mockResolvedValueOnce({ id: 1, status: 'completed' });
+
+    await handleReviewResult({
+      ...baseOpts,
+      result: { status: 'PASS', blocking: [], advisory: [], attempt: 1 },
+    });
+
+    expect(completeClaim).toHaveBeenCalledWith('self-hosted', TEST_REPO_KEY, 7, 1);
+  });
+
+  it('does not throw if createClaim fails', async () => {
+    query.mockResolvedValueOnce({ rows: [makeRetryRecord({ retry_count: 1 })] });
+    query.mockResolvedValue({ rows: [] });
+    createClaim.mockRejectedValueOnce(new Error('DB error'));
+
+    const result = await handleReviewResult({
+      ...baseOpts,
+      result: { status: 'FAIL', blocking: [{ file: 'x.js', line: 1, issue: 'bug' }], advisory: [], attempt: 1 },
+    });
+
+    expect(result.action).toBe('fail');
   });
 });
