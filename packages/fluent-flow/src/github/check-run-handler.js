@@ -134,6 +134,11 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config) {
     return;
   }
 
+  if (pr.state !== 'open') {
+    logger.info({ msg: 'PR is not open, skipping review', repo: repoKey, prNumber: pr.number, state: pr.state });
+    return;
+  }
+
   const issueNumber = extractLinkedIssue(pr.body);
 
   if (issueNumber) {

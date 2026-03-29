@@ -96,7 +96,7 @@ describe('handleCheckRun — CI success review dispatch', () => {
     },
   };
 
-  const prObj = { number: 5, title: 'feat: stuff', body: 'PR body', base: { ref: 'main' } };
+  const prObj = { number: 5, title: 'feat: stuff', body: 'PR body', base: { ref: 'main' }, state: 'open' };
 
   beforeEach(() => {
     getPRsForCommit.mockResolvedValue([prObj]);
@@ -153,7 +153,7 @@ describe('handleCheckRun — CI success review dispatch', () => {
   });
 
   it('skips dispatch and claim when linked issue is paused', async () => {
-    const pausedPr = { number: 5, title: 'feat: stuff', body: 'Fixes #42', base: { ref: 'main' } };
+    const pausedPr = { number: 5, title: 'feat: stuff', body: 'Fixes #42', base: { ref: 'main' }, state: 'open' };
     getPRsForCommit.mockResolvedValue([pausedPr]);
     getActivePause.mockResolvedValue({ id: 1, reason: 'review-escalation' });
     const config = buildConfig({ reviewer: { enabled: true, trigger_check: 'lint-and-test' } });
@@ -194,12 +194,19 @@ describe('handleCheckRun — CI success review dispatch', () => {
   });
 
   it('uses first open PR when multiple PRs linked to same commit', async () => {
-    const pr1 = { number: 5, title: 'PR 1', body: 'body', base: { ref: 'main' } };
+    const pr1 = { number: 5, title: 'PR 1', body: 'body', base: { ref: 'main' }, state: 'open' };
     const pr2 = { number: 8, title: 'PR 2', body: 'body', base: { ref: 'develop' } };
     getPRsForCommit.mockResolvedValue([pr1, pr2]);
     const config = buildConfig({ reviewer: { enabled: true, trigger_check: 'lint-and-test' } });
     await handleCheckRun(TEST_OWNER, TEST_REPO, successPayload, config);
     expect(dispatchReview).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 5, ref: 'main' }));
+  });
+
+  it('skips review when PR is merged/closed', async () => {
+    getPRsForCommit.mockResolvedValue([{ ...prObj, state: 'closed' }]);
+    const config = buildConfig({ reviewer: { enabled: true, trigger_check: 'lint-and-test' } });
+    await handleCheckRun(TEST_OWNER, TEST_REPO, successPayload, config);
+    expect(dispatchReview).not.toHaveBeenCalled();
   });
 });
 
@@ -208,7 +215,7 @@ describe('handleCheckRun — fallback all-checks-pass', () => {
     action: 'completed',
     check_run: { conclusion: 'success', name: 'lint-and-test', head_sha: 'abc123', app: { slug: 'github-actions' } },
   };
-  const prObj = { number: 5, title: 'feat: stuff', body: 'PR body', base: { ref: 'main' } };
+  const prObj = { number: 5, title: 'feat: stuff', body: 'PR body', base: { ref: 'main' }, state: 'open' };
 
   beforeEach(() => {
     getPRsForCommit.mockResolvedValue([prObj]);
