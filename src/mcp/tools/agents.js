@@ -35,8 +35,12 @@ export function registerAgentTools(server) {
     { org_id: z.string().default('self-hosted').describe('Organization ID') },
     async ({ org_id }) => {
       audit('mcp_tool_call', { data: { tool: 'list_agents' } });
-      const agents = await listAgents(org_id);
-      return { content: [{ type: 'text', text: JSON.stringify({ agents }) }] };
+      try {
+        const agents = await listAgents(org_id);
+        return { content: [{ type: 'text', text: JSON.stringify({ agents }) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err.message }) }], isError: true };
+      }
     }
   );
 
@@ -46,8 +50,12 @@ export function registerAgentTools(server) {
     { id: z.string(), org_id: z.string().default('self-hosted') },
     async ({ id, org_id }) => {
       audit('mcp_tool_call', { data: { tool: 'delete_agent', agentId: id } });
-      const deleted = await deleteAgent(org_id, id);
-      return { content: [{ type: 'text', text: JSON.stringify({ ok: deleted }) }] };
+      try {
+        const deleted = await deleteAgent(org_id, id);
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: deleted === true }) }] };
+      } catch (err) {
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err.message }) }], isError: true };
+      }
     }
   );
 }
