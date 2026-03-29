@@ -57,7 +57,11 @@ export function loadAgents() {
 export function getAgentConfig(agentId) {
   if (!agentId) return null;
   const registry = loadAgents();
-  return registry.agents[agentId] ?? null;
+  const config = registry.agents[agentId] ?? null;
+  if (config) {
+    logger.warn({ msg: 'Agent loaded from agents.yml — migrate to DB via admin API', agentId });
+  }
+  return config;
 }
 
 /**

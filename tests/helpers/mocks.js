@@ -108,3 +108,59 @@ export function makeRetryRecord(overrides = {}) {
     ...overrides,
   };
 }
+
+/**
+ * Create a mock agent record.
+ */
+export function makeAgentRecord(overrides = {}) {
+  return {
+    id: 'test-agent',
+    org_id: 'self-hosted',
+    agent_type: 'claude-code',
+    transport: 'long_poll',
+    transport_meta: {},
+    repos: [],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+/**
+ * Create a mock agent session record.
+ */
+export function makeSessionRecord(overrides = {}) {
+  return {
+    id: 1,
+    org_id: 'self-hosted',
+    agent_id: 'test-agent',
+    session_meta: { hostname: 'dev-laptop' },
+    status: 'online',
+    registered_at: new Date().toISOString(),
+    last_seen_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 300000).toISOString(),
+    ...overrides,
+  };
+}
+
+/**
+ * Create a mock agent claim record.
+ */
+export function makeClaimRecord(overrides = {}) {
+  return {
+    id: 1,
+    org_id: 'self-hosted',
+    repo: TEST_REPO_KEY,
+    pr_number: 7,
+    attempt: 1,
+    session_id: 1,
+    claim_type: 'review_fix',
+    status: 'claimed',
+    payload: {},
+    claimed_at: new Date().toISOString(),
+    completed_at: null,
+    expires_at: new Date(Date.now() + 900000).toISOString(),
+    created_at: new Date().toISOString(),
+    ...overrides,
+  };
+}
