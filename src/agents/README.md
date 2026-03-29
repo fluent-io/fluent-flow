@@ -29,7 +29,7 @@ Admin API (/api/agents)          Runner API (/api/runner)
 - `deleteAgent(orgId, agentId)` — cascades to tokens and sessions
 
 ### token-manager.js
-Tokens authenticate runners. SHA-256 hashed, `ff_` prefixed, 67 chars total.
+Tokens authenticate runners. Format: `ff_` prefix (3 chars) + `randomBytes(32).toString('hex')` (64 chars) = 67 chars total. Stored as SHA-256 hex digest.
 - `createToken(orgId, agentId, label)` — returns plaintext (shown once)
 - `validateToken(plaintext)` — returns `{ org_id, agent_id }` or null
 - `revokeToken(orgId, tokenId)` — soft revoke
@@ -59,7 +59,7 @@ Review fails → createClaim (pending or claimed)
           ┌─────────┴─────────┐
           ▼                   ▼
      No session          Session found
-     (pending)           (claimed, busy)
+     (pending)           (claimed, session → busy, 15min TTL)
           │                   │
           │        ┌──────────┴──────────┐
           │        ▼                     ▼

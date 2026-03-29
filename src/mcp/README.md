@@ -44,9 +44,9 @@ Each tool wraps an existing engine function — no duplicated logic. All tool ca
 
 | Tool | Wraps | Purpose |
 |------|-------|---------|
-| `create_agent` | `createAgent()` | Register a new agent in the DB registry |
-| `list_agents` | `listAgents()` | List all agents for an org |
-| `delete_agent` | `deleteAgent()` | Remove an agent from the registry |
+| `create_agent` | `createAgent()` | Register a new agent. Params: `id`, `agent_type`, `transport`, optional `org_id`, `transport_meta`, `repos` |
+| `list_agents` | `listAgents()` | List all agents. Params: optional `org_id` (default: `self-hosted`) |
+| `delete_agent` | `deleteAgent()` | Remove an agent. Params: `id`, optional `org_id` |
 
 All tools require `agent_id`. Command tools use `triggerType: 'mcp'` for audit trail differentiation.
 

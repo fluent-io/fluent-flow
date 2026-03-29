@@ -223,7 +223,7 @@ Defines default states, transitions, reviewer settings, pause rules, and notific
 Agents are managed via the admin API (`/api/agents`) or MCP tools (`create_agent`, `list_agents`). Stored in the `agents` DB table with transport config.
 
 ```bash
-# Create an agent
+# Create an agent (adjust URL for your deployment)
 curl -X POST http://localhost:3847/api/agents \
   -H "Content-Type: application/json" \
   -d '{"id":"my-agent","agent_type":"claude-code","transport":"long_poll"}'
