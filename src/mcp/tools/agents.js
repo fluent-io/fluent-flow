@@ -24,7 +24,8 @@ export function registerAgentTools(server) {
         const agent = await createAgent({ id, orgId: org_id, agentType: agent_type, transport, transportMeta: transport_meta, repos });
         return { content: [{ type: 'text', text: JSON.stringify({ ok: true, agent }) }] };
       } catch (err) {
-        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err.message }) }], isError: true };
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: errorMsg }) }], isError: true };
       }
     }
   );
@@ -39,7 +40,8 @@ export function registerAgentTools(server) {
         const agents = await listAgents(org_id);
         return { content: [{ type: 'text', text: JSON.stringify({ agents }) }] };
       } catch (err) {
-        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err.message }) }], isError: true };
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: errorMsg }) }], isError: true };
       }
     }
   );
@@ -54,7 +56,8 @@ export function registerAgentTools(server) {
         const deleted = await deleteAgent(org_id, id);
         return { content: [{ type: 'text', text: JSON.stringify({ ok: deleted === true }) }] };
       } catch (err) {
-        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err.message }) }], isError: true };
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: errorMsg }) }], isError: true };
       }
     }
   );
