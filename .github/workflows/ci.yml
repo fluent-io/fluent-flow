@@ -21,9 +21,12 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
+          cache-dependency-path: packages/fluent-flow/package-lock.json
 
       - name: Install dependencies
         run: npm ci
+        working-directory: packages/fluent-flow
 
       - name: Run tests
         run: npm test
+        working-directory: packages/fluent-flow
