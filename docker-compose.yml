@@ -1,6 +1,6 @@
 services:
   fluent-flow:
-    build: .
+    build: ./packages/fluent-flow
     container_name: fluent-flow
     ports:
       - "3847:3847"
@@ -12,7 +12,7 @@ services:
       CONFIG_CACHE_TTL_MS: 300000
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
     volumes:
-      - ./config:/app/config:ro
+      - ./packages/fluent-flow/config:/app/config:ro
     networks:
       - fluent-flow-net
     restart: unless-stopped
