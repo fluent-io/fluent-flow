@@ -52,7 +52,7 @@ jobs:
           for f in review.js post-review.mjs run-review.mjs system-prompt.txt; do
             curl -sfL -H "Authorization: Bearer $GH_TOKEN" \
               -H "Accept: application/vnd.github.raw" \
-              "https://api.github.com/repos/${{ inputs.fluent_flow_repo || 'fluent-io/fluent-flow' }}/contents/scripts/$f" \
+              "https://api.github.com/repos/${{ inputs.fluent_flow_repo || 'fluent-io/fluent-flow' }}/contents/packages/fluent-flow/scripts/$f" \
               -o "fluent-flow-scripts/scripts/$f"
           done
 
