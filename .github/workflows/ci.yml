@@ -26,5 +26,4 @@ jobs:
         run: npm ci
 
       - name: Run tests
-        run: npm test
-        working-directory: packages/fluent-flow
+        run: npx turbo run test
