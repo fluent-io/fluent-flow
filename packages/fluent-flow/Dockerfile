@@ -1,12 +1,18 @@
 FROM node:20-alpine
-
 WORKDIR /app
 
+# Copy workspace root files
 COPY package*.json ./
-RUN npm ci --omit=dev
+COPY turbo.json ./
 
-COPY . .
+# Copy the fluent-flow package
+COPY packages/fluent-flow ./packages/fluent-flow
+
+# Install all workspace dependencies
+RUN npm ci --workspace=packages/fluent-flow --omit=dev
+
+WORKDIR /app/packages/fluent-flow
 
 EXPOSE 3847
 
-CMD ["node", "src/index.js"]
+CMD ["node", "-r", "./src/tracing.cjs", "src/index.js"]
