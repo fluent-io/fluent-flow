@@ -109,6 +109,9 @@ export async function resolveSession(orgId, agentId, repo, prNumber) {
   }
 
   // 2. First available
+  // Note: concurrent claims for different PRs could select the same session.
+  // This is benign — the session receives both payloads and processes them sequentially.
+  // True atomic allocation would require a transaction wrapping resolve + claim insert.
   const avail = await query(
     `SELECT id FROM agent_sessions
      WHERE org_id = $1 AND agent_id = $2 AND status = 'online' AND expires_at > NOW()

@@ -3,7 +3,8 @@ import { resolveConfig } from '../config/loader.js';
 import { dispatchWorkflow, addLabel, getReviews, dismissReview } from '../github/rest.js';
 import { enablePullRequestAutoMerge, getPRNodeId } from '../github/graphql.js';
 import { recordPause, getActivePause } from './pause-manager.js';
-import { notifyReviewFailure } from '../notifications/dispatcher.js';
+import { notifyReviewFailure, formatRichMessage } from '../notifications/dispatcher.js';
+import { createClaim, completeClaim, getActiveClaim } from '../agents/claim-manager.js';
 import logger from '../logger.js';
 
 /**
@@ -107,6 +108,17 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
       [reviewSha ?? null, repoKey, prNumber]
     );
 
+    // Complete the active claim for this PR (claim was created on FAIL, attempt may differ)
+    try {
+      const orgId = config.org_id ?? 'self-hosted';
+      const activeClaim = await getActiveClaim(orgId, repoKey, prNumber);
+      if (activeClaim) {
+        await completeClaim(orgId, repoKey, prNumber, activeClaim.attempt);
+      }
+    } catch (err) {
+      logger.error({ msg: 'Failed to complete claim on pass', error: err.message, repo: repoKey, prNumber });
+    }
+
     return { action: 'pass' };
   }
 
@@ -135,6 +147,24 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   // Notify the agent that created the PR
   const resolvedAgent = agentId ?? config.default_agent ?? config.agent_id;
   if (resolvedAgent) {
+    // Create claim BEFORE notifying — long_poll transport needs session_id from the claim
+    try {
+      await createClaim({
+        orgId: config.org_id ?? 'self-hosted',
+        repo: repoKey,
+        prNumber,
+        attempt,
+        agentId: resolvedAgent,
+        payload: {
+          message: formatRichMessage({ repo: repoKey, prNumber, attempt, blocking, advisory }),
+          issues: allIssues,
+          onFailure: config.reviewer?.on_failure,
+        },
+      });
+    } catch (err) {
+      logger.warn({ msg: 'Failed to create claim on review failure', error: err.message });
+    }
+
     await notifyReviewFailure({
       agentId: resolvedAgent,
       repo: repoKey,
