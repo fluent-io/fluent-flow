@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { createAgent, listAgents, deleteAgent } from '../../agents/agent-manager.js';
 import { audit } from '../../db/client.js';
 
+const getErrorMsg = (err) => err instanceof Error ? err.message : String(err);
+
 /**
  * Register agent management tools on the MCP server.
  * @param {import('@modelcontextprotocol/sdk/server/mcp.js').McpServer} server
@@ -24,8 +26,7 @@ export function registerAgentTools(server) {
         const agent = await createAgent({ id, orgId: org_id, agentType: agent_type, transport, transportMeta: transport_meta, repos });
         return { content: [{ type: 'text', text: JSON.stringify({ ok: true, agent }) }] };
       } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: errorMsg }) }], isError: true };
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: getErrorMsg(err) }) }], isError: true };
       }
     }
   );
@@ -38,10 +39,9 @@ export function registerAgentTools(server) {
       audit('mcp_tool_call', { data: { tool: 'list_agents' } });
       try {
         const agents = await listAgents(org_id);
-        return { content: [{ type: 'text', text: JSON.stringify({ agents }) }] };
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: true, agents }) }] };
       } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: errorMsg }) }], isError: true };
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: getErrorMsg(err) }) }], isError: true };
       }
     }
   );
@@ -56,8 +56,7 @@ export function registerAgentTools(server) {
         const deleted = await deleteAgent(org_id, id);
         return { content: [{ type: 'text', text: JSON.stringify({ ok: deleted === true }) }] };
       } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: errorMsg }) }], isError: true };
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, error: getErrorMsg(err) }) }], isError: true };
       }
     }
   );
