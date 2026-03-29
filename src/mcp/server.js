@@ -5,6 +5,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerQueryTools } from './tools/queries.js';
 import { registerPendingTool } from './tools/pending.js';
 import { registerCommandTools } from './tools/commands.js';
+import { registerAgentTools } from './tools/agents.js';
 
 /**
  * Create a new McpServer instance with all Fluent Flow tools registered.
@@ -19,6 +20,7 @@ export function createMcpServer() {
   registerQueryTools(server);
   registerPendingTool(server);
   registerCommandTools(server);
+  registerAgentTools(server);
 
   return server;
 }
