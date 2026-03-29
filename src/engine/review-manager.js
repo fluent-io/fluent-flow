@@ -4,7 +4,7 @@ import { dispatchWorkflow, addLabel, getReviews, dismissReview } from '../github
 import { enablePullRequestAutoMerge, getPRNodeId } from '../github/graphql.js';
 import { recordPause, getActivePause } from './pause-manager.js';
 import { notifyReviewFailure, formatRichMessage } from '../notifications/dispatcher.js';
-import { createClaim, completeClaim } from '../agents/claim-manager.js';
+import { createClaim, completeClaim, getActiveClaim } from '../agents/claim-manager.js';
 import logger from '../logger.js';
 
 /**
@@ -108,9 +108,13 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
       [reviewSha ?? null, repoKey, prNumber]
     );
 
-    // Complete any active claim for this PR
+    // Complete the active claim for this PR (claim was created on FAIL, attempt may differ)
     try {
-      await completeClaim(config.org_id ?? 'self-hosted', repoKey, prNumber, attempt);
+      const orgId = config.org_id ?? 'self-hosted';
+      const activeClaim = await getActiveClaim(orgId, repoKey, prNumber);
+      if (activeClaim) {
+        await completeClaim(orgId, repoKey, prNumber, activeClaim.attempt);
+      }
     } catch (err) {
       logger.error({ msg: 'Failed to complete claim on pass', error: err.message, repo: repoKey, prNumber });
     }
@@ -143,17 +147,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   // Notify the agent that created the PR
   const resolvedAgent = agentId ?? config.default_agent ?? config.agent_id;
   if (resolvedAgent) {
-    await notifyReviewFailure({
-      agentId: resolvedAgent,
-      repo: repoKey,
-      prNumber,
-      attempt,
-      issues: allIssues,
-      onFailure: config.reviewer?.on_failure,
-      delivery: config.delivery ?? {},
-    });
-
-    // Create a claim for this review attempt
+    // Create claim BEFORE notifying — long_poll transport needs session_id from the claim
     try {
       await createClaim({
         orgId: config.org_id ?? 'self-hosted',
@@ -170,6 +164,16 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
     } catch (err) {
       logger.warn({ msg: 'Failed to create claim on review failure', error: err.message });
     }
+
+    await notifyReviewFailure({
+      agentId: resolvedAgent,
+      repo: repoKey,
+      prNumber,
+      attempt,
+      issues: allIssues,
+      onFailure: config.reviewer?.on_failure,
+      delivery: config.delivery ?? {},
+    });
   }
 
   // Check if we've hit max retries
