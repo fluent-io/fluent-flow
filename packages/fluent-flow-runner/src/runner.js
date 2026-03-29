@@ -26,18 +26,17 @@ export function createRunner({ client, log, resolveCommand, cwd, meta }) {
 
   /**
    * Execute an agent command and return the exit code.
-   * @param {string} command — full shell command
+   * Accepts either { bin, args } (no shell) or { shell } (custom template).
+   * @param {{ bin: string, args: string[] } | { shell: string }} cmd
    * @returns {Promise<number>} exit code
    */
-  function execute(command) {
+  function execute(cmd) {
     return new Promise((resolve, reject) => {
-      log.info('Executing agent command', { command });
+      log.info('Executing agent command', { command: cmd.shell ?? cmd.bin });
 
-      const proc = spawn(command, [], {
-        cwd: cwd ?? process.cwd(),
-        shell: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      const proc = cmd.shell
+        ? spawn(cmd.shell, [], { cwd: cwd ?? process.cwd(), shell: true, stdio: ['ignore', 'pipe', 'pipe'] })
+        : spawn(cmd.bin, cmd.args, { cwd: cwd ?? process.cwd(), shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
 
       activeProcess = proc;
 
@@ -71,9 +70,9 @@ export function createRunner({ client, log, resolveCommand, cwd, meta }) {
 
     log.info('Work received', { repo, prNumber, attempt, event: work.event });
 
-    let command;
+    let cmd;
     try {
-      command = resolveCommand({
+      cmd = resolveCommand({
         agentType: work.agentType ?? 'claude-code',
         prompt: message,
         transportCommand: work.transportCommand,
@@ -87,7 +86,7 @@ export function createRunner({ client, log, resolveCommand, cwd, meta }) {
 
     let exitCode;
     try {
-      exitCode = await execute(command);
+      exitCode = await execute(cmd);
     } catch (err) {
       log.error('Agent process error', { error: err.message });
       exitCode = 1;
@@ -138,13 +137,23 @@ export function createRunner({ client, log, resolveCommand, cwd, meta }) {
     },
 
     /**
-     * Gracefully shut down. Kills active agent process if any.
+     * Gracefully shut down. Kills active agent process, reports active claim as failed.
      */
-    shutdown() {
+    async shutdown() {
       log.info('Shutting down...');
       running = false;
       if (activeProcess) {
         activeProcess.kill('SIGTERM');
+      }
+      // Best-effort: report active claim as failed so the server doesn't wait for timeout
+      if (activeWork) {
+        const { repo, prNumber, attempt } = activeWork;
+        try {
+          await client.reportClaim({ status: 'failed', repo, pr_number: prNumber, attempt });
+          log.info('Reported active claim as failed on shutdown', { repo, prNumber, attempt });
+        } catch (err) {
+          log.error('Failed to report claim on shutdown', { error: err.message });
+        }
       }
     },
 

@@ -35,6 +35,22 @@ function fakeProcess(exitCode = 0) {
   return proc;
 }
 
+/** Helper: create a fake process that never exits (for shutdown tests) */
+function hangingProcess() {
+  const handlers = {};
+  const proc = {
+    on: vi.fn((event, cb) => { handlers[event] = cb; }),
+    stdout: { on: vi.fn() },
+    stderr: { on: vi.fn() },
+    kill: vi.fn(() => {
+      // Simulate SIGTERM → close
+      setTimeout(() => handlers.close?.(143), 10);
+    }),
+    pid: 5678,
+  };
+  return proc;
+}
+
 describe('runner', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -84,28 +100,29 @@ describe('runner', () => {
   });
 
   describe('work execution', () => {
-    it('executes agent command when work is received', async () => {
+    it('spawns with shell: false for built-in agent types ({ bin, args })', async () => {
       const work = {
         event: 'review_failed',
         message: 'Fix the bug at src/index.js:5',
         repo: 'org/repo',
         prNumber: 7,
         attempt: 1,
-        agentId: 'claude-dev',
       };
 
       let pollCount = 0;
       const client = makeClient({
         poll: vi.fn().mockImplementation(async () => {
           pollCount++;
-          if (pollCount === 1) return work;
-          return null;
+          return pollCount === 1 ? work : null;
         }),
       });
 
       mockSpawn.mockReturnValueOnce(fakeProcess(0));
 
-      const resolveCmd = vi.fn().mockReturnValue('claude -p "Fix the bug"');
+      const resolveCmd = vi.fn().mockReturnValue({
+        bin: 'claude',
+        args: ['-p', 'Fix the bug at src/index.js:5'],
+      });
 
       const runner = createRunner({
         client,
@@ -123,9 +140,46 @@ describe('runner', () => {
         prompt: 'Fix the bug at src/index.js:5',
       }));
       expect(mockSpawn).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.any(Array),
-        expect.objectContaining({ cwd: '/repo', shell: true }),
+        'claude',
+        ['-p', 'Fix the bug at src/index.js:5'],
+        expect.objectContaining({ cwd: '/repo', shell: false }),
+      );
+    });
+
+    it('spawns with shell: true for custom templates ({ shell })', async () => {
+      const work = {
+        event: 'review_failed',
+        message: 'Fix it',
+        repo: 'org/repo',
+        prNumber: 7,
+        attempt: 1,
+      };
+
+      let pollCount = 0;
+      const client = makeClient({
+        poll: vi.fn().mockImplementation(async () => {
+          pollCount++;
+          return pollCount === 1 ? work : null;
+        }),
+      });
+
+      mockSpawn.mockReturnValueOnce(fakeProcess(0));
+
+      const runner = createRunner({
+        client,
+        log: makeLogger(),
+        resolveCommand: vi.fn().mockReturnValue({ shell: 'my-agent "Fix it"' }),
+      });
+
+      const startPromise = runner.start();
+      await new Promise((r) => setTimeout(r, 100));
+      runner.shutdown();
+      await startPromise;
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'my-agent "Fix it"',
+        [],
+        expect.objectContaining({ shell: true }),
       );
     });
 
@@ -151,7 +205,7 @@ describe('runner', () => {
       const runner = createRunner({
         client,
         log: makeLogger(),
-        resolveCommand: vi.fn().mockReturnValue('echo ok'),
+        resolveCommand: vi.fn().mockReturnValue({ bin: 'echo', args: ['ok'] }),
       });
 
       const startPromise = runner.start();
@@ -189,7 +243,7 @@ describe('runner', () => {
       const runner = createRunner({
         client,
         log: makeLogger(),
-        resolveCommand: vi.fn().mockReturnValue('echo fail'),
+        resolveCommand: vi.fn().mockReturnValue({ bin: 'echo', args: ['fail'] }),
       });
 
       const startPromise = runner.start();
@@ -221,6 +275,49 @@ describe('runner', () => {
       const pollCountAtShutdown = client.poll.mock.calls.length;
       await new Promise((r) => setTimeout(r, 100));
       expect(client.poll.mock.calls.length).toBe(pollCountAtShutdown);
+    });
+
+    it('reports active claim as failed on shutdown', async () => {
+      const work = {
+        event: 'review_failed',
+        message: 'Fix it',
+        repo: 'org/repo',
+        prNumber: 7,
+        attempt: 2,
+      };
+
+      let pollCount = 0;
+      const client = makeClient({
+        poll: vi.fn().mockImplementation(async () => {
+          pollCount++;
+          return pollCount === 1 ? work : null;
+        }),
+      });
+
+      // Use a hanging process so the agent is still running when shutdown is called
+      mockSpawn.mockReturnValueOnce(hangingProcess());
+
+      const runner = createRunner({
+        client,
+        log: makeLogger(),
+        resolveCommand: vi.fn().mockReturnValue({ bin: 'long-agent', args: [] }),
+      });
+
+      const startPromise = runner.start();
+      // Wait for work to be picked up and agent to start
+      await new Promise((r) => setTimeout(r, 50));
+
+      // Shutdown while agent is running
+      await runner.shutdown();
+      await startPromise;
+
+      // Should have reported the active claim as failed
+      expect(client.reportClaim).toHaveBeenCalledWith({
+        status: 'failed',
+        repo: 'org/repo',
+        pr_number: 7,
+        attempt: 2,
+      });
     });
   });
 });
