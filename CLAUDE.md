@@ -1,14 +1,17 @@
 # Fluent Flow
 
-Read [README.md](README.md) for architecture overview, quick start, API reference, and config system.
+Turborepo monorepo. Server code lives in `packages/fluent-flow/`.
+
+Read [packages/fluent-flow/README.md](packages/fluent-flow/README.md) for architecture overview, quick start, API reference, and config system.
 
 ## Key docs by area
 
-- [config/README.md](config/README.md) — Config system: defaults, agent registry, per-repo overrides, validation
-- [src/engine/README.md](src/engine/README.md) — State machine, review pipeline, pause/resume logic
-- [src/mcp/README.md](src/mcp/README.md) — MCP server: tools, connection, auth
-- [src/notifications/README.md](src/notifications/README.md) — Agent notification dispatcher, transports, multi-agent routing
-- [DESIGN.md](DESIGN.md) — Build instructions, DB schema, Docker setup
+- [packages/fluent-flow/config/README.md](packages/fluent-flow/config/README.md) — Config system: defaults, agent registry, per-repo overrides, validation
+- [packages/fluent-flow/src/engine/README.md](packages/fluent-flow/src/engine/README.md) — State machine, review pipeline, pause/resume logic
+- [packages/fluent-flow/src/mcp/README.md](packages/fluent-flow/src/mcp/README.md) — MCP server: tools, connection, auth
+- [packages/fluent-flow/src/notifications/README.md](packages/fluent-flow/src/notifications/README.md) — Agent notification dispatcher, transports, multi-agent routing
+- [packages/fluent-flow/src/agents/README.md](packages/fluent-flow/src/agents/README.md) — Agent registry, tokens, sessions, claims
+- [packages/fluent-flow/DESIGN.md](packages/fluent-flow/DESIGN.md) — Build instructions, DB schema, Docker setup
 
 ## Code conventions
 
@@ -31,8 +34,14 @@ Notifications route to the agent that created the PR, not just the repo default:
 ## Testing
 
 ```bash
-npm test          # 236 tests, runs sequentially (--fileParallelism=false)
+cd packages/fluent-flow
+npm test          # 320 tests, runs sequentially (--fileParallelism=false)
 npm run test:watch
+```
+
+Or from root via Turborepo:
+```bash
+npm test
 ```
 
 TDD workflow: Red → Green → Refactor → breaking change verification → revert.

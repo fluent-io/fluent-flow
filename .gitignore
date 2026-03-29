@@ -11,8 +11,8 @@ coverage/
 *.swp
 *.swo
 tmp/
+.turbo/
 
 # Deployment-specific overrides — configure locally, never commit
-config/agents.yml
+packages/fluent-flow/config/agents.yml
 docker-compose.override.yml
-src/routes/webhook.js.backup
