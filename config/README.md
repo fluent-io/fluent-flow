@@ -8,26 +8,11 @@ Two-layer configuration system: global defaults + per-repo overrides.
 
 Global defaults loaded at startup. Defines states, transitions, reviewer settings, pause rules, and notification preferences. All values can be overridden per-repo.
 
-### agents.yml
+### agents.yml (deprecated)
 
-Agent wake transport registry. Maps agent IDs to their notification transport config. Loaded at startup from this file. If missing, falls back to an empty registry.
+Legacy agent transport registry. **Deprecated** — agents should be managed via the admin API (`/api/agents`) or MCP tools (`create_agent`, `list_agents`). Agent config is now stored in the `agents` DB table.
 
-**Not committed to the repo** — it's in `.gitignore` because it contains deployment-specific URLs. Copy `agents.example.yml` to `agents.yml` and configure for your deployment.
-
-```yaml
-agents:
-  my-agent:
-    transport: webhook              # or workflow_dispatch
-    url: http://my-agent:8080/wake
-    token_env: MY_AGENT_TOKEN       # env var name holding the auth token
-    delivery:                       # optional routing metadata
-      channel: discord
-      to: "channel:123"
-```
-
-### agents.example.yml
-
-Template showing available agent config options. Copy to `agents.yml` to get started.
+If `agents.yml` is present, it still works as a fallback but logs a deprecation warning on each lookup. See `src/agents/README.md` for the new agent registry system.
 
 ## Per-repo config
 

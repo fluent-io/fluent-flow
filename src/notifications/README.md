@@ -10,6 +10,7 @@ transports/
   index.js          — transport registry (getTransport by name)
   webhook.js        — HTTP POST transport
   workflow.js       — GitHub Actions workflow_dispatch transport
+  long-poll.js      — in-memory queue for runner sessions
 ```
 
 ## How it works
@@ -19,7 +20,7 @@ transports/
    - Issue-facing handlers use `resolveAgentForIssue(owner, repo, issueNumber, config)` — checks active pause `agent_id` → linked PR body marker → config default
    - Resolution priority: PR body marker > `config.default_agent` > `config.agent_id` (legacy)
 
-2. **Agent config** is looked up from the agent registry (`config/agents.yml`) via `getAgentConfig(agentId)` in `src/config/agents.js`.
+2. **Agent config** is looked up from the DB agent registry first, then falls back to `config/agents.yml` (deprecated) via `getAgentConfig(agentId)`. For `long_poll` agents, the dispatcher resolves `session_id` from the active claim so the transport can route to the correct runner.
 
 3. **Transport** is selected based on the agent's `transport` field and called with a standardized payload.
 
@@ -53,6 +54,10 @@ HTTP POST to the agent's `url` with optional `Authorization: Bearer {token}`. To
 ### workflow_dispatch
 
 Calls GitHub Actions `workflow_dispatch` API via `dispatchWorkflow()` in `src/github/rest.js`. Dispatches the workflow named in the agent's config with the payload as inputs.
+
+### long_poll
+
+In-memory queue for `fluent-flow-runner` instances. Payloads are enqueued per `session_id` and dequeued when the runner calls `POST /api/runner/poll`. Max queue size: 100 per session (oldest dropped with warning on overflow). Runners connect outbound — no inbound networking required.
 
 ## Adding a new transport
 
