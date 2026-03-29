@@ -13,4 +13,6 @@ RUN npm ci --workspace=packages/fluent-flow --omit=dev
 
 WORKDIR /app/packages/fluent-flow
 
-CMD ["node", "src/index.js"]
+EXPOSE 3847
+
+CMD ["node", "-r", "./src/tracing.cjs", "src/index.js"]

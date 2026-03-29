@@ -5,8 +5,8 @@
   "type": "module",
   "main": "src/index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "dev": "node --watch src/index.js",
+    "start": "node -r ./src/tracing.cjs src/index.js",
+    "dev": "node --watch -r ./src/tracing.cjs src/index.js",
     "test": "vitest run --fileParallelism=false",
     "test:watch": "vitest --fileParallelism=false"
   },
