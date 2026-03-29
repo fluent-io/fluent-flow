@@ -199,6 +199,18 @@ All tools require an `agent_id` parameter. Set `MCP_AUTH_TOKEN` to secure the en
 | `/api/review/result` | POST | Submit review results |
 | `/api/review/retries/:owner/:repo/:pr` | GET | Get retry record |
 | `/api/health` | GET | Health check |
+| `/api/agents` | POST | Create an agent |
+| `/api/agents` | GET | List agents |
+| `/api/agents/:id` | GET | Get agent |
+| `/api/agents/:id` | PATCH | Update agent |
+| `/api/agents/:id` | DELETE | Delete agent |
+| `/api/agents/:id/tokens` | POST | Create agent token |
+| `/api/agents/:id/tokens` | GET | List tokens |
+| `/api/agents/:id/tokens/:tokenId` | DELETE | Revoke token |
+| `/api/agents/:id/sessions` | GET | List active sessions |
+| `/api/runner/register` | POST | Register runner session (token auth) |
+| `/api/runner/poll` | POST | Long-poll for work (token auth) |
+| `/api/runner/claim` | POST | Report claim result (token auth) |
 
 ## Config
 
@@ -206,21 +218,25 @@ All tools require an `agent_id` parameter. Set `MCP_AUTH_TOKEN` to secure the en
 
 Defines default states, transitions, reviewer settings, pause rules, and notification preferences.
 
-### Agent Registry (`config/agents.yml`)
+### Agent Registry (DB-backed)
 
-Maps agent IDs to their wake transport. Loaded at startup.
+Agents are managed via the admin API (`/api/agents`) or MCP tools (`create_agent`, `list_agents`). Stored in the `agents` DB table with transport config.
 
-```yaml
-agents:
-  getonit:
-    transport: webhook              # HTTP POST
-    url: http://openclaw:18789/hooks/agent
-    token_env: OPENCLAW_WEBHOOK_TOKEN
-  claude-actions:
-    transport: workflow_dispatch    # GitHub Actions
-    workflow: agent-wake.yml
-    ref: main
+```bash
+# Create an agent (adjust URL for your deployment)
+curl -X POST http://localhost:3847/api/agents \
+  -H "Content-Type: application/json" \
+  -d '{"id":"my-agent","agent_type":"claude-code","transport":"long_poll"}'
+
+# Issue a token for the runner
+curl -X POST http://localhost:3847/api/agents/my-agent/tokens \
+  -H "Content-Type: application/json" \
+  -d '{"label":"dev-laptop"}'
 ```
+
+Supported transports: `webhook`, `workflow_dispatch`, `long_poll`, `api`.
+
+Legacy `config/agents.yml` still works as fallback but is deprecated — see [config/README.md](config/README.md).
 
 ### Per-Repo Override (`.github/fluent-flow.yml`)
 
@@ -287,13 +303,14 @@ Agent-specific tokens (referenced via `token_env` in `config/agents.yml`) should
 
 | Directory | Purpose | Docs |
 |-----------|---------|------|
-| [config/](config/README.md) | Global defaults, agent registry, per-repo config | [config/README.md](config/README.md) |
+| [config/](config/README.md) | Global defaults, per-repo config | [config/README.md](config/README.md) |
+| [src/agents/](src/agents/README.md) | Agent registry, tokens, sessions, claims | [src/agents/README.md](src/agents/README.md) |
 | [src/engine/](src/engine/README.md) | State machine, review pipeline, pause/resume | [src/engine/README.md](src/engine/README.md) |
 | [src/mcp/](src/mcp/README.md) | MCP server for AI agent integration | [src/mcp/README.md](src/mcp/README.md) |
-| [src/notifications/](src/notifications/README.md) | Agent-agnostic notification dispatcher + transports | [src/notifications/README.md](src/notifications/README.md) |
+| [src/notifications/](src/notifications/README.md) | Notification dispatcher + transports (webhook, workflow, long-poll) | [src/notifications/README.md](src/notifications/README.md) |
 | src/github/ | GitHub REST + GraphQL API clients, webhook verification | |
-| src/routes/ | Express route handlers (webhook, transition, pause, state, review, config, health) | |
-| src/db/ | PostgreSQL pool, migrations, audit logging | |
+| src/routes/ | Express route handlers (webhook, agents, runner, transition, pause, state, review, config, health) | |
+| src/db/ | PostgreSQL pool, migrations (001-007), audit logging | |
 
 ## License
 

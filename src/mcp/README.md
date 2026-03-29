@@ -12,6 +12,7 @@ tools/
   queries.js  — Read-only tools wrapping engine query functions
   commands.js — Write tools wrapping engine command functions
   pending.js  — get_pending_actions (the key polling query)
+  agents.js   — agent registry management tools
 ```
 
 Each tool wraps an existing engine function — no duplicated logic. All tool calls are logged via `audit()`.
@@ -38,6 +39,14 @@ Each tool wraps an existing engine function — no duplicated logic. All tool ca
 | `record_pause` | `recordPause()` | Pause issue for human attention |
 | `process_resume` | `processResume()` | Resume paused issue |
 | `onboard_repo` | GitHub Contents API | Create config + review workflow on a repo's default branch |
+
+### Agent management tools
+
+| Tool | Wraps | Purpose |
+|------|-------|---------|
+| `create_agent` | `createAgent()` | Register a new agent. Params: `id`, `agent_type`, `transport`, optional `org_id`, `transport_meta`, `repos` |
+| `list_agents` | `listAgents()` | List all agents. Params: optional `org_id` (default: `self-hosted`) |
+| `delete_agent` | `deleteAgent()` | Remove an agent. Params: `id`, optional `org_id` |
 
 All tools require `agent_id`. Command tools use `triggerType: 'mcp'` for audit trail differentiation.
 
