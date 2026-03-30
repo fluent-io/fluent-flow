@@ -86,7 +86,7 @@ export async function dispatch({ agentId, event, payload }) {
   if (!agentConfig) {
     const dbAgent = await getAgent(payload.orgId ?? 'self-hosted', agentId);
     if (dbAgent) {
-      agentConfig = { transport: dbAgent.transport, ...dbAgent.transport_meta };
+      agentConfig = { transport: dbAgent.transport, agent_type: dbAgent.agent_type, ...dbAgent.transport_meta };
     }
   }
 
@@ -119,6 +119,10 @@ export async function dispatch({ agentId, event, payload }) {
     ...(sessionId && { session_id: sessionId }),
     ...(agentConfig.delivery?.channel && { channel: agentConfig.delivery.channel }),
     ...(agentConfig.delivery?.to && { to: agentConfig.delivery.to }),
+    ...(agentConfig.transport === 'long_poll' && {
+      agentType: agentConfig.agent_type,
+      transportCommand: agentConfig.command,
+    }),
   };
 
   await transport.send(agentConfig, fullPayload);

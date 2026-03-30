@@ -194,6 +194,29 @@ describe('dispatch', () => {
     );
   });
 
+  it('includes agentType and transportCommand in long_poll payload', async () => {
+    const mockSend = vi.fn();
+    getAgentConfig.mockReturnValue(null);
+    getAgent.mockResolvedValueOnce({
+      id: 'custom-agent',
+      transport: 'long_poll',
+      transport_meta: { command: 'my-agent "{prompt}"' },
+      agent_type: 'custom',
+    });
+    getTransport.mockReturnValue({ send: mockSend });
+    getActiveClaim.mockResolvedValueOnce({ session_id: 5 });
+
+    await dispatch({
+      agentId: 'custom-agent',
+      event: 'review_failed',
+      payload: { repo: 'org/repo', prNumber: 7, message: 'fix it' },
+    });
+
+    const sentPayload = mockSend.mock.calls[0][1];
+    expect(sentPayload.agentType).toBe('custom');
+    expect(sentPayload.transportCommand).toBe('my-agent "{prompt}"');
+  });
+
   it('does not include session_id for non-long_poll agents', async () => {
     const mockSend = vi.fn();
     getAgentConfig.mockReturnValue({ transport: 'webhook', url: 'http://test.com' });

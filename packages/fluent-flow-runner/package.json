@@ -1,0 +1,20 @@
+{
+  "name": "fluent-flow-runner",
+  "version": "0.1.0",
+  "description": "Lightweight CLI runner for Fluent Flow — connects agents to the review pipeline",
+  "type": "module",
+  "bin": {
+    "fluent-flow-runner": "./bin/fluent-flow-runner.js"
+  },
+  "main": "src/runner.js",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.1.0"
+  }
+}
