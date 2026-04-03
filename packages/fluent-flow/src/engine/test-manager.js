@@ -88,6 +88,8 @@ export async function handleTestSuccess({ owner, repo, sha, issueNumber, config 
 
   try {
     await adapter.updateWorkItemState({
+      owner,
+      repo,
       issueNumber,
       fromState: 'Test Failures',
       toState: 'Done'

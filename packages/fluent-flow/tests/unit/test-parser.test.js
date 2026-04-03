@@ -42,7 +42,7 @@ describe('parseCheckAnnotations', () => {
     const annotations = [
       { annotation_level: 'notice', message: 'Info' },
       { annotation_level: 'warning', message: 'Warning' },
-      { annotation_level: 'failure', message: 'Real failure', path: 'test.js', title: 'fail' }
+      { annotation_level: 'failure', message: 'Real failure', path: 'test.js', title: 'fail' },
     ];
 
     const result = parseCheckAnnotations(annotations);

@@ -9,7 +9,7 @@ export function parseCheckAnnotations(annotations = []) {
     .filter((a) => a.annotation_level === 'failure')
     .map((a) => ({
       file: a.path || 'unknown',
-      line: a.start_line || null,
+      line: a.start_line ?? null,
       title: a.title || 'Test failed',
       message: a.message || ''
     }));

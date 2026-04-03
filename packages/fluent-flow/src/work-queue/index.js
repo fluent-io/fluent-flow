@@ -34,3 +34,13 @@ export function registerAdapter(type, AdapterClass) {
 }
 
 export { WorkQueueAdapter } from './adapter.js';
+
+/**
+ * Reset the adapter registry to defaults (for testing).
+ */
+export function resetAdapters() {
+  for (const key of Object.keys(ADAPTERS)) {
+    delete ADAPTERS[key];
+  }
+  ADAPTERS['github-projects'] = GitHubProjectsAdapter;
+}

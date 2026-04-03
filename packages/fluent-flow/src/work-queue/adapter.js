@@ -29,7 +29,7 @@ export class WorkQueueAdapter {
   /**
    * Update a work item state.
    * @param {object} opts
-   * @param {string} opts.issueNumber - Linked GitHub issue number
+   * @param {number} opts.issueNumber - Linked GitHub issue number
    * @param {string} opts.fromState - Current state
    * @param {string} opts.toState - Target state (e.g., 'Test Failures' → 'Done')
    * @returns {Promise<void>}

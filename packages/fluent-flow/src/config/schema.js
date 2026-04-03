@@ -5,6 +5,11 @@ const OnFailureSchema = z.object({
   thinking: z.enum(['low', 'medium', 'high']).optional(),
 });
 
+export const WorkQueueConfigSchema = z.object({
+  type: z.enum(['github-projects', 'linear', 'jira']).default('github-projects'),
+  projectNodeId: z.string().optional(),
+});
+
 export const ReviewerConfigSchema = z.object({
   enabled: z.boolean().default(true),
   model: z.string().default('claude-haiku'),
@@ -52,6 +57,7 @@ export const DefaultsConfigSchema = z.object({
   transitions: z.record(z.string(), TransitionRequirementSchema).default({}),
   pause: PauseConfigSchema.default({}),
   notifications: NotificationsConfigSchema.default({}),
+  work_queue: WorkQueueConfigSchema.optional(),
 });
 
 const DeliveryConfigSchema = z.object({
