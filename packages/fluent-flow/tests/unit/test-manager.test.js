@@ -212,18 +212,21 @@ describe('Test Manager', () => {
       );
     });
 
-    it('continues on update error', async () => {
+    it('continues on update error (non-fatal)', async () => {
       mockAdapter.updateWorkItemState.mockRejectedValue(new Error('API error'));
 
-      // Should not throw
-      await handleTestSuccess({
-        owner: 'test-org',
-        repo: 'test-repo',
-        sha: 'abc123',
-        issueNumber: 42
-      });
+      // Should not throw — adapter failures are non-fatal
+      await expect(
+        handleTestSuccess({
+          owner: 'test-org',
+          repo: 'test-repo',
+          sha: 'abc123',
+          issueNumber: 42
+        })
+      ).resolves.toBeUndefined();
 
-      expect(audit).toHaveBeenCalled();
+      // Audit is only called on success, not on error
+      expect(audit).not.toHaveBeenCalled();
     });
   });
 });

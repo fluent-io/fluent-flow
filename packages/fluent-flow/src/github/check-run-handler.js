@@ -1,7 +1,9 @@
 import { resolveAgentId, dispatch } from '../notifications/dispatcher.js';
-import { getPRsForCommit, getCheckRunsForCommit } from './rest.js';
+import { getPRsForCommit, getCheckRunsForCommit, getCheckRunAnnotations } from './rest.js';
 import { dispatchReview, claimDispatch } from '../engine/review-manager.js';
+import { handleTestFailure, handleTestSuccess } from '../engine/test-manager.js';
 import { getActivePause } from '../engine/pause-manager.js';
+import { parseCheckAnnotations } from './test-parser.js';
 import { audit } from '../db/client.js';
 import logger from '../logger.js';
 
@@ -51,23 +53,47 @@ export async function handleCheckRun(owner, repoName, payload, config) {
 }
 
 /**
- * Handle CI failure — notify the configured agent.
+ * Detect if this check run is a test runner (vs build/lint/etc.).
+ * @param {object} checkRun
+ * @returns {boolean}
+ */
+function isTestCheckRun(checkRun) {
+  return /\b(test|tests|jest|vitest|pytest|mocha|xunit|unittest|rspec)\b/i.test(checkRun.name);
+}
+
+/**
+ * Handle CI failure — notify the configured agent, or create test failure work item.
  */
 async function handleCheckRunFailure(owner, repoName, checkRun, config) {
-  let prNumber = null;
-  let prTitle = '';
-  let prBody;
-
+  let pr = null;
   try {
     const prs = await getPRsForCommit(owner, repoName, checkRun.head_sha);
-    if (prs && prs.length > 0) {
-      prNumber = prs[0].number;
-      prTitle = prs[0].title;
-      prBody = prs[0].body;
-    }
+    if (prs && prs.length > 0) pr = prs[0];
   } catch (err) {
     logger.warn({ msg: 'Failed to fetch linked PRs for CI failure', repo: `${owner}/${repoName}`, sha: checkRun.head_sha, error: err.message });
   }
+
+  // If this is a test check run, route to test-manager for work item creation
+  if (isTestCheckRun(checkRun) && pr) {
+    const annotations = await getCheckRunAnnotations(owner, repoName, checkRun.id);
+    const testFailures = parseCheckAnnotations(annotations);
+    const issueNumber = extractLinkedIssue(pr.body);
+    await handleTestFailure({
+      owner,
+      repo: repoName,
+      sha: checkRun.head_sha,
+      checkName: checkRun.name,
+      testFailures,
+      issueNumber,
+      config,
+    });
+    return;
+  }
+
+  // General CI failure — notify agent
+  const prBody = pr?.body;
+  const prNumber = pr?.number;
+  const prTitle = pr?.title ?? '';
 
   const agentId = resolveAgentId({ prBody, config });
   if (!agentId) {
@@ -158,6 +184,17 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config) {
 
   const priorIssues = claim.last_issues ?? [];
   const attempt = (claim.retry_count ?? 0) + 1;
+
+  // On test check success, update work item state if this is a test runner
+  if (isTestCheckRun(checkRun)) {
+    await handleTestSuccess({
+      owner,
+      repo: repoName,
+      sha: checkRun.head_sha,
+      issueNumber,
+      config,
+    });
+  }
 
   try {
     await dispatchReview({

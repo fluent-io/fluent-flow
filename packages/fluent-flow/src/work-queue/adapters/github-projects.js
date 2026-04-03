@@ -5,7 +5,7 @@ import {
 } from '../../github/graphql.js';
 import logger from '../../logger.js';
 
-/** Default project state names — override via config.failureState / config.resolvedState */
+/** Default project state names — override via config.failure_state / config.resolved_state */
 const DEFAULT_FAILURE_STATE = 'Test Failures';
 const DEFAULT_RESOLVED_STATE = 'Done';
 
@@ -13,22 +13,29 @@ const DEFAULT_RESOLVED_STATE = 'Done';
  * Work queue adapter for GitHub Projects v2.
  * Uses existing graphql helpers to move issues between project states.
  *
- * Config options:
- *   projectNodeId  {string}  Required. GitHub Project node ID (PVT_xxx)
- *   failureState   {string}  Optional. Column name for test failures (default: "Test Failures")
- *   resolvedState  {string}  Optional. Column name for resolved items (default: "Done")
+ * Config options (all snake_case, per project conventions):
+ *   project_node_id  {string}  Required. GitHub Project node ID (PVT_xxx)
+ *   failure_state    {string}  Optional. Column for test failures (default: "Test Failures")
+ *   resolved_state   {string}  Optional. Column for resolved items (default: "Done")
+ *
+ * Legacy camelCase aliases are also accepted for backward compat:
+ *   projectNodeId, failureState, resolvedState
  */
 export class GitHubProjectsAdapter extends WorkQueueAdapter {
   constructor(config) {
     super(config);
   }
 
+  get projectNodeId() {
+    return this.config.project_node_id ?? this.config.projectNodeId;
+  }
+
   get failureState() {
-    return this.config.failureState ?? DEFAULT_FAILURE_STATE;
+    return this.config.failure_state ?? this.config.failureState ?? DEFAULT_FAILURE_STATE;
   }
 
   get resolvedState() {
-    return this.config.resolvedState ?? DEFAULT_RESOLVED_STATE;
+    return this.config.resolved_state ?? this.config.resolvedState ?? DEFAULT_RESOLVED_STATE;
   }
 
   /**
@@ -44,9 +51,9 @@ export class GitHubProjectsAdapter extends WorkQueueAdapter {
     description,
     testFailures,
   }) {
-    const projectNodeId = this.config.projectNodeId;
+    const projectNodeId = this.projectNodeId;
     if (!projectNodeId) {
-      throw new Error('GitHubProjectsAdapter: projectNodeId is required');
+      throw new Error('GitHubProjectsAdapter: project_node_id is required');
     }
 
     const itemNodeId = await findProjectItem(projectNodeId, owner, repo, issueNumber);
@@ -66,9 +73,9 @@ export class GitHubProjectsAdapter extends WorkQueueAdapter {
    * Update a work item state by finding and moving the project item.
    */
   async updateWorkItemState({ owner, repo, issueNumber, fromState, toState }) {
-    const projectNodeId = this.config.projectNodeId;
+    const projectNodeId = this.projectNodeId;
     if (!projectNodeId) {
-      throw new Error('GitHubProjectsAdapter: projectNodeId is required');
+      throw new Error('GitHubProjectsAdapter: project_node_id is required');
     }
 
     const itemNodeId = await findProjectItem(projectNodeId, owner, repo, issueNumber);

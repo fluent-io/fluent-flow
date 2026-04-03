@@ -60,7 +60,7 @@ describe('GitHubProjectsAdapter', () => {
           owner: 'o', repo: 'r', issueNumber: 1, prNumber: 1,
           title: 'fail', description: '', testFailures: { passed: 0, failed: 1, failures: [] },
         })
-      ).rejects.toThrow('projectNodeId is required');
+      ).rejects.toThrow('project_node_id is required');
     });
 
     it('uses custom failureState from config', async () => {

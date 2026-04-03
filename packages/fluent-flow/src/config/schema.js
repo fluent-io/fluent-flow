@@ -5,12 +5,18 @@ const OnFailureSchema = z.object({
   thinking: z.enum(['low', 'medium', 'high']).optional(),
 });
 
-export const WorkQueueConfigSchema = z.object({
-  type: z.string().default('github-projects'),
-  projectNodeId: z.string().optional(),
-  failureState: z.string().optional(),   // Column name for test failure items (default: "Test Failures")
-  resolvedState: z.string().optional(),  // Column name for resolved items (default: "Done")
-});
+export const WorkQueueConfigSchema = z
+  .object({
+    type: z.string().default('github-projects'),
+    project_node_id: z.string().optional(),     // Preferred snake_case field
+    projectNodeId: z.string().optional(),       // Legacy camelCase — normalized via transform
+    failure_state: z.string().optional(),       // Column name for test failure items (default: "Test Failures")
+    resolved_state: z.string().optional(),      // Column name for resolved items (default: "Done")
+  })
+  .transform(({ project_node_id, projectNodeId, ...rest }) => ({
+    ...rest,
+    project_node_id: project_node_id ?? projectNodeId,
+  }));
 
 export const ReviewerConfigSchema = z.object({
   enabled: z.boolean().default(true),

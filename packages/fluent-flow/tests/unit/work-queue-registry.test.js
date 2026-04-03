@@ -1,5 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import { getAdapter, registerAdapter, WorkQueueAdapter } from '../../src/work-queue/index.js';
+import { describe, it, expect, afterEach } from 'vitest';
+import { getAdapter, registerAdapter, resetAdapters, WorkQueueAdapter } from '../../src/work-queue/index.js';
+
+afterEach(() => {
+  resetAdapters();
+});
 
 describe('Work Queue Registry', () => {
   it('loads github-projects adapter', () => {

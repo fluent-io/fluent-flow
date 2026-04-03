@@ -5,7 +5,29 @@ import logger from '../logger.js';
 import { query, audit } from '../db/client.js';
 
 /**
+ * Resolve work queue adapter config with sensible defaults.
+ * Falls back to project_id (or project_ids[0]) for project_node_id.
+ */
+function resolveAdapterConfig(config) {
+  if (config.work_queue) {
+    const adapterConfig = { ...config.work_queue };
+    // Default project_node_id from project_id if not set
+    if (!adapterConfig.project_node_id && !adapterConfig.projectNodeId) {
+      adapterConfig.project_node_id = config.project_id ?? config.project_ids?.[0];
+    }
+    return adapterConfig;
+  }
+  return {
+    type: 'github-projects',
+    project_node_id: config.project_id ?? config.project_ids?.[0],
+  };
+}
+
+/**
  * Handle test failures by creating a work item in the configured queue.
+ *
+ * This is called from check-run-handler when a test check run fails.
+ * Adapter failures are non-fatal — logged and audited but do not fail the webhook.
  */
 export async function handleTestFailure({
   owner,
@@ -27,6 +49,12 @@ export async function handleTestFailure({
     config = await resolveConfig(owner, repo);
   }
 
+  // issueNumber can legitimately be null for unlinked PRs — skip adapter call
+  if (!issueNumber) {
+    logger.info({ msg: 'Test failure has no linked issue, skipping work item creation', repo: repoKey, sha });
+    return;
+  }
+
   // Find linked PR
   let pr = null;
   try {
@@ -43,10 +71,12 @@ export async function handleTestFailure({
   }
 
   // Get work queue adapter
-  const { type: adapterType, ...adapterConfig } = config.work_queue ?? { type: 'github-projects', projectNodeId: config.project_id };
-  const adapter = getAdapter(adapterType, adapterConfig);
+  const adapterConfig = resolveAdapterConfig(config);
+  const { type: adapterType, ...adapterOpts } = adapterConfig;
+  const adapter = getAdapter(adapterType, adapterOpts);
 
-  // Create work item
+  // Create work item — non-fatal: adapter failures (missing project item, GitHub API errors)
+  // should not fail the entire webhook request
   try {
     const workItem = await adapter.createTestFailureItem({
       owner,
@@ -61,7 +91,7 @@ export async function handleTestFailure({
     logger.info({ msg: 'Created test failure work item', repo: repoKey, issueNumber, itemId: workItem.id });
     audit('test_failure_work_item_created', { repo: repoKey, data: { issueNumber, itemId: workItem.id } });
 
-    // Track attempt
+    // Track attempt in DB
     await query(
       `INSERT INTO test_failures (repo, pr_number, sha, retry_count, test_output, work_item_id)
        VALUES ($1, $2, $3, 1, $4, $5)
@@ -76,28 +106,36 @@ export async function handleTestFailure({
     );
   } catch (err) {
     logger.error({ msg: 'Failed to create test failure work item', repo: repoKey, error: err.message });
-    throw err;
+    audit('test_failure_work_item_failed', { repo: repoKey, data: { issueNumber, error: err.message } });
+    // Non-fatal: return without throwing so webhook processing continues
   }
 }
 
 /**
- * Handle test success — update work item state to Done.
+ * Handle test success — update work item state to resolved.
+ * Called from check-run-handler when a test check run succeeds.
+ * Adapter failures are non-fatal.
  */
 export async function handleTestSuccess({ owner, repo, sha, issueNumber, config }) {
   const repoKey = `${owner}/${repo}`;
+
+  if (!issueNumber) {
+    logger.info({ msg: 'Test success has no linked issue, skipping work item update', repo: repoKey });
+    return;
+  }
 
   if (!config) {
     config = await resolveConfig(owner, repo);
   }
 
-  const { type: adapterType, ...adapterConfig } = config.work_queue ?? { type: 'github-projects', projectNodeId: config.project_id };
-  const adapter = getAdapter(adapterType, adapterConfig);
-
-  audit('test_failure_resolved', { repo: repoKey, data: { issueNumber } });
+  const adapterConfig = resolveAdapterConfig(config);
+  const { type: adapterType, ...adapterOpts } = adapterConfig;
+  const adapter = getAdapter(adapterType, adapterOpts);
 
   try {
-    const failureState = adapterConfig.failureState ?? 'Test Failures';
-    const resolvedState = adapterConfig.resolvedState ?? 'Done';
+    const failureState = adapterOpts.failure_state ?? adapterOpts.failureState ?? 'Test Failures';
+    const resolvedState = adapterOpts.resolved_state ?? adapterOpts.resolvedState ?? 'Done';
+
     await adapter.updateWorkItemState({
       owner,
       repo,
@@ -106,8 +144,11 @@ export async function handleTestSuccess({ owner, repo, sha, issueNumber, config 
       toState: resolvedState
     });
 
-    logger.info({ msg: 'Updated test failure item to Done', repo: repoKey, issueNumber });
+    // Audit only after successful update
+    audit('test_failure_resolved', { repo: repoKey, data: { issueNumber } });
+    logger.info({ msg: 'Updated test failure item to resolved', repo: repoKey, issueNumber, resolvedState });
   } catch (err) {
     logger.warn({ msg: 'Failed to update test failure item state', error: err.message });
+    // Non-fatal: return without throwing
   }
 }
