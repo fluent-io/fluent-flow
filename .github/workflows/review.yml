@@ -26,9 +26,9 @@ on:
       ANTHROPIC_API_KEY:
         description: "Anthropic API key for Claude"
         required: true
-      FLUENT_FLOW_URL:
-        description: "Fluent Flow service URL"
-        required: false
+
+  env:
+    FLUENT_FLOW_URL: ${{ vars.FLUENT_FLOW_URL || '' }}
 
 jobs:
   review:
@@ -106,8 +106,6 @@ jobs:
           node ./post_review.mjs "${{ inputs.pr_number }}" "${{ inputs.attempt }}" /tmp/review_result.json
 
       - name: Notify Fluent Flow service
-        env:
-          FLUENT_FLOW_URL: ${{ secrets.FLUENT_FLOW_URL }}
         run: |
           if [ -n "$FLUENT_FLOW_URL" ]; then
             curl -sf -X POST "$FLUENT_FLOW_URL/api/review/result" \
