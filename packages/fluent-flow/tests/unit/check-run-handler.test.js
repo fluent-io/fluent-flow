@@ -12,6 +12,14 @@ vi.mock('../../src/notifications/dispatcher.js', () => ({
 vi.mock('../../src/github/rest.js', () => ({
   getPRsForCommit: vi.fn(),
   getCheckRunsForCommit: vi.fn(),
+  getCheckRunAnnotations: vi.fn().mockResolvedValue([]),
+}));
+vi.mock('../../src/engine/test-manager.js', () => ({
+  handleTestFailure: vi.fn(),
+  handleTestSuccess: vi.fn(),
+}));
+vi.mock('../../src/github/test-parser.js', () => ({
+  parseCheckAnnotations: vi.fn().mockReturnValue({ passed: 0, failed: 0, failures: [] }),
 }));
 vi.mock('../../src/db/client.js', () => ({ audit: vi.fn() }));
 vi.mock('../../src/engine/review-manager.js', () => ({
@@ -33,11 +41,12 @@ beforeEach(() => {
 });
 
 describe('handleCheckRun — agent routing', () => {
+  // Use a non-test check name so CI failures go through agent notification path
   const basePayload = {
     action: 'completed',
     check_run: {
       conclusion: 'failure',
-      name: 'tests',
+      name: 'build',
       head_sha: 'abc123',
       completed_at: '2026-03-23T00:00:00Z',
     },
