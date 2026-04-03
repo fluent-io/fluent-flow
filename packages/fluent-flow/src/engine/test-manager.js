@@ -61,7 +61,11 @@ export async function handleTestFailure({
       `INSERT INTO test_failures (repo, pr_number, sha, retry_count, test_output, work_item_id)
        VALUES ($1, $2, $3, 1, $4, $5)
        ON CONFLICT (repo, pr_number) DO UPDATE
-         SET retry_count = test_failures.retry_count + 1, test_output = $4, work_item_id = $5
+         SET sha = $3,
+             retry_count = test_failures.retry_count + 1,
+             test_output = $4,
+             work_item_id = $5,
+             updated_at = NOW()
        RETURNING *`,
       [repoKey, pr.number, sha, JSON.stringify(testFailures), workItem.id]
     );

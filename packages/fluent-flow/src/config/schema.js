@@ -6,7 +6,7 @@ const OnFailureSchema = z.object({
 });
 
 export const WorkQueueConfigSchema = z.object({
-  type: z.enum(['github-projects', 'linear', 'jira']).default('github-projects'),
+  type: z.string().default('github-projects'),
   projectNodeId: z.string().optional(),
 });
 
@@ -73,6 +73,7 @@ export const RepoConfigSchema = z.object({
   reviewer: ReviewerConfigSchema.partial().optional(),
   pause: PauseConfigSchema.partial().optional(),
   notifications: NotificationsConfigSchema.partial().optional(),
+  work_queue: WorkQueueConfigSchema.optional(),
   delivery: DeliveryConfigSchema,
 });
 

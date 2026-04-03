@@ -20,7 +20,7 @@ export class WorkQueueAdapter {
    * @param {string} opts.title - Work item title
    * @param {string} opts.description - Full description with failure details
    * @param {object} opts.testFailures - { passed, failed, failures: [] }
-   * @returns {Promise<object>} Created work item with { id, state, url }
+   * @returns {Promise<object>} Created work item with { id, state }
    */
   async createTestFailureItem(opts) {
     throw new Error('createTestFailureItem not implemented');

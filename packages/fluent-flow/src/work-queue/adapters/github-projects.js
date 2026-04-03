@@ -2,7 +2,6 @@ import { WorkQueueAdapter } from '../adapter.js';
 import {
   moveProjectItem,
   findProjectItem,
-  getProjectItemStatus,
 } from '../../github/graphql.js';
 import logger from '../../logger.js';
 
