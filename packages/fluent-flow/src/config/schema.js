@@ -8,6 +8,8 @@ const OnFailureSchema = z.object({
 export const WorkQueueConfigSchema = z.object({
   type: z.string().default('github-projects'),
   projectNodeId: z.string().optional(),
+  failureState: z.string().optional(),   // Column name for test failure items (default: "Test Failures")
+  resolvedState: z.string().optional(),  // Column name for resolved items (default: "Done")
 });
 
 export const ReviewerConfigSchema = z.object({

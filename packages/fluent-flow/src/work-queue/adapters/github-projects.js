@@ -5,19 +5,35 @@ import {
 } from '../../github/graphql.js';
 import logger from '../../logger.js';
 
+/** Default project state names — override via config.failureState / config.resolvedState */
+const DEFAULT_FAILURE_STATE = 'Test Failures';
+const DEFAULT_RESOLVED_STATE = 'Done';
+
 /**
  * Work queue adapter for GitHub Projects v2.
  * Uses existing graphql helpers to move issues between project states.
+ *
+ * Config options:
+ *   projectNodeId  {string}  Required. GitHub Project node ID (PVT_xxx)
+ *   failureState   {string}  Optional. Column name for test failures (default: "Test Failures")
+ *   resolvedState  {string}  Optional. Column name for resolved items (default: "Done")
  */
 export class GitHubProjectsAdapter extends WorkQueueAdapter {
   constructor(config) {
     super(config);
-    // config should have: projectNodeId
+  }
+
+  get failureState() {
+    return this.config.failureState ?? DEFAULT_FAILURE_STATE;
+  }
+
+  get resolvedState() {
+    return this.config.resolvedState ?? DEFAULT_RESOLVED_STATE;
   }
 
   /**
    * Create a test failure work item by moving an existing project issue
-   * to the "Test Failures" state. The issue must already be in the project.
+   * to the configured failure state. The issue must already be in the project.
    */
   async createTestFailureItem({
     owner,
@@ -33,7 +49,6 @@ export class GitHubProjectsAdapter extends WorkQueueAdapter {
       throw new Error('GitHubProjectsAdapter: projectNodeId is required');
     }
 
-    // Find the project item for this issue
     const itemNodeId = await findProjectItem(projectNodeId, owner, repo, issueNumber);
     if (!itemNodeId) {
       throw new Error(
@@ -41,11 +56,10 @@ export class GitHubProjectsAdapter extends WorkQueueAdapter {
       );
     }
 
-    // Move to "Test Failures" state
-    await moveProjectItem(projectNodeId, itemNodeId, 'Test Failures');
+    await moveProjectItem(projectNodeId, itemNodeId, this.failureState);
 
-    logger.info({ msg: 'Created test failure item in project', issueNumber, itemNodeId });
-    return { id: itemNodeId, state: 'Test Failures' };
+    logger.info({ msg: 'Created test failure item in project', issueNumber, itemNodeId, state: this.failureState });
+    return { id: itemNodeId, state: this.failureState };
   }
 
   /**
@@ -68,16 +82,15 @@ export class GitHubProjectsAdapter extends WorkQueueAdapter {
   }
 
   /**
-   * Get pending work items. Queries by scanning the project for items
-   * in "Test Failures" state. Note: full project scanning requires
-   * pagination via findProjectItem; this is intentionally limited to
-   * fetching status of known items (full project query is a future enhancement).
+   * Get pending work items.
+   * Full project scanning requires additional GraphQL helpers not yet implemented.
+   * Throws to signal callers not to depend on this method until implemented.
    */
   async getPendingWorkItems(agentId, opts = {}) {
-    // This is a placeholder — full project scanning requires additional
-    // GraphQL helpers not yet in graphql.js. Returns empty for now.
-    logger.info({ msg: 'getPendingWorkItems called (full scan not yet implemented)', agentId });
-    return [];
+    throw new Error(
+      'GitHubProjectsAdapter.getPendingWorkItems() is not yet implemented. ' +
+      'Use MCP get_pending_actions to poll for work.'
+    );
   }
 
   /**

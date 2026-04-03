@@ -62,6 +62,20 @@ describe('GitHubProjectsAdapter', () => {
         })
       ).rejects.toThrow('projectNodeId is required');
     });
+
+    it('uses custom failureState from config', async () => {
+      const customAdapter = new GitHubProjectsAdapter({ projectNodeId: 'PVT_123', failureState: 'Blocked' });
+      findProjectItem.mockResolvedValue('item_node_789');
+      moveProjectItem.mockResolvedValue(undefined);
+
+      const result = await customAdapter.createTestFailureItem({
+        owner: 'test-org', repo: 'test-repo', issueNumber: 10, prNumber: 20,
+        title: 'fail', description: '', testFailures: { passed: 0, failed: 1, failures: [] },
+      });
+
+      expect(moveProjectItem).toHaveBeenCalledWith('PVT_123', 'item_node_789', 'Blocked');
+      expect(result.state).toBe('Blocked');
+    });
   });
 
   describe('updateWorkItemState', () => {
@@ -95,9 +109,8 @@ describe('GitHubProjectsAdapter', () => {
   });
 
   describe('getPendingWorkItems', () => {
-    it('returns empty array (not yet fully implemented)', async () => {
-      const items = await adapter.getPendingWorkItems('agent-id', {});
-      expect(items).toEqual([]);
+    it('throws NotImplementedError', async () => {
+      await expect(adapter.getPendingWorkItems('agent-id', {})).rejects.toThrow('not yet implemented');
     });
   });
 

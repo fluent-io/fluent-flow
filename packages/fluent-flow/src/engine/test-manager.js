@@ -16,6 +16,11 @@ export async function handleTestFailure({
   issueNumber,
   config
 }) {
+  // Input validation
+  if (!owner || !repo) throw new Error('handleTestFailure: owner and repo are required');
+  if (!sha) throw new Error('handleTestFailure: sha is required');
+  if (!testFailures || typeof testFailures !== 'object') throw new Error('handleTestFailure: testFailures is required');
+
   const repoKey = `${owner}/${repo}`;
 
   if (!config) {
@@ -91,12 +96,14 @@ export async function handleTestSuccess({ owner, repo, sha, issueNumber, config 
   audit('test_failure_resolved', { repo: repoKey, data: { issueNumber } });
 
   try {
+    const failureState = adapterConfig.failureState ?? 'Test Failures';
+    const resolvedState = adapterConfig.resolvedState ?? 'Done';
     await adapter.updateWorkItemState({
       owner,
       repo,
       issueNumber,
-      fromState: 'Test Failures',
-      toState: 'Done'
+      fromState: failureState,
+      toState: resolvedState
     });
 
     logger.info({ msg: 'Updated test failure item to Done', repo: repoKey, issueNumber });
