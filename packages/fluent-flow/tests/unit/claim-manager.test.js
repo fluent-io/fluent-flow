@@ -12,9 +12,11 @@ vi.mock('../../src/logger.js', () => ({
 
 const mockResolveSession = vi.fn();
 const mockSetSessionStatus = vi.fn();
+const mockFindAvailableSession = vi.fn();
 vi.mock('../../src/agents/session-manager.js', () => ({
   resolveSession: (...args) => mockResolveSession(...args),
   setSessionStatus: (...args) => mockSetSessionStatus(...args),
+  findAvailableSession: (...args) => mockFindAvailableSession(...args),
 }));
 
 const { createClaim, completeClaim, failClaim, expireClaims, getActiveClaim } = await import('../../src/agents/claim-manager.js');
@@ -24,6 +26,7 @@ describe('claim-manager', () => {
     mockQuery.mockReset();
     mockResolveSession.mockReset();
     mockSetSessionStatus.mockReset();
+    mockFindAvailableSession.mockReset();
   });
 
   describe('createClaim', () => {
@@ -62,6 +65,41 @@ describe('claim-manager', () => {
         expect.stringContaining('claim_type'),
         expect.arrayContaining(['issue_work'])
       );
+    });
+  });
+
+  describe('createClaim without agentId', () => {
+    it('uses findAvailableSession when agentId is not provided', async () => {
+      mockFindAvailableSession.mockResolvedValueOnce({ agentId: 'runner1', sessionId: 3 });
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 1, session_id: 3, status: 'claimed' }] });
+      mockSetSessionStatus.mockResolvedValueOnce();
+      const claim = await createClaim({
+        orgId: 'acme', repo: 'owner/repo', prNumber: 1, attempt: 1, payload: {},
+      });
+      expect(mockFindAvailableSession).toHaveBeenCalledWith('acme', 'owner/repo', 1);
+      expect(mockResolveSession).not.toHaveBeenCalled();
+      expect(claim.session_id).toBe(3);
+    });
+
+    it('creates pending claim when no session available and no agentId', async () => {
+      mockFindAvailableSession.mockResolvedValueOnce(null);
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 1, session_id: null, status: 'pending' }] });
+      const claim = await createClaim({
+        orgId: 'acme', repo: 'owner/repo', prNumber: 1, attempt: 1, payload: {},
+      });
+      expect(claim.status).toBe('pending');
+      expect(mockSetSessionStatus).not.toHaveBeenCalled();
+    });
+
+    it('uses resolveSession when agentId is provided', async () => {
+      mockResolveSession.mockResolvedValueOnce(5);
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 1, session_id: 5, status: 'claimed' }] });
+      mockSetSessionStatus.mockResolvedValueOnce();
+      await createClaim({
+        orgId: 'acme', repo: 'owner/repo', prNumber: 1, attempt: 1, agentId: 'explicit', payload: {},
+      });
+      expect(mockResolveSession).toHaveBeenCalledWith('acme', 'explicit', 'owner/repo', 1);
+      expect(mockFindAvailableSession).not.toHaveBeenCalled();
     });
   });
 

@@ -1,5 +1,5 @@
 import { query, audit } from '../db/client.js';
-import { resolveSession, setSessionStatus } from './session-manager.js';
+import { resolveSession, setSessionStatus, findAvailableSession } from './session-manager.js';
 import logger from '../logger.js';
 
 const DEFAULT_CLAIM_TTL_MS = 15 * 60 * 1000; // 15 minutes
@@ -30,7 +30,19 @@ async function freeSession(orgId, sessionId, agentId, targetStatus = 'online') {
  * @returns {Promise<object>}
  */
 export async function createClaim({ orgId, repo, prNumber, attempt, agentId, payload, claimType = 'review_fix', ttlMs = DEFAULT_CLAIM_TTL_MS }) {
-  const sessionId = await resolveSession(orgId, agentId, repo, prNumber);
+  let sessionId = null;
+  let resolvedAgentId = agentId;
+
+  if (agentId) {
+    sessionId = await resolveSession(orgId, agentId, repo, prNumber);
+  } else {
+    const available = await findAvailableSession(orgId, repo, prNumber);
+    if (available) {
+      sessionId = available.sessionId;
+      resolvedAgentId = available.agentId;
+    }
+  }
+
   const status = sessionId ? 'claimed' : 'pending';
   const claimedAt = sessionId ? new Date().toISOString() : null;
   const expiresAt = sessionId ? new Date(Date.now() + ttlMs).toISOString() : null;
@@ -44,8 +56,8 @@ export async function createClaim({ orgId, repo, prNumber, attempt, agentId, pay
     [orgId, repo, prNumber, attempt, sessionId, claimType, status, JSON.stringify(payload), claimedAt, expiresAt]
   );
 
-  if (sessionId) {
-    await setSessionStatus(orgId, agentId, sessionId, 'busy');
+  if (sessionId && resolvedAgentId) {
+    await setSessionStatus(orgId, resolvedAgentId, sessionId, 'busy');
   }
 
   const claim = result.rows[0];
