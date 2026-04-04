@@ -23,7 +23,7 @@ async function freeSession(orgId, sessionId, agentId, targetStatus = 'online') {
  * @param {string} opts.repo
  * @param {number} opts.prNumber
  * @param {number} opts.attempt
- * @param {string} opts.agentId
+ * @param {string} [opts.agentId] - explicit agent; if omitted, finds any available session
  * @param {object} opts.payload
  * @param {string} [opts.claimType='review_fix']
  * @param {number} [opts.ttlMs]

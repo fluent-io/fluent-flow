@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { validateToken } from '../agents/token-manager.js';
-import { registerSession, touchSession } from '../agents/session-manager.js';
+import { registerSession, touchSession, setSessionStatus } from '../agents/session-manager.js';
 import { completeClaim, failClaim } from '../agents/claim-manager.js';
 import { dequeue, hasPending } from '../notifications/transports/long-poll.js';
 import { query, audit } from '../db/client.js';
@@ -79,7 +79,11 @@ async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 60 * 100
      RETURNING *`,
     [orgId, agentId, sessionId, expiresAt]
   );
-  return result.rows[0] ?? null;
+  const claim = result.rows[0] ?? null;
+  if (claim) {
+    await setSessionStatus(orgId, agentId, sessionId, 'busy');
+  }
+  return claim;
 }
 
 /**
