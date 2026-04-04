@@ -15,7 +15,7 @@ const CreateAgentSchema = z.object({
   agent_type: z.enum(['claude-code', 'codex', 'devin', 'openclaw', 'aider', 'custom']),
   transport: z.enum(['webhook', 'workflow_dispatch', 'long_poll', 'api']),
   transport_meta: z.record(z.any()).optional(),
-  repos: z.array(z.string()).optional(),
+  repos: z.array(z.string()).max(20).optional(),
 });
 
 const UpdateAgentSchema = z.object({
@@ -96,9 +96,9 @@ async function validateRepos(repos) {
 export async function handleCreateAgent(req, res) {
   const parsed = CreateAgentSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
-  const repoError = await validateRepos(parsed.data.repos);
-  if (repoError) return res.status(400).json({ error: repoError });
   try {
+    const repoError = await validateRepos(parsed.data.repos);
+    if (repoError) return res.status(400).json({ error: repoError });
     const agent = await createAgent({
       id: parsed.data.id, orgId: req.adminOrg, agentType: parsed.data.agent_type,
       transport: parsed.data.transport, transportMeta: parsed.data.transport_meta, repos: parsed.data.repos,
@@ -107,6 +107,9 @@ export async function handleCreateAgent(req, res) {
   } catch (err) {
     if (err.code === '23505') {
       return res.status(409).json({ error: `Agent '${parsed.data.id}' already exists` });
+    }
+    if (err.status) {
+      return res.status(502).json({ error: `GitHub API error while validating repos: ${err.message}` });
     }
     logger.error({ msg: 'Failed to create agent', error: err.message });
     res.status(500).json({ error: 'Internal server error' });
@@ -137,9 +140,9 @@ export async function handleListAgents(req, res) {
 export async function handleUpdateAgent(req, res) {
   const parsed = UpdateAgentSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
-  const repoError = await validateRepos(parsed.data.repos);
-  if (repoError) return res.status(400).json({ error: repoError });
   try {
+    const repoError = await validateRepos(parsed.data.repos);
+    if (repoError) return res.status(400).json({ error: repoError });
     const agent = await updateAgent(req.adminOrg, req.params.id, {
       agentType: parsed.data.agent_type, transport: parsed.data.transport,
       transportMeta: parsed.data.transport_meta, repos: parsed.data.repos,
@@ -147,6 +150,9 @@ export async function handleUpdateAgent(req, res) {
     if (!agent) return res.status(404).json({ error: 'Agent not found' });
     res.json(agent);
   } catch (err) {
+    if (err.status) {
+      return res.status(502).json({ error: `GitHub API error while validating repos: ${err.message}` });
+    }
     logger.error({ msg: 'Failed to update agent', error: err.message });
     res.status(500).json({ error: 'Internal server error' });
   }
