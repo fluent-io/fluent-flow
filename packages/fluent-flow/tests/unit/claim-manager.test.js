@@ -79,6 +79,7 @@ describe('claim-manager', () => {
       expect(mockFindAvailableSession).toHaveBeenCalledWith('acme', 'owner/repo', 1);
       expect(mockResolveSession).not.toHaveBeenCalled();
       expect(claim.session_id).toBe(3);
+      expect(mockSetSessionStatus).toHaveBeenCalledWith('acme', 'runner1', 3, 'busy');
     });
 
     it('creates pending claim when no session available and no agentId', async () => {

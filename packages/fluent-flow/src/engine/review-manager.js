@@ -144,7 +144,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
 
   logger.info({ msg: 'Review failed', repo: repoKey, prNumber, attempt, retryCount: newRetryCount, maxRetries });
 
-  // Create claim — agentId is optional; claim-manager will find any available session
+  // Always create claim (even without agentId) so polling agents can pick it up
   const explicitAgent = agentId;
   try {
     await createClaim({
@@ -175,6 +175,8 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
       onFailure: config.reviewer?.on_failure,
       delivery: config.delivery ?? {},
     });
+  } else {
+    logger.info({ msg: 'No notification agent configured — pending claim will be picked up by polling runners', repo: repoKey, prNumber });
   }
 
   // Check if we've hit max retries
