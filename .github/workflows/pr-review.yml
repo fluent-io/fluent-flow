@@ -23,4 +23,3 @@ jobs:
       prior_issues: ${{ inputs.prior_issues }}
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      FLUENT_FLOW_URL: ${{ secrets.FLUENT_FLOW_URL }}

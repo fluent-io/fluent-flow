@@ -27,13 +27,12 @@ on:
         description: "Anthropic API key for Claude"
         required: true
 
-env:
-  FLUENT_FLOW_URL: ${{ vars.FLUENT_FLOW_URL || '' }}
-
 jobs:
   review:
     name: Automated Code Review
     runs-on: ubuntu-latest
+    env:
+      FLUENT_FLOW_URL: ${{ vars.FLUENT_FLOW_URL || '' }}
     permissions:
       contents: read
       pull-requests: write
