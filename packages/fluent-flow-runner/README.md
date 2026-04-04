@@ -4,7 +4,7 @@ CLI runner for [Fluent Flow](../fluent-flow/README.md). Connects to a Fluent Flo
 
 ## Prerequisites
 
-All Admin API calls require `MCP_AUTH_TOKEN` — the shared secret configured on the Fluent Flow server. Find it in your server's environment (e.g. `docker-compose.yml` or `.env`), then export it locally:
+In production, Admin API calls require `MCP_AUTH_TOKEN` — the shared secret configured on the Fluent Flow server. In development (when `MCP_AUTH_TOKEN` is not set on the server), the Admin API allows unauthenticated access. For production, find the token in your server's environment (e.g. `docker-compose.yml` or `.env`), then export it locally:
 
 ```bash
 export MCP_AUTH_TOKEN=<your-server-token>

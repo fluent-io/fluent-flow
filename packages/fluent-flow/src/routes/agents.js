@@ -71,7 +71,7 @@ function adminAuth(req, res, next) {
 
 // --- Validation helpers ---
 
-const REPO_FORMAT = /^[^/]+\/[^/]+$/;
+const REPO_FORMAT = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
 
 async function validateRepos(repos) {
   if (!repos || repos.length === 0) return null;

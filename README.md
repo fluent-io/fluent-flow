@@ -23,7 +23,7 @@ Automated code review orchestrator for AI coding agents. Manages the review-fix 
 
 ```bash
 cd packages/fluent-flow
-cp .env.example .env   # configure DATABASE_URL, GitHub App credentials
+cp .env.example .env   # configure DATABASE_URL, GITHUB_TOKEN, MCP_AUTH_TOKEN
 npm install
 npm run dev
 ```

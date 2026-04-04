@@ -54,9 +54,9 @@ MCP is a stateless HTTP protocol that AI agents (Claude Code, Cursor) use to int
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `GITHUB_APP_ID` | Yes | GitHub App ID |
-| `GITHUB_PRIVATE_KEY` | Yes | GitHub App private key |
-| `MCP_AUTH_TOKEN` | No | Bearer token for MCP and Admin API auth |
+| `GITHUB_TOKEN` | Yes | GitHub personal access token (PAT) |
+| `GITHUB_WEBHOOK_SECRET` | No | Webhook signature verification secret |
+| `MCP_AUTH_TOKEN` | No | Bearer token for MCP and Admin API auth (required in production) |
 | `PORT` | No | Server port (default: `3847`) |
 | `LOG_LEVEL` | No | Pino log level (default: `info`) |
 
