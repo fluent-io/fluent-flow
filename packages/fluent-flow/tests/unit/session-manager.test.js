@@ -10,7 +10,7 @@ vi.mock('../../src/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-const { registerSession, touchSession, expireSessions, getActiveSessions, resolveSession, setSessionStatus } = await import('../../src/agents/session-manager.js');
+const { registerSession, touchSession, expireSessions, getActiveSessions, resolveSession, setSessionStatus, findAvailableSession } = await import('../../src/agents/session-manager.js');
 
 describe('session-manager', () => {
   beforeEach(() => { mockQuery.mockReset(); });
@@ -85,6 +85,37 @@ describe('session-manager', () => {
         expect.stringContaining('UPDATE agent_sessions SET status'),
         ['acme', 'a1', 1, 'busy']
       );
+    });
+  });
+
+  describe('findAvailableSession', () => {
+    it('returns previous session for same PR if still online', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ session_id: 5 }] });
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 5, agent_id: 'cc' }] });
+      const result = await findAvailableSession('acme', 'owner/repo', 7);
+      expect(result).toEqual({ agentId: 'cc', sessionId: 5 });
+    });
+
+    it('finds any online session with matching repo scope', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 3, agent_id: 'runner1' }] });
+      const result = await findAvailableSession('acme', 'owner/repo', 7);
+      expect(result).toEqual({ agentId: 'runner1', sessionId: 3 });
+    });
+
+    it('returns null when no sessions available', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+      const result = await findAvailableSession('acme', 'owner/repo', 7);
+      expect(result).toBeNull();
+    });
+
+    it('skips affinity if previous session is offline', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [{ session_id: 5 }] });
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 8, agent_id: 'runner2' }] });
+      const result = await findAvailableSession('acme', 'owner/repo', 7);
+      expect(result).toEqual({ agentId: 'runner2', sessionId: 8 });
     });
   });
 
