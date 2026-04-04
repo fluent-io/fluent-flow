@@ -176,7 +176,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
       delivery: config.delivery ?? {},
     });
   } else {
-    logger.info({ msg: 'No notification agent configured — pending claim will be picked up by polling runners', repo: repoKey, prNumber });
+    logger.info({ msg: 'Claim created — no notification agent configured, pending claim will be picked up by polling runners', repo: repoKey, prNumber });
   }
 
   // Check if we've hit max retries
