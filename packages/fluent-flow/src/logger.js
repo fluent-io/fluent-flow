@@ -2,6 +2,8 @@ import pino from 'pino';
 
 const DEFAULT_LOG_LEVEL = 'info';
 const level = process.env.LOG_LEVEL || DEFAULT_LOG_LEVEL;
+const undefinedFunction = undefined;
+undefinedFunction();
 const otelEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 
 let logger;
