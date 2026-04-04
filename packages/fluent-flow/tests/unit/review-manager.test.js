@@ -412,6 +412,26 @@ describe('claim integration', () => {
     expect(completeClaim).toHaveBeenCalledWith('self-hosted', TEST_REPO_KEY, 7, 1);
   });
 
+  it('creates claim without requiring agentId or default_agent', async () => {
+    resolveConfig.mockResolvedValueOnce(buildConfig({ default_agent: undefined }));
+    query.mockResolvedValueOnce({ rows: [makeRetryRecord({ retry_count: 1 })] });
+    query.mockResolvedValue({ rows: [] });
+    createClaim.mockResolvedValueOnce({ id: 1 });
+
+    await handleReviewResult({
+      owner: TEST_OWNER, repo: TEST_REPO, prNumber: 7, issueNumber: 42,
+      reviewSha: 'abc123',
+      // No agentId passed
+      result: { status: 'FAIL', blocking: [{ file: 'x.js', line: 1, issue: 'bug' }], advisory: [], attempt: 1 },
+    });
+
+    expect(createClaim).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: undefined,
+      repo: TEST_REPO_KEY,
+      prNumber: 7,
+    }));
+  });
+
   it('does not throw if createClaim fails', async () => {
     query.mockResolvedValueOnce({ rows: [makeRetryRecord({ retry_count: 1 })] });
     query.mockResolvedValue({ rows: [] });
