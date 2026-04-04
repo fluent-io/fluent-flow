@@ -33,11 +33,12 @@ export async function registerSession(orgId, agentId, sessionMeta = {}, ttlMs = 
  */
 export async function touchSession(orgId, agentId, sessionId, ttlMs = DEFAULT_SESSION_TTL_MS) {
   const expiresAt = new Date(Date.now() + ttlMs).toISOString();
-  await query(
+  const result = await query(
     `UPDATE agent_sessions SET last_seen_at = NOW(), expires_at = $4
      WHERE id = $3 AND org_id = $1 AND agent_id = $2 AND status != 'offline'`,
     [orgId, agentId, sessionId, expiresAt]
   );
+  return result.rowCount > 0;
 }
 
 /**
@@ -119,6 +120,58 @@ export async function resolveSession(orgId, agentId, repo, prNumber) {
     [orgId, agentId]
   );
   return avail.rows[0]?.id ?? null;
+}
+
+/**
+ * Find any available session across all agents that can handle this repo.
+ * Priority: previous session for this PR → first available session with repo scope match.
+ * @param {string} orgId
+ * @param {string} repo - "owner/repo"
+ * @param {number} prNumber
+ * @returns {Promise<{agentId: string, sessionId: number}|null>}
+ */
+export async function findAvailableSession(orgId, repo, prNumber) {
+  // 1. PR affinity — check if a prior claim used a session still online
+  try {
+    const prev = await query(
+      `SELECT c.session_id FROM agent_claims c
+       WHERE c.org_id = $1 AND c.repo = $2 AND c.pr_number = $3
+         AND c.status IN ('completed', 'expired')
+       ORDER BY c.attempt DESC LIMIT 1`,
+      [orgId, repo, prNumber]
+    );
+    if (prev.rows[0]?.session_id) {
+      const check = await query(
+        `SELECT s.id, s.agent_id FROM agent_sessions s
+         WHERE s.id = $1 AND s.status = 'online' AND s.expires_at > NOW()`,
+        [prev.rows[0].session_id]
+      );
+      if (check.rows[0]) {
+        return { agentId: check.rows[0].agent_id, sessionId: check.rows[0].id };
+      }
+    }
+  } catch (err) {
+    if (err?.code === '42P01') {
+      logger.warn({ msg: 'agent_claims table not yet initialized — skipping PR affinity' });
+    } else {
+      throw err;
+    }
+  }
+
+  // 2. Any available session — join sessions with agents, filter by repo scope
+  const avail = await query(
+    `SELECT s.id, s.agent_id FROM agent_sessions s
+     JOIN agents a ON a.org_id = s.org_id AND a.id = s.agent_id
+     WHERE s.org_id = $1 AND s.status = 'online' AND s.expires_at > NOW()
+       AND (a.repos = '{}' OR $2 = ANY(a.repos))
+     ORDER BY s.last_seen_at DESC LIMIT 1`,
+    [orgId, repo]
+  );
+  if (avail.rows[0]) {
+    return { agentId: avail.rows[0].agent_id, sessionId: avail.rows[0].id };
+  }
+
+  return null;
 }
 
 /**

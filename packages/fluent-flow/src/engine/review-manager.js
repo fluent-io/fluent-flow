@@ -144,29 +144,30 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
 
   logger.info({ msg: 'Review failed', repo: repoKey, prNumber, attempt, retryCount: newRetryCount, maxRetries });
 
-  // Notify the agent that created the PR
-  const resolvedAgent = agentId ?? config.default_agent ?? config.agent_id;
-  if (resolvedAgent) {
-    // Create claim BEFORE notifying — long_poll transport needs session_id from the claim
-    try {
-      await createClaim({
-        orgId: config.org_id ?? 'self-hosted',
-        repo: repoKey,
-        prNumber,
-        attempt,
-        agentId: resolvedAgent,
-        payload: {
-          message: formatRichMessage({ repo: repoKey, prNumber, attempt, blocking, advisory }),
-          issues: allIssues,
-          onFailure: config.reviewer?.on_failure,
-        },
-      });
-    } catch (err) {
-      logger.warn({ msg: 'Failed to create claim on review failure', error: err.message });
-    }
+  // Always create claim (even without agentId) so polling agents can pick it up
+  const explicitAgent = agentId;
+  try {
+    await createClaim({
+      orgId: config.org_id ?? 'self-hosted',
+      repo: repoKey,
+      prNumber,
+      attempt,
+      agentId: explicitAgent,
+      payload: {
+        message: formatRichMessage({ repo: repoKey, prNumber, attempt, blocking, advisory }),
+        issues: allIssues,
+        onFailure: config.reviewer?.on_failure,
+      },
+    });
+  } catch (err) {
+    logger.warn({ msg: 'Failed to create claim on review failure', error: err.message });
+  }
 
+  // Notify agent if we know which one (explicit or resolved from config)
+  const notifyAgent = explicitAgent ?? config.default_agent ?? config.agent_id;
+  if (notifyAgent) {
     await notifyReviewFailure({
-      agentId: resolvedAgent,
+      agentId: notifyAgent,
       repo: repoKey,
       prNumber,
       attempt,
@@ -174,6 +175,8 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
       onFailure: config.reviewer?.on_failure,
       delivery: config.delivery ?? {},
     });
+  } else {
+    logger.info({ msg: 'Claim created — no notification agent configured, pending claim will be picked up by polling runners', repo: repoKey, prNumber });
   }
 
   // Check if we've hit max retries
@@ -204,7 +207,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
           reason: 'review-escalation',
           context: `Automated review failed ${newRetryCount} times. Blocking issues:\n${blocking.map((b) => `- ${b.file}:${b.line} — ${b.issue}`).join('\n')}`,
           actor: 'fluent-flow',
-          agentId: resolvedAgent,
+          agentId: notifyAgent,
         });
       } catch (err) {
         logger.error({ msg: 'Failed to record escalation pause', error: err.message });
