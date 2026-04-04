@@ -24,8 +24,9 @@ vi.mock('../../src/notifications/transports/long-poll.js', () => ({
   dequeue: (...args) => mockDequeue(...args),
   hasPending: (...args) => mockHasPending(...args),
 }));
+const mockQuery = vi.fn().mockResolvedValue({ rows: [] });
 vi.mock('../../src/db/client.js', () => ({
-  query: vi.fn().mockResolvedValue({ rows: [] }),
+  query: (...args) => mockQuery(...args),
   audit: vi.fn(),
 }));
 vi.mock('../../src/logger.js', () => ({
@@ -98,9 +99,28 @@ describe('runner routes', () => {
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ work: { claim_id: 1, message: 'fix it' } }));
     });
 
-    it('returns empty if no work after timeout', async () => {
+    it('picks up unassigned pending claim when long-poll queue is empty', async () => {
       mockHasPending.mockReturnValue(false);
       mockTouchSession.mockResolvedValue();
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ id: 1, repo: 'owner/repo', pr_number: 5, attempt: 1, payload: '{"message":"fix"}' }],
+      });
+      const req = { tokenInfo: { org_id: 'acme', agent_id: 'a1' }, body: { session_id: 10 }, on: vi.fn() };
+      const res = { json: vi.fn(), headersSent: false };
+      await handlePoll(req, res, { pollTimeoutMs: 0 });
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.stringContaining('agent_claims'),
+        expect.arrayContaining(['acme', 'a1', 10])
+      );
+      expect(res.json).toHaveBeenCalledWith({
+        work: expect.objectContaining({ repo: 'owner/repo', pr_number: 5 }),
+      });
+    });
+
+    it('returns empty if no work and no pending claims after timeout', async () => {
+      mockHasPending.mockReturnValue(false);
+      mockTouchSession.mockResolvedValue();
+      mockQuery.mockResolvedValueOnce({ rows: [] });
       const req = { tokenInfo: { org_id: 'acme', agent_id: 'a1' }, body: { session_id: 10 }, on: vi.fn() };
       const res = { json: vi.fn(), headersSent: false };
       await handlePoll(req, res, { pollTimeoutMs: 0 });
