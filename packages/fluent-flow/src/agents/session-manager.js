@@ -33,11 +33,12 @@ export async function registerSession(orgId, agentId, sessionMeta = {}, ttlMs = 
  */
 export async function touchSession(orgId, agentId, sessionId, ttlMs = DEFAULT_SESSION_TTL_MS) {
   const expiresAt = new Date(Date.now() + ttlMs).toISOString();
-  await query(
+  const result = await query(
     `UPDATE agent_sessions SET last_seen_at = NOW(), expires_at = $4
      WHERE id = $3 AND org_id = $1 AND agent_id = $2 AND status != 'offline'`,
     [orgId, agentId, sessionId, expiresAt]
   );
+  return result.rowCount > 0;
 }
 
 /**

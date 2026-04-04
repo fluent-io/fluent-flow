@@ -108,7 +108,10 @@ export async function handlePoll(req, res, opts = {}) {
   req.on('close', () => { closed = true; });
 
   try {
-    await touchSession(org_id, agent_id, sessionId);
+    const sessionAlive = await touchSession(org_id, agent_id, sessionId);
+    if (!sessionAlive) {
+      return res.status(410).json({ error: 'Session expired or offline — re-register' });
+    }
 
     if (hasPending(sessionId)) {
       respond({ work: dequeue(sessionId) });

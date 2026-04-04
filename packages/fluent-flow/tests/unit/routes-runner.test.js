@@ -92,7 +92,7 @@ describe('runner routes', () => {
     it('returns payload immediately if work is queued', async () => {
       mockHasPending.mockReturnValueOnce(true);
       mockDequeue.mockReturnValueOnce({ claim_id: 1, message: 'fix it' });
-      mockTouchSession.mockResolvedValueOnce();
+      mockTouchSession.mockResolvedValueOnce(true);
       const req = { tokenInfo: { org_id: 'acme', agent_id: 'a1' }, body: { session_id: 10 }, on: vi.fn() };
       const res = { json: vi.fn(), headersSent: false };
       await handlePoll(req, res, { pollTimeoutMs: 0 });
@@ -101,7 +101,7 @@ describe('runner routes', () => {
 
     it('picks up unassigned pending claim when long-poll queue is empty', async () => {
       mockHasPending.mockReturnValue(false);
-      mockTouchSession.mockResolvedValue();
+      mockTouchSession.mockResolvedValue(true);
       mockQuery.mockResolvedValueOnce({
         rows: [{ id: 1, repo: 'owner/repo', pr_number: 5, attempt: 1, payload: '{"message":"fix"}' }],
       });
@@ -119,7 +119,7 @@ describe('runner routes', () => {
 
     it('returns empty if no work and no pending claims after timeout', async () => {
       mockHasPending.mockReturnValue(false);
-      mockTouchSession.mockResolvedValue();
+      mockTouchSession.mockResolvedValue(true);
       mockQuery.mockResolvedValueOnce({ rows: [] });
       const req = { tokenInfo: { org_id: 'acme', agent_id: 'a1' }, body: { session_id: 10 }, on: vi.fn() };
       const res = { json: vi.fn(), headersSent: false };
@@ -136,7 +136,7 @@ describe('runner routes', () => {
 
     it('passes org_id and agent_id to touchSession', async () => {
       mockHasPending.mockReturnValue(false);
-      mockTouchSession.mockResolvedValue();
+      mockTouchSession.mockResolvedValue(true);
       const req = { tokenInfo: { org_id: 'acme', agent_id: 'a1' }, body: { session_id: 10 }, on: vi.fn() };
       const res = { json: vi.fn(), headersSent: false };
       await handlePoll(req, res, { pollTimeoutMs: 0 });
