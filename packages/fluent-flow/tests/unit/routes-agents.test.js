@@ -22,6 +22,10 @@ vi.mock('../../src/agents/token-manager.js', () => ({
   revokeToken: (...args) => mockRevokeToken(...args),
   validateToken: vi.fn(),
 }));
+const mockRepoExists = vi.fn();
+vi.mock('../../src/github/rest.js', () => ({
+  repoExists: (...args) => mockRepoExists(...args),
+}));
 vi.mock('../../src/agents/session-manager.js', () => ({
   getActiveSessions: vi.fn().mockResolvedValue([]),
 }));
@@ -33,7 +37,7 @@ vi.mock('../../src/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-const { handleCreateAgent, handleGetAgent, handleListAgents, handleDeleteAgent, handleCreateToken } = await import('../../src/routes/agents.js');
+const { handleCreateAgent, handleGetAgent, handleListAgents, handleUpdateAgent, handleDeleteAgent, handleCreateToken } = await import('../../src/routes/agents.js');
 
 const adminReq = (body = {}, params = {}) => ({ adminOrg: 'acme', body, params });
 const fakeRes = () => ({ status: vi.fn().mockReturnThis(), json: vi.fn(), end: vi.fn() });
@@ -114,6 +118,61 @@ describe('agent routes', () => {
       const res = fakeRes();
       await handleGetAgent(adminReq({}, { id: 'a1' }), res);
       expect(res.status).toHaveBeenCalledWith(500);
+    });
+  });
+
+  describe('repo validation', () => {
+    it('returns 400 on invalid repo format', async () => {
+      const res = fakeRes();
+      await handleCreateAgent(adminReq({ id: 'a1', agent_type: 'claude-code', transport: 'long_poll', repos: ['not-a-repo'] }), res);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.stringContaining('Invalid repo format') }));
+    });
+
+    it('returns 400 when repo does not exist on GitHub', async () => {
+      mockRepoExists.mockResolvedValue(false);
+      const res = fakeRes();
+      await handleCreateAgent(adminReq({ id: 'a1', agent_type: 'claude-code', transport: 'long_poll', repos: ['owner/nonexistent'] }), res);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.stringContaining('not found on GitHub') }));
+    });
+
+    it('creates agent when repos exist on GitHub', async () => {
+      mockRepoExists.mockResolvedValue(true);
+      mockCreateAgent.mockResolvedValueOnce({ id: 'a1', org_id: 'acme' });
+      const res = fakeRes();
+      await handleCreateAgent(adminReq({ id: 'a1', agent_type: 'claude-code', transport: 'long_poll', repos: ['fluent-io/fluent-flow'] }), res);
+      expect(mockRepoExists).toHaveBeenCalledWith('fluent-io', 'fluent-flow');
+      expect(res.status).toHaveBeenCalledWith(201);
+    });
+
+    it('creates agent when repos is omitted', async () => {
+      mockCreateAgent.mockResolvedValueOnce({ id: 'a1', org_id: 'acme' });
+      const res = fakeRes();
+      await handleCreateAgent(adminReq({ id: 'a1', agent_type: 'claude-code', transport: 'long_poll' }), res);
+      expect(mockRepoExists).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(201);
+    });
+
+    it('returns 400 on update with non-existent repo', async () => {
+      mockRepoExists.mockResolvedValue(false);
+      const res = fakeRes();
+      await handleUpdateAgent(adminReq({ repos: ['owner/gone'] }, { id: 'a1' }), res);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.stringContaining('not found on GitHub') }));
+    });
+  });
+
+  describe('duplicate agent', () => {
+    it('returns 409 when agent already exists', async () => {
+      const err = new Error('duplicate key');
+      err.code = '23505';
+      mockCreateAgent.mockRejectedValueOnce(err);
+      mockRepoExists.mockResolvedValue(true);
+      const res = fakeRes();
+      await handleCreateAgent(adminReq({ id: 'a1', agent_type: 'claude-code', transport: 'long_poll', repos: ['fluent-io/fluent-flow'] }), res);
+      expect(res.status).toHaveBeenCalledWith(409);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.stringContaining('already exists') }));
     });
   });
 });

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { createAgent, getAgent, listAgents, updateAgent, deleteAgent } from '../agents/agent-manager.js';
 import { createToken, listTokens, revokeToken } from '../agents/token-manager.js';
 import { getActiveSessions } from '../agents/session-manager.js';
+import { repoExists } from '../github/rest.js';
 import logger from '../logger.js';
 
 const router = Router();
@@ -68,11 +69,35 @@ function adminAuth(req, res, next) {
   next();
 }
 
+// --- Validation helpers ---
+
+const REPO_FORMAT = /^[^/]+\/[^/]+$/;
+
+async function validateRepos(repos) {
+  if (!repos || repos.length === 0) return null;
+  for (const repo of repos) {
+    if (!REPO_FORMAT.test(repo)) {
+      return `Invalid repo format: '${repo}'. Expected 'owner/repo'`;
+    }
+  }
+  const invalid = [];
+  for (const repo of repos) {
+    const [owner, name] = repo.split('/');
+    if (!await repoExists(owner, name)) invalid.push(repo);
+  }
+  if (invalid.length) {
+    return `Repos not found on GitHub: ${invalid.join(', ')}`;
+  }
+  return null;
+}
+
 // --- Handlers ---
 
 export async function handleCreateAgent(req, res) {
   const parsed = CreateAgentSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
+  const repoError = await validateRepos(parsed.data.repos);
+  if (repoError) return res.status(400).json({ error: repoError });
   try {
     const agent = await createAgent({
       id: parsed.data.id, orgId: req.adminOrg, agentType: parsed.data.agent_type,
@@ -80,6 +105,9 @@ export async function handleCreateAgent(req, res) {
     });
     res.status(201).json(agent);
   } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: `Agent '${parsed.data.id}' already exists` });
+    }
     logger.error({ msg: 'Failed to create agent', error: err.message });
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -109,6 +137,8 @@ export async function handleListAgents(req, res) {
 export async function handleUpdateAgent(req, res) {
   const parsed = UpdateAgentSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
+  const repoError = await validateRepos(parsed.data.repos);
+  if (repoError) return res.status(400).json({ error: repoError });
   try {
     const agent = await updateAgent(req.adminOrg, req.params.id, {
       agentType: parsed.data.agent_type, transport: parsed.data.transport,
