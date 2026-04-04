@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { createAgent, getAgent, listAgents, updateAgent, deleteAgent } from '../agents/agent-manager.js';
 import { createToken, listTokens, revokeToken } from '../agents/token-manager.js';
 import { getActiveSessions } from '../agents/session-manager.js';
+import { repoExists } from '../github/rest.js';
 import logger from '../logger.js';
 
 const router = Router();
@@ -14,7 +15,7 @@ const CreateAgentSchema = z.object({
   agent_type: z.enum(['claude-code', 'codex', 'devin', 'openclaw', 'aider', 'custom']),
   transport: z.enum(['webhook', 'workflow_dispatch', 'long_poll', 'api']),
   transport_meta: z.record(z.any()).optional(),
-  repos: z.array(z.string()).optional(),
+  repos: z.array(z.string()).max(20).optional(),
 });
 
 const UpdateAgentSchema = z.object({
@@ -68,18 +69,48 @@ function adminAuth(req, res, next) {
   next();
 }
 
+// --- Validation helpers ---
+
+const REPO_FORMAT = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
+
+async function validateRepos(repos) {
+  if (!repos || repos.length === 0) return null;
+  for (const repo of repos) {
+    if (!REPO_FORMAT.test(repo)) {
+      return `Invalid repo format: '${repo}'. Expected 'owner/repo'`;
+    }
+  }
+  const invalid = [];
+  for (const repo of repos) {
+    const [owner, name] = repo.split('/');
+    if (!await repoExists(owner, name)) invalid.push(repo);
+  }
+  if (invalid.length) {
+    return `Repos not found on GitHub: ${invalid.join(', ')}`;
+  }
+  return null;
+}
+
 // --- Handlers ---
 
 export async function handleCreateAgent(req, res) {
   const parsed = CreateAgentSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
   try {
+    const repoError = await validateRepos(parsed.data.repos);
+    if (repoError) return res.status(400).json({ error: repoError });
     const agent = await createAgent({
       id: parsed.data.id, orgId: req.adminOrg, agentType: parsed.data.agent_type,
       transport: parsed.data.transport, transportMeta: parsed.data.transport_meta, repos: parsed.data.repos,
     });
     res.status(201).json(agent);
   } catch (err) {
+    if (err.code === '23505') {
+      return res.status(409).json({ error: `Agent '${parsed.data.id}' already exists` });
+    }
+    if (err.status) {
+      return res.status(502).json({ error: `GitHub API error while validating repos: ${err.message}` });
+    }
     logger.error({ msg: 'Failed to create agent', error: err.message });
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -110,6 +141,8 @@ export async function handleUpdateAgent(req, res) {
   const parsed = UpdateAgentSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
   try {
+    const repoError = await validateRepos(parsed.data.repos);
+    if (repoError) return res.status(400).json({ error: repoError });
     const agent = await updateAgent(req.adminOrg, req.params.id, {
       agentType: parsed.data.agent_type, transport: parsed.data.transport,
       transportMeta: parsed.data.transport_meta, repos: parsed.data.repos,
@@ -117,6 +150,9 @@ export async function handleUpdateAgent(req, res) {
     if (!agent) return res.status(404).json({ error: 'Agent not found' });
     res.json(agent);
   } catch (err) {
+    if (err.status) {
+      return res.status(502).json({ error: `GitHub API error while validating repos: ${err.message}` });
+    }
     logger.error({ msg: 'Failed to update agent', error: err.message });
     res.status(500).json({ error: 'Internal server error' });
   }

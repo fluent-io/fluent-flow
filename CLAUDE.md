@@ -6,6 +6,7 @@ Read [packages/fluent-flow/README.md](packages/fluent-flow/README.md) for archit
 
 ## Key docs by area
 
+- [packages/fluent-flow-runner/README.md](packages/fluent-flow-runner/README.md) — Runner CLI: agent registration, token setup, running locally
 - [packages/fluent-flow/config/README.md](packages/fluent-flow/config/README.md) — Config system: defaults, agent registry, per-repo overrides, validation
 - [packages/fluent-flow/src/engine/README.md](packages/fluent-flow/src/engine/README.md) — State machine, review pipeline, pause/resume logic
 - [packages/fluent-flow/src/mcp/README.md](packages/fluent-flow/src/mcp/README.md) — MCP server: tools, connection, auth

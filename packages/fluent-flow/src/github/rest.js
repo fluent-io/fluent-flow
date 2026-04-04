@@ -98,6 +98,23 @@ export async function getIssue(owner, repo, issueNumber) {
 }
 
 /**
+ * Check if a repo exists on GitHub.
+ * Returns true if found, false on 404, rethrows on other errors (auth, rate limit, network).
+ * @param {string} owner
+ * @param {string} repo
+ * @returns {Promise<boolean>}
+ */
+export async function repoExists(owner, repo) {
+  try {
+    await githubRequest(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
+    return true;
+  } catch (err) {
+    if (err.status === 404) return false;
+    throw err;
+  }
+}
+
+/**
  * Get PR details.
  */
 export async function getPR(owner, repo, prNumber) {
