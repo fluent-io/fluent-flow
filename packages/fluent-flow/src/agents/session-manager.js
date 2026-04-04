@@ -150,7 +150,11 @@ export async function findAvailableSession(orgId, repo, prNumber) {
       }
     }
   } catch (err) {
-    if (err?.code !== '42P01') throw err;
+    if (err?.code === '42P01') {
+      logger.warn({ msg: 'agent_claims table not yet initialized — skipping PR affinity' });
+    } else {
+      throw err;
+    }
   }
 
   // 2. Any available session — join sessions with agents, filter by repo scope
