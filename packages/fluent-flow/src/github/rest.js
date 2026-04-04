@@ -280,6 +280,25 @@ export async function getReviews(owner, repo, prNumber) {
  * @param {number} reviewId
  * @param {string} message
  */
+/**
+ * Get check run annotations.
+ * @param {string} owner
+ * @param {string} repo
+ * @param {number} checkRunId
+ * @returns {Promise<Array>} Array of annotation objects
+ */
+export async function getCheckRunAnnotations(owner, repo, checkRunId) {
+  try {
+    const result = await githubRequest(
+      `/repos/${owner}/${repo}/check-runs/${checkRunId}/annotations?per_page=100`
+    );
+    return Array.isArray(result) ? result : [];
+  } catch (err) {
+    logger.warn({ msg: 'Failed to fetch check run annotations', owner, repo, checkRunId, error: err.message });
+    return [];
+  }
+}
+
 export async function dismissReview(owner, repo, prNumber, reviewId, message) {
   return githubRequest(`/repos/${owner}/${repo}/pulls/${prNumber}/reviews/${reviewId}/dismissals`, {
     method: 'PUT',
