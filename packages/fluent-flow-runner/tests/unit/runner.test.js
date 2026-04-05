@@ -146,7 +146,7 @@ describe('runner', () => {
       );
     });
 
-    it('spawns with shell: true for custom templates ({ shell })', async () => {
+    it('spawns with shell: true and passes env vars for custom templates ({ shell, env })', async () => {
       const work = {
         event: 'review_failed',
         message: 'Fix it',
@@ -165,10 +165,14 @@ describe('runner', () => {
 
       mockSpawn.mockReturnValueOnce(fakeProcess(0));
 
+      const promptEnv = { FLUENT_FLOW_PROMPT: 'Fix it' };
       const runner = createRunner({
         client,
         log: makeLogger(),
-        resolveCommand: vi.fn().mockReturnValue({ shell: 'my-agent "Fix it"' }),
+        resolveCommand: vi.fn().mockReturnValue({
+          shell: 'my-agent "$FLUENT_FLOW_PROMPT"',
+          env: promptEnv,
+        }),
       });
 
       const startPromise = runner.start();
@@ -177,9 +181,12 @@ describe('runner', () => {
       await startPromise;
 
       expect(mockSpawn).toHaveBeenCalledWith(
-        'my-agent "Fix it"',
+        'my-agent "$FLUENT_FLOW_PROMPT"',
         [],
-        expect.objectContaining({ shell: true }),
+        expect.objectContaining({
+          shell: true,
+          env: expect.objectContaining(promptEnv),
+        }),
       );
     });
 
@@ -318,6 +325,71 @@ describe('runner', () => {
         pr_number: 7,
         attempt: 2,
       });
+    });
+  });
+
+  describe('poll failure circuit breaker', () => {
+    it('stops runner after max consecutive poll failures', async () => {
+      vi.useFakeTimers();
+      const log = makeLogger();
+      const client = makeClient({
+        poll: vi.fn().mockRejectedValue(new Error('network down')),
+      });
+
+      const runner = createRunner({
+        client,
+        log,
+        resolveCommand: vi.fn(),
+        maxPollFailures: 3,
+      });
+
+      const startPromise = runner.start();
+      // Advance through backoff delays: 2s + 4s + exit
+      await vi.advanceTimersByTimeAsync(10000);
+      await startPromise;
+
+      vi.useRealTimers();
+
+      expect(client.poll.mock.calls.length).toBe(3);
+      expect(log.error).toHaveBeenCalledWith(
+        'Max consecutive poll failures reached, stopping runner',
+        expect.objectContaining({ consecutiveFailures: 3, maxFailures: 3 }),
+      );
+    });
+
+    it('resets failure count on successful poll', async () => {
+      vi.useFakeTimers();
+      let callCount = 0;
+      const client = makeClient({
+        poll: vi.fn().mockImplementation(async () => {
+          callCount++;
+          // Fail twice, succeed once, then fail twice more, succeed → total 6+ calls without hitting max(3)
+          if (callCount <= 2) throw new Error('fail');
+          if (callCount === 3) return null; // success resets counter
+          if (callCount <= 5) throw new Error('fail again');
+          if (callCount === 6) return null; // another success
+          return null;
+        }),
+      });
+
+      const runner = createRunner({
+        client,
+        log: makeLogger(),
+        resolveCommand: vi.fn(),
+        maxPollFailures: 3,
+      });
+
+      const startPromise = runner.start();
+      // Advance enough time for all backoff cycles
+      await vi.advanceTimersByTimeAsync(30000);
+      runner.shutdown();
+      await vi.advanceTimersByTimeAsync(1000);
+      await startPromise;
+
+      vi.useRealTimers();
+
+      // Runner should still be alive past 5 total failures because resets happened
+      expect(client.poll.mock.calls.length).toBeGreaterThan(5);
     });
   });
 });

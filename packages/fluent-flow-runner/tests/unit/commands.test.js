@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveCommand, AGENT_COMMANDS, escapeForShell } from '../../src/commands.js';
+import { resolveCommand, AGENT_COMMANDS, MAX_PROMPT_LENGTH } from '../../src/commands.js';
 
 describe('commands', () => {
   describe('AGENT_COMMANDS', () => {
@@ -43,15 +43,18 @@ describe('commands', () => {
     });
   });
 
-  describe('resolveCommand() — custom templates', () => {
-    it('uses CLI override and returns { shell }', () => {
+  describe('resolveCommand() — custom templates (env-var based)', () => {
+    it('uses CLI override and returns { shell, env }', () => {
       const cmd = resolveCommand({
         agentType: 'claude-code',
         prompt: 'do stuff',
         commandOverride: 'my-agent --auto "{prompt}"',
       });
-      expect(cmd.shell).toBe('my-agent --auto "do stuff"');
+      expect(cmd.env).toEqual({ FLUENT_FLOW_PROMPT: 'do stuff' });
       expect(cmd).not.toHaveProperty('bin');
+      // {prompt} is replaced with env var reference, not the raw prompt
+      expect(cmd.shell).not.toContain('do stuff');
+      expect(cmd.shell).toContain('FLUENT_FLOW_PROMPT');
     });
 
     it('uses transport_meta.command when provided (no CLI override)', () => {
@@ -60,7 +63,8 @@ describe('commands', () => {
         prompt: 'hello',
         transportCommand: 'custom-tool -p "{prompt}"',
       });
-      expect(cmd.shell).toBe('custom-tool -p "hello"');
+      expect(cmd.env).toEqual({ FLUENT_FLOW_PROMPT: 'hello' });
+      expect(cmd.shell).toContain('FLUENT_FLOW_PROMPT');
     });
 
     it('CLI override takes precedence over transport_meta.command', () => {
@@ -70,21 +74,23 @@ describe('commands', () => {
         transportCommand: 'transport-cmd "{prompt}"',
         commandOverride: 'override-cmd "{prompt}"',
       });
-      expect(cmd.shell).toBe('override-cmd "hello"');
+      expect(cmd.shell).toMatch(/^override-cmd /);
+      expect(cmd.env).toEqual({ FLUENT_FLOW_PROMPT: 'hello' });
     });
 
-    it('escapes shell metacharacters in custom template prompts', () => {
+    it('prevents shell injection by passing prompt via env var, not interpolation', () => {
+      const malicious = 'fix $(rm -rf /) && `whoami` | cat /etc/passwd; echo pwned';
       const cmd = resolveCommand({
         agentType: 'custom',
-        prompt: 'fix $(rm -rf /) and `whoami`',
+        prompt: malicious,
         commandOverride: 'agent "{prompt}"',
       });
-      // $ and backticks should be escaped with backslashes
-      expect(cmd.shell).toContain('\\$');
-      expect(cmd.shell).toContain('\\`');
-      // The unescaped forms should not appear (check exact sequences)
-      expect(cmd.shell).not.toMatch(/[^\\]\$\(/);  // no unescaped $(
-      expect(cmd.shell).not.toMatch(/[^\\]`/);       // no unescaped `
+      // The raw malicious string must NOT appear in the shell command
+      expect(cmd.shell).not.toContain(malicious);
+      expect(cmd.shell).not.toContain('$(rm');
+      expect(cmd.shell).not.toContain('`whoami`');
+      // It is safely passed via environment
+      expect(cmd.env.FLUENT_FLOW_PROMPT).toBe(malicious);
     });
   });
 
@@ -93,27 +99,11 @@ describe('commands', () => {
       expect(() => resolveCommand({ agentType: 'unknown', prompt: 'x' }))
         .toThrow('No command template for agent type "unknown"');
     });
-  });
 
-  describe('escapeForShell()', () => {
-    it('escapes double quotes', () => {
-      expect(escapeForShell('say "hi"')).toBe('say \\"hi\\"');
-    });
-
-    it('escapes backticks', () => {
-      expect(escapeForShell('run `cmd`')).toBe('run \\`cmd\\`');
-    });
-
-    it('escapes dollar signs', () => {
-      expect(escapeForShell('$HOME')).toBe('\\$HOME');
-    });
-
-    it('escapes backslashes', () => {
-      expect(escapeForShell('path\\to')).toBe('path\\\\to');
-    });
-
-    it('escapes newlines', () => {
-      expect(escapeForShell('line1\nline2')).toBe('line1\\nline2');
+    it('throws when prompt exceeds maximum length', () => {
+      const oversized = 'x'.repeat(MAX_PROMPT_LENGTH + 1);
+      expect(() => resolveCommand({ agentType: 'claude-code', prompt: oversized }))
+        .toThrow('Prompt exceeds maximum length');
     });
   });
 });
