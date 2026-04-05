@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { hostname, platform } from 'node:os';
+import { prepareWorktree } from './worktree.js';
 
 /**
  * Build an isolated environment for shell commands.
@@ -60,11 +61,11 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
    * @param {{ bin: string, args: string[] } | { shell: string, env?: Record<string, string> }} cmd
    * @returns {Promise<number>} exit code
    */
-  function execute(cmd) {
+  function execute(cmd, cwdOverride) {
     return new Promise((resolve, reject) => {
       log.info('Executing agent command', { command: cmd.shell ?? cmd.bin });
 
-      const baseOpts = { cwd: cwd ?? process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] };
+      const baseOpts = { cwd: cwdOverride ?? cwd ?? process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] };
 
       const proc = cmd.shell
         ? spawn(cmd.shell, [], {
@@ -104,8 +105,9 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
     activeWork = work;
     const { message, repo, attempt } = work;
     const prNumber = work.prNumber ?? work.pr_number;
+    const branch = work.branch;
 
-    log.info('Work received', { repo, prNumber, attempt, event: work.event });
+    log.info('Work received', { repo, prNumber, attempt, branch, event: work.event });
 
     let cmd;
     try {
@@ -121,12 +123,45 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
       return;
     }
 
+    // Prepare worktree if branch is provided
+    let worktreeCleanup = null;
+    let agentCwd = cwd ?? process.cwd();
+    if (branch && repo) {
+      try {
+        const wt = await prepareWorktree({
+          workDir: cwd ?? process.cwd(),
+          repo,
+          prNumber,
+          attempt,
+          branch,
+        });
+        agentCwd = wt.worktreePath;
+        worktreeCleanup = wt.cleanup;
+        log.info('Worktree ready', { worktreePath: agentCwd });
+      } catch (err) {
+        log.error('Failed to prepare worktree', { error: err.message });
+        await client.reportClaim({ status: 'failed', repo, pr_number: prNumber, attempt });
+        activeWork = null;
+        return;
+      }
+    }
+
     let exitCode;
     try {
-      exitCode = await execute(cmd);
+      exitCode = await execute(cmd, agentCwd);
     } catch (err) {
       log.error('Agent process error', { error: err.message });
       exitCode = 1;
+    }
+
+    // Always clean up worktree
+    if (worktreeCleanup) {
+      try {
+        await worktreeCleanup();
+        log.info('Worktree cleaned up');
+      } catch (err) {
+        log.warn('Failed to clean up worktree', { error: err.message });
+      }
     }
 
     const status = exitCode === 0 ? 'completed' : 'failed';
