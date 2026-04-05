@@ -46,6 +46,11 @@ See [runner docs](packages/fluent-flow-runner/README.md) for step-by-step setup.
 docker compose up -d --build
 ```
 
+## Documentation
+
+- [Design specs](docs/specs/) — Architecture and design decisions
+- [Implementation plans](docs/plans/) — Step-by-step build plans
+
 ## Development
 
 This is a [Turborepo](https://turbo.build/) monorepo.

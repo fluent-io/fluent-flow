@@ -17,7 +17,7 @@ function makeClient(overrides = {}) {
 }
 
 function makeLogger() {
-  return { info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+  return { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() };
 }
 
 /** Helper: create a fake child process that exits with given code */
@@ -146,7 +146,54 @@ describe('runner', () => {
       );
     });
 
-    it('spawns with shell: true for custom templates ({ shell })', async () => {
+    it('spawns with shell: true and passes env vars for custom templates ({ shell, env })', async () => {
+      const work = {
+        event: 'review_failed',
+        message: 'Fix it',
+        repo: 'org/repo',
+        prNumber: 7,
+        attempt: 1,
+      };
+
+      let pollCount = 0;
+      const client = makeClient({
+        poll: vi.fn().mockImplementation(async () => {
+          pollCount++;
+          return pollCount === 1 ? work : null;
+        }),
+      });
+
+      mockSpawn.mockReturnValueOnce(fakeProcess(0));
+
+      const promptEnv = { FLUENT_FLOW_PROMPT: 'Fix it' };
+      const runner = createRunner({
+        client,
+        log: makeLogger(),
+        resolveCommand: vi.fn().mockReturnValue({
+          shell: 'my-agent "$FLUENT_FLOW_PROMPT"',
+          env: promptEnv,
+        }),
+      });
+
+      const startPromise = runner.start();
+      await new Promise((r) => setTimeout(r, 100));
+      runner.shutdown();
+      await startPromise;
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        'my-agent "$FLUENT_FLOW_PROMPT"',
+        [],
+        expect.objectContaining({
+          shell: true,
+          env: expect.objectContaining(promptEnv),
+        }),
+      );
+    });
+
+    it('uses an isolated environment for shell commands (no full process.env leak)', async () => {
+      // Set a fake secret in process.env
+      process.env.__TEST_SECRET_KEY = 'super-secret';
+
       const work = {
         event: 'review_failed',
         message: 'Fix it',
@@ -168,7 +215,10 @@ describe('runner', () => {
       const runner = createRunner({
         client,
         log: makeLogger(),
-        resolveCommand: vi.fn().mockReturnValue({ shell: 'my-agent "Fix it"' }),
+        resolveCommand: vi.fn().mockReturnValue({
+          shell: 'my-agent "$FLUENT_FLOW_PROMPT"',
+          env: { FLUENT_FLOW_PROMPT: 'Fix it' },
+        }),
       });
 
       const startPromise = runner.start();
@@ -176,11 +226,15 @@ describe('runner', () => {
       runner.shutdown();
       await startPromise;
 
-      expect(mockSpawn).toHaveBeenCalledWith(
-        'my-agent "Fix it"',
-        [],
-        expect.objectContaining({ shell: true }),
-      );
+      const spawnEnv = mockSpawn.mock.calls[0][2].env;
+      // Isolated env must contain the explicitly passed var
+      expect(spawnEnv.FLUENT_FLOW_PROMPT).toBe('Fix it');
+      // Isolated env must contain PATH (essential)
+      expect(spawnEnv.PATH).toBeDefined();
+      // Isolated env must NOT contain the fake secret
+      expect(spawnEnv.__TEST_SECRET_KEY).toBeUndefined();
+
+      delete process.env.__TEST_SECRET_KEY;
     });
 
     it('reports completed when agent exits 0', async () => {
@@ -318,6 +372,174 @@ describe('runner', () => {
         pr_number: 7,
         attempt: 2,
       });
+    });
+  });
+
+  describe('shutdown() kill error handling', () => {
+    it('logs a warning when kill fails with unexpected error', async () => {
+      const work = {
+        event: 'review_failed',
+        message: 'Fix it',
+        repo: 'org/repo',
+        prNumber: 7,
+        attempt: 1,
+      };
+
+      let pollCount = 0;
+      const client = makeClient({
+        poll: vi.fn().mockImplementation(async () => {
+          pollCount++;
+          return pollCount === 1 ? work : null;
+        }),
+      });
+
+      // Build a process where kill throws but close still fires
+      const handlers = {};
+      const proc = {
+        on: vi.fn((event, cb) => { handlers[event] = cb; }),
+        stdout: { on: vi.fn() },
+        stderr: { on: vi.fn() },
+        kill: vi.fn(() => {
+          const err = new Error('Operation not permitted');
+          err.code = 'EPERM';
+          throw err;
+        }),
+        pid: 9999,
+      };
+      // Process exits on its own after a tick (simulating already-dying)
+      setTimeout(() => handlers.close?.(1), 200);
+      mockSpawn.mockReturnValueOnce(proc);
+
+      const log = makeLogger();
+      const runner = createRunner({
+        client,
+        log,
+        resolveCommand: vi.fn().mockReturnValue({ bin: 'agent', args: [] }),
+      });
+
+      const startPromise = runner.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await runner.shutdown();
+      await new Promise((r) => setTimeout(r, 300));
+      await startPromise;
+
+      expect(log.warn).toHaveBeenCalledWith(
+        'Failed to kill agent process',
+        expect.objectContaining({ error: 'Operation not permitted', code: 'EPERM' }),
+      );
+    });
+
+    it('silently ignores ESRCH (process already exited)', async () => {
+      const work = {
+        event: 'review_failed',
+        message: 'Fix it',
+        repo: 'org/repo',
+        prNumber: 7,
+        attempt: 1,
+      };
+
+      let pollCount = 0;
+      const client = makeClient({
+        poll: vi.fn().mockImplementation(async () => {
+          pollCount++;
+          return pollCount === 1 ? work : null;
+        }),
+      });
+
+      const handlers = {};
+      const proc = {
+        on: vi.fn((event, cb) => { handlers[event] = cb; }),
+        stdout: { on: vi.fn() },
+        stderr: { on: vi.fn() },
+        kill: vi.fn(() => {
+          const err = new Error('No such process');
+          err.code = 'ESRCH';
+          throw err;
+        }),
+        pid: 9998,
+      };
+      setTimeout(() => handlers.close?.(1), 200);
+      mockSpawn.mockReturnValueOnce(proc);
+
+      const log = makeLogger();
+      const runner = createRunner({
+        client,
+        log,
+        resolveCommand: vi.fn().mockReturnValue({ bin: 'agent', args: [] }),
+      });
+
+      const startPromise = runner.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await runner.shutdown();
+      await new Promise((r) => setTimeout(r, 300));
+      await startPromise;
+
+      expect(log.warn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('poll failure circuit breaker', () => {
+    it('stops runner after max consecutive poll failures', async () => {
+      vi.useFakeTimers();
+      const log = makeLogger();
+      const client = makeClient({
+        poll: vi.fn().mockRejectedValue(new Error('network down')),
+      });
+
+      const runner = createRunner({
+        client,
+        log,
+        resolveCommand: vi.fn(),
+        maxPollFailures: 3,
+      });
+
+      const startPromise = runner.start();
+      // Advance through backoff delays: 2s + 4s + exit
+      await vi.advanceTimersByTimeAsync(10000);
+      await startPromise;
+
+      vi.useRealTimers();
+
+      expect(client.poll.mock.calls.length).toBe(3);
+      expect(log.error).toHaveBeenCalledWith(
+        'Max consecutive poll failures reached, stopping runner',
+        expect.objectContaining({ consecutiveFailures: 3, maxFailures: 3 }),
+      );
+    });
+
+    it('resets failure count on successful poll', async () => {
+      vi.useFakeTimers();
+      let callCount = 0;
+      const client = makeClient({
+        poll: vi.fn().mockImplementation(async () => {
+          callCount++;
+          // Fail twice, succeed once, then fail twice more, succeed → total 6+ calls without hitting max(3)
+          if (callCount <= 2) throw new Error('fail');
+          if (callCount === 3) return null; // success resets counter
+          if (callCount <= 5) throw new Error('fail again');
+          if (callCount === 6) return null; // another success
+          return null;
+        }),
+      });
+
+      const runner = createRunner({
+        client,
+        log: makeLogger(),
+        resolveCommand: vi.fn(),
+        maxPollFailures: 3,
+      });
+
+      const startPromise = runner.start();
+      // Advance enough time for all backoff cycles
+      await vi.advanceTimersByTimeAsync(30000);
+      runner.shutdown();
+      await vi.advanceTimersByTimeAsync(1000);
+      await startPromise;
+
+      vi.useRealTimers();
+
+      // Runner should still be alive past 5 total failures because resets happened
+      expect(client.poll.mock.calls.length).toBeGreaterThan(5);
     });
   });
 });

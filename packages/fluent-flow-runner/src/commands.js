@@ -19,11 +19,17 @@ export const AGENT_COMMANDS = {
 };
 
 /**
+ * Maximum prompt length (128 KB) to avoid oversized command strings.
+ */
+export const MAX_PROMPT_LENGTH = 128 * 1024;
+
+/**
  * Resolve the command to execute for a work item.
  *
  * For built-in agent types: returns { bin, args } with prompt as a discrete arg (no shell).
- * For custom commands (CLI --command or transport_meta.command): returns { shell: command-string }
- *   where the prompt replaces {prompt} with shell metacharacters escaped.
+ * For custom commands (CLI --command or transport_meta.command): returns { shell, env }
+ *   where the prompt is passed via FLUENT_FLOW_PROMPT env var to avoid shell injection.
+ *   The template's {prompt} placeholder is replaced with a shell reference to the env var.
  *
  * Priority: commandOverride (CLI --command) > transportCommand (transport_meta.command) > AGENT_COMMANDS[agentType]
  *
@@ -32,14 +38,23 @@ export const AGENT_COMMANDS = {
  * @param {string} opts.prompt — the review feedback message
  * @param {string} [opts.commandOverride] — CLI --command flag (template string)
  * @param {string} [opts.transportCommand] — transport_meta.command from server (template string)
- * @returns {{ bin: string, args: string[] } | { shell: string }}
+ * @returns {{ bin: string, args: string[] } | { shell: string, env: Record<string, string> }}
  */
 export function resolveCommand({ agentType, prompt, commandOverride, transportCommand }) {
+  if (prompt.length > MAX_PROMPT_LENGTH) {
+    throw new Error(`Prompt exceeds maximum length of ${MAX_PROMPT_LENGTH} bytes`);
+  }
+
   const customTemplate = commandOverride ?? transportCommand;
 
   if (customTemplate) {
-    // Custom template — must use shell. Escape shell metacharacters in prompt.
-    return { shell: customTemplate.replace(/\{prompt\}/g, escapeForShell(prompt)) };
+    // Pass prompt via env var to avoid shell injection entirely.
+    // Replace {prompt} with a shell variable reference.
+    const shell = customTemplate.replace(
+      /\{prompt\}/g,
+      process.platform === 'win32' ? '%FLUENT_FLOW_PROMPT%' : '"$FLUENT_FLOW_PROMPT"',
+    );
+    return { shell, env: { FLUENT_FLOW_PROMPT: prompt } };
   }
 
   const builder = AGENT_COMMANDS[agentType];
@@ -48,19 +63,4 @@ export function resolveCommand({ agentType, prompt, commandOverride, transportCo
   }
 
   return builder(prompt);
-}
-
-/**
- * Escape a string for safe embedding in a double-quoted shell argument.
- * Handles: double quotes, backticks, dollar signs, backslashes, newlines.
- * @param {string} str
- * @returns {string}
- */
-export function escapeForShell(str) {
-  return str
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/`/g, '\\`')
-    .replace(/\$/g, '\\$')
-    .replace(/\n/g, '\\n');
 }

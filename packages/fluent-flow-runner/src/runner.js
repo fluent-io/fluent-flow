@@ -2,6 +2,34 @@ import { spawn } from 'node:child_process';
 import { hostname, platform } from 'node:os';
 
 /**
+ * Build an isolated environment for shell commands.
+ * Only essential system variables are inherited — prevents leaking
+ * sensitive credentials (AWS keys, tokens, etc.) to agent subprocesses.
+ */
+function buildIsolatedEnv(cmdEnv) {
+  const allowlist = ['PATH', 'HOME', 'USER', 'SHELL', 'TERM', 'LANG'];
+  if (process.platform === 'win32') {
+    allowlist.push('SYSTEMROOT', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA');
+  }
+  const base = {};
+  for (const key of allowlist) {
+    if (process.env[key] !== undefined) {
+      base[key] = process.env[key];
+    }
+  }
+  return { ...base, ...cmdEnv };
+}
+
+/** Default max consecutive poll failures before the runner stops. */
+const DEFAULT_MAX_POLL_FAILURES = 30;
+
+/** Base delay (ms) for exponential backoff on consecutive poll failures. */
+const BASE_BACKOFF_MS = 2000;
+
+/** Maximum backoff delay (ms). */
+const MAX_BACKOFF_MS = 60000;
+
+/**
  * Create a runner instance.
  *
  * @param {object} opts
@@ -10,13 +38,15 @@ import { hostname, platform } from 'node:os';
  * @param {Function} opts.resolveCommand — resolveCommand() from commands.js
  * @param {string} [opts.cwd] — working directory for agent commands
  * @param {object} [opts.meta] — session metadata override
+ * @param {number} [opts.maxPollFailures] — max consecutive poll failures before stopping
  * @returns {{ start, shutdown }}
  */
-export function createRunner({ client, log, resolveCommand, cwd, meta }) {
+export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFailures }) {
   let running = false;
   let sessionId = null;
   let activeWork = null;
   let activeProcess = null;
+  const maxFailures = maxPollFailures ?? DEFAULT_MAX_POLL_FAILURES;
 
   const sessionMeta = meta ?? {
     hostname: hostname(),
@@ -26,17 +56,23 @@ export function createRunner({ client, log, resolveCommand, cwd, meta }) {
 
   /**
    * Execute an agent command and return the exit code.
-   * Accepts either { bin, args } (no shell) or { shell } (custom template).
-   * @param {{ bin: string, args: string[] } | { shell: string }} cmd
+   * Accepts either { bin, args } (no shell) or { shell, env } (custom template).
+   * @param {{ bin: string, args: string[] } | { shell: string, env?: Record<string, string> }} cmd
    * @returns {Promise<number>} exit code
    */
   function execute(cmd) {
     return new Promise((resolve, reject) => {
       log.info('Executing agent command', { command: cmd.shell ?? cmd.bin });
 
+      const baseOpts = { cwd: cwd ?? process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] };
+
       const proc = cmd.shell
-        ? spawn(cmd.shell, [], { cwd: cwd ?? process.cwd(), shell: true, stdio: ['ignore', 'pipe', 'pipe'] })
-        : spawn(cmd.bin, cmd.args, { cwd: cwd ?? process.cwd(), shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
+        ? spawn(cmd.shell, [], {
+            ...baseOpts,
+            shell: true,
+            env: buildIsolatedEnv(cmd.env),
+          })
+        : spawn(cmd.bin, cmd.args, { ...baseOpts, shell: false });
 
       activeProcess = proc;
 
@@ -118,9 +154,12 @@ export function createRunner({ client, log, resolveCommand, cwd, meta }) {
       sessionId = session.session_id;
       log.info('Session registered', { sessionId, status: session.status });
 
+      let consecutiveFailures = 0;
+
       while (running) {
         try {
           const work = await client.poll(sessionId);
+          consecutiveFailures = 0; // reset on success
           if (work) {
             await handleWork(work);
           } else {
@@ -129,8 +168,23 @@ export function createRunner({ client, log, resolveCommand, cwd, meta }) {
           }
         } catch (err) {
           if (!running) break;
-          log.error('Poll error', { error: err.message });
-          await new Promise((r) => setTimeout(r, 2000));
+          consecutiveFailures++;
+          const backoff = Math.min(BASE_BACKOFF_MS * 2 ** (consecutiveFailures - 1), MAX_BACKOFF_MS);
+          log.error('Poll error', {
+            error: err.message,
+            consecutiveFailures,
+            maxFailures,
+            nextRetryMs: backoff,
+          });
+          if (consecutiveFailures >= maxFailures) {
+            log.error('Max consecutive poll failures reached, stopping runner', {
+              consecutiveFailures,
+              maxFailures,
+            });
+            running = false;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, backoff));
         }
       }
 
@@ -144,7 +198,13 @@ export function createRunner({ client, log, resolveCommand, cwd, meta }) {
       log.info('Shutting down...');
       running = false;
       if (activeProcess) {
-        activeProcess.kill('SIGTERM');
+        try {
+          activeProcess.kill('SIGTERM');
+        } catch (e) {
+          if (e.code !== 'ESRCH') {
+            log.warn('Failed to kill agent process', { error: e.message, code: e.code });
+          }
+        }
       }
       // Best-effort: report active claim as failed so the server doesn't wait for timeout
       if (activeWork) {

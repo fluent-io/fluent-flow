@@ -13,6 +13,8 @@ Read [packages/fluent-flow/README.md](packages/fluent-flow/README.md) for archit
 - [packages/fluent-flow/src/notifications/README.md](packages/fluent-flow/src/notifications/README.md) — Agent notification dispatcher, transports, multi-agent routing
 - [packages/fluent-flow/src/agents/README.md](packages/fluent-flow/src/agents/README.md) — Agent registry, tokens, sessions, claims
 - [packages/fluent-flow/DESIGN.md](packages/fluent-flow/DESIGN.md) — Build instructions, DB schema, Docker setup
+- [docs/specs/](docs/specs/) — Design specs (agent-agnostic routing, worktree task pipeline)
+- [docs/plans/](docs/plans/) — Implementation plans and design docs
 
 ## Code conventions
 
