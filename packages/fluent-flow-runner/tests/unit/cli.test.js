@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseArgs } from '../../bin/fluent-flow-runner.js';
+import { parseArgs } from '../../src/parse-args.js';
 
 describe('CLI parseArgs()', () => {
   it('parses --token and --server', () => {

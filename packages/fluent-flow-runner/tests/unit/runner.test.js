@@ -5,6 +5,11 @@ vi.mock('node:child_process', () => ({
   spawn: (...args) => mockSpawn(...args),
 }));
 
+const mockPrepareWorktree = vi.fn();
+vi.mock('../../src/worktree.js', () => ({
+  prepareWorktree: (...args) => mockPrepareWorktree(...args),
+}));
+
 import { createRunner } from '../../src/runner.js';
 
 function makeClient(overrides = {}) {
@@ -540,6 +545,96 @@ describe('runner', () => {
 
       // Runner should still be alive past 5 total failures because resets happened
       expect(client.poll.mock.calls.length).toBeGreaterThan(5);
+    });
+  });
+
+  describe('worktree integration', () => {
+    it('creates worktree and runs agent in worktree cwd', async () => {
+      const mockCleanup = vi.fn().mockResolvedValue();
+      mockPrepareWorktree.mockResolvedValueOnce({
+        worktreePath: '/work/.fluent-flow/repos/fluent-io/fluent-flow/.worktrees/pr-40-attempt-1',
+        cleanup: mockCleanup,
+      });
+      mockSpawn.mockReturnValueOnce(fakeProcess(0));
+
+      const client = makeClient({
+        poll: vi.fn()
+          .mockResolvedValueOnce({
+            message: 'fix the bug',
+            repo: 'fluent-io/fluent-flow',
+            pr_number: 40,
+            attempt: 1,
+            branch: 'fix/something',
+            agentType: 'claude-code',
+          })
+          .mockResolvedValue(null),
+      });
+      const log = makeLogger();
+      const runner = createRunner({ client, log, resolveCommand: (opts) => ({ bin: 'claude', args: [opts.prompt] }) });
+
+      const startPromise = runner.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await runner.shutdown();
+      await startPromise;
+
+      expect(mockPrepareWorktree).toHaveBeenCalledWith(expect.objectContaining({
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        attempt: 1,
+        branch: 'fix/something',
+      }));
+
+      const spawnCall = mockSpawn.mock.calls[0];
+      expect(spawnCall[2].cwd).toBe('/work/.fluent-flow/repos/fluent-io/fluent-flow/.worktrees/pr-40-attempt-1');
+
+      expect(mockCleanup).toHaveBeenCalled();
+    });
+
+    it('cleans up worktree even if agent fails', async () => {
+      const mockCleanup = vi.fn().mockResolvedValue();
+      mockPrepareWorktree.mockResolvedValueOnce({
+        worktreePath: '/work/.fluent-flow/repos/o/r/.worktrees/pr-1-attempt-1',
+        cleanup: mockCleanup,
+      });
+      mockSpawn.mockReturnValueOnce(fakeProcess(1));
+
+      const client = makeClient({
+        poll: vi.fn()
+          .mockResolvedValueOnce({
+            message: 'fix', repo: 'o/r', pr_number: 1, attempt: 1, branch: 'fix/x', agentType: 'claude-code',
+          })
+          .mockResolvedValue(null),
+      });
+      const log = makeLogger();
+      const runner = createRunner({ client, log, resolveCommand: (opts) => ({ bin: 'claude', args: [opts.prompt] }) });
+
+      const startPromise = runner.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await runner.shutdown();
+      await startPromise;
+
+      expect(mockCleanup).toHaveBeenCalled();
+    });
+
+    it('skips worktree when branch is not provided', async () => {
+      mockSpawn.mockReturnValueOnce(fakeProcess(0));
+
+      const client = makeClient({
+        poll: vi.fn()
+          .mockResolvedValueOnce({
+            message: 'fix', repo: 'o/r', pr_number: 1, attempt: 1, agentType: 'claude-code',
+          })
+          .mockResolvedValue(null),
+      });
+      const log = makeLogger();
+      const runner = createRunner({ client, log, resolveCommand: (opts) => ({ bin: 'claude', args: [opts.prompt] }) });
+
+      const startPromise = runner.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await runner.shutdown();
+      await startPromise;
+
+      expect(mockPrepareWorktree).not.toHaveBeenCalled();
     });
   });
 });

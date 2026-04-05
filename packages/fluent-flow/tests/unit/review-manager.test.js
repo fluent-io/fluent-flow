@@ -432,6 +432,22 @@ describe('claim integration', () => {
     }));
   });
 
+  it('includes branch in claim payload', async () => {
+    query.mockResolvedValueOnce({ rows: [makeRetryRecord({ retry_count: 1 })] });
+    query.mockResolvedValue({ rows: [] });
+    createClaim.mockResolvedValueOnce({ id: 1 });
+
+    await handleReviewResult({
+      ...baseOpts,
+      result: { status: 'FAIL', blocking: [{ file: 'x.js', line: 1, issue: 'bug' }], advisory: [], attempt: 1 },
+      headBranch: 'fix/something',
+    });
+
+    expect(createClaim).toHaveBeenCalledWith(expect.objectContaining({
+      payload: expect.objectContaining({ branch: 'fix/something' }),
+    }));
+  });
+
   it('does not throw if createClaim fails', async () => {
     query.mockResolvedValueOnce({ rows: [makeRetryRecord({ retry_count: 1 })] });
     query.mockResolvedValue({ rows: [] });
