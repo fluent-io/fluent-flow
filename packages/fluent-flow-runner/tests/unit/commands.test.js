@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { resolveCommand, AGENT_COMMANDS, MAX_PROMPT_LENGTH } from '../../src/commands.js';
+
+const originalPlatform = process.platform;
 
 describe('commands', () => {
   describe('AGENT_COMMANDS', () => {
@@ -91,6 +93,44 @@ describe('commands', () => {
       expect(cmd.shell).not.toContain('`whoami`');
       // It is safely passed via environment
       expect(cmd.env.FLUENT_FLOW_PROMPT).toBe(malicious);
+    });
+  });
+
+  describe('resolveCommand() — Windows platform', () => {
+    afterEach(() => {
+      Object.defineProperty(process, 'platform', { value: originalPlatform });
+    });
+
+    it('uses %VAR% syntax for custom templates on win32', () => {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      const cmd = resolveCommand({
+        agentType: 'custom',
+        prompt: 'fix it',
+        commandOverride: 'my-agent "{prompt}"',
+      });
+      expect(cmd.shell).toBe('my-agent "%FLUENT_FLOW_PROMPT%"');
+      expect(cmd.env).toEqual({ FLUENT_FLOW_PROMPT: 'fix it' });
+    });
+
+    it('uses $VAR syntax for custom templates on linux', () => {
+      Object.defineProperty(process, 'platform', { value: 'linux' });
+      const cmd = resolveCommand({
+        agentType: 'custom',
+        prompt: 'fix it',
+        commandOverride: 'my-agent "{prompt}"',
+      });
+      expect(cmd.shell).toBe('my-agent ""$FLUENT_FLOW_PROMPT""');
+      expect(cmd.env).toEqual({ FLUENT_FLOW_PROMPT: 'fix it' });
+    });
+
+    it('replaces multiple {prompt} placeholders with Windows env var syntax', () => {
+      Object.defineProperty(process, 'platform', { value: 'win32' });
+      const cmd = resolveCommand({
+        agentType: 'custom',
+        prompt: 'hello',
+        commandOverride: 'agent --msg {prompt} --confirm {prompt}',
+      });
+      expect(cmd.shell).toBe('agent --msg %FLUENT_FLOW_PROMPT% --confirm %FLUENT_FLOW_PROMPT%');
     });
   });
 

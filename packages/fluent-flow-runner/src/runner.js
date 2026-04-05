@@ -1,6 +1,25 @@
 import { spawn } from 'node:child_process';
 import { hostname, platform } from 'node:os';
 
+/**
+ * Build an isolated environment for shell commands.
+ * Only essential system variables are inherited — prevents leaking
+ * sensitive credentials (AWS keys, tokens, etc.) to agent subprocesses.
+ */
+function buildIsolatedEnv(cmdEnv) {
+  const allowlist = ['PATH', 'HOME', 'USER', 'SHELL', 'TERM', 'LANG'];
+  if (process.platform === 'win32') {
+    allowlist.push('SYSTEMROOT', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA');
+  }
+  const base = {};
+  for (const key of allowlist) {
+    if (process.env[key] !== undefined) {
+      base[key] = process.env[key];
+    }
+  }
+  return { ...base, ...cmdEnv };
+}
+
 /** Default max consecutive poll failures before the runner stops. */
 const DEFAULT_MAX_POLL_FAILURES = 30;
 
@@ -51,7 +70,7 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
         ? spawn(cmd.shell, [], {
             ...baseOpts,
             shell: true,
-            env: { ...process.env, ...cmd.env },
+            env: buildIsolatedEnv(cmd.env),
           })
         : spawn(cmd.bin, cmd.args, { ...baseOpts, shell: false });
 
@@ -179,7 +198,13 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
       log.info('Shutting down...');
       running = false;
       if (activeProcess) {
-        try { activeProcess.kill('SIGTERM'); } catch { /* process already exited */ }
+        try {
+          activeProcess.kill('SIGTERM');
+        } catch (e) {
+          if (e.code !== 'ESRCH') {
+            log.warn('Failed to kill agent process', { error: e.message, code: e.code });
+          }
+        }
       }
       // Best-effort: report active claim as failed so the server doesn't wait for timeout
       if (activeWork) {

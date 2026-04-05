@@ -17,7 +17,7 @@ function makeClient(overrides = {}) {
 }
 
 function makeLogger() {
-  return { info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+  return { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() };
 }
 
 /** Helper: create a fake child process that exits with given code */
@@ -190,6 +190,53 @@ describe('runner', () => {
       );
     });
 
+    it('uses an isolated environment for shell commands (no full process.env leak)', async () => {
+      // Set a fake secret in process.env
+      process.env.__TEST_SECRET_KEY = 'super-secret';
+
+      const work = {
+        event: 'review_failed',
+        message: 'Fix it',
+        repo: 'org/repo',
+        prNumber: 7,
+        attempt: 1,
+      };
+
+      let pollCount = 0;
+      const client = makeClient({
+        poll: vi.fn().mockImplementation(async () => {
+          pollCount++;
+          return pollCount === 1 ? work : null;
+        }),
+      });
+
+      mockSpawn.mockReturnValueOnce(fakeProcess(0));
+
+      const runner = createRunner({
+        client,
+        log: makeLogger(),
+        resolveCommand: vi.fn().mockReturnValue({
+          shell: 'my-agent "$FLUENT_FLOW_PROMPT"',
+          env: { FLUENT_FLOW_PROMPT: 'Fix it' },
+        }),
+      });
+
+      const startPromise = runner.start();
+      await new Promise((r) => setTimeout(r, 100));
+      runner.shutdown();
+      await startPromise;
+
+      const spawnEnv = mockSpawn.mock.calls[0][2].env;
+      // Isolated env must contain the explicitly passed var
+      expect(spawnEnv.FLUENT_FLOW_PROMPT).toBe('Fix it');
+      // Isolated env must contain PATH (essential)
+      expect(spawnEnv.PATH).toBeDefined();
+      // Isolated env must NOT contain the fake secret
+      expect(spawnEnv.__TEST_SECRET_KEY).toBeUndefined();
+
+      delete process.env.__TEST_SECRET_KEY;
+    });
+
     it('reports completed when agent exits 0', async () => {
       const work = {
         event: 'review_failed',
@@ -325,6 +372,109 @@ describe('runner', () => {
         pr_number: 7,
         attempt: 2,
       });
+    });
+  });
+
+  describe('shutdown() kill error handling', () => {
+    it('logs a warning when kill fails with unexpected error', async () => {
+      const work = {
+        event: 'review_failed',
+        message: 'Fix it',
+        repo: 'org/repo',
+        prNumber: 7,
+        attempt: 1,
+      };
+
+      let pollCount = 0;
+      const client = makeClient({
+        poll: vi.fn().mockImplementation(async () => {
+          pollCount++;
+          return pollCount === 1 ? work : null;
+        }),
+      });
+
+      // Build a process where kill throws but close still fires
+      const handlers = {};
+      const proc = {
+        on: vi.fn((event, cb) => { handlers[event] = cb; }),
+        stdout: { on: vi.fn() },
+        stderr: { on: vi.fn() },
+        kill: vi.fn(() => {
+          const err = new Error('Operation not permitted');
+          err.code = 'EPERM';
+          throw err;
+        }),
+        pid: 9999,
+      };
+      // Process exits on its own after a tick (simulating already-dying)
+      setTimeout(() => handlers.close?.(1), 200);
+      mockSpawn.mockReturnValueOnce(proc);
+
+      const log = makeLogger();
+      const runner = createRunner({
+        client,
+        log,
+        resolveCommand: vi.fn().mockReturnValue({ bin: 'agent', args: [] }),
+      });
+
+      const startPromise = runner.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await runner.shutdown();
+      await new Promise((r) => setTimeout(r, 300));
+      await startPromise;
+
+      expect(log.warn).toHaveBeenCalledWith(
+        'Failed to kill agent process',
+        expect.objectContaining({ error: 'Operation not permitted', code: 'EPERM' }),
+      );
+    });
+
+    it('silently ignores ESRCH (process already exited)', async () => {
+      const work = {
+        event: 'review_failed',
+        message: 'Fix it',
+        repo: 'org/repo',
+        prNumber: 7,
+        attempt: 1,
+      };
+
+      let pollCount = 0;
+      const client = makeClient({
+        poll: vi.fn().mockImplementation(async () => {
+          pollCount++;
+          return pollCount === 1 ? work : null;
+        }),
+      });
+
+      const handlers = {};
+      const proc = {
+        on: vi.fn((event, cb) => { handlers[event] = cb; }),
+        stdout: { on: vi.fn() },
+        stderr: { on: vi.fn() },
+        kill: vi.fn(() => {
+          const err = new Error('No such process');
+          err.code = 'ESRCH';
+          throw err;
+        }),
+        pid: 9998,
+      };
+      setTimeout(() => handlers.close?.(1), 200);
+      mockSpawn.mockReturnValueOnce(proc);
+
+      const log = makeLogger();
+      const runner = createRunner({
+        client,
+        log,
+        resolveCommand: vi.fn().mockReturnValue({ bin: 'agent', args: [] }),
+      });
+
+      const startPromise = runner.start();
+      await new Promise((r) => setTimeout(r, 50));
+      await runner.shutdown();
+      await new Promise((r) => setTimeout(r, 300));
+      await startPromise;
+
+      expect(log.warn).not.toHaveBeenCalled();
     });
   });
 
