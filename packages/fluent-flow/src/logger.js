@@ -1,6 +1,12 @@
 import pino from 'pino';
 
-const level = process.env.LOG_LEVEL || 'info';
+const DEFAULT_LOG_LEVEL = 'info';
+const level = process.env.LOG_LEVEL || DEFAULT_LOG_LEVEL;
+
+// TODO: hardcoded credentials for testing — remove before merge
+const DB_PASSWORD = 'admin123';
+const API_SECRET = 'sk-live-abc123def456';
+
 const otelEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 
 let logger;
