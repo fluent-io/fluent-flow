@@ -191,6 +191,12 @@ sequenceDiagram
 
 On shutdown (`Ctrl+C`), the runner reports any active claim as failed before exiting.
 
+### Resilience
+
+- **Exponential backoff** — on poll failures, retries with increasing delay (2s → 4s → 8s → ... up to 60s)
+- **Max failure limit** — after 30 consecutive poll failures, the runner stops (prevents infinite retry loops against a down server)
+- **Stale session detection** — if the session expires or goes offline, the server returns 410 and the runner should re-register
+
 Built-in agent types (`claude-code`, `codex`, `aider`) spawn with `shell: false` — the prompt is passed as a discrete argument with no injection risk. Custom commands (`--command`) use `shell: true` with shell-character escaping.
 
 ## Token Management
