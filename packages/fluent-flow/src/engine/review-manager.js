@@ -175,6 +175,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
       issues: allIssues,
       onFailure: config.reviewer?.on_failure,
       delivery: config.delivery ?? {},
+      branch: headBranch,
     });
   } else {
     logger.info({ msg: 'Claim created — no notification agent configured, pending claim will be picked up by polling runners', repo: repoKey, prNumber });

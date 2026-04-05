@@ -169,7 +169,7 @@ export function formatRichMessage({ repo, prNumber, attempt, blocking = [], advi
 /**
  * Notify an agent that a review failed.
  */
-export async function notifyReviewFailure({ agentId, repo, prNumber, attempt, issues, onFailure, delivery = {} }) {
+export async function notifyReviewFailure({ agentId, repo, prNumber, attempt, issues, onFailure, delivery = {}, branch }) {
   const blocking = issues?.filter(i => i.severity === 'blocking') ?? [];
   const advisory = issues?.filter(i => i.severity === 'advisory') ?? [];
   const message = formatRichMessage({ repo, prNumber, attempt, blocking, advisory });
@@ -179,6 +179,7 @@ export async function notifyReviewFailure({ agentId, repo, prNumber, attempt, is
     payload: {
       message, wakeMode: 'now', deliver: true,
       repo, prNumber, attempt, issues,
+      ...(branch && { branch }),
       ...(onFailure?.model && { model: onFailure.model }),
       ...(onFailure?.thinking && { thinking: onFailure.thinking }),
       ...delivery,
