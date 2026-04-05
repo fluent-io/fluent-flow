@@ -66,7 +66,8 @@ export function createRunner({ client, log, resolveCommand, cwd, meta }) {
    */
   async function handleWork(work) {
     activeWork = work;
-    const { message, repo, prNumber, attempt } = work;
+    const { message, repo, attempt } = work;
+    const prNumber = work.prNumber ?? work.pr_number;
 
     log.info('Work received', { repo, prNumber, attempt, event: work.event });
 
@@ -147,7 +148,8 @@ export function createRunner({ client, log, resolveCommand, cwd, meta }) {
       }
       // Best-effort: report active claim as failed so the server doesn't wait for timeout
       if (activeWork) {
-        const { repo, prNumber, attempt } = activeWork;
+        const { repo, attempt } = activeWork;
+        const prNumber = activeWork.prNumber ?? activeWork.pr_number;
         try {
           await client.reportClaim({ status: 'failed', repo, pr_number: prNumber, attempt });
           log.info('Reported active claim as failed on shutdown', { repo, prNumber, attempt });
