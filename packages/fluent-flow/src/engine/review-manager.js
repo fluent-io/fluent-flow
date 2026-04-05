@@ -81,7 +81,7 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', atte
  * @param {string} [opts.reviewSha] - Commit SHA the review was for
  * @returns {Promise<{ action: 'pass'|'fail'|'escalate' }>}
  */
-export async function handleReviewResult({ owner, repo, prNumber, issueNumber, result, reviewSha, agentId }) {
+export async function handleReviewResult({ owner, repo, prNumber, issueNumber, result, reviewSha, agentId, headBranch }) {
   const repoKey = `${owner}/${repo}`;
   const config = await resolveConfig(owner, repo);
   const maxRetries = config.reviewer?.max_retries ?? 3;
@@ -157,6 +157,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
         message: formatRichMessage({ repo: repoKey, prNumber, attempt, blocking, advisory }),
         issues: allIssues,
         onFailure: config.reviewer?.on_failure,
+        branch: headBranch,
       },
     });
   } catch (err) {

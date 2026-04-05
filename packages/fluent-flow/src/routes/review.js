@@ -17,6 +17,7 @@ const ReviewResultSchema = z.object({
   pr_number: z.number().int().positive(),
   issue_number: z.number().int().positive().optional(),
   review_sha: z.string().optional(),
+  head_branch: z.string().optional(),
   result: z.object({
     status: z.enum(['PASS', 'FAIL']),
     summary: z.string().optional(),
@@ -61,7 +62,7 @@ router.post('/review/result', async (req, res) => {
     return res.status(400).json({ error: 'Invalid request', details: parsed.error.flatten() });
   }
 
-  const { repo, pr_number, issue_number, review_sha, result } = parsed.data;
+  const { repo, pr_number, issue_number, review_sha, head_branch, result } = parsed.data;
   const [owner, repoName] = repo.split('/');
 
   if (!owner || !repoName) {
@@ -76,6 +77,7 @@ router.post('/review/result', async (req, res) => {
       issueNumber: issue_number,
       result,
       reviewSha: review_sha,
+      headBranch: head_branch,
     });
     res.json({ ok: true, action: outcome.action });
   } catch (err) {
