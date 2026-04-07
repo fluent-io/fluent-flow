@@ -7,6 +7,8 @@ const mockDequeue = vi.fn();
 const mockHasPending = vi.fn();
 const mockCompleteClaim = vi.fn();
 const mockFailClaim = vi.fn();
+const mockGetClaimByAttempt = vi.fn();
+const mockCreateClaim = vi.fn();
 
 vi.mock('../../src/agents/token-manager.js', () => ({
   validateToken: (...args) => mockValidateToken(...args),
@@ -19,6 +21,8 @@ vi.mock('../../src/agents/session-manager.js', () => ({
 vi.mock('../../src/agents/claim-manager.js', () => ({
   completeClaim: (...args) => mockCompleteClaim(...args),
   failClaim: (...args) => mockFailClaim(...args),
+  getClaimByAttempt: (...args) => mockGetClaimByAttempt(...args),
+  createClaim: (...args) => mockCreateClaim(...args),
 }));
 vi.mock('../../src/notifications/transports/long-poll.js', () => ({
   dequeue: (...args) => mockDequeue(...args),
@@ -175,6 +179,46 @@ describe('runner routes', () => {
       const res = { status: vi.fn().mockReturnThis(), json: vi.fn() };
       await handleClaimResult(req, res);
       expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('auto-creates build claim when spec claim completes', async () => {
+      mockGetClaimByAttempt.mockResolvedValueOnce({ id: 1, claim_type: 'spec', status: 'claimed' });
+      mockCompleteClaim.mockResolvedValueOnce({ id: 1, status: 'completed' });
+      mockCreateClaim.mockResolvedValueOnce({ id: 2, claim_type: 'build', status: 'pending' });
+
+      const req = { tokenInfo: { org_id: 'acme' }, body: { status: 'completed', repo: 'o/r', pr_number: 7, attempt: 1 } };
+      const res = { json: vi.fn() };
+      await handleClaimResult(req, res);
+
+      expect(mockGetClaimByAttempt).toHaveBeenCalledWith('acme', 'o/r', 7, 1);
+      expect(mockCreateClaim).toHaveBeenCalledWith(expect.objectContaining({
+        orgId: 'acme',
+        repo: 'o/r',
+        prNumber: 7,
+        attempt: 2,
+        claimType: 'build',
+      }));
+    });
+
+    it('does not chain when review_fix claim completes', async () => {
+      mockGetClaimByAttempt.mockResolvedValueOnce({ id: 1, claim_type: 'review_fix', status: 'claimed' });
+      mockCompleteClaim.mockResolvedValueOnce({ id: 1, status: 'completed' });
+
+      const req = { tokenInfo: { org_id: 'acme' }, body: { status: 'completed', repo: 'o/r', pr_number: 7, attempt: 1 } };
+      const res = { json: vi.fn() };
+      await handleClaimResult(req, res);
+
+      expect(mockCreateClaim).not.toHaveBeenCalled();
+    });
+
+    it('does not chain when claim fails', async () => {
+      mockFailClaim.mockResolvedValueOnce({ id: 1, status: 'failed' });
+
+      const req = { tokenInfo: { org_id: 'acme' }, body: { status: 'failed', repo: 'o/r', pr_number: 7, attempt: 1 } };
+      const res = { json: vi.fn() };
+      await handleClaimResult(req, res);
+
+      expect(mockCreateClaim).not.toHaveBeenCalled();
     });
   });
 });

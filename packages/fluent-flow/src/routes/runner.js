@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { validateToken } from '../agents/token-manager.js';
 import { registerSession, touchSession, setSessionStatus } from '../agents/session-manager.js';
-import { completeClaim, failClaim } from '../agents/claim-manager.js';
+import { completeClaim, failClaim, getClaimByAttempt, createClaim } from '../agents/claim-manager.js';
 import { dequeue, hasPending } from '../notifications/transports/long-poll.js';
 import { query, audit } from '../db/client.js';
 import logger from '../logger.js';
@@ -182,16 +182,57 @@ export async function handleClaimResult(req, res) {
     const { org_id } = req.tokenInfo;
     const { status, repo, pr_number, attempt } = parsed.data;
 
-    const claim = status === 'completed'
-      ? await completeClaim(org_id, repo, pr_number, attempt)
-      : await failClaim(org_id, repo, pr_number, attempt);
+    if (status === 'completed') {
+      // Look up claim_type before completing (for chaining)
+      const existingClaim = await getClaimByAttempt(org_id, repo, pr_number, attempt);
+      const claimType = existingClaim?.claim_type ?? 'review_fix';
 
-    if (!claim) {
-      return res.status(404).json({ error: 'Claim not found or already resolved' });
+      const claim = await completeClaim(org_id, repo, pr_number, attempt);
+      if (!claim) {
+        return res.status(404).json({ error: 'Claim not found or already resolved' });
+      }
+
+      audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status, claimType } });
+
+      // Auto-chain: spec → build
+      if (claimType === 'spec') {
+        try {
+          await createClaim({
+            orgId: org_id,
+            repo,
+            prNumber: pr_number,
+            attempt: attempt + 1,
+            claimType: 'build',
+            payload: { source_claim_id: claim.id },
+          });
+          logger.info({ msg: 'Auto-created build claim after spec completion', repo, prNumber: pr_number, attempt: attempt + 1 });
+        } catch (err) {
+          logger.error({ msg: 'Failed to create follow-on build claim', error: err.message });
+        }
+      }
+
+      // Auto-chain: test_verify → re-review
+      if (claimType === 'test_verify') {
+        try {
+          const [owner, repoName] = repo.split('/');
+          const { dispatchReview } = await import('../engine/review-manager.js');
+          await dispatchReview({ owner, repo: repoName, prNumber: pr_number, ref: 'main', attempt: attempt + 1 });
+          logger.info({ msg: 'Triggered re-review after test_verify completion', repo, prNumber: pr_number });
+        } catch (err) {
+          logger.error({ msg: 'Failed to trigger re-review after test_verify', error: err.message });
+        }
+      }
+
+      res.json({ ok: true, claim_id: claim.id, status: claim.status });
+    } else {
+      // Failed claim — no chaining
+      const claim = await failClaim(org_id, repo, pr_number, attempt);
+      if (!claim) {
+        return res.status(404).json({ error: 'Claim not found or already resolved' });
+      }
+      audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status: 'failed' } });
+      res.json({ ok: true, claim_id: claim.id, status: claim.status });
     }
-
-    audit('claim_result', { repo, data: { claimId: claim.id, status } });
-    res.json({ ok: true, claim_id: claim.id, status: claim.status });
   } catch (err) {
     logger.error({ msg: 'Failed to report claim result', error: err.message });
     res.status(500).json({ error: 'Internal server error' });

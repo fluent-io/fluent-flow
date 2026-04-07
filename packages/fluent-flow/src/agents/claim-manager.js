@@ -149,3 +149,21 @@ export async function getActiveClaim(orgId, repo, prNumber) {
   );
   return result.rows[0] ?? null;
 }
+
+/**
+ * Get a specific claim by org, repo, PR, and attempt.
+ * Used by completion handler to read claim_type before chaining.
+ * @param {string} orgId
+ * @param {string} repo
+ * @param {number} prNumber
+ * @param {number} attempt
+ * @returns {Promise<object|null>}
+ */
+export async function getClaimByAttempt(orgId, repo, prNumber, attempt) {
+  const result = await query(
+    `SELECT * FROM agent_claims
+     WHERE org_id = $1 AND repo = $2 AND pr_number = $3 AND attempt = $4`,
+    [orgId, repo, prNumber, attempt]
+  );
+  return result.rows[0] ?? null;
+}
