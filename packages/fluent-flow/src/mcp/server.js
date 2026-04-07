@@ -6,6 +6,7 @@ import { registerQueryTools } from './tools/queries.js';
 import { registerPendingTool } from './tools/pending.js';
 import { registerCommandTools } from './tools/commands.js';
 import { registerAgentTools } from './tools/agents.js';
+import { registerTaskTools } from './tools/tasks.js';
 
 /**
  * Create a new McpServer instance with all Fluent Flow tools registered.
@@ -21,6 +22,7 @@ export function createMcpServer() {
   registerPendingTool(server);
   registerCommandTools(server);
   registerAgentTools(server);
+  registerTaskTools(server);
 
   return server;
 }
