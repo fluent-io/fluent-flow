@@ -52,5 +52,6 @@ export function createClient({ serverUrl, token, fetch: fetchFn = globalThis.fet
      * @returns {Promise<{ ok, claim_id, status }>}
      */
     reportClaim: (claim) => post('/api/runner/claim', claim, 'Claim report'),
+
   };
 }

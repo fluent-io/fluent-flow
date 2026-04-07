@@ -28,8 +28,37 @@ describe('CLI parseArgs()', () => {
     expect(opts.verbose).toBe(false);
   });
 
-  it('throws if --token is missing', () => {
-    expect(() => parseArgs(['--server', 's'])).toThrow('--token is required');
+  it('parses --agent flag', () => {
+    const opts = parseArgs(['--token', 't', '--server', 's', '--agent', 'my-agent']);
+    expect(opts.agent).toBe('my-agent');
+  });
+
+  it('parses --mcp-auth-token flag', () => {
+    const opts = parseArgs(['--token', 't', '--server', 's', '--mcp-auth-token', 'mcp_secret']);
+    expect(opts.mcpAuthToken).toBe('mcp_secret');
+  });
+
+  it('token is optional when agent is provided with mcp-auth-token', () => {
+    const opts = parseArgs(['--server', 's', '--agent', 'my-agent', '--mcp-auth-token', 'mcp_tok']);
+    expect(opts.token).toBeUndefined();
+    expect(opts.agent).toBe('my-agent');
+  });
+
+  it('allows --agent without --mcp-auth-token for subsequent runs using saved credentials', () => {
+    const opts = parseArgs(['--server', 's', '--agent', 'my-agent']);
+    expect(opts.agent).toBe('my-agent');
+    expect(opts.token).toBeUndefined();
+    expect(opts.mcpAuthToken).toBeUndefined();
+  });
+
+  it('allows --agent with --token (no mcp-auth-token needed)', () => {
+    const opts = parseArgs(['--server', 's', '--agent', 'my-agent', '--token', 'ff_tok']);
+    expect(opts.agent).toBe('my-agent');
+    expect(opts.token).toBe('ff_tok');
+  });
+
+  it('throws if neither --token nor --agent is provided', () => {
+    expect(() => parseArgs(['--server', 's'])).toThrow('--token or --agent is required');
   });
 
   it('throws if --server is missing', () => {

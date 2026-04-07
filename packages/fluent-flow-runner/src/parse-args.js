@@ -8,15 +8,17 @@ export function parseArgs(argv) {
 
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
-      case '--token':    opts.token = argv[++i]; break;
-      case '--server':   opts.server = argv[++i]; break;
-      case '--command':  opts.command = argv[++i]; break;
-      case '--cwd':      opts.cwd = argv[++i]; break;
-      case '--verbose':  opts.verbose = true; break;
+      case '--token':          opts.token = argv[++i]; break;
+      case '--server':         opts.server = argv[++i]; break;
+      case '--command':        opts.command = argv[++i]; break;
+      case '--cwd':            opts.cwd = argv[++i]; break;
+      case '--verbose':        opts.verbose = true; break;
+      case '--agent':          opts.agent = argv[++i]; break;
+      case '--mcp-auth-token': opts.mcpAuthToken = argv[++i]; break;
     }
   }
 
-  if (!opts.token) throw new Error('--token is required');
+  if (!opts.token && !opts.agent) throw new Error('--token or --agent is required');
   if (!opts.server) throw new Error('--server is required');
 
   return opts;
