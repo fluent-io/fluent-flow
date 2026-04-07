@@ -240,6 +240,26 @@ describe('bootstrap', () => {
     }
   });
 
+  it('encodes agentId with special characters in URL', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: 'my agent', agent_type: 'claude-code' }),
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ token: 'ff_tok', label: 'auto-testhost' }),
+    });
+
+    await bootstrap({
+      server: 'https://flow.example.com',
+      agentId: 'my agent',
+      mcpAuthToken: 'valid_long_token',
+      fetch: fetchMock,
+    });
+
+    expect(fetchMock.mock.calls[1][0]).toBe('https://flow.example.com/api/agents/my%20agent/tokens');
+  });
+
   it('does not include response body in token generation errors', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,

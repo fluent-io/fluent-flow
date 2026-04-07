@@ -2,6 +2,16 @@ import { getAgentCredentials, setAgentCredentials } from './credentials.js';
 import { bootstrap } from './bootstrap.js';
 
 /**
+ * Normalize a server URL for consistent comparison and storage.
+ * Strips trailing slashes so "https://host" and "https://host/" match.
+ * @param {string} url
+ * @returns {string}
+ */
+function normalizeServer(url) {
+  return url.replace(/\/+$/, '');
+}
+
+/**
  * Resolve the agent token using the startup flow:
  * 1. If --token provided → use directly (backward compat)
  * 2. If no --token:
@@ -18,11 +28,13 @@ export async function resolveToken(opts, log) {
   if (opts.token) return opts.token;
 
   const agentId = opts.agent;
+  const server = normalizeServer(opts.server);
 
   // Case 2a: look up saved credentials
   const saved = getAgentCredentials(agentId);
   if (saved) {
-    if (saved.server === opts.server) {
+    const savedServer = normalizeServer(saved.server);
+    if (savedServer === server) {
       log.info('Using saved credentials', { agent: agentId });
       return saved.token;
     }
@@ -38,12 +50,12 @@ export async function resolveToken(opts, log) {
   log.info('Bootstrapping agent', { agent: agentId });
   try {
     const { token } = await bootstrap({
-      server: opts.server,
+      server,
       agentId,
       mcpAuthToken,
     });
 
-    setAgentCredentials(agentId, { token, server: opts.server });
+    setAgentCredentials(agentId, { token, server });
     log.info('Credentials saved', { agent: agentId });
 
     return token;

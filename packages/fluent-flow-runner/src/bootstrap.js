@@ -44,7 +44,7 @@ export async function bootstrap({ server, agentId, mcpAuthToken, agentType, fetc
 
   // Step 2: Generate token
   const label = `auto-${hostname()}`;
-  const tokRes = await fetchFn(`${base}/api/agents/${agentId}/tokens`, {
+  const tokRes = await fetchFn(`${base}/api/agents/${encodeURIComponent(agentId)}/tokens`, {
     method: 'POST',
     headers,
     body: JSON.stringify({ label }),

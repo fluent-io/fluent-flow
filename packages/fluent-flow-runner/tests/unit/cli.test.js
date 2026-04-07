@@ -44,9 +44,11 @@ describe('CLI parseArgs()', () => {
     expect(opts.agent).toBe('my-agent');
   });
 
-  it('throws if --agent is provided without --token and --mcp-auth-token', () => {
-    expect(() => parseArgs(['--server', 's', '--agent', 'my-agent']))
-      .toThrow('--agent requires --mcp-auth-token or --token');
+  it('allows --agent without --mcp-auth-token for subsequent runs using saved credentials', () => {
+    const opts = parseArgs(['--server', 's', '--agent', 'my-agent']);
+    expect(opts.agent).toBe('my-agent');
+    expect(opts.token).toBeUndefined();
+    expect(opts.mcpAuthToken).toBeUndefined();
   });
 
   it('allows --agent with --token (no mcp-auth-token needed)', () => {

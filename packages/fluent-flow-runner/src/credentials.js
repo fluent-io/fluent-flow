@@ -1,6 +1,6 @@
 import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import { randomBytes, scryptSync, createCipheriv, createDecipheriv } from 'node:crypto';
 
 /**
@@ -104,6 +104,8 @@ export function loadCredentials() {
 export function saveCredentials(data) {
   mkdirSync(credDir(), { recursive: true, mode: DIR_MODE });
   writeFileSync(credPath(), JSON.stringify(data, null, 2), { encoding: 'utf-8', mode: FILE_MODE });
+  // Enforce owner-only permissions even if file already existed with looser mode
+  try { chmodSync(credPath(), FILE_MODE); } catch { /* best effort */ }
 }
 
 /**

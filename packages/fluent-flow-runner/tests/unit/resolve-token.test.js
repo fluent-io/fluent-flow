@@ -35,6 +35,33 @@ describe('resolveToken', () => {
     expect(log.info).toHaveBeenCalledWith('Using saved credentials', { agent: 'my-agent' });
   });
 
+  it('matches saved credentials with trailing slash normalization', async () => {
+    getAgentCredentials.mockReturnValue({ token: 'ff_saved', server: 'https://flow.example.com/' });
+
+    const token = await resolveToken(
+      { agent: 'my-agent', server: 'https://flow.example.com' },
+      log,
+    );
+
+    expect(token).toBe('ff_saved');
+    expect(log.info).toHaveBeenCalledWith('Using saved credentials', { agent: 'my-agent' });
+  });
+
+  it('saves normalized server URL (no trailing slash) after bootstrap', async () => {
+    getAgentCredentials.mockReturnValue(null);
+    bootstrap.mockResolvedValue({ token: 'ff_bootstrapped' });
+
+    await resolveToken(
+      { agent: 'my-agent', server: 'https://flow.example.com/', mcpAuthToken: 'mcp_secret_long' },
+      log,
+    );
+
+    expect(setAgentCredentials).toHaveBeenCalledWith('my-agent', {
+      token: 'ff_bootstrapped',
+      server: 'https://flow.example.com',
+    });
+  });
+
   it('logs mismatch and bootstraps when server differs', async () => {
     getAgentCredentials.mockReturnValue({ token: 'ff_saved', server: 'https://old.example.com' });
     bootstrap.mockResolvedValue({ token: 'ff_new' });
