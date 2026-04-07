@@ -21,7 +21,7 @@ vi.mock('../../src/engine/test-manager.js', () => ({
 vi.mock('../../src/github/test-parser.js', () => ({
   parseCheckAnnotations: vi.fn().mockReturnValue({ passed: 0, failed: 0, failures: [] }),
 }));
-vi.mock('../../src/db/client.js', () => ({ audit: vi.fn() }));
+vi.mock('../../src/db/client.js', () => ({ audit: vi.fn(), query: vi.fn() }));
 vi.mock('../../src/engine/review-manager.js', () => ({
   dispatchReview: vi.fn(),
   claimDispatch: vi.fn(),
@@ -29,10 +29,14 @@ vi.mock('../../src/engine/review-manager.js', () => ({
 vi.mock('../../src/engine/pause-manager.js', () => ({
   getActivePause: vi.fn(),
 }));
+vi.mock('../../src/agents/claim-manager.js', () => ({
+  createClaim: vi.fn(),
+}));
 
 import { resolveAgentId, dispatch } from '../../src/notifications/dispatcher.js';
 import { getPRsForCommit, getCheckRunsForCommit } from '../../src/github/rest.js';
 import { dispatchReview, claimDispatch } from '../../src/engine/review-manager.js';
+import { createClaim } from '../../src/agents/claim-manager.js';
 import { getActivePause } from '../../src/engine/pause-manager.js';
 import { handleCheckRun } from '../../src/github/check-run-handler.js';
 
@@ -216,6 +220,33 @@ describe('handleCheckRun — CI success review dispatch', () => {
     const config = buildConfig({ reviewer: { enabled: true, trigger_check: 'lint-and-test' } });
     await handleCheckRun(TEST_OWNER, TEST_REPO, successPayload, config);
     expect(dispatchReview).not.toHaveBeenCalled();
+  });
+
+  it('creates test_verify claim instead of review when review_fix claim was completed', async () => {
+    const { query } = await import('../../src/db/client.js');
+    query.mockResolvedValueOnce({ rows: [{ id: 1 }] }); // hasReviewFixClaim check
+    createClaim.mockResolvedValueOnce({ id: 2, claim_type: 'test_verify' });
+
+    const config = buildConfig({ reviewer: { enabled: true, trigger_check: 'lint-and-test' } });
+    await handleCheckRun(TEST_OWNER, TEST_REPO, successPayload, config);
+
+    expect(createClaim).toHaveBeenCalledWith(expect.objectContaining({
+      claimType: 'test_verify',
+      prNumber: 5,
+      attempt: 2,
+    }));
+    expect(dispatchReview).not.toHaveBeenCalled();
+  });
+
+  it('dispatches review normally when no review_fix claim exists', async () => {
+    const { query } = await import('../../src/db/client.js');
+    query.mockResolvedValueOnce({ rows: [] }); // no review_fix claim
+
+    const config = buildConfig({ reviewer: { enabled: true, trigger_check: 'lint-and-test' } });
+    await handleCheckRun(TEST_OWNER, TEST_REPO, successPayload, config);
+
+    expect(createClaim).not.toHaveBeenCalled();
+    expect(dispatchReview).toHaveBeenCalled();
   });
 });
 
