@@ -114,6 +114,84 @@ describe('client', () => {
     });
   });
 
+  describe('registerAgent()', () => {
+    it('POSTs to /api/agents with MCP auth token', async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ id: 'test-agent', agent_type: 'claude-code', transport: 'long_poll' }),
+      });
+      const result = await client.registerAgent({
+        mcpAuthToken: 'mcp_secret',
+        agentId: 'test-agent',
+        agentType: 'claude-code',
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://flow.example.com/api/agents',
+        expect.objectContaining({
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer mcp_secret',
+          },
+          body: JSON.stringify({
+            id: 'test-agent',
+            agent_type: 'claude-code',
+            transport: 'long_poll',
+          }),
+        }),
+      );
+      expect(result).toEqual({ id: 'test-agent', agent_type: 'claude-code', transport: 'long_poll' });
+    });
+
+    it('throws on non-ok response', async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 401,
+        text: async () => 'Unauthorized',
+      });
+      await expect(
+        client.registerAgent({ mcpAuthToken: 'bad', agentId: 'x', agentType: 'claude-code' }),
+      ).rejects.toThrow('Agent registration failed: 401');
+    });
+  });
+
+  describe('generateToken()', () => {
+    it('POSTs to /api/agents/:id/tokens with MCP auth token', async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ token: 'ff_newtoken', label: 'auto-host' }),
+      });
+      const result = await client.generateToken({
+        mcpAuthToken: 'mcp_secret',
+        agentId: 'test-agent',
+        label: 'auto-host',
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        'https://flow.example.com/api/agents/test-agent/tokens',
+        expect.objectContaining({
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer mcp_secret',
+          },
+          body: JSON.stringify({ label: 'auto-host' }),
+        }),
+      );
+      expect(result).toEqual({ token: 'ff_newtoken', label: 'auto-host' });
+    });
+
+    it('throws on non-ok response', async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: false,
+        status: 403,
+        text: async () => 'Forbidden',
+      });
+      await expect(
+        client.generateToken({ mcpAuthToken: 'bad', agentId: 'x' }),
+      ).rejects.toThrow('Token generation failed: 403');
+    });
+  });
+
   describe('URL normalization', () => {
     it('strips trailing slash from serverUrl', async () => {
       const c = createClient({ serverUrl: 'https://flow.example.com/', token: 't', fetch: fetchMock });
