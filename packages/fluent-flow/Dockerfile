@@ -5,11 +5,12 @@ WORKDIR /app
 COPY package*.json ./
 COPY turbo.json ./
 
-# Copy the fluent-flow package
+# Copy all workspace packages (required by workspace resolution)
 COPY packages/fluent-flow ./packages/fluent-flow
+COPY packages/fluent-flow-runner/package.json ./packages/fluent-flow-runner/package.json
 
-# Install all workspace dependencies
-RUN npm ci --workspace=packages/fluent-flow --omit=dev
+# Install workspace dependencies
+RUN npm ci --omit=dev --workspace packages/fluent-flow
 
 WORKDIR /app/packages/fluent-flow
 

@@ -1,3 +1,4 @@
+import './tracing.cjs';
 import express from 'express';
 import { captureRawBody } from './github/webhook-verify.js';
 import { getPool, closePool, healthCheck, runMigrations } from './db/client.js';
