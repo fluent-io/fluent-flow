@@ -63,7 +63,7 @@ describe('bootstrap', () => {
           'Content-Type': 'application/json',
           'Authorization': 'Bearer mcp_secret',
         },
-        body: JSON.stringify({ label: 'auto-testhost' }),
+        body: expect.stringMatching(/"label":"auto-testhost-[a-z0-9]+"/),
       }),
     );
   });
