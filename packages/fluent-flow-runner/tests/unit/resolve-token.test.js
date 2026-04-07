@@ -149,4 +149,47 @@ describe('resolveToken', () => {
       expect(err.message).not.toContain('secret.internal');
     }
   });
+
+  it('redacts token patterns from bootstrap error messages', async () => {
+    getAgentCredentials.mockReturnValue(null);
+    bootstrap.mockRejectedValue(new Error('Auth failed for Bearer mcp_super_secret_token_value'));
+
+    try {
+      await resolveToken(
+        { agent: 'my-agent', server: 'https://flow.example.com', mcpAuthToken: 'mcp_secret_long' },
+        log,
+      );
+    } catch (err) {
+      expect(err.message).not.toContain('mcp_super_secret_token_value');
+      expect(err.message).not.toContain('Bearer mcp_super');
+    }
+  });
+
+  it('redacts ff_ prefixed tokens from error messages', async () => {
+    getAgentCredentials.mockReturnValue(null);
+    bootstrap.mockRejectedValue(new Error('Invalid token ff_abcdef1234567890abcdef'));
+
+    try {
+      await resolveToken(
+        { agent: 'my-agent', server: 'https://flow.example.com', mcpAuthToken: 'mcp_secret_long' },
+        log,
+      );
+    } catch (err) {
+      expect(err.message).not.toContain('ff_abcdef1234567890');
+    }
+  });
+
+  it('rejects short MCP_AUTH_TOKEN before network call', async () => {
+    getAgentCredentials.mockReturnValue(null);
+    const origEnv = process.env.MCP_AUTH_TOKEN;
+    delete process.env.MCP_AUTH_TOKEN;
+
+    await expect(
+      resolveToken({ agent: 'my-agent', server: 'https://flow.example.com', mcpAuthToken: 'short' }, log),
+    ).rejects.toThrow('No saved credentials');
+
+    expect(bootstrap).not.toHaveBeenCalled();
+    if (origEnv !== undefined) process.env.MCP_AUTH_TOKEN = origEnv;
+    else delete process.env.MCP_AUTH_TOKEN;
+  });
 });

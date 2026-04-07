@@ -43,8 +43,8 @@ export async function resolveToken(opts, log) {
 
   // Case 2c: bootstrap with MCP_AUTH_TOKEN
   const mcpAuthToken = opts.mcpAuthToken || process.env.MCP_AUTH_TOKEN;
-  if (!mcpAuthToken) {
-    throw new Error('No saved credentials for agent "' + agentId + '". Provide --mcp-auth-token or set MCP_AUTH_TOKEN env var to bootstrap.');
+  if (!mcpAuthToken || mcpAuthToken.length < 8) {
+    throw new Error('No saved credentials. Provide --mcp-auth-token or set MCP_AUTH_TOKEN env var to bootstrap.');
   }
 
   log.info('Bootstrapping agent', { agent: agentId });
@@ -61,7 +61,9 @@ export async function resolveToken(opts, log) {
     return token;
   } catch (err) {
     const safeMsg = String(err.message || 'Unknown error')
-      .replace(/https?:\/\/[^\s"']+/g, '[REDACTED]');
+      .replace(/https?:\/\/[^\s"']+/g, '[REDACTED]')
+      .replace(/Bearer\s+\S+/gi, '[REDACTED]')
+      .replace(/(?:ff_|mcp)[a-zA-Z0-9_-]{16,}/g, '[REDACTED]');
     throw new Error(`Bootstrap failed for agent "${agentId}": ${safeMsg}`);
   }
 }

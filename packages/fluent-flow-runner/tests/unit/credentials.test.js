@@ -125,6 +125,20 @@ describe('credentials', () => {
       const secondWrite = JSON.parse(mockWriteFileSync.mock.calls[1][1]);
       expect(secondWrite._encryption.salt).toBe(salt);
     });
+
+    it('uses unique IVs for each encryption', () => {
+      mockReadFileSync.mockReturnValue(JSON.stringify({ agents: {}, default_agent: null }));
+
+      setAgentCredentials('agent-1', { token: 'ff_tok1', server: 'https://s1.com' });
+      const firstWrite = JSON.parse(mockWriteFileSync.mock.calls[0][1]);
+
+      mockReadFileSync.mockReturnValue(JSON.stringify(firstWrite));
+      setAgentCredentials('agent-2', { token: 'ff_tok2', server: 'https://s2.com' });
+      const secondWrite = JSON.parse(mockWriteFileSync.mock.calls[1][1]);
+
+      // IVs must differ even for same plaintext
+      expect(firstWrite.agents['agent-1'].token.iv).not.toBe(secondWrite.agents['agent-2'].token.iv);
+    });
   });
 
   describe('getAgentCredentials()', () => {
