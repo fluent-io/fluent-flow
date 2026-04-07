@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { hostname, platform } from 'node:os';
 import { prepareWorktree } from './worktree.js';
+import { resolvePrompt } from './prompts.js';
 
 /**
  * Build an isolated environment for shell commands.
@@ -111,9 +112,14 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
 
     let cmd;
     try {
+      const claimType = work.claim_type ?? 'review_fix';
+      if (!work.claim_type) {
+        log.info('No claim_type in work payload, defaulting to review_fix');
+      }
+      const prompt = resolvePrompt({ claimType, work });
       cmd = resolveCommand({
         agentType: work.agentType ?? 'claude-code',
-        prompt: message,
+        prompt,
         transportCommand: work.transportCommand,
       });
     } catch (err) {

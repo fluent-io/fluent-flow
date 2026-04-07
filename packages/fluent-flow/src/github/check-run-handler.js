@@ -4,7 +4,8 @@ import { dispatchReview, claimDispatch } from '../engine/review-manager.js';
 import { handleTestFailure, handleTestSuccess } from '../engine/test-manager.js';
 import { getActivePause } from '../engine/pause-manager.js';
 import { parseCheckAnnotations } from './test-parser.js';
-import { audit } from '../db/client.js';
+import { audit, query } from '../db/client.js';
+import { createClaim } from '../agents/claim-manager.js';
 import logger from '../logger.js';
 
 /**
@@ -194,6 +195,41 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config) {
       issueNumber,
       config,
     });
+  }
+
+  // Check if a review_fix claim was recently completed for this PR — if so, create test_verify
+  let hasReviewFixClaim = false;
+  try {
+    const claimCheck = await query(
+      `SELECT 1 FROM agent_claims
+       WHERE org_id = $1 AND repo = $2 AND pr_number = $3
+         AND claim_type = 'review_fix' AND status = 'completed'
+       LIMIT 1`,
+      [config.org_id ?? 'self-hosted', repoKey, pr.number]
+    );
+    hasReviewFixClaim = claimCheck.rows.length > 0;
+  } catch (err) {
+    logger.warn({ msg: 'Failed to check for review_fix claims', error: err.message });
+  }
+
+  if (hasReviewFixClaim) {
+    try {
+      await createClaim({
+        orgId: config.org_id ?? 'self-hosted',
+        repo: repoKey,
+        prNumber: pr.number,
+        attempt: attempt + 1,
+        claimType: 'test_verify',
+        payload: { branch: pr.head?.ref },
+      });
+      logger.info({ msg: 'Created test_verify claim after review_fix + CI pass', repo: repoKey, prNumber: pr.number });
+      // Early return: test_verify agent will verify fixes, then runner route's
+      // completion handler will trigger dispatchReview() via auto-chaining.
+      // If createClaim fails above, we fall through to dispatchReview directly.
+      return;
+    } catch (err) {
+      logger.error({ msg: 'Failed to create test_verify claim, falling back to review', error: err.message });
+    }
   }
 
   try {
