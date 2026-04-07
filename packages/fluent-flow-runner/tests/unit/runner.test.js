@@ -124,10 +124,10 @@ describe('runner', () => {
 
       mockSpawn.mockReturnValueOnce(fakeProcess(0));
 
-      const resolveCmd = vi.fn().mockReturnValue({
+      const resolveCmd = vi.fn().mockImplementation(({ prompt }) => ({
         bin: 'claude',
-        args: ['-p', 'Fix the bug at src/index.js:5'],
-      });
+        args: ['-p', prompt],
+      }));
 
       const runner = createRunner({
         client,
@@ -142,11 +142,12 @@ describe('runner', () => {
       await startPromise;
 
       expect(resolveCmd).toHaveBeenCalledWith(expect.objectContaining({
-        prompt: 'Fix the bug at src/index.js:5',
+        prompt: expect.stringContaining('Fix the bug at src/index.js:5'),
       }));
+      const resolvedPrompt = resolveCmd.mock.calls[0][0].prompt;
       expect(mockSpawn).toHaveBeenCalledWith(
         'claude',
-        ['-p', 'Fix the bug at src/index.js:5'],
+        ['-p', resolvedPrompt],
         expect.objectContaining({ cwd: '/repo', shell: false }),
       );
     });
@@ -545,6 +546,74 @@ describe('runner', () => {
 
       // Runner should still be alive past 5 total failures because resets happened
       expect(client.poll.mock.calls.length).toBeGreaterThan(5);
+    });
+  });
+
+  describe('claim_type prompt resolution', () => {
+    it('resolves prompt from claim_type via resolvePrompt', async () => {
+      const work = {
+        event: 'claim_created',
+        claim_type: 'spec',
+        message: 'Build the feature',
+        repo: 'org/repo',
+        prNumber: 10,
+        attempt: 1,
+        branch: 'feature/x',
+      };
+
+      let pollCount = 0;
+      const client = makeClient({
+        poll: vi.fn().mockImplementation(async () => {
+          pollCount++;
+          return pollCount === 1 ? work : null;
+        }),
+      });
+
+      const mockResolveCommand = vi.fn().mockReturnValue({ bin: 'claude', args: ['-p', 'prompt'] });
+      mockSpawn.mockReturnValueOnce(fakeProcess(0));
+      mockPrepareWorktree.mockResolvedValueOnce({ worktreePath: '/wt', cleanup: vi.fn() });
+
+      const runner = createRunner({ client, log: makeLogger(), resolveCommand: mockResolveCommand, cwd: '/repo' });
+      const startPromise = runner.start();
+      await new Promise((r) => setTimeout(r, 80));
+      runner.shutdown();
+      await startPromise;
+
+      expect(mockResolveCommand).toHaveBeenCalled();
+      const promptArg = mockResolveCommand.mock.calls[0][0].prompt;
+      expect(promptArg).toContain('docs/specs/');
+      expect(promptArg).toContain('org/repo');
+    });
+
+    it('defaults to review_fix when claim_type is not provided', async () => {
+      const work = {
+        event: 'review_failed',
+        message: 'Fix the bug',
+        repo: 'org/repo',
+        prNumber: 7,
+        attempt: 1,
+      };
+
+      let pollCount = 0;
+      const client = makeClient({
+        poll: vi.fn().mockImplementation(async () => {
+          pollCount++;
+          return pollCount === 1 ? work : null;
+        }),
+      });
+
+      const mockResolveCommand = vi.fn().mockReturnValue({ bin: 'claude', args: ['-p', 'prompt'] });
+      mockSpawn.mockReturnValueOnce(fakeProcess(0));
+
+      const runner = createRunner({ client, log: makeLogger(), resolveCommand: mockResolveCommand });
+      const startPromise = runner.start();
+      await new Promise((r) => setTimeout(r, 80));
+      runner.shutdown();
+      await startPromise;
+
+      const promptArg = mockResolveCommand.mock.calls[0][0].prompt;
+      expect(promptArg).toContain('Fix the bug');
+      expect(promptArg).toContain('fix agent');
     });
   });
 
