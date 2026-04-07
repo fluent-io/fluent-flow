@@ -39,7 +39,9 @@ export async function bootstrap({ server, agentId, mcpAuthToken, agentType, fetc
 
   if (!regRes.ok) {
     await regRes.text().catch(() => {});
-    throw new Error(`Agent registration failed: ${regRes.status}`);
+    if (regRes.status !== 409) {
+      throw new Error(`Agent registration failed: ${regRes.status}`);
+    }
   }
 
   // Step 2: Generate token

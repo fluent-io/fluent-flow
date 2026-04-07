@@ -89,9 +89,17 @@ function decryptToken(encObj, salt) {
 export function loadCredentials() {
   try {
     const raw = readFileSync(credPath(), 'utf-8');
-    return JSON.parse(raw);
-  } catch {
-    return { ...EMPTY, agents: {} };
+    const data = JSON.parse(raw);
+    // Normalize shape — ensure agents is a plain object
+    if (!data.agents || typeof data.agents !== 'object' || Array.isArray(data.agents)) {
+      data.agents = {};
+    }
+    return data;
+  } catch (err) {
+    if (err.code === 'ENOENT' || err instanceof SyntaxError) {
+      return { ...EMPTY, agents: {} };
+    }
+    throw err;
   }
 }
 

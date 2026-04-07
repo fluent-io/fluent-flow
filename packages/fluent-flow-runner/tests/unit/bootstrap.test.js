@@ -260,6 +260,29 @@ describe('bootstrap', () => {
     expect(fetchMock.mock.calls[1][0]).toBe('https://flow.example.com/api/agents/my%20agent/tokens');
   });
 
+  it('treats 409 Conflict as success for idempotent registration', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      text: async () => 'Agent already exists',
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ token: 'ff_generated_token', label: 'auto-testhost' }),
+    });
+
+    const result = await bootstrap({
+      server: 'https://flow.example.com',
+      agentId: 'existing-agent',
+      mcpAuthToken: 'valid_long_token',
+      fetch: fetchMock,
+    });
+
+    expect(result).toEqual({ token: 'ff_generated_token' });
+    // Token generation should still be called
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('does not include response body in token generation errors', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,

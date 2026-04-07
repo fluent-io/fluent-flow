@@ -69,6 +69,44 @@ describe('credentials', () => {
       const result = loadCredentials();
       expect(result).toEqual({ agents: {}, default_agent: null });
     });
+
+    it('rethrows EACCES permission errors', () => {
+      const error = new Error('EACCES: permission denied');
+      error.code = 'EACCES';
+      mockReadFileSync.mockImplementation(() => { throw error; });
+
+      expect(() => loadCredentials()).toThrow('EACCES');
+    });
+
+    it('rethrows I/O errors', () => {
+      const error = new Error('EIO: i/o error');
+      error.code = 'EIO';
+      mockReadFileSync.mockImplementation(() => { throw error; });
+
+      expect(() => loadCredentials()).toThrow('EIO');
+    });
+
+    it('normalizes agents field when missing', () => {
+      mockReadFileSync.mockReturnValue(JSON.stringify({ default_agent: 'x' }));
+
+      const result = loadCredentials();
+      expect(result.agents).toEqual({});
+      expect(result.default_agent).toBe('x');
+    });
+
+    it('normalizes agents field when null', () => {
+      mockReadFileSync.mockReturnValue(JSON.stringify({ agents: null, default_agent: null }));
+
+      const result = loadCredentials();
+      expect(result.agents).toEqual({});
+    });
+
+    it('normalizes agents field when not an object', () => {
+      mockReadFileSync.mockReturnValue(JSON.stringify({ agents: 'bad', default_agent: null }));
+
+      const result = loadCredentials();
+      expect(result.agents).toEqual({});
+    });
   });
 
   describe('saveCredentials()', () => {
