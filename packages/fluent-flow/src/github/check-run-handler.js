@@ -227,7 +227,6 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config) {
       // completion handler will trigger dispatchReview() via auto-chaining.
       // If createClaim fails above, we fall through to dispatchReview directly.
       return;
-      return; // Skip direct review dispatch — test_verify completion will trigger it
     } catch (err) {
       logger.error({ msg: 'Failed to create test_verify claim, falling back to review', error: err.message });
     }
