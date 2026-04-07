@@ -153,6 +153,9 @@ export async function getActiveClaim(orgId, repo, prNumber) {
 /**
  * Get a specific claim by org, repo, PR, and attempt.
  * Used by completion handler to read claim_type before chaining.
+ * Intentionally does not filter by status — the completion handler needs
+ * to read claim_type from claims that are still in 'claimed' state before
+ * calling completeClaim().
  * @param {string} orgId
  * @param {string} repo
  * @param {number} prNumber

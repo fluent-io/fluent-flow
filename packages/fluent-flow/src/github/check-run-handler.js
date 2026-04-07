@@ -223,7 +223,10 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config) {
         payload: { branch: pr.head?.ref },
       });
       logger.info({ msg: 'Created test_verify claim after review_fix + CI pass', repo: repoKey, prNumber: pr.number });
-      return; // Skip direct review dispatch — test_verify completion will trigger it
+      // Early return: test_verify agent will verify fixes, then runner route's
+      // completion handler will trigger dispatchReview() via auto-chaining.
+      // If createClaim fails above, we fall through to dispatchReview directly.
+      return;
     } catch (err) {
       logger.error({ msg: 'Failed to create test_verify claim, falling back to review', error: err.message });
     }

@@ -197,6 +197,7 @@ describe('runner routes', () => {
         prNumber: 7,
         attempt: 2,
         claimType: 'build',
+        payload: { source_claim_id: 1 },
       }));
     });
 

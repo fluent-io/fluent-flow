@@ -113,6 +113,9 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
     let cmd;
     try {
       const claimType = work.claim_type ?? 'review_fix';
+      if (!work.claim_type) {
+        log.info('No claim_type in work payload, defaulting to review_fix');
+      }
       const prompt = resolvePrompt({ claimType, work });
       cmd = resolveCommand({
         agentType: work.agentType ?? 'claude-code',
