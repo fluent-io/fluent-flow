@@ -19,6 +19,9 @@ export function parseArgs(argv) {
   }
 
   if (!opts.token && !opts.agent) throw new Error('--token or --agent is required');
+  if (opts.agent && !opts.token && !opts.mcpAuthToken) {
+    throw new Error('--agent requires --mcp-auth-token or --token');
+  }
   if (!opts.server) throw new Error('--server is required');
 
   return opts;

@@ -38,10 +38,21 @@ describe('CLI parseArgs()', () => {
     expect(opts.mcpAuthToken).toBe('mcp_secret');
   });
 
-  it('token is optional when agent is provided', () => {
-    const opts = parseArgs(['--server', 's', '--agent', 'my-agent']);
+  it('token is optional when agent is provided with mcp-auth-token', () => {
+    const opts = parseArgs(['--server', 's', '--agent', 'my-agent', '--mcp-auth-token', 'mcp_tok']);
     expect(opts.token).toBeUndefined();
     expect(opts.agent).toBe('my-agent');
+  });
+
+  it('throws if --agent is provided without --token and --mcp-auth-token', () => {
+    expect(() => parseArgs(['--server', 's', '--agent', 'my-agent']))
+      .toThrow('--agent requires --mcp-auth-token or --token');
+  });
+
+  it('allows --agent with --token (no mcp-auth-token needed)', () => {
+    const opts = parseArgs(['--server', 's', '--agent', 'my-agent', '--token', 'ff_tok']);
+    expect(opts.agent).toBe('my-agent');
+    expect(opts.token).toBe('ff_tok');
   });
 
   it('throws if neither --token nor --agent is provided', () => {

@@ -81,12 +81,39 @@ describe('bootstrap', () => {
     await bootstrap({
       server: 'https://flow.example.com',
       agentId: 'test',
-      mcpAuthToken: 'secret',
+      mcpAuthToken: 'secret_value_here',
       fetch: fetchMock,
     });
 
     const registerBody = JSON.parse(fetchMock.mock.calls[0][1].body);
     expect(registerBody.agent_type).toBe('claude-code');
+  });
+
+  it('uses FLUENT_FLOW_AGENT_TYPE env var when agentType not provided', async () => {
+    const origEnv = process.env.FLUENT_FLOW_AGENT_TYPE;
+    process.env.FLUENT_FLOW_AGENT_TYPE = 'copilot';
+
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: 'test', agent_type: 'copilot', transport: 'long_poll' }),
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ token: 'ff_tok', label: 'auto-testhost' }),
+    });
+
+    await bootstrap({
+      server: 'https://flow.example.com',
+      agentId: 'test',
+      mcpAuthToken: 'secret_value_here',
+      fetch: fetchMock,
+    });
+
+    const registerBody = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(registerBody.agent_type).toBe('copilot');
+
+    if (origEnv !== undefined) process.env.FLUENT_FLOW_AGENT_TYPE = origEnv;
+    else delete process.env.FLUENT_FLOW_AGENT_TYPE;
   });
 
   it('throws if agent registration fails', async () => {
@@ -100,7 +127,7 @@ describe('bootstrap', () => {
       bootstrap({
         server: 'https://flow.example.com',
         agentId: 'bad-agent',
-        mcpAuthToken: 'bad-token',
+        mcpAuthToken: 'bad-token-value',
         fetch: fetchMock,
       }),
     ).rejects.toThrow('Agent registration failed: 403');
@@ -121,7 +148,7 @@ describe('bootstrap', () => {
       bootstrap({
         server: 'https://flow.example.com',
         agentId: 'my-agent',
-        mcpAuthToken: 'secret',
+        mcpAuthToken: 'secret_value_here',
         fetch: fetchMock,
       }),
     ).rejects.toThrow('Token generation failed: 500');
@@ -140,11 +167,101 @@ describe('bootstrap', () => {
     await bootstrap({
       server: 'https://flow.example.com/',
       agentId: 'x',
-      mcpAuthToken: 'secret',
+      mcpAuthToken: 'secret_value_here',
       fetch: fetchMock,
     });
 
     expect(fetchMock.mock.calls[0][0]).toBe('https://flow.example.com/api/agents');
     expect(fetchMock.mock.calls[1][0]).toBe('https://flow.example.com/api/agents/x/tokens');
+  });
+
+  it('throws if mcpAuthToken is empty', async () => {
+    await expect(
+      bootstrap({
+        server: 'https://flow.example.com',
+        agentId: 'test',
+        mcpAuthToken: '',
+        fetch: fetchMock,
+      }),
+    ).rejects.toThrow('MCP_AUTH_TOKEN is required');
+  });
+
+  it('throws if mcpAuthToken is too short', async () => {
+    await expect(
+      bootstrap({
+        server: 'https://flow.example.com',
+        agentId: 'test',
+        mcpAuthToken: 'short',
+        fetch: fetchMock,
+      }),
+    ).rejects.toThrow('MCP_AUTH_TOKEN must be at least 8 characters');
+  });
+
+  it('does not include response body in error messages', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      text: async () => 'Internal error with sensitive token=abc123',
+    });
+
+    try {
+      await bootstrap({
+        server: 'https://flow.example.com',
+        agentId: 'test',
+        mcpAuthToken: 'valid_long_token',
+        fetch: fetchMock,
+      });
+      expect.unreachable('Should have thrown');
+    } catch (err) {
+      expect(err.message).toBe('Agent registration failed: 500');
+      expect(err.message).not.toContain('sensitive');
+      expect(err.message).not.toContain('abc123');
+    }
+  });
+
+  it('does not expose MCP_AUTH_TOKEN value in error messages', async () => {
+    const secretToken = 'super_secret_mcp_token_123';
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 401,
+      text: async () => `Unauthorized: ${secretToken}`,
+    });
+
+    try {
+      await bootstrap({
+        server: 'https://flow.example.com',
+        agentId: 'test',
+        mcpAuthToken: secretToken,
+        fetch: fetchMock,
+      });
+      expect.unreachable('Should have thrown');
+    } catch (err) {
+      expect(err.message).not.toContain(secretToken);
+    }
+  });
+
+  it('does not include response body in token generation errors', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: 'test', agent_type: 'claude-code' }),
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      text: async () => 'Service unavailable: db connection failed at 10.0.0.5',
+    });
+
+    try {
+      await bootstrap({
+        server: 'https://flow.example.com',
+        agentId: 'test',
+        mcpAuthToken: 'valid_long_token',
+        fetch: fetchMock,
+      });
+      expect.unreachable('Should have thrown');
+    } catch (err) {
+      expect(err.message).toBe('Token generation failed: 503');
+      expect(err.message).not.toContain('10.0.0.5');
+    }
   });
 });

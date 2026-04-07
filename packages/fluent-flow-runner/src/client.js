@@ -53,52 +53,5 @@ export function createClient({ serverUrl, token, fetch: fetchFn = globalThis.fet
      */
     reportClaim: (claim) => post('/api/runner/claim', claim, 'Claim report'),
 
-    /**
-     * Register an agent via the admin API (uses MCP_AUTH_TOKEN).
-     * @param {object} opts
-     * @param {string} opts.mcpAuthToken
-     * @param {string} opts.agentId
-     * @param {string} opts.agentType
-     * @returns {Promise<{ id, agent_type, transport }>}
-     */
-    async registerAgent({ mcpAuthToken, agentId, agentType }) {
-      const res = await fetchFn(`${base}/api/agents`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${mcpAuthToken}`,
-        },
-        body: JSON.stringify({ id: agentId, agent_type: agentType, transport: 'long_poll' }),
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`Agent registration failed: ${res.status}${text ? ` — ${text}` : ''}`);
-      }
-      return res.json();
-    },
-
-    /**
-     * Generate a token for an agent via the admin API (uses MCP_AUTH_TOKEN).
-     * @param {object} opts
-     * @param {string} opts.mcpAuthToken
-     * @param {string} opts.agentId
-     * @param {string} [opts.label]
-     * @returns {Promise<{ token, label }>}
-     */
-    async generateToken({ mcpAuthToken, agentId, label }) {
-      const res = await fetchFn(`${base}/api/agents/${agentId}/tokens`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${mcpAuthToken}`,
-        },
-        body: JSON.stringify({ label }),
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        throw new Error(`Token generation failed: ${res.status}${text ? ` — ${text}` : ''}`);
-      }
-      return res.json();
-    },
   };
 }

@@ -7,11 +7,19 @@ import { hostname } from 'node:os';
  * @param {string} opts.server — Fluent Flow server base URL
  * @param {string} opts.agentId — agent ID to register
  * @param {string} opts.mcpAuthToken — MCP_AUTH_TOKEN for admin API access
- * @param {string} [opts.agentType] — agent type (default: 'claude-code')
+ * @param {string} [opts.agentType] — agent type (default: env FLUENT_FLOW_AGENT_TYPE or 'claude-code')
  * @param {Function} [opts.fetch] — fetch implementation (default: globalThis.fetch)
  * @returns {Promise<{ token: string }>}
  */
-export async function bootstrap({ server, agentId, mcpAuthToken, agentType = 'claude-code', fetch: fetchFn = globalThis.fetch }) {
+export async function bootstrap({ server, agentId, mcpAuthToken, agentType, fetch: fetchFn = globalThis.fetch }) {
+  if (!mcpAuthToken || typeof mcpAuthToken !== 'string') {
+    throw new Error('MCP_AUTH_TOKEN is required');
+  }
+  if (mcpAuthToken.length < 8) {
+    throw new Error('MCP_AUTH_TOKEN must be at least 8 characters');
+  }
+
+  const resolvedAgentType = agentType || process.env.FLUENT_FLOW_AGENT_TYPE || 'claude-code';
   const base = server.replace(/\/+$/, '');
   const headers = {
     'Content-Type': 'application/json',
@@ -24,14 +32,14 @@ export async function bootstrap({ server, agentId, mcpAuthToken, agentType = 'cl
     headers,
     body: JSON.stringify({
       id: agentId,
-      agent_type: agentType,
+      agent_type: resolvedAgentType,
       transport: 'long_poll',
     }),
   });
 
   if (!regRes.ok) {
-    const text = await regRes.text().catch(() => '');
-    throw new Error(`Agent registration failed: ${regRes.status}${text ? ` — ${text}` : ''}`);
+    await regRes.text().catch(() => {});
+    throw new Error(`Agent registration failed: ${regRes.status}`);
   }
 
   // Step 2: Generate token
@@ -43,8 +51,8 @@ export async function bootstrap({ server, agentId, mcpAuthToken, agentType = 'cl
   });
 
   if (!tokRes.ok) {
-    const text = await tokRes.text().catch(() => '');
-    throw new Error(`Token generation failed: ${tokRes.status}${text ? ` — ${text}` : ''}`);
+    await tokRes.text().catch(() => {});
+    throw new Error(`Token generation failed: ${tokRes.status}`);
   }
 
   const tokData = await tokRes.json();

@@ -5,9 +5,10 @@ import { join } from 'node:path';
 const mockHomedir = vi.fn(() => '/home/testuser');
 vi.mock('node:os', () => ({
   homedir: () => mockHomedir(),
+  hostname: () => 'testhost',
 }));
 
-// Mock node:fs — must use vi.mock for ESM namespace
+// Mock node:fs
 const mockMkdirSync = vi.fn(() => '/home/testuser/.fluent-flow');
 const mockReadFileSync = vi.fn();
 const mockWriteFileSync = vi.fn();
@@ -27,7 +28,6 @@ import {
 } from '../../src/credentials.js';
 
 describe('credentials', () => {
-  // Use join to compute expected paths so they match the platform separator
   const homeDir = '/home/testuser';
   const credDir = join(homeDir, '.fluent-flow');
   const credPath = join(credDir, 'credentials.json');
@@ -41,8 +41,9 @@ describe('credentials', () => {
   describe('loadCredentials()', () => {
     it('returns parsed credentials when file exists', () => {
       const data = {
+        _encryption: { salt: 'c2FsdA==' },
         agents: {
-          'my-agent': { token: 'ff_abc', server: 'https://flow.example.com' },
+          'my-agent': { token: { iv: 'aQ==', data: 'Yg==', tag: 'Yw==' }, server: 'https://flow.example.com' },
         },
         default_agent: 'my-agent',
       };
@@ -71,37 +72,65 @@ describe('credentials', () => {
   });
 
   describe('saveCredentials()', () => {
-    it('writes credentials JSON to file and creates directory', () => {
-      const data = {
-        agents: { 'my-agent': { token: 'ff_abc', server: 'https://flow.example.com' } },
-        default_agent: 'my-agent',
-      };
-
+    it('writes credentials JSON with restricted directory and file permissions', () => {
+      const data = { agents: {}, default_agent: null, _encryption: { salt: 'abc' } };
       saveCredentials(data);
 
-      expect(mockMkdirSync).toHaveBeenCalledWith(credDir, { recursive: true });
+      expect(mockMkdirSync).toHaveBeenCalledWith(credDir, { recursive: true, mode: 0o700 });
       expect(mockWriteFileSync).toHaveBeenCalledWith(
         credPath,
         JSON.stringify(data, null, 2),
-        'utf-8',
+        { encoding: 'utf-8', mode: 0o600 },
       );
     });
   });
 
-  describe('getAgentCredentials()', () => {
-    it('returns credentials for a known agent', () => {
-      const creds = { token: 'ff_abc', server: 'https://flow.example.com' };
-      mockReadFileSync.mockReturnValue(JSON.stringify({
-        agents: { 'my-agent': creds },
-        default_agent: 'my-agent',
-      }));
+  describe('encryption round-trip', () => {
+    it('encrypts tokens on save and decrypts on load', () => {
+      mockReadFileSync.mockReturnValue(JSON.stringify({ agents: {}, default_agent: null }));
 
-      const result = getAgentCredentials('my-agent');
-      expect(result).toEqual(creds);
+      setAgentCredentials('test-agent', { token: 'ff_secret_token', server: 'https://flow.example.com' });
+
+      // Capture what was written
+      const writtenData = JSON.parse(mockWriteFileSync.mock.calls[0][1]);
+
+      // Verify token is NOT plaintext
+      expect(writtenData.agents['test-agent'].token).not.toBe('ff_secret_token');
+      expect(writtenData.agents['test-agent'].token.data).toBeDefined();
+      expect(writtenData.agents['test-agent'].token.iv).toBeDefined();
+      expect(writtenData.agents['test-agent'].token.tag).toBeDefined();
+      expect(writtenData.agents['test-agent'].server).toBe('https://flow.example.com');
+
+      // Verify encryption salt exists
+      expect(writtenData._encryption.salt).toBeDefined();
+
+      // Load: mock file to return what was written
+      mockReadFileSync.mockReturnValue(JSON.stringify(writtenData));
+
+      const result = getAgentCredentials('test-agent');
+      expect(result).toEqual({ token: 'ff_secret_token', server: 'https://flow.example.com' });
     });
 
+    it('preserves encryption salt across multiple saves', () => {
+      mockReadFileSync.mockReturnValue(JSON.stringify({ agents: {}, default_agent: null }));
+
+      setAgentCredentials('agent-1', { token: 'ff_tok1', server: 'https://s1.com' });
+      const firstWrite = JSON.parse(mockWriteFileSync.mock.calls[0][1]);
+      const salt = firstWrite._encryption.salt;
+
+      // Second save uses same file content
+      mockReadFileSync.mockReturnValue(JSON.stringify(firstWrite));
+      setAgentCredentials('agent-2', { token: 'ff_tok2', server: 'https://s2.com' });
+
+      const secondWrite = JSON.parse(mockWriteFileSync.mock.calls[1][1]);
+      expect(secondWrite._encryption.salt).toBe(salt);
+    });
+  });
+
+  describe('getAgentCredentials()', () => {
     it('returns null for an unknown agent', () => {
       mockReadFileSync.mockReturnValue(JSON.stringify({
+        _encryption: { salt: 'c2FsdA==' },
         agents: {},
         default_agent: null,
       }));
@@ -109,51 +138,94 @@ describe('credentials', () => {
       const result = getAgentCredentials('unknown-agent');
       expect(result).toBeNull();
     });
+
+    it('returns null when encryption salt is missing', () => {
+      mockReadFileSync.mockReturnValue(JSON.stringify({
+        agents: { 'my-agent': { token: { iv: 'aQ==', data: 'Yg==', tag: 'Yw==' }, server: 'https://s.com' } },
+        default_agent: 'my-agent',
+      }));
+
+      const result = getAgentCredentials('my-agent');
+      expect(result).toBeNull();
+    });
+
+    it('returns null when encrypted token data is malformed', () => {
+      mockReadFileSync.mockReturnValue(JSON.stringify({
+        _encryption: { salt: 'c2FsdA==' },
+        agents: { 'my-agent': { token: 'plaintext-token', server: 'https://s.com' } },
+        default_agent: 'my-agent',
+      }));
+
+      const result = getAgentCredentials('my-agent');
+      expect(result).toBeNull();
+    });
   });
 
   describe('setAgentCredentials()', () => {
-    it('saves credentials for a new agent and sets as default', () => {
+    it('saves encrypted credentials for a new agent and sets as default', () => {
       mockReadFileSync.mockReturnValue(JSON.stringify({
         agents: {},
         default_agent: null,
       }));
 
-      const creds = { token: 'ff_xyz', server: 'https://flow.example.com' };
-      setAgentCredentials('new-agent', creds);
+      setAgentCredentials('new-agent', { token: 'ff_xyz', server: 'https://flow.example.com' });
 
       const writtenData = JSON.parse(mockWriteFileSync.mock.calls[0][1]);
-      expect(writtenData.agents['new-agent']).toEqual(creds);
+      expect(writtenData.agents['new-agent'].token.data).toBeDefined();
+      expect(writtenData.agents['new-agent'].server).toBe('https://flow.example.com');
       expect(writtenData.default_agent).toBe('new-agent');
     });
 
     it('preserves existing agents when adding a new one', () => {
-      const existing = {
-        agents: {
-          'agent-1': { token: 'ff_a', server: 'https://s1.com' },
-        },
-        default_agent: 'agent-1',
-      };
-      mockReadFileSync.mockReturnValue(JSON.stringify(existing));
+      // First save: create agent-1
+      mockReadFileSync.mockReturnValue(JSON.stringify({ agents: {}, default_agent: null }));
+      setAgentCredentials('agent-1', { token: 'ff_a', server: 'https://s1.com' });
+      const firstWrite = JSON.parse(mockWriteFileSync.mock.calls[0][1]);
 
+      // Second save: add agent-2
+      mockReadFileSync.mockReturnValue(JSON.stringify(firstWrite));
       setAgentCredentials('agent-2', { token: 'ff_b', server: 'https://s2.com' });
 
-      const writtenData = JSON.parse(mockWriteFileSync.mock.calls[0][1]);
-      expect(writtenData.agents['agent-1']).toEqual({ token: 'ff_a', server: 'https://s1.com' });
-      expect(writtenData.agents['agent-2']).toEqual({ token: 'ff_b', server: 'https://s2.com' });
-      // default_agent stays as agent-1 (first registered)
-      expect(writtenData.default_agent).toBe('agent-1');
+      const secondWrite = JSON.parse(mockWriteFileSync.mock.calls[1][1]);
+      expect(secondWrite.agents['agent-1'].token.data).toBeDefined();
+      expect(secondWrite.agents['agent-2'].token.data).toBeDefined();
+      expect(secondWrite.default_agent).toBe('agent-1');
     });
 
     it('overwrites credentials for an existing agent', () => {
-      mockReadFileSync.mockReturnValue(JSON.stringify({
-        agents: { 'my-agent': { token: 'ff_old', server: 'https://old.com' } },
-        default_agent: 'my-agent',
-      }));
+      mockReadFileSync.mockReturnValue(JSON.stringify({ agents: {}, default_agent: null }));
+      setAgentCredentials('my-agent', { token: 'ff_old', server: 'https://old.com' });
+      const firstWrite = JSON.parse(mockWriteFileSync.mock.calls[0][1]);
 
+      mockReadFileSync.mockReturnValue(JSON.stringify(firstWrite));
       setAgentCredentials('my-agent', { token: 'ff_new', server: 'https://new.com' });
 
-      const writtenData = JSON.parse(mockWriteFileSync.mock.calls[0][1]);
-      expect(writtenData.agents['my-agent']).toEqual({ token: 'ff_new', server: 'https://new.com' });
+      const secondWrite = JSON.parse(mockWriteFileSync.mock.calls[1][1]);
+      // Verify the new token can be decrypted
+      mockReadFileSync.mockReturnValue(JSON.stringify(secondWrite));
+      const result = getAgentCredentials('my-agent');
+      expect(result.token).toBe('ff_new');
+      expect(result.server).toBe('https://new.com');
+    });
+  });
+
+  describe('file permissions', () => {
+    it('creates directory with mode 0700', () => {
+      mockReadFileSync.mockReturnValue(JSON.stringify({ agents: {}, default_agent: null }));
+      setAgentCredentials('agent', { token: 'ff_tok', server: 'https://s.com' });
+
+      expect(mockMkdirSync).toHaveBeenCalledWith(credDir, { recursive: true, mode: 0o700 });
+    });
+
+    it('writes file with mode 0600', () => {
+      mockReadFileSync.mockReturnValue(JSON.stringify({ agents: {}, default_agent: null }));
+      setAgentCredentials('agent', { token: 'ff_tok', server: 'https://s.com' });
+
+      expect(mockWriteFileSync).toHaveBeenCalledWith(
+        credPath,
+        expect.any(String),
+        expect.objectContaining({ mode: 0o600 }),
+      );
     });
   });
 });
