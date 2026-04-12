@@ -20,3 +20,12 @@ CREATE TABLE IF NOT EXISTS user_orgs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_user_orgs_org_id ON user_orgs(org_id);
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'user_orgs_role_check'
+  ) THEN
+    ALTER TABLE user_orgs ADD CONSTRAINT user_orgs_role_check
+      CHECK (role IN ('member', 'admin'));
+  END IF;
+END $$;
