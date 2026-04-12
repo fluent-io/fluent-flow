@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { query } from '../pool.js';
+import { getPool, query } from '../pool.js';
 
 const TOKEN_PREFIX = 'ff_';
 
@@ -12,20 +12,31 @@ function hashToken(plaintext: string): string {
 }
 
 export async function regenerateKey(orgId: string, agentId: string): Promise<{ plaintext: string; id: number }> {
-  await query(
-    `UPDATE agent_tokens SET revoked_at = NOW() WHERE org_id = $1 AND agent_id = $2 AND revoked_at IS NULL`,
-    [orgId, agentId],
-  );
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
 
-  const plaintext = generateToken();
-  const hash = hashToken(plaintext);
+    await client.query(
+      `UPDATE agent_tokens SET revoked_at = NOW() WHERE org_id = $1 AND agent_id = $2 AND revoked_at IS NULL`,
+      [orgId, agentId],
+    );
 
-  const result = await query(
-    `INSERT INTO agent_tokens (org_id, agent_id, token_hash, label) VALUES ($1, $2, $3, $4) RETURNING id, org_id, agent_id, created_at`,
-    [orgId, agentId, hash, 'default'],
-  );
+    const plaintext = generateToken();
+    const hash = hashToken(plaintext);
 
-  return { plaintext, ...result.rows[0] };
+    const result = await client.query(
+      `INSERT INTO agent_tokens (org_id, agent_id, token_hash, label) VALUES ($1, $2, $3, $4) RETURNING id, org_id, agent_id, created_at`,
+      [orgId, agentId, hash, 'default'],
+    );
+
+    await client.query('COMMIT');
+    return { plaintext, ...result.rows[0] };
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 export async function getKeyInfo(orgId: string, agentId: string): Promise<{ id: number; created_at: Date } | null> {
