@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import logger from '../logger.js';
@@ -33,9 +33,12 @@ export async function query(text, params) {
 
 export async function runMigrations() {
   const pool = getPool();
-  const migrations = ['001_initial.sql', '002_audit_log.sql', '003_mcp_pending.sql', '004_dispatch_dedup.sql', '005_agent_registry.sql', '006_agent_sessions.sql', '007_agent_claims.sql', '008_test_failures.sql'];
+  const migrationsDir = join(__dirname, 'migrations');
+  const migrations = readdirSync(migrationsDir)
+    .filter(f => f.endsWith('.sql'))
+    .sort();
   for (const file of migrations) {
-    const migrationPath = join(__dirname, 'migrations', file);
+    const migrationPath = join(migrationsDir, file);
     const sql = readFileSync(migrationPath, 'utf8');
     await pool.query(sql);
     logger.info({ msg: 'Migration applied', file });
