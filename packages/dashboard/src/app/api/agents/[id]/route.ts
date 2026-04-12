@@ -50,6 +50,12 @@ export async function DELETE(
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
+  await query(
+    `DELETE FROM agent_claims WHERE org_id = $1 AND session_id IN (
+      SELECT id FROM agent_sessions WHERE org_id = $1 AND agent_id = $2
+    )`,
+    [agent.org_id, agent.id],
+  );
   await query('DELETE FROM agents WHERE org_id = $1 AND id = $2', [agent.org_id, agent.id]);
 
   return NextResponse.json({ deleted: true });
