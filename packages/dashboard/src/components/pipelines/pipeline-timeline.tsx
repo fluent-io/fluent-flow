@@ -66,7 +66,7 @@ export function PipelineTimeline({ claims }: { claims: PipelineDetailClaim[] }) 
               <div className="flex gap-4 text-xs text-muted-foreground">
                 {claim.agent_id && <div>Agent: <span className="text-foreground">{claim.agent_id}</span></div>}
                 {claim.session_id && <div>Session: <span className="text-foreground">#{claim.session_id}</span></div>}
-                {meta.hostname && <div>Host: <span className="text-foreground">{meta.hostname as string}</span></div>}
+                {typeof meta.hostname === 'string' && <div>Host: <span className="text-foreground">{meta.hostname}</span></div>}
               </div>
             </div>
           </div>

@@ -51,7 +51,7 @@ export function PipelineStage({ claimType, status, claimedAt, completedAt, isFir
   const config = getStageConfig(claimType);
   const style = statusStyles[status] ?? 'bg-secondary border-border text-muted-foreground';
   const icon = statusIcons[status] ?? '\u2014';
-  const duration = formatDuration(claimedAt, completedAt);
+  const duration = formatDuration(claimedAt ?? null, completedAt ?? null);
 
   return (
     <div
