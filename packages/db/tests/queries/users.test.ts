@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockQuery = vi.fn();
-vi.mock('../../src/pool.js', () => ({
+vi.mock('../../src/pool', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
 }));
 
-const { upsertUser, getUserOrgs } = await import('../../src/queries/users.js');
+const { upsertUser, getUserOrgs } = await import('../../src/queries/users');
 
 describe('upsertUser', () => {
   beforeEach(() => { mockQuery.mockReset(); });

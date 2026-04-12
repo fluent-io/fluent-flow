@@ -5,12 +5,12 @@ const mockRelease = vi.fn();
 const mockQuery = vi.fn();
 const mockConnect = vi.fn().mockResolvedValue({ query: mockClientQuery, release: mockRelease });
 
-vi.mock('../../src/pool.js', () => ({
+vi.mock('../../src/pool', () => ({
   getPool: () => ({ connect: () => mockConnect() }),
   query: (...args: unknown[]) => mockQuery(...args),
 }));
 
-const { regenerateKey, getKeyInfo } = await import('../../src/queries/tokens.js');
+const { regenerateKey, getKeyInfo } = await import('../../src/queries/tokens');
 
 describe('regenerateKey', () => {
   beforeEach(() => {

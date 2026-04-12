@@ -1,6 +1,6 @@
-import { query } from '../pool.js';
-import { agentListItemSchema, agentSchema } from '../schemas/agents.js';
-import type { AgentListItem, Agent } from '../schemas/agents.js';
+import { query } from '../pool';
+import { agentListItemSchema, agentSchema } from '../schemas/agents';
+import type { AgentListItem, Agent } from '../schemas/agents';
 
 export async function listAgents(orgIds: string[]): Promise<AgentListItem[]> {
   const isSuper = orgIds.length === 0;

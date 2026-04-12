@@ -1,6 +1,6 @@
-import { query } from '../pool.js';
-import { userSchema, userOrgSchema } from '../schemas/users.js';
-import type { User, UserOrg } from '../schemas/users.js';
+import { query } from '../pool';
+import { userSchema, userOrgSchema } from '../schemas/users';
+import type { User, UserOrg } from '../schemas/users';
 
 interface UpsertUserInput {
   github_id: number;

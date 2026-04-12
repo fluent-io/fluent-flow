@@ -1,6 +1,6 @@
-import { query } from '../pool.js';
-import { claimSchema } from '../schemas/claims.js';
-import type { Claim } from '../schemas/claims.js';
+import { query } from '../pool';
+import { claimSchema } from '../schemas/claims';
+import type { Claim } from '../schemas/claims';
 
 export async function getAgentClaims(orgId: string, agentId: string): Promise<Claim[]> {
   const sql = `

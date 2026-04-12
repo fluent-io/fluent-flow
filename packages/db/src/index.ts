@@ -1,3 +1,3 @@
-export { getPool, query, closePool } from './pool.js';
-export * from './schemas/index.js';
-export * from './queries/index.js';
+export { getPool, query, closePool } from './pool';
+export * from './schemas/index';
+export * from './queries/index';
