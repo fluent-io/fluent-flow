@@ -1,11 +1,13 @@
 # Fluent Flow
 
-Turborepo monorepo. Server code lives in `packages/fluent-flow/`.
+Turborepo monorepo with four packages: server (`packages/fluent-flow/`), runner (`packages/fluent-flow-runner/`), dashboard (`packages/dashboard/`), and shared db (`packages/db/`).
 
 Read [packages/fluent-flow/README.md](packages/fluent-flow/README.md) for architecture overview, quick start, API reference, and config system.
 
 ## Key docs by area
 
+- [packages/dashboard/README.md](packages/dashboard/README.md) — Admin dashboard: agent management, pipeline status, auth, setup
+- [packages/db/README.md](packages/db/README.md) — Shared data access: pg pool, Zod schemas, org-scoped queries
 - [packages/fluent-flow-runner/README.md](packages/fluent-flow-runner/README.md) — Runner CLI: agent registration, token setup, running locally
 - [packages/fluent-flow/config/README.md](packages/fluent-flow/config/README.md) — Config system: defaults, agent registry, per-repo overrides, validation
 - [packages/fluent-flow/src/engine/README.md](packages/fluent-flow/src/engine/README.md) — State machine, review pipeline, pause/resume logic
@@ -13,8 +15,8 @@ Read [packages/fluent-flow/README.md](packages/fluent-flow/README.md) for archit
 - [packages/fluent-flow/src/notifications/README.md](packages/fluent-flow/src/notifications/README.md) — Agent notification dispatcher, transports, multi-agent routing
 - [packages/fluent-flow/src/agents/README.md](packages/fluent-flow/src/agents/README.md) — Agent registry, tokens, sessions, claims
 - [packages/fluent-flow/DESIGN.md](packages/fluent-flow/DESIGN.md) — Build instructions, DB schema, Docker setup
-- [docs/specs/](docs/specs/) — Design specs (agent-agnostic routing, worktree task pipeline)
-- [docs/plans/](docs/plans/) — Implementation plans and design docs
+- [docs/specs/](docs/specs/) — Design specs (agent-agnostic routing, worktree task pipeline, dashboard, pipeline status)
+- [docs/plans/](docs/plans/) — Implementation plans
 
 ## Code conventions
 
@@ -38,11 +40,11 @@ Notifications route to the agent that created the PR, not just the repo default:
 
 ```bash
 cd packages/fluent-flow
-npm test          # 320 tests, runs sequentially (--fileParallelism=false)
+npm test          # 381 tests, runs sequentially (--fileParallelism=false)
 npm run test:watch
 ```
 
-Or from root via Turborepo:
+Or from root via Turborepo (runs all packages: 381 engine + 15 db + 14 dashboard = 410 tests):
 ```bash
 npm test
 ```
