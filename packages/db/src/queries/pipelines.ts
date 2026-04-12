@@ -27,7 +27,7 @@ export async function listPipelines(orgIds: string[]): Promise<PipelineListItem[
       c.pr_number,
       MAX(c.attempt) AS latest_attempt,
       MAX(c.created_at) AS last_activity,
-      json_agg(
+      COALESCE(json_agg(
         json_build_object(
           'claim_type', c.claim_type,
           'status', c.status,
@@ -35,11 +35,11 @@ export async function listPipelines(orgIds: string[]): Promise<PipelineListItem[
           'claimed_at', c.claimed_at,
           'completed_at', c.completed_at
         ) ORDER BY c.created_at
-      ) AS stages
+      ), '[]'::json) AS stages
     FROM agent_claims c
     ${isSuper ? '' : 'WHERE c.org_id = ANY($1)'}
     GROUP BY c.org_id, c.repo, c.pr_number
-    ORDER BY MAX(c.created_at) DESC
+    ORDER BY last_activity DESC
     LIMIT 100
   `;
 
