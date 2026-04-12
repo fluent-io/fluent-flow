@@ -12,7 +12,7 @@ import {
 
 interface AgentDetailHeaderProps {
   agent: Agent;
-  keyInfo: { id: number; created_at: string } | null;
+  keyInfo: { id: number; created_at: Date | string } | null;
   status: string | null;
   isAdmin: boolean;
 }
