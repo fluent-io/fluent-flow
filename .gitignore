@@ -12,6 +12,9 @@ coverage/
 *.swo
 tmp/
 .turbo/
+.superpowers
+*.tsbuildinfo
+.next
 
 # Deployment-specific overrides — configure locally, never commit
 packages/fluent-flow/config/agents.yml
