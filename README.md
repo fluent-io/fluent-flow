@@ -16,6 +16,8 @@ Automated code review orchestrator for AI coding agents. Manages the review-fix 
 |---------|-------------|
 | [fluent-flow](packages/fluent-flow/) | Server — review engine, agent registry, MCP server, webhook handler |
 | [fluent-flow-runner](packages/fluent-flow-runner/) | CLI runner — connects to the server, picks up work, spawns agents locally |
+| [dashboard](packages/dashboard/) | Admin UI — Next.js dashboard for managing agents and monitoring pipelines |
+| [db](packages/db/) | Shared data access — pg pool, Zod schemas, org-scoped queries |
 
 ## Getting Started
 
@@ -39,6 +41,16 @@ fluent-flow-runner --token ff_<token> --server http://localhost:3847 --verbose
 ```
 
 See [runner docs](packages/fluent-flow-runner/README.md) for step-by-step setup.
+
+### Dashboard
+
+```bash
+cd packages/dashboard
+cp .env.example .env.local   # configure DATABASE_URL, GitHub OAuth, NEXTAUTH_SECRET
+npm run dev                   # http://localhost:3000
+```
+
+See [dashboard docs](packages/dashboard/README.md) for setup and features.
 
 ### Docker
 

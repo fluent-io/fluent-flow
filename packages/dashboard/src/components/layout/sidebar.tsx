@@ -3,12 +3,13 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Bot, Settings, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Bot, GitBranch, Settings, ChevronLeft, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
 const navItems = [
   { label: 'Agents', href: '/agents', icon: Bot },
+  { label: 'Pipelines', href: '/pipelines', icon: GitBranch },
   { label: 'Settings', href: '/settings', icon: Settings },
 ];
 
