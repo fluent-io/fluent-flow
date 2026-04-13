@@ -6,15 +6,17 @@ RUN corepack enable
 
 # Copy workspace root files
 COPY package*.json ./
+COPY turbo.json ./
 
-# Copy dashboard package
+# Copy required workspace packages
+COPY packages/db ./packages/db
 COPY packages/dashboard ./packages/dashboard
 
-# Install all workspace dependencies (including root)
+# Install all workspace dependencies
 RUN npm ci
 
-# Build the dashboard Next.js app
-RUN npm run build --workspace packages/dashboard
+# Build all packages (db first, then dashboard)
+RUN npm run build
 
 WORKDIR /app/packages/dashboard
 
