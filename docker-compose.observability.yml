@@ -1,0 +1,30 @@
+# Example override for observability (Signoz)
+# Use with: docker compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+#
+# Prerequisites:
+# 1. Signoz must be running with a network named "signoz-net".
+# 2. Create the external network (if not already created):
+#    docker network create signoz-net
+# 3. Ensure Signoz services are connected to the same network.
+# 4. This file is optional and only needed for tracing integration.
+
+services:
+  fluent-flow:
+    environment:
+      NODE_OPTIONS: --require ./src/tracing.cjs
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://signoz-otel-collector:4318
+      OTEL_SERVICE_NAME: fluent-flow
+    networks:
+      - fluent-flow-net
+      - signoz-net
+
+  dashboard:
+    environment:
+      NODE_ENV: production
+    networks:
+      - fluent-flow-net
+      - signoz-net
+
+networks:
+  signoz-net:
+    external: true
