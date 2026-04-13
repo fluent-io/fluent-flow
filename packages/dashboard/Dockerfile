@@ -1,18 +1,20 @@
-FROM node:24-alpine
+FROM node:20-alpine
 WORKDIR /app
 
-# Enable corepack for yarn
+# Enable corepack for yarn (required by dashboard's packageManager field)
 RUN corepack enable
 
 # Copy workspace root files
 COPY package*.json ./
-COPY turbo.json ./
 
 # Copy dashboard package
 COPY packages/dashboard ./packages/dashboard
 
-# Install workspace dependencies for dashboard (including dev)
-RUN npm ci --workspace packages/dashboard
+# Install all workspace dependencies (including root)
+RUN npm ci
+
+# Build the dashboard Next.js app
+RUN npm run build --workspace packages/dashboard
 
 WORKDIR /app/packages/dashboard
 
