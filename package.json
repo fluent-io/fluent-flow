@@ -2,13 +2,16 @@
   "name": "fluent-flow-monorepo",
   "private": true,
   "packageManager": "npm@10.9.2",
-  "workspaces": ["packages/*"],
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
     "dev": "turbo run dev"
   },
   "devDependencies": {
-    "turbo": "^2.5.0"
+    "turbo": "^2.5.0",
+    "typescript": "^6.0.2"
   }
 }

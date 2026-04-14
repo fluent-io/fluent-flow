@@ -1,10 +1,12 @@
 import { query, audit } from '../db/client.js';
 import { resolveConfig } from '../config/loader.js';
-import { dispatchWorkflow, addLabel, getReviews, dismissReview } from '../github/rest.js';
-import { enablePullRequestAutoMerge, getPRNodeId } from '../github/graphql.js';
+import { dispatchWorkflow, addLabel, getReviews, dismissReview } from '../providers/github/rest.js';
+import { enablePullRequestAutoMerge, getPRNodeId } from '../providers/github/graphql.js';
 import { recordPause, getActivePause } from './pause-manager.js';
 import { notifyReviewFailure, formatRichMessage } from '../notifications/dispatcher.js';
 import { createClaim, completeClaim, getActiveClaim } from '../agents/claim-manager.js';
+import { onClaimDispatched, onClaimResolved } from './check-run.js';
+import { getProvider } from '../providers/index.js';
 import logger from '../logger.js';
 
 /**
@@ -114,6 +116,10 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
       const activeClaim = await getActiveClaim(orgId, repoKey, prNumber);
       if (activeClaim) {
         await completeClaim(orgId, repoKey, prNumber, activeClaim.attempt);
+        // Emit check-run resolved (fire-and-forget)
+        const providerClient = getProvider({ installation_id: activeClaim.installation_id });
+        onClaimResolved(providerClient, activeClaim, { conclusion: 'success' })
+          .catch((err) => logger.warn({ msg: 'onClaimResolved failed', error: err.message }));
       }
     } catch (err) {
       logger.error({ msg: 'Failed to complete claim on pass', error: err.message, repo: repoKey, prNumber });
@@ -147,7 +153,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   // Always create claim (even without agentId) so polling agents can pick it up
   const explicitAgent = agentId;
   try {
-    await createClaim({
+    const newClaim = await createClaim({
       orgId: config.org_id ?? 'self-hosted',
       repo: repoKey,
       prNumber,
@@ -160,6 +166,12 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
         branch: headBranch,
       },
     });
+    // Emit check-run dispatched (fire-and-forget)
+    if (newClaim) {
+      const providerClient = getProvider({ installation_id: newClaim.installation_id });
+      onClaimDispatched(providerClient, { ...newClaim, head_sha: reviewSha })
+        .catch((err) => logger.warn({ msg: 'onClaimDispatched failed', error: err.message }));
+    }
   } catch (err) {
     logger.warn({ msg: 'Failed to create claim on review failure', error: err.message });
   }

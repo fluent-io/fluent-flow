@@ -6,8 +6,8 @@ vi.mock('../../src/config/loader.js', () => ({ resolveConfig: vi.fn(), invalidat
 vi.mock('../../src/engine/state-machine.js', () => ({ executeTransition: vi.fn(), getCurrentState: vi.fn() }));
 vi.mock('../../src/engine/review-manager.js', () => ({ dispatchReview: vi.fn() }));
 vi.mock('../../src/engine/pause-manager.js', () => ({ recordPause: vi.fn(), processResume: vi.fn() }));
-vi.mock('../../src/github/rest.js', () => ({ postComment: vi.fn(), addLabel: vi.fn(), removeLabel: vi.fn(), dispatchWorkflow: vi.fn(), getFileExists: vi.fn(), createFile: vi.fn() }));
-vi.mock('../../src/github/graphql.js', () => ({ moveProjectItem: vi.fn(), findProjectItem: vi.fn() }));
+vi.mock('../../src/providers/github/rest.js', () => ({ postComment: vi.fn(), addLabel: vi.fn(), removeLabel: vi.fn(), dispatchWorkflow: vi.fn(), getFileExists: vi.fn(), createFile: vi.fn() }));
+vi.mock('../../src/providers/github/graphql.js', () => ({ moveProjectItem: vi.fn(), findProjectItem: vi.fn() }));
 vi.mock('../../src/notifications/dispatcher.js', () => ({ notifyPause: vi.fn(), notifyResume: vi.fn(), notifyReviewFailure: vi.fn() }));
 
 import { executeTransition } from '../../src/engine/state-machine.js';

@@ -5,7 +5,7 @@ vi.mock('../../src/logger.js', async () => {
   return { default: createMockLogger() };
 });
 vi.mock('../../src/engine/pause-manager.js', () => ({ getActivePause: vi.fn() }));
-vi.mock('../../src/github/rest.js', () => ({ getLinkedPR: vi.fn(), getPR: vi.fn() }));
+vi.mock('../../src/providers/github/rest.js', () => ({ getLinkedPR: vi.fn(), getPR: vi.fn() }));
 
 // Mock agents registry
 vi.mock('../../src/config/agents.js', () => ({
@@ -45,7 +45,7 @@ import {
   formatRichMessage,
 } from '../../src/notifications/dispatcher.js';
 import { getActivePause } from '../../src/engine/pause-manager.js';
-import { getLinkedPR, getPR } from '../../src/github/rest.js';
+import { getLinkedPR, getPR } from '../../src/providers/github/rest.js';
 
 beforeEach(() => {
   vi.clearAllMocks();

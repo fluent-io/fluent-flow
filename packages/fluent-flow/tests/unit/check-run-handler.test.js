@@ -9,7 +9,7 @@ vi.mock('../../src/notifications/dispatcher.js', () => ({
   resolveAgentId: vi.fn(),
   dispatch: vi.fn(),
 }));
-vi.mock('../../src/github/rest.js', () => ({
+vi.mock('../../src/providers/github/rest.js', () => ({
   getPRsForCommit: vi.fn(),
   getCheckRunsForCommit: vi.fn(),
   getCheckRunAnnotations: vi.fn().mockResolvedValue([]),
@@ -18,7 +18,7 @@ vi.mock('../../src/engine/test-manager.js', () => ({
   handleTestFailure: vi.fn(),
   handleTestSuccess: vi.fn(),
 }));
-vi.mock('../../src/github/test-parser.js', () => ({
+vi.mock('../../src/engine/test-parser.js', () => ({
   parseCheckAnnotations: vi.fn().mockReturnValue({ passed: 0, failed: 0, failures: [] }),
 }));
 vi.mock('../../src/db/client.js', () => ({ audit: vi.fn(), query: vi.fn() }));
@@ -34,11 +34,11 @@ vi.mock('../../src/agents/claim-manager.js', () => ({
 }));
 
 import { resolveAgentId, dispatch } from '../../src/notifications/dispatcher.js';
-import { getPRsForCommit, getCheckRunsForCommit } from '../../src/github/rest.js';
+import { getPRsForCommit, getCheckRunsForCommit } from '../../src/providers/github/rest.js';
 import { dispatchReview, claimDispatch } from '../../src/engine/review-manager.js';
 import { createClaim } from '../../src/agents/claim-manager.js';
 import { getActivePause } from '../../src/engine/pause-manager.js';
-import { handleCheckRun } from '../../src/github/check-run-handler.js';
+import { handleCheckRun } from '../../src/providers/github/check-run-handler.js';
 
 beforeEach(() => {
   vi.clearAllMocks();

@@ -1,7 +1,7 @@
 /**
  * Workflow dispatch transport — triggers a GitHub Actions workflow.
  */
-import { dispatchWorkflow } from '../../github/rest.js';
+import { dispatchWorkflow } from '../../providers/github/rest.js';
 import logger from '../../logger.js';
 
 /**

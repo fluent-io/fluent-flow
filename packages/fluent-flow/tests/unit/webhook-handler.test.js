@@ -34,14 +34,14 @@ vi.mock('../../src/notifications/dispatcher.js', () => ({
   notifyPRMerged: vi.fn(),
   resolveAgentForIssue: vi.fn(),
 }));
-vi.mock('../../src/github/rest.js', () => ({
+vi.mock('../../src/providers/github/rest.js', () => ({
   getLinkedPR: vi.fn(),
   getPR: vi.fn(),
 }));
-vi.mock('../../src/github/check-run-handler.js', () => ({
+vi.mock('../../src/providers/github/check-run-handler.js', () => ({
   handleCheckRun: vi.fn(),
 }));
-vi.mock('../../src/github/webhook-verify.js', () => ({
+vi.mock('../../src/providers/github/webhook-verify.js', () => ({
   webhookSignatureMiddleware: (req, res, next) => next(),
 }));
 
@@ -236,7 +236,7 @@ describe('handleIssueComment — agent routing', () => {
     resolveAgentForIssue.mockResolvedValue('resolved-agent');
     const { parseResumeCommand } = await import('../../src/engine/pause-manager.js');
     parseResumeCommand.mockReturnValue({ isResume: false });
-    const { getLinkedPR } = await import('../../src/github/rest.js');
+    const { getLinkedPR } = await import('../../src/providers/github/rest.js');
     getLinkedPR.mockResolvedValue(7);
 
     await handleIssueComment(TEST_OWNER, TEST_REPO, {

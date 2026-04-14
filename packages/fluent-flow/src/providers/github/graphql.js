@@ -1,7 +1,7 @@
 /**
  * GitHub GraphQL API client — primarily for GitHub Projects v2 operations.
  */
-import logger from '../logger.js';
+import logger from '../../logger.js';
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GRAPHQL_URL = 'https://api.github.com/graphql';

@@ -4,7 +4,7 @@ import { dirname, join } from 'path';
 import yaml from 'js-yaml';
 import { query } from '../db/client.js';
 import { validateDefaults, validateRepoConfig, validateMergedConfig } from './schema.js';
-import { getRepoFileContents } from '../github/rest.js';
+import { getRepoFileContents } from '../providers/github/rest.js';
 import logger from '../logger.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

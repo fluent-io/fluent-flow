@@ -1,11 +1,12 @@
 import './tracing.cjs';
 import express from 'express';
-import { captureRawBody } from './github/webhook-verify.js';
+import { captureRawBody } from './providers/github/webhook-verify.js';
 import { getPool, closePool, healthCheck, runMigrations } from './db/client.js';
 import { loadDefaults } from './config/loader.js';
 import { loadAgents } from './config/agents.js';
 import { validateEnv } from './config/env.js';
 import { bootstrapSelfHosted } from './agents/org-manager.js';
+import { startOutboundWorker } from './workers/outbound.js';
 import logger from './logger.js';
 
 // MCP
@@ -14,6 +15,7 @@ import { mcpAuthMiddleware } from './mcp/auth.js';
 
 // Routes
 import webhookRouter from './routes/webhook.js';
+import githubAppWebhookRouter from './routes/github-app-webhook.js';
 import transitionRouter from './routes/transition.js';
 import pauseRouter from './routes/pause.js';
 import stateRouter from './routes/state.js';
@@ -53,6 +55,7 @@ app.use((req, res, next) => {
 
 // Mount routes
 app.use('/api', webhookRouter);
+app.use('/api', githubAppWebhookRouter);
 app.use('/api', transitionRouter);
 app.use('/api', pauseRouter);
 app.use('/api', stateRouter);
@@ -118,6 +121,10 @@ async function start() {
 
     app.listen(PORT, '0.0.0.0', () => {
       logger.info({ msg: 'Fluent Flow started', port: PORT, env: process.env.NODE_ENV || 'development' });
+      // Start outbound queue worker after server is listening
+      startOutboundWorker().catch((err) =>
+        logger.error({ msg: 'Outbound worker crashed', error: err.message })
+      );
     });
   } catch (err) {
     logger.error({ msg: 'Failed to start', error: err.message, stack: err.stack });

@@ -11,19 +11,19 @@ vi.mock('../../src/logger.js', async () => {
 // Mock all external dependencies
 vi.mock('../../src/db/client.js', () => ({ query: vi.fn(), audit: vi.fn() }));
 vi.mock('../../src/config/loader.js', () => ({ resolveConfig: vi.fn() }));
-vi.mock('../../src/github/graphql.js', () => ({
+vi.mock('../../src/providers/github/graphql.js', () => ({
   moveProjectItem: vi.fn(),
   findProjectItem: vi.fn(),
 }));
-vi.mock('../../src/github/rest.js', () => ({
+vi.mock('../../src/providers/github/rest.js', () => ({
   postComment: vi.fn(),
   getIssue: vi.fn(),
 }));
 
 import { query } from '../../src/db/client.js';
 import { resolveConfig } from '../../src/config/loader.js';
-import { moveProjectItem, findProjectItem } from '../../src/github/graphql.js';
-import { postComment } from '../../src/github/rest.js';
+import { moveProjectItem, findProjectItem } from '../../src/providers/github/graphql.js';
+import { postComment } from '../../src/providers/github/rest.js';
 import { executeTransition, autoTransition, attemptTransitionToDone } from '../../src/engine/state-machine.js';
 
 beforeEach(() => {

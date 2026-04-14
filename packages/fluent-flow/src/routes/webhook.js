@@ -1,13 +1,13 @@
 import { Router } from 'express';
-import { handleCheckRun } from '../github/check-run-handler.js';
+import { handleCheckRun } from '../providers/github/check-run-handler.js';
 import { audit } from '../db/client.js';
-import { webhookSignatureMiddleware } from '../github/webhook-verify.js';
+import { webhookSignatureMiddleware } from '../providers/github/webhook-verify.js';
 import { resolveConfig, invalidateConfig } from '../config/loader.js';
 import { executeTransition, autoTransition, getCurrentState } from '../engine/state-machine.js';
 import { recordPause, processResume, parseResumeCommand, getActivePause } from '../engine/pause-manager.js';
 import { handleReviewResult, resetRetries } from '../engine/review-manager.js';
 import { resolveAgentId, notifyPRMerged, resolveAgentForIssue } from '../notifications/dispatcher.js';
-import { getLinkedPR, getPR } from '../github/rest.js';
+import { getLinkedPR, getPR } from '../providers/github/rest.js';
 import logger from '../logger.js';
 
 const router = Router();
@@ -41,8 +41,19 @@ function extractLinkedIssue(body) {
   return match ? parseInt(match[1], 10) : null;
 }
 
-// POST /api/webhook/github — unified webhook endpoint
-router.post('/webhook/github', webhookSignatureMiddleware, async (req, res) => {
+/**
+ * Middleware that gates the legacy PAT-based webhook when the GitHub App is enabled.
+ * Returns 503 during App cutover so operators know to update their GitHub webhook URL.
+ */
+export function legacyWebhookGateMiddleware(req, res, next) {
+  if (process.env.FF_GITHUB_APP_ENABLED === 'true') {
+    return res.status(503).json({ error: 'legacy webhook disabled during cutover' });
+  }
+  return next();
+}
+
+// POST /api/webhook/github — unified webhook endpoint (legacy PAT path)
+router.post('/webhook/github', legacyWebhookGateMiddleware, webhookSignatureMiddleware, async (req, res) => {
   const event = req.headers['x-github-event'];
   const payload = req.body;
 
@@ -296,11 +307,12 @@ async function handleIssues(owner, repo, payload, config) {
  * Handle issue_comment events (/resume, agent-pause).
  */
 async function handleIssueComment(owner, repo, payload, config) {
-  const { action, comment, issue } = payload;
+  const { action, comment, issue, installation } = payload;
   if (action !== 'created') return;
 
   const issueNumber = issue.number;
   const body = comment.body;
+  const ctx = installation?.id ? { installation_id: installation.id } : {};
 
   // Check for /resume command
   const { isResume, toState, instructions } = parseResumeCommand(body);
@@ -327,7 +339,7 @@ async function handleIssueComment(owner, repo, payload, config) {
   if (pauseData) {
     try {
       // Find linked PR if any
-      const linkedPR = await getLinkedPR(owner, repo, issueNumber);
+      const linkedPR = await getLinkedPR(owner, repo, issueNumber, ctx);
       const agentId = await resolveAgentForIssue(owner, repo, issueNumber, config);
       await recordPause({
         owner,

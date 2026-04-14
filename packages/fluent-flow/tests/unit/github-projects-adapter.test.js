@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { GitHubProjectsAdapter } from '../../src/work-queue/adapters/github-projects.js';
 
-vi.mock('../../src/github/graphql.js', () => ({
+vi.mock('../../src/providers/github/graphql.js', () => ({
   moveProjectItem: vi.fn(),
   findProjectItem: vi.fn(),
   getProjectItemStatus: vi.fn(),
 }));
 
-const { moveProjectItem, findProjectItem } = await import('../../src/github/graphql.js');
+const { moveProjectItem, findProjectItem } = await import('../../src/providers/github/graphql.js');
 
 describe('GitHubProjectsAdapter', () => {
   let adapter;
