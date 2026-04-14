@@ -7,9 +7,11 @@ services:
     ports:
       - "3847:3847"
     environment:
-      DATABASE_URL: ${DATABASE_URL}
-      GITHUB_TOKEN: ${GITHUB_TOKEN}
-      GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET}
+      DATABASE_URL: ${DATABASE_URL:-postgres://fluentflow:password@postgres:5432/fluentflow}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+      GITHUB_APP_PRIVATE_KEY_PATH: ${GITHUB_APP_PRIVATE_KEY_PATH:-}
+      GITHUB_APP_WEBHOOK_SECRET: ${GITHUB_APP_WEBHOOK_SECRET:-}
       PORT: 3847
       CONFIG_CACHE_TTL_MS: 300000
       MCP_AUTH_TOKEN: ${MCP_AUTH_TOKEN:-}
@@ -34,7 +36,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL: ${DATABASE_URL:-postgres://fluentflow:password@postgres:5432/fluentflow}
       GITHUB_CLIENT_ID: ${GITHUB_CLIENT_ID}
       GITHUB_CLIENT_SECRET: ${GITHUB_CLIENT_SECRET}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
