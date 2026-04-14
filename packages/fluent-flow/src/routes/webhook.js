@@ -41,19 +41,18 @@ function extractLinkedIssue(body) {
   return match ? parseInt(match[1], 10) : null;
 }
 
-/**
- * Middleware that gates the legacy PAT-based webhook when the GitHub App is enabled.
- * Returns 503 during App cutover so operators know to update their GitHub webhook URL.
- */
-export function legacyWebhookGateMiddleware(req, res, next) {
-  if (process.env.FF_GITHUB_APP_ENABLED === 'true') {
-    return res.status(503).json({ error: 'legacy webhook disabled during cutover' });
-  }
-  return next();
-}
+// Legacy PAT webhook endpoints — return 410 Gone
+router.post('/webhook/github', (_req, res) => {
+  res.status(410).json({ error: 'legacy webhook endpoint removed — use /webhooks/github-app' });
+});
 
-// POST /api/webhook/github — unified webhook endpoint (legacy PAT path)
-router.post('/webhook/github', legacyWebhookGateMiddleware, webhookSignatureMiddleware, async (req, res) => {
+router.post('/webhooks/github', (_req, res) => {
+  res.status(410).json({ error: 'legacy webhook endpoint removed — use /webhooks/github-app' });
+});
+
+// Dead code path — kept so routeWebhookEvent and handlers remain importable for tests
+if (false) {
+router.post('/webhook/github-dead', webhookSignatureMiddleware, async (req, res) => {
   const event = req.headers['x-github-event'];
   const payload = req.body;
 
@@ -67,6 +66,7 @@ router.post('/webhook/github', legacyWebhookGateMiddleware, webhookSignatureMidd
     logger.error({ msg: 'Webhook processing error', event, error: err.message, stack: err.stack });
   }
 });
+} // end dead code block
 
 /**
  * Route a GitHub webhook event to the appropriate handler.

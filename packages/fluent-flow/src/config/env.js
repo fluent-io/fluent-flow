@@ -9,39 +9,26 @@ import logger from '../logger.js';
 export function validateEnv(env = process.env) {
   const errors = [];
 
-  const required = ['DATABASE_URL', 'GITHUB_TOKEN'];
+  const required = ['DATABASE_URL', 'GITHUB_APP_ID', 'GITHUB_APP_PRIVATE_KEY_PATH', 'GITHUB_APP_WEBHOOK_SECRET'];
   for (const key of required) {
     if (!env[key]) {
       errors.push(`Missing required environment variable: ${key}`);
     }
   }
 
-  if (!env.GITHUB_WEBHOOK_SECRET) {
-    logger.warn({ msg: 'GITHUB_WEBHOOK_SECRET not set — webhook signature verification will be skipped' });
+  if (!env.GITHUB_TOKEN) {
+    logger.warn({ msg: 'GITHUB_TOKEN not set — some legacy REST calls may fail' });
   }
 
   if (!env.MCP_AUTH_TOKEN) {
     logger.warn({ msg: 'MCP_AUTH_TOKEN not set — MCP endpoint will accept unauthenticated requests' });
   }
 
-  // GitHub App env vars — required when FF_GITHUB_APP_ENABLED=true
-  if (env.FF_GITHUB_APP_ENABLED === 'true') {
-    const appRequired = [
-      'FF_GITHUB_APP_ID',
-      'FF_GITHUB_APP_PRIVATE_KEY',
-      'FF_GITHUB_APP_WEBHOOK_SECRET',
-    ];
-    for (const key of appRequired) {
-      if (!env[key]) {
-        errors.push(`FF_GITHUB_APP_ENABLED=true but missing: ${key}`);
-      }
-    }
-    if (!env.FF_GITHUB_APP_CLIENT_ID) {
-      logger.warn({ msg: 'FF_GITHUB_APP_CLIENT_ID not set — OAuth flows will be unavailable' });
-    }
-    if (!env.FF_GITHUB_APP_CLIENT_SECRET) {
-      logger.warn({ msg: 'FF_GITHUB_APP_CLIENT_SECRET not set — OAuth flows will be unavailable' });
-    }
+  if (!env.GITHUB_APP_CLIENT_ID) {
+    logger.warn({ msg: 'GITHUB_APP_CLIENT_ID not set — OAuth flows will be unavailable' });
+  }
+  if (!env.GITHUB_APP_CLIENT_SECRET) {
+    logger.warn({ msg: 'GITHUB_APP_CLIENT_SECRET not set — OAuth flows will be unavailable' });
   }
 
   return errors;

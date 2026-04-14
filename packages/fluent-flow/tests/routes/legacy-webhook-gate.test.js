@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../src/logger.js', async () => {
   const { createMockLogger } = await import('../helpers/mock-logger.js');
@@ -56,10 +56,6 @@ vi.mock('../../src/db/outbound-queue.js', () => ({
   unparkForInstallation: vi.fn(),
 }));
 
-function makeReq(method, path, body, headers = {}) {
-  return { method, path, body, headers, ip: '127.0.0.1' };
-}
-
 function makeRes() {
   return {
     _status: null,
@@ -72,46 +68,36 @@ function makeRes() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  delete process.env.FF_GITHUB_APP_ENABLED;
 });
 
-afterEach(() => {
-  delete process.env.FF_GITHUB_APP_ENABLED;
-});
+describe('Legacy webhook endpoints return 410 Gone', () => {
+  it('POST /webhook/github returns 410', async () => {
+    const { default: router } = await import('../../src/routes/webhook.js');
 
-describe('Legacy webhook gate (FF_GITHUB_APP_ENABLED)', () => {
-  it('returns 503 on the legacy webhook path when flag is enabled', async () => {
-    process.env.FF_GITHUB_APP_ENABLED = 'true';
+    // Find the route handler for POST /webhook/github
+    const layer = router.stack.find(l => l.route?.path === '/webhook/github' && l.route?.methods?.post);
+    expect(layer).toBeDefined();
 
-    // Import after setting env so module sees the flag
-    const { legacyWebhookGateMiddleware } = await import('../../src/routes/webhook.js');
-
-    const req = makeReq('POST', '/api/webhook/github', { repository: { full_name: 'a/b' } }, {
-      'x-github-event': 'push',
-    });
+    const handler = layer.route.stack[0].handle;
     const res = makeRes();
-    const next = vi.fn();
+    handler({}, res);
 
-    legacyWebhookGateMiddleware(req, res, next);
-
-    expect(res._status).toBe(503);
+    expect(res._status).toBe(410);
     expect(res._body).toMatchObject({ error: expect.stringContaining('legacy') });
-    expect(next).not.toHaveBeenCalled();
   });
 
-  it('calls next() when flag is not enabled', async () => {
-    delete process.env.FF_GITHUB_APP_ENABLED;
+  it('POST /webhooks/github returns 410', async () => {
+    const { default: router } = await import('../../src/routes/webhook.js');
 
-    const { legacyWebhookGateMiddleware } = await import('../../src/routes/webhook.js');
+    const layer = router.stack.find(l => l.route?.path === '/webhooks/github' && l.route?.methods?.post);
+    expect(layer).toBeDefined();
 
-    const req = makeReq('POST', '/api/webhook/github', {}, {});
+    const handler = layer.route.stack[0].handle;
     const res = makeRes();
-    const next = vi.fn();
+    handler({}, res);
 
-    legacyWebhookGateMiddleware(req, res, next);
-
-    expect(next).toHaveBeenCalledOnce();
-    expect(res._status).toBeNull();
+    expect(res._status).toBe(410);
+    expect(res._body).toMatchObject({ error: expect.stringContaining('legacy') });
   });
 });
 
@@ -119,7 +105,6 @@ describe('App webhook route exists', () => {
   it('github-app-webhook router exports a default Express router', async () => {
     const { default: router } = await import('../../src/routes/github-app-webhook.js');
     expect(typeof router).toBe('function');
-    // Express routers have a 'stack' property
     expect(router.stack).toBeDefined();
   });
 });
