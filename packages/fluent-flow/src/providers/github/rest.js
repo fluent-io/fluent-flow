@@ -143,6 +143,26 @@ export async function getPR(owner, repo, prNumber, ctx) {
 }
 
 /**
+ * List open PRs for a repo.
+ */
+export async function listOpenPRs(owner, repo, ctx) {
+  const token = await resolveToken(ctx);
+  return githubRequest(`/repos/${owner}/${repo}/pulls?state=open&per_page=100`, {}, token);
+}
+
+/**
+ * Fetch a PR as unified diff text.
+ */
+export async function getDiff(owner, repo, prNumber, ctx) {
+  const token = await resolveToken(ctx);
+  return githubRequest(
+    `/repos/${owner}/${repo}/pulls/${prNumber}`,
+    { headers: { Accept: 'application/vnd.github.diff' } },
+    token
+  );
+}
+
+/**
  * Get pull requests linked to an issue.
  * Returns the first open PR number found, or null.
  */

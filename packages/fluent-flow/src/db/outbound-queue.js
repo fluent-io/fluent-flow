@@ -26,9 +26,16 @@ export async function enqueue({ installation_id, kind, payload, client_ref }) {
   return existing.rows[0] ?? null;
 }
 
+// Visibility timeout: after claiming, the row is hidden for this many seconds so
+// concurrent workers don't re-pick it. If the worker crashes before mark*,
+// the row reappears after the lease expires and can be retried.
+const CLAIM_VISIBILITY_SECS = 60;
+
 /**
  * Claim the next ready row from the queue using FOR UPDATE SKIP LOCKED.
- * Increments attempts and updates next_attempt_at for the claimed row.
+ * Only sets an in-flight visibility timeout on `next_attempt_at`; does NOT
+ * increment `attempts` or `rate_limited_attempts`. Attempt/backoff accounting
+ * is performed solely in markFailed().
  * Returns null if the queue is empty.
  */
 export async function claimNext() {
@@ -52,20 +59,16 @@ export async function claimNext() {
       return null;
     }
 
-    const attempts = (row.attempts ?? 0) + 1;
-    const backoffSecs = Math.min(300, Math.pow(2, attempts));
-
     await client.query(
       `UPDATE provider_outbound_queue
-       SET attempts = $1,
-           next_attempt_at = NOW() + ($2 * interval '1 second')
-       WHERE id = $3`,
-      [attempts, backoffSecs, row.id]
+       SET next_attempt_at = NOW() + ($1 * interval '1 second')
+       WHERE id = $2`,
+      [CLAIM_VISIBILITY_SECS, row.id]
     );
 
     await client.query('COMMIT');
     logger.info({ msg: 'claimNext', id: row.id, kind: row.kind });
-    return { ...row, attempts };
+    return row;
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
@@ -90,22 +93,37 @@ export async function markSucceeded(id) {
 }
 
 /**
- * Mark a queue row as failed.
- * If rateLimited is true, increments rate_limited_attempts only (not ordinary attempts).
- * Backoff formula: next_attempt_at = now() + interval '1 second' * least(300, 2 ^ attempts)
+ * Mark a queue row as failed. Owns all attempt/backoff accounting
+ * (claimNext only sets a short visibility timeout and never mutates counters).
+ * - Ordinary failure: increments `attempts`; backoff = least(300, 2 ^ attempts) seconds.
+ * - Rate-limited:     increments `rate_limited_attempts` only; backoff uses
+ *                     `rate_limited_attempts` (or `retryAfter` when provided by GitHub).
  */
-export async function markFailed(id, { error, rateLimited = false }) {
+export async function markFailed(id, { error, rateLimited = false, retryAfter = null }) {
   let result;
   if (rateLimited) {
-    result = await query(
-      `UPDATE provider_outbound_queue
-       SET rate_limited_attempts = rate_limited_attempts + 1,
-           last_error = $1,
-           next_attempt_at = NOW() + (LEAST(300, power(2, attempts + rate_limited_attempts)) * interval '1 second')
-       WHERE id = $2
-       RETURNING *`,
-      [error, id]
-    );
+    const useRetryAfter = retryAfter != null && !Number.isNaN(Number(retryAfter));
+    if (useRetryAfter) {
+      result = await query(
+        `UPDATE provider_outbound_queue
+         SET rate_limited_attempts = rate_limited_attempts + 1,
+             last_error = $1,
+             next_attempt_at = NOW() + ($3 * interval '1 second')
+         WHERE id = $2
+         RETURNING *`,
+        [error, id, Number(retryAfter)]
+      );
+    } else {
+      result = await query(
+        `UPDATE provider_outbound_queue
+         SET rate_limited_attempts = rate_limited_attempts + 1,
+             last_error = $1,
+             next_attempt_at = NOW() + (LEAST(300, power(2, rate_limited_attempts + 1)) * interval '1 second')
+         WHERE id = $2
+         RETURNING *`,
+        [error, id]
+      );
+    }
   } else {
     result = await query(
       `UPDATE provider_outbound_queue

@@ -1,7 +1,6 @@
 import { Router } from 'express';
 import { handleCheckRun } from '../providers/github/check-run-handler.js';
 import { audit } from '../db/client.js';
-import { webhookSignatureMiddleware } from '../providers/github/webhook-verify.js';
 import { resolveConfig, invalidateConfig } from '../config/loader.js';
 import { executeTransition, autoTransition, getCurrentState } from '../engine/state-machine.js';
 import { recordPause, processResume, parseResumeCommand, getActivePause } from '../engine/pause-manager.js';
@@ -50,28 +49,10 @@ router.post('/webhooks/github', (_req, res) => {
   res.status(410).json({ error: 'legacy webhook endpoint removed — use /webhooks/github-app' });
 });
 
-// Dead code path — kept so routeWebhookEvent and handlers remain importable for tests
-if (false) {
-router.post('/webhook/github-dead', webhookSignatureMiddleware, async (req, res) => {
-  const event = req.headers['x-github-event'];
-  const payload = req.body;
-
-  // Always respond quickly to GitHub
-  res.status(200).json({ ok: true, event });
-
-  // Process asynchronously
-  try {
-    await routeWebhookEvent(event, payload);
-  } catch (err) {
-    logger.error({ msg: 'Webhook processing error', event, error: err.message, stack: err.stack });
-  }
-});
-} // end dead code block
-
 /**
  * Route a GitHub webhook event to the appropriate handler.
  */
-async function routeWebhookEvent(event, payload) {
+export async function routeWebhookEvent(event, payload) {
   const repo = payload.repository;
   if (!repo) {
     logger.info({ msg: 'Webhook without repository, skipping', event });
@@ -388,5 +369,5 @@ async function handlePush(owner, repo, payload, config) {
   }
 }
 
-export { handlePullRequest, handleIssues, handleIssueComment };
+export { handlePullRequest, handleIssues, handleIssueComment, handlePush };
 export default router;

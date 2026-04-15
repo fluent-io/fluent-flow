@@ -60,21 +60,24 @@ describe('enqueue', () => {
 });
 
 describe('claimNext', () => {
-  it('uses FOR UPDATE SKIP LOCKED and increments attempts', async () => {
-    const row = { id: 5, attempts: 0 };
+  it('uses FOR UPDATE SKIP LOCKED, sets a visibility timeout, and does NOT touch attempts', async () => {
+    const row = { id: 5, attempts: 0, rate_limited_attempts: 0 };
     mockClientQuery
       .mockResolvedValueOnce({ rows: [] })    // BEGIN
       .mockResolvedValueOnce({ rows: [row] }) // SELECT FOR UPDATE SKIP LOCKED
-      .mockResolvedValueOnce({ rows: [{ ...row, attempts: 1 }] }) // UPDATE attempts
+      .mockResolvedValueOnce({ rows: [row] }) // UPDATE next_attempt_at (visibility)
       .mockResolvedValueOnce({ rows: [] });   // COMMIT
 
     const result = await claimNext();
     expect(result).toBeDefined();
     expect(result.id).toBe(5);
 
-    // Verify SKIP LOCKED appears in the SQL calls
     const allSql = mockClientQuery.mock.calls.map(([sql]) => sql).join(' ');
     expect(allSql).toMatch(/SKIP LOCKED/i);
+    // claimNext sets only next_attempt_at (visibility) — never increments attempts
+    expect(allSql).not.toMatch(/attempts\s*=\s*attempts\s*\+\s*1/i);
+    expect(allSql).not.toMatch(/attempts\s*=\s*\$/i);
+    expect(allSql).toMatch(/next_attempt_at/i);
   });
 
   it('returns null when queue is empty', async () => {
