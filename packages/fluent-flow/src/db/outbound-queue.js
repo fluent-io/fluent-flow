@@ -44,11 +44,14 @@ export async function claimNext() {
   try {
     await client.query('BEGIN');
 
+    // ORDER BY next_attempt_at ASC ensures FIFO drain and prevents starvation of
+    // older rows when newer ones are continuously enqueued.
     const selectResult = await client.query(
       `SELECT * FROM provider_outbound_queue
        WHERE next_attempt_at <= NOW()
          AND parked_at IS NULL
          AND succeeded_at IS NULL
+       ORDER BY next_attempt_at ASC
        FOR UPDATE SKIP LOCKED
        LIMIT 1`
     );
