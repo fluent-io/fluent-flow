@@ -61,14 +61,15 @@ export function webhookSignatureMiddleware(req, res, next) {
 
 /**
  * Express middleware for GitHub App webhook signature verification.
- * Uses FF_GITHUB_APP_WEBHOOK_SECRET. Skips verification (with a warning)
- * if the secret is not configured.
+ * Uses FF_GITHUB_APP_WEBHOOK_SECRET (required at startup by validateEnv).
+ * If the secret is somehow missing at request time (e.g. validateEnv bypassed),
+ * fails closed with 500 rather than silently accepting unsigned requests.
  */
 export function appWebhookSignatureMiddleware(req, res, next) {
   const secret = process.env.FF_GITHUB_APP_WEBHOOK_SECRET;
   if (!secret) {
-    logger.warn({ msg: 'FF_GITHUB_APP_WEBHOOK_SECRET not set — skipping App webhook signature verification' });
-    return next();
+    logger.error({ msg: 'FF_GITHUB_APP_WEBHOOK_SECRET not set — refusing to accept App webhooks' });
+    return res.status(500).json({ error: 'webhook secret not configured' });
   }
 
   const signature = req.headers['x-hub-signature-256'];

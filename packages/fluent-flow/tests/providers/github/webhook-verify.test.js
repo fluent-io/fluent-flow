@@ -83,7 +83,7 @@ describe('appWebhookSignatureMiddleware', () => {
     expect(res.statusCode).toBe(401);
   });
 
-  it('calls next() when FF_GITHUB_APP_WEBHOOK_SECRET is not set (skip verify)', () => {
+  it('fails closed with 500 when FF_GITHUB_APP_WEBHOOK_SECRET is not set', () => {
     delete process.env.FF_GITHUB_APP_WEBHOOK_SECRET;
     const body = '{"action":"created"}';
     const req = {
@@ -96,6 +96,7 @@ describe('appWebhookSignatureMiddleware', () => {
 
     appWebhookSignatureMiddleware(req, res, next);
 
-    expect(next).toHaveBeenCalledOnce();
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(500);
   });
 });

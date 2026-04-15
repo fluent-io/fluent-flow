@@ -1,26 +1,37 @@
 /**
  * GitHub GraphQL API client — primarily for GitHub Projects v2 operations.
+ * Prefers installation-token auth when the caller passes ctx.installation_id;
+ * falls back to GITHUB_TOKEN PAT only when no installation context is provided.
  */
 import logger from '../../logger.js';
+import { getInstallationToken } from './token-cache.js';
 
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const GRAPHQL_URL = 'https://api.github.com/graphql';
 
 // Cache project field IDs: projectId -> { statusFieldId, optionMap, cachedAt }
 const projectFieldCache = new Map();
 const PROJECT_FIELD_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
+async function resolveToken(ctx) {
+  if (ctx?.installation_id) {
+    return getInstallationToken(ctx.installation_id);
+  }
+  return process.env.GITHUB_TOKEN ?? '';
+}
+
 /**
  * Execute a GraphQL query/mutation.
  * @param {string} query
  * @param {object} [variables]
+ * @param {{ installation_id?: number }} [ctx]
  * @returns {Promise<object>} GraphQL data
  */
-async function graphqlRequest(query, variables = {}) {
+async function graphqlRequest(query, variables = {}, ctx) {
+  const token = await resolveToken(ctx);
   const response = await fetch(GRAPHQL_URL, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${GITHUB_TOKEN}`,
+      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
       'X-GitHub-Api-Version': '2022-11-28',
     },
@@ -51,7 +62,7 @@ async function graphqlRequest(query, variables = {}) {
  * @param {string} projectId - Node ID of the project (PVT_xxx)
  * @returns {{ statusFieldId: string, optionMap: Map<string, string> }}
  */
-async function getProjectFields(projectId) {
+async function getProjectFields(projectId, ctx) {
   const cached = projectFieldCache.get(projectId);
   if (cached && Date.now() - cached.cachedAt < PROJECT_FIELD_CACHE_TTL_MS) {
     return { statusFieldId: cached.statusFieldId, optionMap: cached.optionMap };
@@ -76,7 +87,7 @@ async function getProjectFields(projectId) {
         }
       }
     }
-  `, { projectId });
+  `, { projectId }, ctx);
 
   const fields = data?.node?.fields?.nodes ?? [];
   const statusField = fields.find((f) => f?.name === 'Status');
@@ -105,8 +116,8 @@ async function getProjectFields(projectId) {
  * @param {string} itemNodeId - Item node ID
  * @param {string} targetState - Target state name (must match a Status option)
  */
-export async function moveProjectItem(projectId, itemNodeId, targetState) {
-  const { statusFieldId, optionMap } = await getProjectFields(projectId);
+export async function moveProjectItem(projectId, itemNodeId, targetState, ctx) {
+  const { statusFieldId, optionMap } = await getProjectFields(projectId, ctx);
 
   const optionId = optionMap.get(targetState);
   if (!optionId) {
@@ -133,7 +144,7 @@ export async function moveProjectItem(projectId, itemNodeId, targetState) {
     itemId: itemNodeId,
     fieldId: statusFieldId,
     optionId,
-  });
+  }, ctx);
 
   logger.info({ msg: 'Moved project item', projectId, itemNodeId, targetState });
 }
@@ -144,8 +155,8 @@ export async function moveProjectItem(projectId, itemNodeId, targetState) {
  * @param {string} itemNodeId
  * @returns {string|null} Current status name
  */
-export async function getProjectItemStatus(projectId, itemNodeId) {
-  const { statusFieldId } = await getProjectFields(projectId);
+export async function getProjectItemStatus(projectId, itemNodeId, ctx) {
+  const { statusFieldId } = await getProjectFields(projectId, ctx);
 
   const data = await graphqlRequest(`
     query GetItemStatus($itemId: ID!) {
@@ -166,7 +177,7 @@ export async function getProjectItemStatus(projectId, itemNodeId) {
         }
       }
     }
-  `, { itemId: itemNodeId });
+  `, { itemId: itemNodeId }, ctx);
 
   const fieldValues = data?.node?.fieldValues?.nodes ?? [];
   const statusValue = fieldValues.find((v) => v?.field?.id === statusFieldId);
@@ -181,7 +192,7 @@ export async function getProjectItemStatus(projectId, itemNodeId) {
  * @param {number} issueNumber
  * @returns {string|null} Item node ID
  */
-export async function findProjectItem(projectId, owner, repo, issueNumber) {
+export async function findProjectItem(projectId, owner, repo, issueNumber, ctx) {
   // Query project items and find the one matching this issue
   // Uses cursor-based pagination to find the item
   let cursor = null;
@@ -216,7 +227,7 @@ export async function findProjectItem(projectId, owner, repo, issueNumber) {
           }
         }
       }
-    `, { projectId, cursor });
+    `, { projectId, cursor }, ctx);
 
     const items = data?.node?.items;
     if (!items) break;
@@ -241,7 +252,7 @@ export async function findProjectItem(projectId, owner, repo, issueNumber) {
  * @param {string} prNodeId - Node ID of the PR
  * @param {string} [mergeMethod='SQUASH'] - SQUASH | MERGE | REBASE
  */
-export async function enablePullRequestAutoMerge(prNodeId, mergeMethod = 'SQUASH') {
+export async function enablePullRequestAutoMerge(prNodeId, mergeMethod = 'SQUASH', ctx) {
   await graphqlRequest(`
     mutation EnableAutoMerge($prId: ID!, $mergeMethod: PullRequestMergeMethod!) {
       enablePullRequestAutoMerge(input: {
@@ -256,7 +267,7 @@ export async function enablePullRequestAutoMerge(prNodeId, mergeMethod = 'SQUASH
         }
       }
     }
-  `, { prId: prNodeId, mergeMethod });
+  `, { prId: prNodeId, mergeMethod }, ctx);
 
   logger.info({ msg: 'Enabled auto-merge', prNodeId, mergeMethod });
 }
@@ -268,7 +279,7 @@ export async function enablePullRequestAutoMerge(prNodeId, mergeMethod = 'SQUASH
  * @param {number} prNumber
  * @returns {string} PR node ID
  */
-export async function getPRNodeId(owner, repo, prNumber) {
+export async function getPRNodeId(owner, repo, prNumber, ctx) {
   const data = await graphqlRequest(`
     query GetPRNodeId($owner: String!, $repo: String!, $number: Int!) {
       repository(owner: $owner, name: $repo) {
@@ -277,7 +288,7 @@ export async function getPRNodeId(owner, repo, prNumber) {
         }
       }
     }
-  `, { owner, repo, number: prNumber });
+  `, { owner, repo, number: prNumber }, ctx);
 
   return data?.repository?.pullRequest?.id;
 }
