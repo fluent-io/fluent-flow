@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseCheckAnnotations } from '../../src/github/test-parser.js';
+import { parseCheckAnnotations } from '../../src/engine/test-parser.js';
 
 describe('parseCheckAnnotations', () => {
   it('extracts test failures from GitHub check annotations', () => {

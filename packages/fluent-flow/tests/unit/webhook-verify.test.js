@@ -6,7 +6,7 @@ vi.mock('../../src/logger.js', async () => {
   return { default: createMockLogger() };
 });
 
-import { verifyWebhookSignature } from '../../src/github/webhook-verify.js';
+import { verifyWebhookSignature } from '../../src/providers/github/webhook-verify.js';
 
 function sign(body, secret) {
   return `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;

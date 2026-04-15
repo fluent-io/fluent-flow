@@ -1,23 +1,39 @@
 /**
  * GitHub REST API client using fetch (Node 18+ built-in).
+ * Supports both PAT auth (legacy) and installation-token auth (App).
  */
-import logger from '../logger.js';
+import logger from '../../logger.js';
+import { getInstallationToken } from './token-cache.js';
 
-const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 const BASE_URL = 'https://api.github.com';
+
+/**
+ * Resolve the auth token for a request.
+ * Prefers installation token when installation_id is provided; falls back to GITHUB_TOKEN PAT.
+ * @param {{ installation_id?: number }} [ctx]
+ * @returns {Promise<string>}
+ */
+async function resolveToken(ctx) {
+  if (ctx?.installation_id) {
+    return getInstallationToken(ctx.installation_id);
+  }
+  return process.env.GITHUB_TOKEN ?? '';
+}
 
 /**
  * Make an authenticated GitHub API request.
  * @param {string} path - API path (e.g. /repos/owner/repo/issues)
  * @param {object} [options] - fetch options
+ * @param {string} [token] - auth token (pre-resolved)
  * @returns {Promise<object>} Parsed JSON response
  */
-async function githubRequest(path, options = {}) {
+async function githubRequest(path, options = {}, token) {
+  const authToken = token ?? process.env.GITHUB_TOKEN ?? '';
   const url = path.startsWith('https://') ? path : `${BASE_URL}${path}`;
   const response = await fetch(url, {
     ...options,
     headers: {
-      Authorization: `Bearer ${GITHUB_TOKEN}`,
+      Authorization: `Bearer ${authToken}`,
       Accept: 'application/vnd.github+json',
       'X-GitHub-Api-Version': '2022-11-28',
       'Content-Type': 'application/json',
@@ -48,33 +64,38 @@ async function githubRequest(path, options = {}) {
  * @param {string} repo
  * @param {number} issueNumber
  * @param {string} body
+ * @param {{ installation_id?: number }} [ctx]
  * @returns {Promise<object>} Created comment
  */
-export async function postComment(owner, repo, issueNumber, body) {
+export async function postComment(owner, repo, issueNumber, body, ctx) {
+  const token = await resolveToken(ctx);
   return githubRequest(`/repos/${owner}/${repo}/issues/${issueNumber}/comments`, {
     method: 'POST',
     body: JSON.stringify({ body }),
-  });
+  }, token);
 }
 
 /**
  * Add a label to an issue or PR.
  */
-export async function addLabel(owner, repo, issueNumber, label) {
+export async function addLabel(owner, repo, issueNumber, label, ctx) {
+  const token = await resolveToken(ctx);
   return githubRequest(`/repos/${owner}/${repo}/issues/${issueNumber}/labels`, {
     method: 'POST',
     body: JSON.stringify({ labels: [label] }),
-  });
+  }, token);
 }
 
 /**
  * Remove a label from an issue or PR.
  */
-export async function removeLabel(owner, repo, issueNumber, label) {
+export async function removeLabel(owner, repo, issueNumber, label, ctx) {
+  const token = await resolveToken(ctx);
   try {
     return await githubRequest(
       `/repos/${owner}/${repo}/issues/${issueNumber}/labels/${encodeURIComponent(label)}`,
-      { method: 'DELETE' }
+      { method: 'DELETE' },
+      token
     );
   } catch (err) {
     if (err.status === 404) return null; // Label wasn't applied, ignore
@@ -85,28 +106,27 @@ export async function removeLabel(owner, repo, issueNumber, label) {
 /**
  * Get the current labels on an issue.
  */
-export async function getLabels(owner, repo, issueNumber) {
-  const labels = await githubRequest(`/repos/${owner}/${repo}/issues/${issueNumber}/labels`);
+export async function getLabels(owner, repo, issueNumber, ctx) {
+  const token = await resolveToken(ctx);
+  const labels = await githubRequest(`/repos/${owner}/${repo}/issues/${issueNumber}/labels`, {}, token);
   return labels.map((l) => l.name);
 }
 
 /**
  * Get issue details.
  */
-export async function getIssue(owner, repo, issueNumber) {
-  return githubRequest(`/repos/${owner}/${repo}/issues/${issueNumber}`);
+export async function getIssue(owner, repo, issueNumber, ctx) {
+  const token = await resolveToken(ctx);
+  return githubRequest(`/repos/${owner}/${repo}/issues/${issueNumber}`, {}, token);
 }
 
 /**
  * Check if a repo exists on GitHub.
- * Returns true if found, false on 404, rethrows on other errors (auth, rate limit, network).
- * @param {string} owner
- * @param {string} repo
- * @returns {Promise<boolean>}
  */
-export async function repoExists(owner, repo) {
+export async function repoExists(owner, repo, ctx) {
+  const token = await resolveToken(ctx);
   try {
-    await githubRequest(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
+    await githubRequest(`/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, {}, token);
     return true;
   } catch (err) {
     if (err.status === 404) return false;
@@ -117,20 +137,38 @@ export async function repoExists(owner, repo) {
 /**
  * Get PR details.
  */
-export async function getPR(owner, repo, prNumber) {
-  return githubRequest(`/repos/${owner}/${repo}/pulls/${prNumber}`);
+export async function getPR(owner, repo, prNumber, ctx) {
+  const token = await resolveToken(ctx);
+  return githubRequest(`/repos/${owner}/${repo}/pulls/${prNumber}`, {}, token);
 }
 
 /**
- * Get pull requests linked to an issue (searches for PRs referencing the issue).
+ * List open PRs for a repo.
+ */
+export async function listOpenPRs(owner, repo, ctx) {
+  const token = await resolveToken(ctx);
+  return githubRequest(`/repos/${owner}/${repo}/pulls?state=open&per_page=100`, {}, token);
+}
+
+/**
+ * Fetch a PR as unified diff text.
+ */
+export async function getDiff(owner, repo, prNumber, ctx) {
+  const token = await resolveToken(ctx);
+  return githubRequest(
+    `/repos/${owner}/${repo}/pulls/${prNumber}`,
+    { headers: { Accept: 'application/vnd.github.diff' } },
+    token
+  );
+}
+
+/**
+ * Get pull requests linked to an issue.
  * Returns the first open PR number found, or null.
  */
-export async function getLinkedPR(owner, repo, issueNumber) {
-  // Search for PRs that mention this issue
-  const result = await githubRequest(
-    `/repos/${owner}/${repo}/pulls?state=open&per_page=100`
-  );
-  // There's no direct API; check PR bodies for "Fixes #N" or "Closes #N"
+export async function getLinkedPR(owner, repo, issueNumber, ctx) {
+  const token = await resolveToken(ctx);
+  const result = await githubRequest(`/repos/${owner}/${repo}/pulls?state=open&per_page=100`, {}, token);
   const patterns = [
     new RegExp(`(?:fixes|closes|resolves)\\s+#${issueNumber}\\b`, 'i'),
     new RegExp(`(?:fixes|closes|resolves)\\s+${owner}/${repo}#${issueNumber}\\b`, 'i'),
@@ -146,26 +184,22 @@ export async function getLinkedPR(owner, repo, issueNumber) {
 
 /**
  * Dispatch a workflow via workflow_dispatch event.
- * @param {string} owner
- * @param {string} repo
- * @param {string} workflowId - Workflow file name or ID
- * @param {string} ref - Branch or tag to run on
- * @param {object} inputs - Workflow inputs
  */
-export async function dispatchWorkflow(owner, repo, workflowId, ref, inputs = {}) {
+export async function dispatchWorkflow(owner, repo, workflowId, ref, inputs = {}, ctx) {
+  const token = await resolveToken(ctx);
   return githubRequest(`/repos/${owner}/${repo}/actions/workflows/${workflowId}/dispatches`, {
     method: 'POST',
     body: JSON.stringify({ ref, inputs }),
-  });
+  }, token);
 }
 
 /**
  * Get file contents from a repo (returns base64-encoded content).
- * @returns {string|null} Base64-encoded file content, or null if not found
  */
-export async function getRepoFileContents(owner, repo, path) {
+export async function getRepoFileContents(owner, repo, path, ctx) {
+  const token = await resolveToken(ctx);
   try {
-    const result = await githubRequest(`/repos/${owner}/${repo}/contents/${path}`);
+    const result = await githubRequest(`/repos/${owner}/${repo}/contents/${path}`, {}, token);
     return result.content?.replace(/\n/g, '') ?? null;
   } catch (err) {
     if (err.status === 404) return null;
@@ -176,20 +210,22 @@ export async function getRepoFileContents(owner, repo, path) {
 /**
  * Get the authenticated user's login.
  */
-export async function getAuthenticatedUser() {
-  const user = await githubRequest('/user');
+export async function getAuthenticatedUser(ctx) {
+  const token = await resolveToken(ctx);
+  const user = await githubRequest('/user', {}, token);
   return user.login;
 }
 
 /**
  * Create or ensure a label exists in a repo.
  */
-export async function ensureLabel(owner, repo, name, color = 'e11d48', description = '') {
+export async function ensureLabel(owner, repo, name, color = 'e11d48', description = '', ctx) {
+  const token = await resolveToken(ctx);
   try {
     await githubRequest(`/repos/${owner}/${repo}/labels`, {
       method: 'POST',
       body: JSON.stringify({ name, color, description }),
-    });
+    }, token);
   } catch (err) {
     if (err.status === 422) return; // Already exists
     throw err;
@@ -198,14 +234,11 @@ export async function ensureLabel(owner, repo, name, color = 'e11d48', descripti
 
 /**
  * Check if a file exists in a repo on the default branch.
- * @param {string} owner
- * @param {string} repo
- * @param {string} path - File path in the repo
- * @returns {Promise<boolean>} true if the file exists, false on 404
  */
-export async function getFileExists(owner, repo, path) {
+export async function getFileExists(owner, repo, path, ctx) {
+  const token = await resolveToken(ctx);
   try {
-    await githubRequest(`/repos/${owner}/${repo}/contents/${path}`);
+    await githubRequest(`/repos/${owner}/${repo}/contents/${path}`, {}, token);
     return true;
   } catch (err) {
     if (err.status === 404) return false;
@@ -215,34 +248,25 @@ export async function getFileExists(owner, repo, path) {
 
 /**
  * Create a file in a repo via the GitHub Contents API.
- * @param {string} owner
- * @param {string} repo
- * @param {string} path - File path to create
- * @param {string} content - Raw string content (will be base64-encoded)
- * @param {string} message - Commit message
- * @returns {Promise<object>} GitHub API response
  */
-export async function createFile(owner, repo, path, content, message) {
+export async function createFile(owner, repo, path, content, message, ctx) {
+  const token = await resolveToken(ctx);
   const encoded = Buffer.from(content).toString('base64');
   return githubRequest(`/repos/${owner}/${repo}/contents/${path}`, {
     method: 'PUT',
     body: JSON.stringify({ message, content: encoded }),
-  });
+  }, token);
 }
 
 /**
  * Get open PRs associated with a commit SHA.
- * Uses the GitHub Commit Pulls API (requires groot-preview header).
- * @param {string} owner
- * @param {string} repo
- * @param {string} sha - Commit SHA
- * @returns {Promise<Array>} Array of PR objects
  */
-export async function getPRsForCommit(owner, repo, sha) {
+export async function getPRsForCommit(owner, repo, sha, ctx) {
+  const token = await resolveToken(ctx);
   try {
     return await githubRequest(`/repos/${owner}/${repo}/commits/${sha}/pulls`, {
       headers: { Accept: 'application/vnd.github.groot-preview+json' },
-    });
+    }, token);
   } catch (err) {
     logger.warn({ msg: 'getPRsForCommit failed', owner, repo, sha, error: err.message });
     return [];
@@ -250,47 +274,32 @@ export async function getPRsForCommit(owner, repo, sha) {
 }
 
 /**
- * Get check runs for a commit (paginates, up to 100 per page).
- * @param {string} owner
- * @param {string} repo
- * @param {string} sha
- * @returns {Promise<Array>} Array of check run objects
+ * Get check runs for a commit.
  */
-export async function getCheckRunsForCommit(owner, repo, sha) {
-  const result = await githubRequest(`/repos/${owner}/${repo}/commits/${sha}/check-runs?per_page=100`);
+export async function getCheckRunsForCommit(owner, repo, sha, ctx) {
+  const token = await resolveToken(ctx);
+  const result = await githubRequest(`/repos/${owner}/${repo}/commits/${sha}/check-runs?per_page=100`, {}, token);
   return result.check_runs ?? [];
 }
 
 /**
  * List reviews on a pull request.
- * @param {string} owner
- * @param {string} repo
- * @param {number} prNumber
- * @returns {Promise<Array>} Array of review objects
  */
-export async function getReviews(owner, repo, prNumber) {
-  return githubRequest(`/repos/${owner}/${repo}/pulls/${prNumber}/reviews`);
+export async function getReviews(owner, repo, prNumber, ctx) {
+  const token = await resolveToken(ctx);
+  return githubRequest(`/repos/${owner}/${repo}/pulls/${prNumber}/reviews`, {}, token);
 }
 
 /**
- * Dismiss a pull request review.
- * @param {string} owner
- * @param {string} repo
- * @param {number} prNumber
- * @param {number} reviewId
- * @param {string} message
- */
-/**
  * Get check run annotations.
- * @param {string} owner
- * @param {string} repo
- * @param {number} checkRunId
- * @returns {Promise<Array>} Array of annotation objects
  */
-export async function getCheckRunAnnotations(owner, repo, checkRunId) {
+export async function getCheckRunAnnotations(owner, repo, checkRunId, ctx) {
+  const token = await resolveToken(ctx);
   try {
     const result = await githubRequest(
-      `/repos/${owner}/${repo}/check-runs/${checkRunId}/annotations?per_page=100`
+      `/repos/${owner}/${repo}/check-runs/${checkRunId}/annotations?per_page=100`,
+      {},
+      token
     );
     return Array.isArray(result) ? result : [];
   } catch (err) {
@@ -299,9 +308,10 @@ export async function getCheckRunAnnotations(owner, repo, checkRunId) {
   }
 }
 
-export async function dismissReview(owner, repo, prNumber, reviewId, message) {
+export async function dismissReview(owner, repo, prNumber, reviewId, message, ctx) {
+  const token = await resolveToken(ctx);
   return githubRequest(`/repos/${owner}/${repo}/pulls/${prNumber}/reviews/${reviewId}/dismissals`, {
     method: 'PUT',
     body: JSON.stringify({ message }),
-  });
+  }, token);
 }

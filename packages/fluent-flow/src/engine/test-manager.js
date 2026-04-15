@@ -1,6 +1,6 @@
 import { resolveConfig } from '../config/loader.js';
 import { getAdapter } from '../work-queue/index.js';
-import { getPRsForCommit } from '../github/rest.js';
+import { getPRsForCommit } from '../providers/github/rest.js';
 import logger from '../logger.js';
 import { query, audit } from '../db/client.js';
 

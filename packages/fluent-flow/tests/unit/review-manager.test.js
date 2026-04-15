@@ -9,13 +9,13 @@ vi.mock('../../src/logger.js', async () => {
 });
 vi.mock('../../src/db/client.js', () => ({ query: vi.fn(), audit: vi.fn() }));
 vi.mock('../../src/config/loader.js', () => ({ resolveConfig: vi.fn() }));
-vi.mock('../../src/github/rest.js', () => ({
+vi.mock('../../src/providers/github/rest.js', () => ({
   dispatchWorkflow: vi.fn(),
   addLabel: vi.fn(),
   getReviews: vi.fn(),
   dismissReview: vi.fn(),
 }));
-vi.mock('../../src/github/graphql.js', () => ({
+vi.mock('../../src/providers/github/graphql.js', () => ({
   enablePullRequestAutoMerge: vi.fn(),
   getPRNodeId: vi.fn(),
 }));
@@ -28,8 +28,8 @@ vi.mock('../../src/agents/claim-manager.js', () => ({ createClaim: vi.fn(), comp
 
 import { query } from '../../src/db/client.js';
 import { resolveConfig } from '../../src/config/loader.js';
-import { dispatchWorkflow, addLabel, getReviews, dismissReview } from '../../src/github/rest.js';
-import { enablePullRequestAutoMerge, getPRNodeId } from '../../src/github/graphql.js';
+import { dispatchWorkflow, addLabel, getReviews, dismissReview } from '../../src/providers/github/rest.js';
+import { enablePullRequestAutoMerge, getPRNodeId } from '../../src/providers/github/graphql.js';
 import { recordPause, getActivePause } from '../../src/engine/pause-manager.js';
 import { notifyReviewFailure } from '../../src/notifications/dispatcher.js';
 import { createClaim, completeClaim, getActiveClaim } from '../../src/agents/claim-manager.js';

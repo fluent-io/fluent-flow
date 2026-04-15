@@ -1,12 +1,12 @@
-import { resolveAgentId, dispatch } from '../notifications/dispatcher.js';
+import { resolveAgentId, dispatch } from '../../notifications/dispatcher.js';
 import { getPRsForCommit, getCheckRunsForCommit, getCheckRunAnnotations } from './rest.js';
-import { dispatchReview, claimDispatch } from '../engine/review-manager.js';
-import { handleTestFailure, handleTestSuccess } from '../engine/test-manager.js';
-import { getActivePause } from '../engine/pause-manager.js';
-import { parseCheckAnnotations } from './test-parser.js';
-import { audit, query } from '../db/client.js';
-import { createClaim } from '../agents/claim-manager.js';
-import logger from '../logger.js';
+import { dispatchReview, claimDispatch } from '../../engine/review-manager.js';
+import { handleTestFailure, handleTestSuccess } from '../../engine/test-manager.js';
+import { getActivePause } from '../../engine/pause-manager.js';
+import { parseCheckAnnotations } from '../../engine/test-parser.js';
+import { audit, query } from '../../db/client.js';
+import { createClaim } from '../../agents/claim-manager.js';
+import logger from '../../logger.js';
 
 /**
  * Check if a check run belongs to the review workflow (should be ignored).

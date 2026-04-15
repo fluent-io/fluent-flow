@@ -6,7 +6,7 @@ import { getAgentConfig } from '../config/agents.js';
 import { getTransport } from './transports/index.js';
 import { audit } from '../db/client.js';
 import { getActivePause } from '../engine/pause-manager.js';
-import { getLinkedPR, getPR } from '../github/rest.js';
+import { getLinkedPR, getPR } from '../providers/github/rest.js';
 import { getAgent } from '../agents/agent-manager.js';
 import { getActiveClaim } from '../agents/claim-manager.js';
 import logger from '../logger.js';

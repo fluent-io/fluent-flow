@@ -1,7 +1,7 @@
 import { query, audit } from '../db/client.js';
 import { resolveConfig } from '../config/loader.js';
-import { moveProjectItem, findProjectItem } from '../github/graphql.js';
-import { postComment, getIssue } from '../github/rest.js';
+import { moveProjectItem, findProjectItem } from '../providers/github/graphql.js';
+import { postComment, getIssue } from '../providers/github/rest.js';
 import logger from '../logger.js';
 
 // Terminal states — no further transitions allowed

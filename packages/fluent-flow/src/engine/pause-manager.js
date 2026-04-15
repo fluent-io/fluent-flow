@@ -1,7 +1,7 @@
 import { query, audit } from '../db/client.js';
 import { resolveConfig } from '../config/loader.js';
 import { executeTransition, getCurrentState } from './state-machine.js';
-import { postComment, addLabel, removeLabel } from '../github/rest.js';
+import { postComment, addLabel, removeLabel } from '../providers/github/rest.js';
 import { notifyPause, notifyResume } from '../notifications/dispatcher.js';
 import logger from '../logger.js';
 

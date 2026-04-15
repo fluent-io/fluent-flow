@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from 'crypto';
-import logger from '../logger.js';
+import logger from '../../logger.js';
 
 /**
  * Middleware that captures the raw request body for signature verification.
@@ -53,6 +53,29 @@ export function webhookSignatureMiddleware(req, res, next) {
 
   if (!verifyWebhookSignature(rawBody, signature, secret)) {
     logger.warn({ msg: 'Invalid webhook signature', ip: req.ip });
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
+
+  next();
+}
+
+/**
+ * Express middleware for GitHub App webhook signature verification.
+ * Uses FF_GITHUB_APP_WEBHOOK_SECRET (required at startup by validateEnv).
+ * If the secret is somehow missing at request time (e.g. validateEnv bypassed),
+ * fails closed with 500 rather than silently accepting unsigned requests.
+ */
+export function appWebhookSignatureMiddleware(req, res, next) {
+  const secret = process.env.FF_GITHUB_APP_WEBHOOK_SECRET;
+  if (!secret) {
+    logger.error({ msg: 'FF_GITHUB_APP_WEBHOOK_SECRET not set — refusing to accept App webhooks' });
+    return res.status(500).json({ error: 'webhook secret not configured' });
+  }
+
+  const signature = req.headers['x-hub-signature-256'];
+
+  if (!verifyWebhookSignature(req.rawBody, signature, secret)) {
+    logger.warn({ msg: 'Invalid App webhook signature', ip: req.ip });
     return res.status(401).json({ error: 'Invalid signature' });
   }
 

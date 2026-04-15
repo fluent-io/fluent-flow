@@ -6,7 +6,7 @@ vi.mock('../../src/config/loader.js', () => ({ resolveConfig: vi.fn(), invalidat
 vi.mock('../../src/engine/state-machine.js', () => ({ executeTransition: vi.fn(), getCurrentState: vi.fn() }));
 vi.mock('../../src/engine/review-manager.js', () => ({ dispatchReview: vi.fn() }));
 vi.mock('../../src/engine/pause-manager.js', () => ({ recordPause: vi.fn(), processResume: vi.fn() }));
-vi.mock('../../src/github/rest.js', () => ({
+vi.mock('../../src/providers/github/rest.js', () => ({
   postComment: vi.fn(),
   addLabel: vi.fn(),
   removeLabel: vi.fn(),
@@ -14,10 +14,10 @@ vi.mock('../../src/github/rest.js', () => ({
   getFileExists: vi.fn(),
   createFile: vi.fn(),
 }));
-vi.mock('../../src/github/graphql.js', () => ({ moveProjectItem: vi.fn(), findProjectItem: vi.fn() }));
+vi.mock('../../src/providers/github/graphql.js', () => ({ moveProjectItem: vi.fn(), findProjectItem: vi.fn() }));
 vi.mock('../../src/notifications/dispatcher.js', () => ({ notifyPause: vi.fn(), notifyResume: vi.fn(), notifyReviewFailure: vi.fn() }));
 
-import { getFileExists, createFile } from '../../src/github/rest.js';
+import { getFileExists, createFile } from '../../src/providers/github/rest.js';
 import { invalidateConfig } from '../../src/config/loader.js';
 import { registerCommandTools } from '../../src/mcp/tools/commands.js';
 

@@ -9,7 +9,7 @@ vi.mock('../../src/config/loader.js', () => ({
   resolveConfig: vi.fn()
 }));
 
-vi.mock('../../src/github/rest.js', () => ({
+vi.mock('../../src/providers/github/rest.js', () => ({
   getPRsForCommit: vi.fn(),
   addLabel: vi.fn()
 }));
@@ -21,7 +21,7 @@ vi.mock('../../src/db/client.js', () => ({
 
 const { getAdapter } = await import('../../src/work-queue/index.js');
 const { resolveConfig } = await import('../../src/config/loader.js');
-const { getPRsForCommit } = await import('../../src/github/rest.js');
+const { getPRsForCommit } = await import('../../src/providers/github/rest.js');
 const { query, audit } = await import('../../src/db/client.js');
 
 describe('Test Manager', () => {

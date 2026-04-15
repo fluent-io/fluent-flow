@@ -23,7 +23,7 @@ vi.mock('../../src/agents/token-manager.js', () => ({
   validateToken: vi.fn(),
 }));
 const mockRepoExists = vi.fn();
-vi.mock('../../src/github/rest.js', () => ({
+vi.mock('../../src/providers/github/rest.js', () => ({
   repoExists: (...args) => mockRepoExists(...args),
 }));
 vi.mock('../../src/agents/session-manager.js', () => ({

@@ -14,7 +14,7 @@ vi.mock('../../src/engine/state-machine.js', () => ({
   executeTransition: vi.fn(),
   getCurrentState: vi.fn(),
 }));
-vi.mock('../../src/github/rest.js', () => ({
+vi.mock('../../src/providers/github/rest.js', () => ({
   postComment: vi.fn(),
   addLabel: vi.fn(),
   removeLabel: vi.fn(),
@@ -27,7 +27,7 @@ vi.mock('../../src/notifications/dispatcher.js', () => ({
 import { query } from '../../src/db/client.js';
 import { resolveConfig } from '../../src/config/loader.js';
 import { executeTransition, getCurrentState } from '../../src/engine/state-machine.js';
-import { postComment, addLabel, removeLabel } from '../../src/github/rest.js';
+import { postComment, addLabel, removeLabel } from '../../src/providers/github/rest.js';
 import { notifyPause, notifyResume } from '../../src/notifications/dispatcher.js';
 import { recordPause, processResume, getActivePause } from '../../src/engine/pause-manager.js';
 

@@ -2,7 +2,7 @@ import { WorkQueueAdapter } from '../adapter.js';
 import {
   moveProjectItem,
   findProjectItem,
-} from '../../github/graphql.js';
+} from '../../providers/github/graphql.js';
 import logger from '../../logger.js';
 
 /** Default project state names — override via config.failure_state / config.resolved_state */

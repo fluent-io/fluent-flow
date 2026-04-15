@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { createAgent, getAgent, listAgents, updateAgent, deleteAgent } from '../agents/agent-manager.js';
 import { createToken, listTokens, revokeToken } from '../agents/token-manager.js';
 import { getActiveSessions } from '../agents/session-manager.js';
-import { repoExists } from '../github/rest.js';
+import { repoExists } from '../providers/github/rest.js';
 import logger from '../logger.js';
 
 const router = Router();

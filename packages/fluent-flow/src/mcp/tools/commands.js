@@ -7,7 +7,7 @@ import { executeTransition } from '../../engine/state-machine.js';
 import { dispatchReview } from '../../engine/review-manager.js';
 import { recordPause, processResume } from '../../engine/pause-manager.js';
 import { audit } from '../../db/client.js';
-import { getFileExists, createFile } from '../../github/rest.js';
+import { getFileExists, createFile } from '../../providers/github/rest.js';
 import { invalidateConfig } from '../../config/loader.js';
 
 /**
