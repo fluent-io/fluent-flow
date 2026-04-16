@@ -57,7 +57,7 @@ export const providerOutboundQueue = pgTable('provider_outbound_queue', {
 }, (t) => ({
   kindCheck: check(
     'provider_outbound_queue_kind_check',
-    sql`${t.kind} = ANY (ARRAY['comment', 'review', 'check_run.create', 'check_run.update'])`
+    sql`${t.kind} = ANY (ARRAY['comment', 'review', 'create_check_run', 'update_check_run'])`
   ),
   clientRefKey: uniqueIndex('provider_outbound_queue_client_ref_key').on(t.clientRef),
   installIdx: index('idx_outbound_queue_installation_id').on(t.installationId),

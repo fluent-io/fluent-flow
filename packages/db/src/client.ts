@@ -8,9 +8,17 @@ export type Transaction = Parameters<Parameters<Database['transaction']>[0]>[0];
 
 const { Pool } = pg;
 
-const DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://fluentflow:password@localhost:5432/fluentflow';
+// Fail fast in any non-test environment if DATABASE_URL isn't set, so a missing
+// env var can't silently connect to a local dev DB in prod/staging.
+function resolveDatabaseUrl(): string {
+  const url = process.env.DATABASE_URL;
+  if (url) return url;
+  const isTest = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
+  if (isTest) return 'postgres://fluentflow:password@localhost:5432/fluentflow';
+  throw new Error('DATABASE_URL environment variable must be set');
+}
 
-export const pool = new Pool({ connectionString: DATABASE_URL });
+export const pool = new Pool({ connectionString: resolveDatabaseUrl() });
 
 /**
  * Drizzle DB instance — preferred for all new code.

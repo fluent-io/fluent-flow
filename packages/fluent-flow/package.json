@@ -12,7 +12,7 @@
     "migrate": "node scripts/migrate.js"
   },
   "dependencies": {
-    "@fluent-flow/db": "*",
+    "@fluent-flow/db": "0.0.1",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@opentelemetry/auto-instrumentations-node": "^0.72.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.214.0",

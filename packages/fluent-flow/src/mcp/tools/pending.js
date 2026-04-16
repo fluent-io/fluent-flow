@@ -4,11 +4,9 @@
  */
 import { z } from 'zod';
 import { sql } from 'drizzle-orm';
-import { db, schema } from '@fluent-flow/db';
+import { db } from '@fluent-flow/db';
 import { audit } from '../../db/client.js';
 import logger from '../../logger.js';
-
-const { pauses } = schema;
 
 /**
  * Register the get_pending_actions tool on the MCP server.

@@ -1,5 +1,6 @@
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { sql } from 'drizzle-orm';
+import type { Pool } from 'pg';
 import { db, pool } from './client.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +9,11 @@ import fs from 'node:fs/promises';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.resolve(__dirname, './migrations');
+
+/** Minimal pool surface used by the stamper — lets tests inject a fake. */
+export interface StampablePool {
+  query<T = unknown>(text: string, params?: unknown[]): Promise<{ rows: T[] }>;
+}
 
 /**
  * Baseline-aware migrator.
@@ -23,40 +29,55 @@ const MIGRATIONS_DIR = path.resolve(__dirname, './migrations');
  * boot in both environments.
  */
 export async function runMigrations(): Promise<void> {
-  await stampBaselineIfLiveDb();
+  await stampBaselineIfLiveDb({ pool: pool as unknown as StampablePool, migrationsDir: MIGRATIONS_DIR });
   await migrate(db, { migrationsFolder: MIGRATIONS_DIR });
 }
 
-async function stampBaselineIfLiveDb(): Promise<void> {
-  // Only stamp if __drizzle_migrations is empty/missing AND core tables already exist.
-  const drizzleTableExists = await tableExists('__drizzle_migrations');
-  const providerInstallationsExists = await tableExists('provider_installations');
+/**
+ * Stamp `__drizzle_migrations` on a live DB so the migrator skips the baseline.
+ * Exported + dependency-injected for unit testability.
+ *
+ * Outcomes by DB state:
+ *   - fresh (no core tables): no-op; caller runs `migrate()` which applies the baseline
+ *   - live (core tables exist, drizzle table missing/empty): creates drizzle table, inserts baseline hash
+ *   - already-migrated (drizzle table has ≥1 row): no-op
+ */
+export async function stampBaselineIfLiveDb({
+  pool: p,
+  migrationsDir,
+}: {
+  pool: StampablePool;
+  migrationsDir: string;
+}): Promise<void> {
+  const drizzleTableExists = await tableExists(p, '__drizzle_migrations');
+  const providerInstallationsExists = await tableExists(p, 'provider_installations');
 
   if (drizzleTableExists) {
-    const { rows } = await pool.query<{ count: string }>(
+    const { rows } = await p.query<{ count: string }>(
       `SELECT COUNT(*)::text AS count FROM public.__drizzle_migrations`
     );
-    if (Number(rows[0]?.count ?? 0) > 0) {
-      return; // already migrated (either stamped or real migrations applied)
-    }
+    if (Number(rows[0]?.count ?? 0) > 0) return;
   }
 
-  if (!providerInstallationsExists) {
-    return; // fresh DB — let the migrator run the baseline normally
-  }
+  if (!providerInstallationsExists) return;
 
-  // Live DB without drizzle tracking: stamp the baseline so migrator skips it.
-  await ensureDrizzleMigrationsTable();
-  const baselineHash = await computeBaselineHash();
-  await pool.query(
+  await p.query(
+    `CREATE TABLE IF NOT EXISTS public.__drizzle_migrations (
+       id SERIAL PRIMARY KEY,
+       hash TEXT NOT NULL,
+       created_at BIGINT
+     )`
+  );
+  const baselineHash = await computeBaselineHash(migrationsDir);
+  await p.query(
     `INSERT INTO public.__drizzle_migrations (hash, created_at) VALUES ($1, $2)
      ON CONFLICT DO NOTHING`,
     [baselineHash, Date.now()]
   );
 }
 
-async function tableExists(name: string): Promise<boolean> {
-  const { rows } = await pool.query<{ exists: boolean }>(
+async function tableExists(p: StampablePool, name: string): Promise<boolean> {
+  const { rows } = await p.query<{ exists: boolean }>(
     `SELECT EXISTS (
        SELECT 1 FROM information_schema.tables
        WHERE table_schema = 'public' AND table_name = $1
@@ -66,17 +87,6 @@ async function tableExists(name: string): Promise<boolean> {
   return rows[0]?.exists ?? false;
 }
 
-async function ensureDrizzleMigrationsTable(): Promise<void> {
-  // Mirrors drizzle-orm's internal schema — node-postgres dialect.
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS public.__drizzle_migrations (
-      id SERIAL PRIMARY KEY,
-      hash TEXT NOT NULL,
-      created_at BIGINT
-    )
-  `);
-}
-
 /**
  * The migrator hashes the baseline SQL file content to dedupe. We hash the
  * same file here so the stamped row matches what migrate() would compare
@@ -84,8 +94,8 @@ async function ensureDrizzleMigrationsTable(): Promise<void> {
  * would try to re-apply — by design; editing an already-applied migration is
  * exactly the footgun this redesign exists to prevent.
  */
-async function computeBaselineHash(): Promise<string> {
-  const journal = path.join(MIGRATIONS_DIR, 'meta', '_journal.json');
+export async function computeBaselineHash(migrationsDir: string): Promise<string> {
+  const journal = path.join(migrationsDir, 'meta', '_journal.json');
   try {
     const j = JSON.parse(await fs.readFile(journal, 'utf8')) as {
       entries: Array<{ idx: number; tag: string; when: number; hash?: string }>;
@@ -93,9 +103,7 @@ async function computeBaselineHash(): Promise<string> {
     const baseline = j.entries[0];
     if (!baseline) throw new Error('no baseline entry in _journal.json');
     if (baseline.hash) return baseline.hash;
-    // drizzle-kit writes the hash into the snapshot file; if absent, fall back
-    // to hashing the .sql file itself.
-    const sqlFile = path.join(MIGRATIONS_DIR, `${baseline.tag}.sql`);
+    const sqlFile = path.join(migrationsDir, `${baseline.tag}.sql`);
     const content = await fs.readFile(sqlFile, 'utf8');
     return crypto.createHash('sha256').update(content).digest('hex');
   } catch (err) {

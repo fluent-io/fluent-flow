@@ -1,0 +1,2 @@
+ALTER TABLE "provider_outbound_queue" DROP CONSTRAINT "provider_outbound_queue_kind_check";--> statement-breakpoint
+ALTER TABLE "provider_outbound_queue" ADD CONSTRAINT "provider_outbound_queue_kind_check" CHECK ("provider_outbound_queue"."kind" = ANY (ARRAY['comment', 'review', 'create_check_run', 'update_check_run']));

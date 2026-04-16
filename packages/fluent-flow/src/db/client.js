@@ -15,9 +15,20 @@ export async function runMigrations() {
   logger.info({ msg: 'Database connected, migrations applied' });
 }
 
+let closingPromise = null;
+
+/**
+ * Close the pool. Idempotent — repeated calls (shutdown handlers, signal
+ * cascades, CLI migrate scripts) share the same underlying end() promise
+ * instead of racing and throwing "Called end on pool more than once".
+ */
 export async function closePool() {
-  await pool.end();
-  logger.info({ msg: 'Database pool closed' });
+  if (!closingPromise) {
+    closingPromise = pool.end().then(() => {
+      logger.info({ msg: 'Database pool closed' });
+    });
+  }
+  return closingPromise;
 }
 
 export async function healthCheck() {

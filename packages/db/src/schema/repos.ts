@@ -9,8 +9,11 @@ export const repos = pgTable('repos', {
   repoFullName: text('repo_full_name').notNull(),
   provider: text('provider').notNull().default('github'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  // installation_id is INTEGER, but provider_installations.id is BIGINT.
-  // Postgres allows the FK (INTEGER → BIGINT widens). Declared in migration 016.
+  // installation_id is stored as INTEGER here while provider_installations.id
+  // is BIGINT. The live DB does NOT declare a foreign-key constraint for this
+  // column — the old homegrown migration 016 added the column without an FK,
+  // and the drizzle baseline preserves that state. If we want referential
+  // integrity, add a follow-up migration + `.references(...)` here together.
   installationId: integer('installation_id'),
 }, (t) => ({
   orgIdIdx: index('idx_repos_org_id').on(t.orgId),
