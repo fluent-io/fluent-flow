@@ -1,29 +1,36 @@
-import { query, getPool } from './client.js';
+import { and, eq, isNull, lte, sql } from 'drizzle-orm';
+import { db, schema } from '@fluent-flow/db';
 import logger from '../logger.js';
+
+const { providerOutboundQueue } = schema;
 
 /**
  * Enqueue a provider action. If client_ref already exists, returns the existing row (idempotent).
  */
 export async function enqueue({ installation_id, kind, payload, client_ref }) {
-  const result = await query(
-    `INSERT INTO provider_outbound_queue (installation_id, kind, payload, client_ref)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (client_ref) DO NOTHING
-     RETURNING *`,
-    [installation_id, kind, JSON.stringify(payload), client_ref]
-  );
+  const inserted = await db
+    .insert(providerOutboundQueue)
+    .values({
+      installationId: installation_id,
+      kind,
+      payload,
+      clientRef: client_ref,
+    })
+    .onConflictDoNothing({ target: providerOutboundQueue.clientRef })
+    .returning();
 
-  if (result.rows[0]) {
+  if (inserted[0]) {
     logger.info({ msg: 'enqueue', kind, client_ref });
-    return result.rows[0];
+    return inserted[0];
   }
 
-  // Conflict: return the existing row
-  const existing = await query(
-    `SELECT * FROM provider_outbound_queue WHERE client_ref = $1`,
-    [client_ref]
-  );
-  return existing.rows[0] ?? null;
+  const existing = await db
+    .select()
+    .from(providerOutboundQueue)
+    .where(eq(providerOutboundQueue.clientRef, client_ref))
+    .limit(1);
+
+  return existing[0] ?? null;
 }
 
 // Visibility timeout: after claiming, the row is hidden for this many seconds so
@@ -39,60 +46,48 @@ const CLAIM_VISIBILITY_SECS = 60;
  * Returns null if the queue is empty.
  */
 export async function claimNext() {
-  const pool = getPool();
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  return db.transaction(async (tx) => {
+    // ORDER BY next_attempt_at ASC ensures FIFO drain and prevents starvation.
+    const rows = await tx
+      .select()
+      .from(providerOutboundQueue)
+      .where(
+        and(
+          lte(providerOutboundQueue.nextAttemptAt, sql`NOW()`),
+          isNull(providerOutboundQueue.parkedAt),
+          isNull(providerOutboundQueue.succeededAt),
+        ),
+      )
+      .orderBy(providerOutboundQueue.nextAttemptAt)
+      .limit(1)
+      .for('update', { skipLocked: true });
 
-    // ORDER BY next_attempt_at ASC ensures FIFO drain and prevents starvation of
-    // older rows when newer ones are continuously enqueued.
-    const selectResult = await client.query(
-      `SELECT * FROM provider_outbound_queue
-       WHERE next_attempt_at <= NOW()
-         AND parked_at IS NULL
-         AND succeeded_at IS NULL
-       ORDER BY next_attempt_at ASC
-       FOR UPDATE SKIP LOCKED
-       LIMIT 1`
-    );
+    const row = rows[0];
+    if (!row) return null;
 
-    const row = selectResult.rows[0];
-    if (!row) {
-      await client.query('COMMIT');
-      return null;
-    }
+    await tx
+      .update(providerOutboundQueue)
+      .set({
+        nextAttemptAt: sql`NOW() + (${CLAIM_VISIBILITY_SECS} * interval '1 second')`,
+      })
+      .where(eq(providerOutboundQueue.id, row.id));
 
-    await client.query(
-      `UPDATE provider_outbound_queue
-       SET next_attempt_at = NOW() + ($1 * interval '1 second')
-       WHERE id = $2`,
-      [CLAIM_VISIBILITY_SECS, row.id]
-    );
-
-    await client.query('COMMIT');
     logger.info({ msg: 'claimNext', id: row.id, kind: row.kind });
     return row;
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 /**
  * Mark a queue row as successfully processed.
  */
 export async function markSucceeded(id) {
-  const result = await query(
-    `UPDATE provider_outbound_queue
-     SET succeeded_at = NOW()
-     WHERE id = $1
-     RETURNING *`,
-    [id]
-  );
+  const [row] = await db
+    .update(providerOutboundQueue)
+    .set({ succeededAt: sql`NOW()` })
+    .where(eq(providerOutboundQueue.id, id))
+    .returning();
   logger.info({ msg: 'markSucceeded', id });
-  return result.rows[0];
+  return row;
 }
 
 /**
@@ -103,57 +98,50 @@ export async function markSucceeded(id) {
  *                     `rate_limited_attempts` (or `retryAfter` when provided by GitHub).
  */
 export async function markFailed(id, { error, rateLimited = false, retryAfter = null }) {
-  let result;
+  let row;
   if (rateLimited) {
     const useRetryAfter = retryAfter != null && !Number.isNaN(Number(retryAfter));
-    if (useRetryAfter) {
-      result = await query(
-        `UPDATE provider_outbound_queue
-         SET rate_limited_attempts = rate_limited_attempts + 1,
-             last_error = $1,
-             next_attempt_at = NOW() + ($3 * interval '1 second')
-         WHERE id = $2
-         RETURNING *`,
-        [error, id, Number(retryAfter)]
-      );
-    } else {
-      result = await query(
-        `UPDATE provider_outbound_queue
-         SET rate_limited_attempts = rate_limited_attempts + 1,
-             last_error = $1,
-             next_attempt_at = NOW() + (LEAST(300, power(2, rate_limited_attempts + 1)) * interval '1 second')
-         WHERE id = $2
-         RETURNING *`,
-        [error, id]
-      );
-    }
+    const nextAttemptSql = useRetryAfter
+      ? sql`NOW() + (${Number(retryAfter)} * interval '1 second')`
+      : sql`NOW() + (LEAST(300, power(2, ${providerOutboundQueue.rateLimitedAttempts} + 1)) * interval '1 second')`;
+    [row] = await db
+      .update(providerOutboundQueue)
+      .set({
+        rateLimitedAttempts: sql`${providerOutboundQueue.rateLimitedAttempts} + 1`,
+        lastError: error,
+        nextAttemptAt: nextAttemptSql,
+      })
+      .where(eq(providerOutboundQueue.id, id))
+      .returning();
   } else {
-    result = await query(
-      `UPDATE provider_outbound_queue
-       SET attempts = attempts + 1,
-           last_error = $1,
-           next_attempt_at = NOW() + (LEAST(300, power(2, attempts + 1)) * interval '1 second')
-       WHERE id = $2
-       RETURNING *`,
-      [error, id]
-    );
+    [row] = await db
+      .update(providerOutboundQueue)
+      .set({
+        attempts: sql`${providerOutboundQueue.attempts} + 1`,
+        lastError: error,
+        nextAttemptAt: sql`NOW() + (LEAST(300, power(2, ${providerOutboundQueue.attempts} + 1)) * interval '1 second')`,
+      })
+      .where(eq(providerOutboundQueue.id, id))
+      .returning();
   }
   logger.info({ msg: 'markFailed', id, rateLimited, error });
-  return result.rows[0];
+  return row;
 }
 
 /**
  * Park all open queue rows for a given installation (e.g. on suspend).
  */
 export async function parkForInstallation(installationId) {
-  await query(
-    `UPDATE provider_outbound_queue
-     SET parked_at = NOW()
-     WHERE installation_id = $1
-       AND succeeded_at IS NULL
-       AND parked_at IS NULL`,
-    [installationId]
-  );
+  await db
+    .update(providerOutboundQueue)
+    .set({ parkedAt: sql`NOW()` })
+    .where(
+      and(
+        eq(providerOutboundQueue.installationId, installationId),
+        isNull(providerOutboundQueue.succeededAt),
+        isNull(providerOutboundQueue.parkedAt),
+      ),
+    );
   logger.info({ msg: 'parkForInstallation', installationId });
 }
 
@@ -161,13 +149,15 @@ export async function parkForInstallation(installationId) {
  * Un-park queue rows for an installation, only those newer than sinceHours.
  */
 export async function unparkForInstallation(installationId, sinceHours = 24) {
-  await query(
-    `UPDATE provider_outbound_queue
-     SET parked_at = NULL
-     WHERE installation_id = $1
-       AND parked_at IS NOT NULL
-       AND created_at >= NOW() - ($2 * interval '1 hour')`,
-    [installationId, sinceHours]
-  );
+  await db
+    .update(providerOutboundQueue)
+    .set({ parkedAt: null })
+    .where(
+      and(
+        eq(providerOutboundQueue.installationId, installationId),
+        sql`${providerOutboundQueue.parkedAt} IS NOT NULL`,
+        sql`${providerOutboundQueue.createdAt} >= NOW() - (${sinceHours} * interval '1 hour')`,
+      ),
+    );
   logger.info({ msg: 'unparkForInstallation', installationId, sinceHours });
 }

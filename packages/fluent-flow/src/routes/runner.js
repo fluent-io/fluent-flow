@@ -4,7 +4,9 @@ import { validateToken } from '../agents/token-manager.js';
 import { registerSession, touchSession, setSessionStatus } from '../agents/session-manager.js';
 import { completeClaim, failClaim, getClaimByAttempt, createClaim } from '../agents/claim-manager.js';
 import { dequeue, hasPending } from '../notifications/transports/long-poll.js';
-import { query, audit } from '../db/client.js';
+import { sql } from 'drizzle-orm';
+import { db } from '@fluent-flow/db';
+import { audit } from '../db/client.js';
 import logger from '../logger.js';
 
 const router = Router();
@@ -62,24 +64,32 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * Check for unassigned pending claims that match this agent's repo scope.
  * Atomically claims the first match.
  */
-async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 60 * 1000) {
-  const expiresAt = new Date(Date.now() + ttlMs).toISOString();
-  const result = await query(
-    `UPDATE agent_claims SET
-       session_id = $3, status = 'claimed', claimed_at = NOW(), expires_at = $4
-     WHERE id = (
-       SELECT c.id FROM agent_claims c
-       JOIN agents a ON a.org_id = c.org_id AND a.id = $2
-       WHERE c.org_id = $1 AND c.status = 'pending' AND c.session_id IS NULL
-         AND (a.repos = '{}' OR c.repo = ANY(a.repos))
-       ORDER BY c.created_at ASC
-       LIMIT 1
-       FOR UPDATE SKIP LOCKED
-     )
-     RETURNING *`,
-    [orgId, agentId, sessionId, expiresAt]
-  );
-  const claim = result.rows[0] ?? null;
+export async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 60 * 1000) {
+  const expiresAt = new Date(Date.now() + ttlMs);
+  // UPDATE … WHERE id = (SELECT … FOR UPDATE SKIP LOCKED) — the canonical
+  // atomic claim pattern. Kept as raw SQL because drizzle doesn't express
+  // UPDATE-from-locked-subselect ergonomically.
+  const result = await db.execute(sql`
+    UPDATE agent_claims SET
+      session_id = ${sessionId},
+      status = 'claimed',
+      claimed_at = NOW(),
+      expires_at = ${expiresAt}
+    WHERE id = (
+      SELECT c.id FROM agent_claims c
+      JOIN agents a ON a.org_id = c.org_id AND a.id = ${agentId}
+      WHERE c.org_id = ${orgId}
+        AND c.status = 'pending'
+        AND c.session_id IS NULL
+        AND (a.repos = '{}' OR c.repo = ANY(a.repos))
+      ORDER BY c.created_at ASC
+      LIMIT 1
+      FOR UPDATE SKIP LOCKED
+    )
+    RETURNING *
+  `);
+  const rows = result.rows ?? result;
+  const claim = rows[0] ?? null;
   if (claim) {
     await setSessionStatus(orgId, agentId, sessionId, 'busy');
   }

@@ -4,7 +4,9 @@ import { dispatchReview, claimDispatch } from '../../engine/review-manager.js';
 import { handleTestFailure, handleTestSuccess } from '../../engine/test-manager.js';
 import { getActivePause } from '../../engine/pause-manager.js';
 import { parseCheckAnnotations } from '../../engine/test-parser.js';
-import { audit, query } from '../../db/client.js';
+import { and, eq } from 'drizzle-orm';
+import { db, schema } from '@fluent-flow/db';
+import { audit } from '../../db/client.js';
 import { createClaim } from '../../agents/claim-manager.js';
 import logger from '../../logger.js';
 
@@ -200,14 +202,21 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config) {
   // Check if a review_fix claim was recently completed for this PR — if so, create test_verify
   let hasReviewFixClaim = false;
   try {
-    const claimCheck = await query(
-      `SELECT 1 FROM agent_claims
-       WHERE org_id = $1 AND repo = $2 AND pr_number = $3
-         AND claim_type = 'review_fix' AND status = 'completed'
-       LIMIT 1`,
-      [config.org_id ?? 'self-hosted', repoKey, pr.number]
-    );
-    hasReviewFixClaim = claimCheck.rows.length > 0;
+    const { agentClaims } = schema;
+    const rows = await db
+      .select({ one: agentClaims.id })
+      .from(agentClaims)
+      .where(
+        and(
+          eq(agentClaims.orgId, config.org_id ?? 'self-hosted'),
+          eq(agentClaims.repo, repoKey),
+          eq(agentClaims.prNumber, pr.number),
+          eq(agentClaims.claimType, 'review_fix'),
+          eq(agentClaims.status, 'completed'),
+        ),
+      )
+      .limit(1);
+    hasReviewFixClaim = rows.length > 0;
   } catch (err) {
     logger.warn({ msg: 'Failed to check for review_fix claims', error: err.message });
   }

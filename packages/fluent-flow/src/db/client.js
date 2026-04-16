@@ -1,76 +1,58 @@
-import pg from 'pg';
-import { readFileSync, readdirSync } from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+/**
+ * Thin wrapper over @fluent-flow/db's drizzle client.
+ * All data access now goes through the drizzle builder (`db`, `schema`, `sql`).
+ * This file exists for the lifecycle helpers (runMigrations, closePool,
+ * healthCheck) and the fire-and-forget audit helper.
+ */
+import { db, pool, schema, sql, runMigrations as drizzleRunMigrations } from '@fluent-flow/db';
 import logger from '../logger.js';
 
-const { Pool } = pg;
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
-let pool;
-
-export function getPool() {
-  if (!pool) {
-    pool = new Pool({
-      connectionString: process.env.DATABASE_URL,
-      max: 10,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
-    });
-
-    pool.on('error', (err) => {
-      logger.error({ msg: 'Unexpected pg pool error', error: err.message });
-    });
-  }
-  return pool;
-}
-
-export async function query(text, params) {
-  const client = getPool();
-  return client.query(text, params);
-}
+export { db, pool, schema, sql };
+export { withTransaction } from '@fluent-flow/db';
 
 export async function runMigrations() {
-  const pool = getPool();
-  const migrationsDir = join(__dirname, 'migrations');
-  const migrations = readdirSync(migrationsDir)
-    .filter(f => f.endsWith('.sql'))
-    .sort();
-  for (const file of migrations) {
-    const migrationPath = join(migrationsDir, file);
-    const sql = readFileSync(migrationPath, 'utf8');
-    await pool.query(sql);
-    logger.info({ msg: 'Migration applied', file });
-  }
+  await drizzleRunMigrations();
+  logger.info({ msg: 'Database connected, migrations applied' });
 }
 
+let closingPromise = null;
+
+/**
+ * Close the pool. Idempotent — repeated calls (shutdown handlers, signal
+ * cascades, CLI migrate scripts) share the same underlying end() promise
+ * instead of racing and throwing "Called end on pool more than once".
+ */
 export async function closePool() {
-  if (pool) {
-    await pool.end();
-    pool = null;
-    logger.info({ msg: 'Database pool closed' });
+  if (!closingPromise) {
+    closingPromise = pool.end().then(() => {
+      logger.info({ msg: 'Database pool closed' });
+    });
   }
+  return closingPromise;
 }
 
 export async function healthCheck() {
-  const result = await query('SELECT 1 AS ok');
+  const result = await pool.query('SELECT 1 AS ok');
   return result.rows[0].ok === 1;
 }
 
 /**
  * Write an audit log entry (fire-and-forget — never throws).
- * @param {string} eventType - e.g. 'webhook_received', 'state_transition', 'agent_woken'
+ * @param {string} eventType
  * @param {object} [opts]
- * @param {string} [opts.repo] - "owner/repo"
+ * @param {string} [opts.repo]
  * @param {string} [opts.actor]
- * @param {object} [opts.data] - Any additional JSON data
+ * @param {object} [opts.data]
  */
 export function audit(eventType, { repo, actor, data } = {}) {
-  query(
-    `INSERT INTO audit_log (event_type, repo, actor, data) VALUES ($1, $2, $3, $4)`,
-    [eventType, repo ?? null, actor ?? null, data ? JSON.stringify(data) : null]
-  ).catch((err) => {
-    logger.error({ msg: 'audit log write failed', eventType, error: err.message });
-  });
+  db.insert(schema.auditLog)
+    .values({
+      eventType,
+      repo: repo ?? null,
+      actor: actor ?? null,
+      data: data ?? null,
+    })
+    .catch((err) => {
+      logger.error({ msg: 'audit log write failed', eventType, error: err.message });
+    });
 }

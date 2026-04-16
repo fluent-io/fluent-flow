@@ -1,4 +1,5 @@
-import { query } from '../db/client.js';
+import { and, eq, inArray, sql } from 'drizzle-orm';
+import { db, schema } from '@fluent-flow/db';
 import {
   upsertInstallation,
   softDeleteInstallation,
@@ -10,6 +11,8 @@ import {
 import { parkForInstallation, unparkForInstallation } from '../db/outbound-queue.js';
 import logger from '../logger.js';
 
+const { orgs, agentClaims, repos } = schema;
+
 // Unpark rows created within this many hours on unsuspend
 const UNPARK_HOURS = 24;
 
@@ -19,10 +22,7 @@ const UNPARK_HOURS = 24;
  * @param {string} login
  */
 async function ensureOrg(login) {
-  await query(
-    `INSERT INTO orgs (id, name) VALUES ($1, $1) ON CONFLICT DO NOTHING`,
-    [login]
-  );
+  await db.insert(orgs).values({ id: login, name: login }).onConflictDoNothing();
 }
 
 /**
@@ -68,18 +68,24 @@ export async function handleInstallationSuspended(externalInstallationId) {
 
   await softDeleteInstallation(installation.id);
 
-  // Cancel in-flight claims for repos belonging to this installation
-  await query(
-    `UPDATE agent_claims
-     SET status = 'cancelled',
-         completed_at = NOW(),
-         payload = payload || $2::jsonb
-     WHERE status IN ('pending', 'claimed')
-       AND repo IN (
-         SELECT r.id FROM repos r WHERE r.installation_id = $1
-       )`,
-    [installation.id, JSON.stringify({ cancel_reason: 'installation_suspended' })]
-  );
+  // Cancel in-flight claims for repos belonging to this installation.
+  const affectedRepos = db
+    .select({ id: repos.id })
+    .from(repos)
+    .where(eq(repos.installationId, installation.id));
+  await db
+    .update(agentClaims)
+    .set({
+      status: 'cancelled',
+      completedAt: sql`NOW()`,
+      payload: sql`${agentClaims.payload} || ${{ cancel_reason: 'installation_suspended' }}::jsonb`,
+    })
+    .where(
+      and(
+        inArray(agentClaims.status, ['pending', 'claimed']),
+        inArray(agentClaims.repo, affectedRepos),
+      ),
+    );
 
   await parkForInstallation(installation.id);
 

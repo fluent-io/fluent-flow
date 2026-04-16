@@ -13,7 +13,7 @@ const registry = new Map([
 
 /**
  * Get a transport module by name.
- * @param {string} name - Transport name (webhook, workflow_dispatch)
+ * @param {string} name - Transport name (webhook, workflow_dispatch, long_poll)
  * @returns {{ send: Function }|null}
  */
 export function getTransport(name) {

@@ -1,6 +1,9 @@
-import { query } from '../db/client.js';
+import { eq } from 'drizzle-orm';
+import { db, schema } from '@fluent-flow/db';
 import { resolveRepoConfig } from '../db/repo-configs.js';
 import logger from '../logger.js';
+
+const { agentClaims } = schema;
 
 /**
  * Hook called when a claim is dispatched (queued for an agent).
@@ -22,10 +25,10 @@ export async function onClaimDispatched(client, claim) {
 
   const checkRunId = checkRun?.id;
   if (checkRunId && id) {
-    await query(
-      `UPDATE agent_claims SET check_run_external_id = $1 WHERE id = $2`,
-      [checkRunId, id]
-    );
+    await db
+      .update(agentClaims)
+      .set({ checkRunExternalId: checkRunId })
+      .where(eq(agentClaims.id, id));
   }
 
   logger.info({ msg: 'onClaimDispatched', claimId: id, checkRunId });

@@ -1,4 +1,8 @@
-import { query, audit } from '../db/client.js';
+import { and, eq, lt, sql } from 'drizzle-orm';
+import { db, schema } from '@fluent-flow/db';
+import { audit } from '../db/client.js';
+
+const { reviewRetries } = schema;
 import { resolveConfig } from '../config/loader.js';
 import { dispatchWorkflow, addLabel, getReviews, dismissReview } from '../providers/github/rest.js';
 import { enablePullRequestAutoMerge, getPRNodeId } from '../providers/github/graphql.js';
@@ -103,12 +107,10 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
       logger.error({ msg: 'Failed to enable auto-merge', repo: repoKey, prNumber, error: err.message });
     }
 
-    // Update retry record to reflect pass
-    await query(
-      `UPDATE review_retries SET last_review_sha = $1, updated_at = NOW()
-       WHERE repo = $2 AND pr_number = $3`,
-      [reviewSha ?? null, repoKey, prNumber]
-    );
+    await db
+      .update(reviewRetries)
+      .set({ lastReviewSha: reviewSha ?? null, updatedAt: sql`NOW()` })
+      .where(and(eq(reviewRetries.repo, repoKey), eq(reviewRetries.prNumber, prNumber)));
 
     // Complete the active claim for this PR (claim was created on FAIL, attempt may differ)
     try {
@@ -134,19 +136,26 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
     ...advisory.map((a) => ({ ...a, severity: 'advisory' })),
   ];
 
-  const retryResult = await query(
-    `INSERT INTO review_retries (repo, pr_number, retry_count, last_issues, last_review_sha)
-     VALUES ($1, $2, 1, $3, $4)
-     ON CONFLICT (repo, pr_number) DO UPDATE
-       SET retry_count = review_retries.retry_count + 1,
-           last_issues = $3,
-           last_review_sha = $4,
-           updated_at = NOW()
-     RETURNING *`,
-    [repoKey, prNumber, JSON.stringify(allIssues), reviewSha ?? null]
-  );
-  const retryRecord = retryResult.rows[0];
-  const newRetryCount = retryRecord.retry_count;
+  const [retryRecord] = await db
+    .insert(reviewRetries)
+    .values({
+      repo: repoKey,
+      prNumber,
+      retryCount: 1,
+      lastIssues: allIssues,
+      lastReviewSha: reviewSha ?? null,
+    })
+    .onConflictDoUpdate({
+      target: [reviewRetries.repo, reviewRetries.prNumber],
+      set: {
+        retryCount: sql`${reviewRetries.retryCount} + 1`,
+        lastIssues: allIssues,
+        lastReviewSha: reviewSha ?? null,
+        updatedAt: sql`NOW()`,
+      },
+    })
+    .returning();
+  const newRetryCount = retryRecord.retryCount;
 
   logger.info({ msg: 'Review failed', repo: repoKey, prNumber, attempt, retryCount: newRetryCount, maxRetries });
 
@@ -247,11 +256,12 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
  * @returns {Promise<object|null>}
  */
 export async function getRetryRecord(repo, prNumber) {
-  const result = await query(
-    'SELECT * FROM review_retries WHERE repo = $1 AND pr_number = $2',
-    [repo, prNumber]
-  );
-  return result.rows[0] ?? null;
+  const [row] = await db
+    .select()
+    .from(reviewRetries)
+    .where(and(eq(reviewRetries.repo, repo), eq(reviewRetries.prNumber, prNumber)))
+    .limit(1);
+  return row ?? null;
 }
 
 /**
@@ -266,17 +276,19 @@ export async function getRetryRecord(repo, prNumber) {
  * @returns {Promise<object|null>}
  */
 export async function claimDispatch(repo, prNumber, sha, maxRetries) {
-  const result = await query(
-    `INSERT INTO review_retries (repo, pr_number, last_dispatch_sha)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (repo, pr_number) DO UPDATE
-       SET last_dispatch_sha = $3, updated_at = NOW()
-       WHERE review_retries.last_dispatch_sha IS DISTINCT FROM $3
-         AND review_retries.retry_count < $4
-     RETURNING *`,
-    [repo, prNumber, sha, maxRetries]
-  );
-  return result.rows[0] ?? null;
+  const [row] = await db
+    .insert(reviewRetries)
+    .values({ repo, prNumber, lastDispatchSha: sha })
+    .onConflictDoUpdate({
+      target: [reviewRetries.repo, reviewRetries.prNumber],
+      set: { lastDispatchSha: sha, updatedAt: sql`NOW()` },
+      setWhere: and(
+        sql`${reviewRetries.lastDispatchSha} IS DISTINCT FROM ${sha}`,
+        lt(reviewRetries.retryCount, maxRetries),
+      ),
+    })
+    .returning();
+  return row ?? null;
 }
 
 /**
@@ -285,10 +297,14 @@ export async function claimDispatch(repo, prNumber, sha, maxRetries) {
  * @param {number} prNumber
  */
 export async function resetRetries(repo, prNumber) {
-  await query(
-    `UPDATE review_retries SET retry_count = 0, last_issues = NULL, last_dispatch_sha = NULL, updated_at = NOW()
-     WHERE repo = $1 AND pr_number = $2`,
-    [repo, prNumber]
-  );
+  await db
+    .update(reviewRetries)
+    .set({
+      retryCount: 0,
+      lastIssues: null,
+      lastDispatchSha: null,
+      updatedAt: sql`NOW()`,
+    })
+    .where(and(eq(reviewRetries.repo, repo), eq(reviewRetries.prNumber, prNumber)));
 }
 

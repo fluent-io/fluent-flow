@@ -1,4 +1,8 @@
-import { query, audit } from '../db/client.js';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
+import { db, schema } from '@fluent-flow/db';
+import { audit } from '../db/client.js';
+
+const { stateTransitions, projectItems } = schema;
 import { resolveConfig } from '../config/loader.js';
 import { moveProjectItem, findProjectItem } from '../providers/github/graphql.js';
 import { postComment, getIssue } from '../providers/github/rest.js';
@@ -80,14 +84,13 @@ export function validateRequirements(requirements, context = {}) {
  * @returns {Promise<string>} Current state
  */
 export async function getCurrentState(repo, issueNumber) {
-  const result = await query(
-    `SELECT to_state FROM state_transitions
-     WHERE repo = $1 AND issue_number = $2
-     ORDER BY created_at DESC
-     LIMIT 1`,
-    [repo, issueNumber]
-  );
-  return result.rows[0]?.to_state ?? 'Backlog';
+  const [row] = await db
+    .select({ toState: stateTransitions.toState })
+    .from(stateTransitions)
+    .where(and(eq(stateTransitions.repo, repo), eq(stateTransitions.issueNumber, issueNumber)))
+    .orderBy(desc(stateTransitions.createdAt))
+    .limit(1);
+  return row?.toState ?? 'Backlog';
 }
 
 /**
@@ -97,13 +100,11 @@ export async function getCurrentState(repo, issueNumber) {
  * @returns {Promise<Array>}
  */
 export async function getTransitionHistory(repo, issueNumber) {
-  const result = await query(
-    `SELECT * FROM state_transitions
-     WHERE repo = $1 AND issue_number = $2
-     ORDER BY created_at ASC`,
-    [repo, issueNumber]
-  );
-  return result.rows;
+  return db
+    .select()
+    .from(stateTransitions)
+    .where(and(eq(stateTransitions.repo, repo), eq(stateTransitions.issueNumber, issueNumber)))
+    .orderBy(asc(stateTransitions.createdAt));
 }
 
 /**
@@ -112,23 +113,20 @@ export async function getTransitionHistory(repo, issueNumber) {
  * @returns {Promise<object>} The created transition record
  */
 async function recordTransition({ repo, issueNumber, fromState, toState, triggerType, triggerDetail, actor, metadata }) {
-  const result = await query(
-    `INSERT INTO state_transitions
-       (repo, issue_number, from_state, to_state, trigger_type, trigger_detail, actor, metadata)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-     RETURNING *`,
-    [
+  const [row] = await db
+    .insert(stateTransitions)
+    .values({
       repo,
       issueNumber,
-      fromState ?? null,
+      fromState: fromState ?? null,
       toState,
       triggerType,
-      triggerDetail ?? null,
-      actor ?? null,
-      metadata ? JSON.stringify(metadata) : null,
-    ]
-  );
-  return result.rows[0];
+      triggerDetail: triggerDetail ?? null,
+      actor: actor ?? null,
+      metadata: metadata ?? null,
+    })
+    .returning();
+  return row;
 }
 
 /**
@@ -146,25 +144,30 @@ async function updateProjectCard(repo, issueNumber, toState, projectId) {
     const [owner, repoName] = repo.split('/');
     let itemNodeId = null;
 
-    // Try to find from project_items table
-    const cached = await query(
-      'SELECT item_node_id FROM project_items WHERE repo = $1 AND issue_number = $2 AND project_id = $3',
-      [repo, issueNumber, projectId]
-    );
+    const [cached] = await db
+      .select({ itemNodeId: projectItems.itemNodeId })
+      .from(projectItems)
+      .where(
+        and(
+          eq(projectItems.repo, repo),
+          eq(projectItems.issueNumber, issueNumber),
+          eq(projectItems.projectId, projectId),
+        ),
+      )
+      .limit(1);
 
-    if (cached.rows.length > 0) {
-      itemNodeId = cached.rows[0].item_node_id;
+    if (cached) {
+      itemNodeId = cached.itemNodeId;
     } else {
-      // Query GitHub to find the item
       itemNodeId = await findProjectItem(projectId, owner, repoName, issueNumber);
       if (itemNodeId) {
-        // Cache it
-        await query(
-          `INSERT INTO project_items (project_id, item_node_id, repo, issue_number, current_state)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (project_id, item_node_id) DO UPDATE SET current_state = $5, last_activity = NOW()`,
-          [projectId, itemNodeId, repo, issueNumber, toState]
-        );
+        await db
+          .insert(projectItems)
+          .values({ projectId, itemNodeId, repo, issueNumber, currentState: toState })
+          .onConflictDoUpdate({
+            target: [projectItems.projectId, projectItems.itemNodeId],
+            set: { currentState: toState, lastActivity: sql`NOW()` },
+          });
       }
     }
 
@@ -175,12 +178,12 @@ async function updateProjectCard(repo, issueNumber, toState, projectId) {
 
     await moveProjectItem(projectId, itemNodeId, toState);
 
-    // Update local cache
-    await query(
-      `UPDATE project_items SET current_state = $1, last_activity = NOW()
-       WHERE project_id = $2 AND item_node_id = $3`,
-      [toState, projectId, itemNodeId]
-    );
+    await db
+      .update(projectItems)
+      .set({ currentState: toState, lastActivity: sql`NOW()` })
+      .where(
+        and(eq(projectItems.projectId, projectId), eq(projectItems.itemNodeId, itemNodeId)),
+      );
   } catch (err) {
     logger.error({ msg: 'Failed to update project card', repo, issueNumber, toState, error: err.message });
   }

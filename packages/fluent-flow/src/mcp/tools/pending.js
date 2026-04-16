@@ -3,7 +3,9 @@
  * Returns unresolved work items for a specific agent.
  */
 import { z } from 'zod';
-import { query, audit } from '../../db/client.js';
+import { sql } from 'drizzle-orm';
+import { db } from '@fluent-flow/db';
+import { audit } from '../../db/client.js';
 import logger from '../../logger.js';
 
 /**
@@ -33,15 +35,13 @@ export function registerPendingTool(server) {
  * @returns {Promise<Array>}
  */
 export async function getPendingActions(agentId, repoFilter) {
-  const params = [agentId];
-  let repoClause = '';
-  if (repoFilter) {
-    params.push(repoFilter);
-    repoClause = ` AND rr.repo = $${params.length}`;
-  }
+  // Three-way UNION ALL with cross-table joins + JSONB extraction from
+  // config_cache — cleaner as one raw SQL statement than the drizzle query
+  // builder, which doesn't express UNION ALL ergonomically.
+  const repoFilterRR = repoFilter ? sql`AND rr.repo = ${repoFilter}` : sql``;
+  const repoFilterP = repoFilter ? sql`AND p.repo = ${repoFilter}` : sql``;
 
-  // Part 1: Review failures needing fixes
-  const reviewFailuresSQL = `
+  const result = await db.execute(sql`
     SELECT 'review_failed' AS action_type,
            rr.repo,
            NULL::int AS issue_number,
@@ -53,12 +53,11 @@ export async function getPendingActions(agentId, repoFilter) {
     JOIN config_cache cc ON cc.repo = rr.repo
     WHERE rr.retry_count > 0
       AND rr.last_issues IS NOT NULL
-      AND (cc.config->>'default_agent' = $1 OR cc.config->>'agent_id' = $1)
-      ${repoClause}`;
+      AND (cc.config->>'default_agent' = ${agentId} OR cc.config->>'agent_id' = ${agentId})
+      ${repoFilterRR}
 
-  // Part 2: Active pauses (waiting for human)
-  const pauseRepoClause = repoFilter ? ` AND p.repo = $${params.length}` : '';
-  const activePausesSQL = `
+    UNION ALL
+
     SELECT 'paused' AS action_type,
            p.repo,
            p.issue_number,
@@ -67,12 +66,12 @@ export async function getPendingActions(agentId, repoFilter) {
            jsonb_build_object('reason', p.reason, 'context', p.context) AS detail,
            p.paused_at AS created_at
     FROM pauses p
-    WHERE p.agent_id = $1
+    WHERE p.agent_id = ${agentId}
       AND p.resumed_at IS NULL
-      ${pauseRepoClause}`;
+      ${repoFilterP}
 
-  // Part 3: Resumed pauses with unacknowledged instructions
-  const resumedSQL = `
+    UNION ALL
+
     SELECT 'resumed' AS action_type,
            p.repo,
            p.issue_number,
@@ -81,24 +80,25 @@ export async function getPendingActions(agentId, repoFilter) {
            jsonb_build_object('target_state', p.resume_to_state, 'instructions', p.resume_instructions) AS detail,
            p.resumed_at AS created_at
     FROM pauses p
-    WHERE p.agent_id = $1
+    WHERE p.agent_id = ${agentId}
       AND p.resumed_at IS NOT NULL
       AND p.resume_instructions IS NOT NULL
       AND p.resume_acknowledged_at IS NULL
-      ${pauseRepoClause}`;
+      ${repoFilterP}
 
-  const sql = `${reviewFailuresSQL} UNION ALL ${activePausesSQL} UNION ALL ${resumedSQL} ORDER BY created_at DESC`;
+    ORDER BY created_at DESC
+  `);
 
-  const result = await query(sql, params);
+  const rows = result.rows ?? result;
 
-  // Auto-acknowledge resumed items
-  if (result.rows.some(r => r.action_type === 'resumed')) {
-    query(
-      `UPDATE pauses SET resume_acknowledged_at = NOW()
-       WHERE agent_id = $1 AND resumed_at IS NOT NULL AND resume_acknowledged_at IS NULL`,
-      [agentId]
-    ).catch(err => logger.error({ msg: 'Failed to acknowledge resumes', error: err.message }));
+  if (rows.some((r) => r.action_type === 'resumed')) {
+    db.execute(sql`
+      UPDATE pauses SET resume_acknowledged_at = NOW()
+      WHERE agent_id = ${agentId}
+        AND resumed_at IS NOT NULL
+        AND resume_acknowledged_at IS NULL
+    `).catch((err) => logger.error({ msg: 'Failed to acknowledge resumes', error: err.message }));
   }
 
-  return result.rows;
+  return rows;
 }

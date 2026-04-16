@@ -1,6 +1,9 @@
-import { query } from './client.js';
+import { desc, eq, sql } from 'drizzle-orm';
+import { db, schema } from '@fluent-flow/db';
 import { RepoConfigSchema } from '../config/provider-schema.js';
 import logger from '../logger.js';
+
+const { repoConfigs, repoConfigHistory, orgConfig } = schema;
 
 /**
  * Compute a simple JSON Patch (RFC 6902) diff between two objects.
@@ -28,48 +31,47 @@ function computePatch(oldObj, newObj) {
  * Validate, upsert repo config, and append a JSON Patch history row.
  */
 export async function upsertRepoConfig(repoId, patch, actor) {
-  // Validate input
   RepoConfigSchema.parse(patch);
 
-  // Fetch existing config for diff
-  const existing = await query(
-    `SELECT * FROM repo_configs WHERE repo_id = $1`,
-    [repoId]
-  );
-  const oldConfig = existing.rows[0] ?? {};
+  const [existing] = await db
+    .select()
+    .from(repoConfigs)
+    .where(eq(repoConfigs.repoId, repoId))
+    .limit(1);
+  const oldConfig = existing ?? {};
 
-  // Upsert
-  const result = await query(
-    `INSERT INTO repo_configs (repo_id, default_agent, claim_types, review_model, paused, updated_by, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, NOW())
-     ON CONFLICT (repo_id) DO UPDATE SET
-       default_agent = COALESCE(EXCLUDED.default_agent, repo_configs.default_agent),
-       claim_types   = COALESCE(EXCLUDED.claim_types, repo_configs.claim_types),
-       review_model  = COALESCE(EXCLUDED.review_model, repo_configs.review_model),
-       paused        = EXCLUDED.paused,
-       updated_by    = EXCLUDED.updated_by,
-       updated_at    = NOW()
-     RETURNING *`,
-    [
+  const [newConfig] = await db
+    .insert(repoConfigs)
+    .values({
       repoId,
-      patch.default_agent ?? null,
-      patch.claim_types ? JSON.stringify(patch.claim_types) : null,
-      patch.review_model ?? null,
-      patch.paused ?? false,
-      actor,
-    ]
-  );
-  const newConfig = result.rows[0];
+      defaultAgent: patch.default_agent ?? null,
+      claimTypes: patch.claim_types ?? null,
+      reviewModel: patch.review_model ?? null,
+      paused: patch.paused ?? false,
+      updatedBy: actor,
+      updatedAt: sql`NOW()`,
+    })
+    .onConflictDoUpdate({
+      target: repoConfigs.repoId,
+      set: {
+        defaultAgent: sql`COALESCE(EXCLUDED.default_agent, ${repoConfigs.defaultAgent})`,
+        claimTypes: sql`COALESCE(EXCLUDED.claim_types, ${repoConfigs.claimTypes})`,
+        reviewModel: sql`COALESCE(EXCLUDED.review_model, ${repoConfigs.reviewModel})`,
+        paused: sql`EXCLUDED.paused`,
+        updatedBy: sql`EXCLUDED.updated_by`,
+        updatedAt: sql`NOW()`,
+      },
+    })
+    .returning();
 
-  // Compute JSON Patch diff for history
   const patchOps = computePatch(oldConfig, newConfig);
 
-  // Append history row
-  await query(
-    `INSERT INTO repo_config_history (repo_id, patch, actor, at)
-     VALUES ($1, $2, $3, NOW())`,
-    [repoId, JSON.stringify(patchOps), actor]
-  );
+  await db.insert(repoConfigHistory).values({
+    repoId,
+    patch: patchOps,
+    actor,
+    at: sql`NOW()`,
+  });
 
   logger.info({ msg: 'upsertRepoConfig', repoId, actor });
   return newConfig;
@@ -82,36 +84,39 @@ export async function upsertRepoConfig(repoId, patch, actor) {
 export async function resolveRepoConfig(repoId) {
   const orgId = repoId.split('/')[0];
 
-  const [orgResult, repoResult] = await Promise.all([
-    query(`SELECT * FROM org_config WHERE org_id = $1`, [orgId]),
-    query(`SELECT * FROM repo_configs WHERE repo_id = $1`, [repoId]),
+  const [orgRows, repoRows] = await Promise.all([
+    db.select().from(orgConfig).where(eq(orgConfig.orgId, orgId)).limit(1),
+    db.select().from(repoConfigs).where(eq(repoConfigs.repoId, repoId)).limit(1),
   ]);
 
-  const orgConfig = orgResult.rows[0] ?? {};
-  const repoConfig = repoResult.rows[0] ?? {};
+  const org = orgRows[0] ?? {};
+  const repo = repoRows[0] ?? {};
 
-  // Merge: built-in defaults <- org_config <- repo_configs (later wins)
-  return {
-    paused: false,                    // built-in default
-    ...orgConfig,
-    default_agent: orgConfig.default_agent,
-    review_model: orgConfig.review_model ?? orgConfig.default_review_model,
-    claim_types: orgConfig.default_claim_types,
-    ...Object.fromEntries(
-      Object.entries(repoConfig).filter(([, v]) => v !== null && v !== undefined)
-    ),
+  // Drizzle returns camelCase column aliases; the rest of the app reads
+  // snake_case keys. Map explicitly so repo fields actually override org
+  // fields, and so we don't leak camelCase keys into the resolved config.
+  const resolved = {
+    paused: false,
+    default_agent: org.defaultAgent ?? null,
+    review_model: org.reviewModel ?? org.defaultReviewModel ?? null,
+    claim_types: org.defaultClaimTypes ?? null,
   };
+
+  if (repo.defaultAgent != null) resolved.default_agent = repo.defaultAgent;
+  if (repo.reviewModel != null) resolved.review_model = repo.reviewModel;
+  if (repo.claimTypes != null) resolved.claim_types = repo.claimTypes;
+  if (repo.paused != null) resolved.paused = repo.paused;
+
+  return resolved;
 }
 
 /**
  * List repo config history for a given repo, most recent first.
  */
 export async function listRepoConfigHistory(repoId) {
-  const result = await query(
-    `SELECT * FROM repo_config_history
-     WHERE repo_id = $1
-     ORDER BY at DESC`,
-    [repoId]
-  );
-  return result.rows;
+  return db
+    .select()
+    .from(repoConfigHistory)
+    .where(eq(repoConfigHistory.repoId, repoId))
+    .orderBy(desc(repoConfigHistory.at));
 }

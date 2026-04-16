@@ -1,4 +1,8 @@
-import { query, audit } from '../db/client.js';
+import { and, desc, eq, isNull, sql } from 'drizzle-orm';
+import { db, schema } from '@fluent-flow/db';
+import { audit } from '../db/client.js';
+
+const { pauses } = schema;
 import { resolveConfig } from '../config/loader.js';
 import { executeTransition, getCurrentState } from './state-machine.js';
 import { postComment, addLabel, removeLabel } from '../providers/github/rest.js';
@@ -87,24 +91,19 @@ export async function recordPause({ owner, repo, issueNumber, prNumber, reason, 
 
   const { markdown, checklist } = buildPauseChecklist(reason, context);
 
-  // Insert pause record
-  const result = await query(
-    `INSERT INTO pauses
-       (repo, issue_number, pr_number, previous_state, reason, context, checklist, agent_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-     RETURNING *`,
-    [
-      repoKey,
+  const [pause] = await db
+    .insert(pauses)
+    .values({
+      repo: repoKey,
       issueNumber,
-      prNumber ?? null,
+      prNumber: prNumber ?? null,
       previousState,
       reason,
-      context ?? null,
-      JSON.stringify(checklist),
-      resolvedAgent,
-    ]
-  );
-  const pause = result.rows[0];
+      context: context ?? null,
+      checklist,
+      agentId: resolvedAgent,
+    })
+    .returning();
 
   // Transition to Awaiting Human if not already there
   if (previousState !== 'Awaiting Human') {
@@ -221,14 +220,19 @@ export function parseResumeCommand(body) {
  * @returns {Promise<object|null>}
  */
 export async function getActivePause(repoKey, issueNumber) {
-  const result = await query(
-    `SELECT * FROM pauses
-     WHERE repo = $1 AND issue_number = $2 AND resumed_at IS NULL
-     ORDER BY paused_at DESC
-     LIMIT 1`,
-    [repoKey, issueNumber]
-  );
-  return result.rows[0] ?? null;
+  const [row] = await db
+    .select()
+    .from(pauses)
+    .where(
+      and(
+        eq(pauses.repo, repoKey),
+        eq(pauses.issueNumber, issueNumber),
+        isNull(pauses.resumedAt),
+      ),
+    )
+    .orderBy(desc(pauses.pausedAt))
+    .limit(1);
+  return row ?? null;
 }
 
 /**
@@ -259,16 +263,15 @@ export async function processResume({ owner, repo, issueNumber, toState, instruc
   // Determine target state
   const targetState = toState ?? pause.previous_state ?? 'In Progress';
 
-  // Update pause record
-  await query(
-    `UPDATE pauses SET
-       resumed_at = NOW(),
-       resumed_by = $1,
-       resume_instructions = $2,
-       resume_to_state = $3
-     WHERE id = $4`,
-    [resumedBy ?? null, instructions ?? null, targetState, pause.id]
-  );
+  await db
+    .update(pauses)
+    .set({
+      resumedAt: sql`NOW()`,
+      resumedBy: resumedBy ?? null,
+      resumeInstructions: instructions ?? null,
+      resumeToState: targetState,
+    })
+    .where(eq(pauses.id, pause.id));
 
   // Execute state transition
   try {

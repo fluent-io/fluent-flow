@@ -2,7 +2,11 @@ import { resolveConfig } from '../config/loader.js';
 import { getAdapter } from '../work-queue/index.js';
 import { getPRsForCommit } from '../providers/github/rest.js';
 import logger from '../logger.js';
-import { query, audit } from '../db/client.js';
+import { sql } from 'drizzle-orm';
+import { db, schema } from '@fluent-flow/db';
+import { audit } from '../db/client.js';
+
+const { testFailures: testFailuresTable } = schema;
 
 /**
  * Resolve work queue adapter config with sensible defaults.
@@ -91,19 +95,27 @@ export async function handleTestFailure({
     logger.info({ msg: 'Created test failure work item', repo: repoKey, issueNumber, itemId: workItem.id });
     audit('test_failure_work_item_created', { repo: repoKey, data: { issueNumber, itemId: workItem.id } });
 
-    // Track attempt in DB
-    await query(
-      `INSERT INTO test_failures (repo, pr_number, sha, retry_count, test_output, work_item_id)
-       VALUES ($1, $2, $3, 1, $4, $5)
-       ON CONFLICT (repo, pr_number) DO UPDATE
-         SET sha = $3,
-             retry_count = test_failures.retry_count + 1,
-             test_output = $4,
-             work_item_id = $5,
-             updated_at = NOW()
-       RETURNING *`,
-      [repoKey, pr.number, sha, JSON.stringify(testFailures), workItem.id]
-    );
+    await db
+      .insert(testFailuresTable)
+      .values({
+        repo: repoKey,
+        prNumber: pr.number,
+        sha,
+        retryCount: 1,
+        testOutput: testFailures,
+        workItemId: workItem.id,
+      })
+      .onConflictDoUpdate({
+        target: [testFailuresTable.repo, testFailuresTable.prNumber],
+        set: {
+          sha,
+          retryCount: sql`${testFailuresTable.retryCount} + 1`,
+          testOutput: testFailures,
+          workItemId: workItem.id,
+          updatedAt: sql`NOW()`,
+        },
+      })
+      .returning();
   } catch (err) {
     logger.error({ msg: 'Failed to create test failure work item', repo: repoKey, error: err.message });
     audit('test_failure_work_item_failed', { repo: repoKey, data: { issueNumber, error: err.message } });
