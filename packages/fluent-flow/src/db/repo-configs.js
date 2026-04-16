@@ -92,16 +92,22 @@ export async function resolveRepoConfig(repoId) {
   const org = orgRows[0] ?? {};
   const repo = repoRows[0] ?? {};
 
-  return {
+  // Drizzle returns camelCase column aliases; the rest of the app reads
+  // snake_case keys. Map explicitly so repo fields actually override org
+  // fields, and so we don't leak camelCase keys into the resolved config.
+  const resolved = {
     paused: false,
-    ...org,
-    default_agent: org.defaultAgent,
-    review_model: org.reviewModel ?? org.defaultReviewModel,
-    claim_types: org.defaultClaimTypes,
-    ...Object.fromEntries(
-      Object.entries(repo).filter(([, v]) => v !== null && v !== undefined),
-    ),
+    default_agent: org.defaultAgent ?? null,
+    review_model: org.reviewModel ?? org.defaultReviewModel ?? null,
+    claim_types: org.defaultClaimTypes ?? null,
   };
+
+  if (repo.defaultAgent != null) resolved.default_agent = repo.defaultAgent;
+  if (repo.reviewModel != null) resolved.review_model = repo.reviewModel;
+  if (repo.claimTypes != null) resolved.claim_types = repo.claimTypes;
+  if (repo.paused != null) resolved.paused = repo.paused;
+
+  return resolved;
 }
 
 /**

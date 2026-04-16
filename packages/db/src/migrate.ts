@@ -68,10 +68,18 @@ export async function stampBaselineIfLiveDb({
        created_at BIGINT
      )`
   );
+  // __drizzle_migrations has no native unique constraint on hash, so a bare
+  // ON CONFLICT DO NOTHING would never fire and two concurrent instances
+  // could both stamp the baseline on first boot. Add the index ourselves so
+  // the insert is truly idempotent under concurrency.
+  await p.query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS __drizzle_migrations_hash_idx
+       ON public.__drizzle_migrations (hash)`
+  );
   const baselineHash = await computeBaselineHash(migrationsDir);
   await p.query(
     `INSERT INTO public.__drizzle_migrations (hash, created_at) VALUES ($1, $2)
-     ON CONFLICT DO NOTHING`,
+     ON CONFLICT (hash) DO NOTHING`,
     [baselineHash, Date.now()]
   );
 }

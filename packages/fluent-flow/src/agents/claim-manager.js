@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, getTableColumns, inArray, lt, sql } from 'drizzle-orm';
 import { db, schema } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 import { resolveSession, setSessionStatus, findAvailableSession } from './session-manager.js';
@@ -84,7 +84,9 @@ export async function createClaim({ orgId, repo, prNumber, attempt, agentId, pay
 }
 
 async function finalizeClaim(orgId, repo, prNumber, attempt, finalStatus) {
-  const [claim] = await db
+  // Fold the session-agent lookup into the UPDATE's RETURNING so the hot
+  // path (claim completion/failure) stays a single round-trip.
+  const [row] = await db
     .update(agentClaims)
     .set({ status: finalStatus, completedAt: sql`NOW()` })
     .where(
@@ -96,9 +98,12 @@ async function finalizeClaim(orgId, repo, prNumber, attempt, finalStatus) {
         inArray(agentClaims.status, ['claimed', 'pending']),
       ),
     )
-    .returning();
-  if (!claim) return null;
-  const sessionAgentId = await getSessionAgentId(claim.sessionId);
+    .returning({
+      ...getTableColumns(agentClaims),
+      sessionAgentId: sql`(SELECT ${agentSessions.agentId} FROM ${agentSessions} WHERE ${agentSessions.id} = ${agentClaims.sessionId})`.as('session_agent_id'),
+    });
+  if (!row) return null;
+  const { sessionAgentId, ...claim } = row;
   await freeSession(orgId, claim.sessionId, sessionAgentId, 'online');
   return claim;
 }

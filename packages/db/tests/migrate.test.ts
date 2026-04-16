@@ -70,8 +70,12 @@ describe('stampBaselineIfLiveDb', () => {
     await stampBaselineIfLiveDb({ pool, migrationsDir });
     const sqls = pool.calls.map((c) => c.sql);
     expect(sqls.some((s) => s.includes('CREATE TABLE IF NOT EXISTS public.__drizzle_migrations'))).toBe(true);
+    // Unique index on hash is required for ON CONFLICT (hash) to fire under
+    // concurrent first-boot; without it duplicate baseline stamps could slip in.
+    expect(sqls.some((s) => s.includes('CREATE UNIQUE INDEX IF NOT EXISTS __drizzle_migrations_hash_idx'))).toBe(true);
     const insert = pool.calls.find((c) => c.sql.includes('INSERT INTO public.__drizzle_migrations'));
     expect(insert).toBeDefined();
+    expect(insert!.sql).toContain('ON CONFLICT (hash) DO NOTHING');
     expect(insert!.params?.[0]).toBe('deadbeef');
   });
 

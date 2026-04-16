@@ -2,7 +2,7 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import yaml from 'js-yaml';
-import { eq, gt, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { db, schema } from '@fluent-flow/db';
 import { validateDefaults, validateRepoConfig, validateMergedConfig } from './schema.js';
 import { getRepoFileContents } from '../providers/github/rest.js';
