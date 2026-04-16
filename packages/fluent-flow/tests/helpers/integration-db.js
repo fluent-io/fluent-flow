@@ -38,8 +38,14 @@ export function resolveTestDatabaseUrl() {
 }
 
 /**
- * Connect once and cache. Returns false (never throws) if the DB isn't reachable —
- * suites call `integrationDescribe()` to conditionally skip.
+ * Connect once and cache. Returns false (never throws) if the DB isn't reachable
+ * OR if the schema hasn't been migrated yet — suites call `integrationDescribe()`
+ * to conditionally skip.
+ *
+ * We probe for a sentinel core table (`provider_installations`) in addition to
+ * `SELECT 1`. Connection-only checks allowed us to run against an empty DB, at
+ * which point `resetDb()` would hard-fail on the missing tables; this probe
+ * turns that into a clean skip instead.
  */
 let _dbAvailable;
 export async function isDbAvailable() {
@@ -49,7 +55,13 @@ export async function isDbAvailable() {
   const probe = new Pool({ connectionString: url, connectionTimeoutMillis: 500 });
   try {
     await probe.query('SELECT 1');
-    _dbAvailable = true;
+    const { rows } = await probe.query(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.tables
+         WHERE table_schema = 'public' AND table_name = 'provider_installations'
+       ) AS exists`,
+    );
+    _dbAvailable = Boolean(rows[0]?.exists);
   } catch {
     _dbAvailable = false;
   } finally {

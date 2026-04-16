@@ -8,6 +8,34 @@ const { agentClaims, agentSessions } = schema;
 
 const DEFAULT_CLAIM_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
+/**
+ * Normalize a Drizzle camelCase claim row to the snake_case shape the rest of
+ * the app (engine hooks, route handlers, webhook payloads) reads. Consumers
+ * like `handleClaimResult` rely on `claim.claim_type` for spec→build chaining
+ * and `claim.head_sha` / `claim.check_run_external_id` for check-run updates;
+ * leaking camelCase rows silently breaks those flows.
+ */
+function toSnakeClaim(row) {
+  if (!row) return row;
+  return {
+    id: row.id,
+    org_id: row.orgId,
+    repo: row.repo,
+    pr_number: row.prNumber,
+    attempt: row.attempt,
+    session_id: row.sessionId,
+    claim_type: row.claimType,
+    status: row.status,
+    payload: row.payload,
+    claimed_at: row.claimedAt,
+    completed_at: row.completedAt,
+    expires_at: row.expiresAt,
+    created_at: row.createdAt,
+    check_run_external_id: row.checkRunExternalId,
+    head_sha: row.headSha,
+  };
+}
+
 async function getSessionAgentId(sessionId) {
   if (!sessionId) return null;
   const [row] = await db
@@ -80,7 +108,7 @@ export async function createClaim({ orgId, repo, prNumber, attempt, agentId, pay
     data: { claimId: claim.id, prNumber, attempt, sessionId, status, claimType },
   });
   logger.info({ msg: 'Claim created', orgId, repo, prNumber, attempt, sessionId, status, claimType });
-  return claim;
+  return toSnakeClaim(claim);
 }
 
 async function finalizeClaim(orgId, repo, prNumber, attempt, finalStatus) {
@@ -105,7 +133,7 @@ async function finalizeClaim(orgId, repo, prNumber, attempt, finalStatus) {
   if (!row) return null;
   const { sessionAgentId, ...claim } = row;
   await freeSession(orgId, claim.sessionId, sessionAgentId, 'online');
-  return claim;
+  return toSnakeClaim(claim);
 }
 
 /**
@@ -144,7 +172,7 @@ export async function expireClaims() {
     }
   }
   if (claims.length > 0) logger.info({ msg: 'Claims expired', count: claims.length });
-  return claims;
+  return claims.map(toSnakeClaim);
 }
 
 /**
@@ -164,7 +192,7 @@ export async function getActiveClaim(orgId, repo, prNumber) {
     )
     .orderBy(desc(agentClaims.attempt))
     .limit(1);
-  return row ?? null;
+  return toSnakeClaim(row) ?? null;
 }
 
 /**
@@ -183,5 +211,5 @@ export async function getClaimByAttempt(orgId, repo, prNumber, attempt) {
       ),
     )
     .limit(1);
-  return row ?? null;
+  return toSnakeClaim(row) ?? null;
 }
