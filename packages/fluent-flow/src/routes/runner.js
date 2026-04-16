@@ -64,7 +64,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  * Check for unassigned pending claims that match this agent's repo scope.
  * Atomically claims the first match.
  */
-async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 60 * 1000) {
+export async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 60 * 1000) {
   const expiresAt = new Date(Date.now() + ttlMs);
   // UPDATE … WHERE id = (SELECT … FOR UPDATE SKIP LOCKED) — the canonical
   // atomic claim pattern. Kept as raw SQL because drizzle doesn't express

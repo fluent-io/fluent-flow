@@ -3,14 +3,48 @@ import { sql } from 'drizzle-orm';
 
 const { Pool } = pg;
 
+const LOCAL_HOSTS = new Set([
+  'localhost',
+  '127.0.0.1',
+  '::1',
+  'host.docker.internal',
+  'postgres', // common docker-compose service name
+  'db', // common docker-compose service name
+]);
+
 /**
- * Connect once and cache. Returns null (never throws) if the DB isn't reachable —
- * suites call `skipIfNoDb(it)` to conditionally skip.
+ * Resolve the DB URL used by integration tests. `resetDb()` TRUNCATEs every
+ * app table, so we must NEVER let it connect to a prod/staging DATABASE_URL by
+ * accident.
+ *
+ * Precedence (safer first): TEST_DATABASE_URL > INTEGRATION_DATABASE_URL >
+ * DATABASE_URL. DATABASE_URL is only accepted when it points at a local host;
+ * to allow a remote DATABASE_URL (e.g. ephemeral CI DB), set
+ * FF_ALLOW_REMOTE_TEST_DB=1 as an explicit opt-in.
+ */
+export function resolveTestDatabaseUrl() {
+  const testUrl = process.env.TEST_DATABASE_URL ?? process.env.INTEGRATION_DATABASE_URL;
+  if (testUrl) return testUrl;
+  const fallback = process.env.DATABASE_URL;
+  if (!fallback) return null;
+  if (process.env.FF_ALLOW_REMOTE_TEST_DB === '1') return fallback;
+  try {
+    const host = new URL(fallback).hostname;
+    if (LOCAL_HOSTS.has(host)) return fallback;
+  } catch {
+    // Unparseable URL — fall through to null and treat as unavailable.
+  }
+  return null;
+}
+
+/**
+ * Connect once and cache. Returns false (never throws) if the DB isn't reachable —
+ * suites call `integrationDescribe()` to conditionally skip.
  */
 let _dbAvailable;
 export async function isDbAvailable() {
   if (_dbAvailable !== undefined) return _dbAvailable;
-  const url = process.env.DATABASE_URL ?? process.env.TEST_DATABASE_URL;
+  const url = resolveTestDatabaseUrl();
   if (!url) return (_dbAvailable = false);
   const probe = new Pool({ connectionString: url, connectionTimeoutMillis: 500 });
   try {
