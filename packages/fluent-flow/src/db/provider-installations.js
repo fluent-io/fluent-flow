@@ -17,7 +17,7 @@ export async function upsertInstallation({
     `INSERT INTO provider_installations
        (org_id, external_installation_id, account_login, account_type, permissions, events)
      VALUES ($1, $2, $3, $4, $5, $6)
-     ON CONFLICT (external_installation_id) DO UPDATE SET
+     ON CONFLICT (provider, external_installation_id) DO UPDATE SET
        org_id        = EXCLUDED.org_id,
        account_login = EXCLUDED.account_login,
        account_type  = EXCLUDED.account_type,

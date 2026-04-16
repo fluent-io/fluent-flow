@@ -14,16 +14,17 @@ CREATE INDEX IF NOT EXISTS idx_repos_org_id ON repos(org_id);
 CREATE INDEX IF NOT EXISTS idx_repos_repo_external_id ON repos(repo_external_id);
 
 CREATE TABLE IF NOT EXISTS provider_installations (
-  id                       SERIAL PRIMARY KEY,
+  id                       BIGSERIAL PRIMARY KEY,
   org_id                   TEXT NOT NULL REFERENCES orgs(id),
-  provider                 TEXT NOT NULL DEFAULT 'github',
-  external_installation_id BIGINT NOT NULL UNIQUE,
+  provider                 TEXT NOT NULL DEFAULT 'github' CHECK (provider = 'github'),
+  external_installation_id BIGINT NOT NULL,
   account_login            TEXT NOT NULL,
   account_type             TEXT NOT NULL,
   installed_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   suspended_at             TIMESTAMPTZ,
   permissions              JSONB NOT NULL DEFAULT '{}',
-  events                   JSONB NOT NULL DEFAULT '[]'
+  events                   JSONB NOT NULL DEFAULT '[]',
+  UNIQUE (provider, external_installation_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_provider_installations_org_id
