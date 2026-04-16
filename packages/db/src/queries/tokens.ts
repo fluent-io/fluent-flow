@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { getPool, query } from '../pool';
+import { getPool, query } from '../pool.js';
 
 const TOKEN_PREFIX = 'ff_';
 

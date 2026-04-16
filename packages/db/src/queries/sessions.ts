@@ -1,6 +1,6 @@
-import { query } from '../pool';
-import { sessionSchema } from '../schemas/sessions';
-import type { Session } from '../schemas/sessions';
+import { query } from '../pool.js';
+import { sessionSchema } from '../schemas/sessions.js';
+import type { Session } from '../schemas/sessions.js';
 
 export async function getAgentSessions(orgId: string, agentId: string): Promise<Session[]> {
   const sql = `
