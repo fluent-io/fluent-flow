@@ -1,9 +1,12 @@
-import { query } from './client.js';
+import { and, eq, isNull, ne, sql } from 'drizzle-orm';
+import { db, schema } from '@fluent-flow/db';
 import logger from '../logger.js';
 
+const { providerInstallations, providerInstallationRepos } = schema;
+
 /**
- * Upsert a provider installation by external_installation_id.
- * Returns the inserted/updated row.
+ * Upsert a provider installation. Matches the composite UNIQUE constraint
+ * (provider, external_installation_id) that actually exists in prod.
  */
 export async function upsertInstallation({
   org_id,
@@ -13,21 +16,29 @@ export async function upsertInstallation({
   permissions,
   events,
 }) {
-  const result = await query(
-    `INSERT INTO provider_installations
-       (org_id, external_installation_id, account_login, account_type, permissions, events)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     ON CONFLICT (external_installation_id) DO UPDATE SET
-       org_id        = EXCLUDED.org_id,
-       account_login = EXCLUDED.account_login,
-       account_type  = EXCLUDED.account_type,
-       permissions   = EXCLUDED.permissions,
-       events        = EXCLUDED.events,
-       suspended_at  = NULL
-     RETURNING *`,
-    [org_id, external_installation_id, account_login, account_type, JSON.stringify(permissions), JSON.stringify(events)]
-  );
-  const row = result.rows[0];
+  const [row] = await db
+    .insert(providerInstallations)
+    .values({
+      orgId: org_id,
+      externalInstallationId: external_installation_id,
+      accountLogin: account_login,
+      accountType: account_type,
+      permissions,
+      events,
+    })
+    .onConflictDoUpdate({
+      target: [providerInstallations.provider, providerInstallations.externalInstallationId],
+      set: {
+        orgId: sql`EXCLUDED.org_id`,
+        accountLogin: sql`EXCLUDED.account_login`,
+        accountType: sql`EXCLUDED.account_type`,
+        permissions: sql`EXCLUDED.permissions`,
+        events: sql`EXCLUDED.events`,
+        suspendedAt: null,
+      },
+    })
+    .returning();
+
   logger.info({ msg: 'upsertInstallation', external_installation_id, org_id });
   return row;
 }
@@ -36,14 +47,11 @@ export async function upsertInstallation({
  * Soft-delete (suspend) an installation by internal id.
  */
 export async function softDeleteInstallation(id) {
-  const result = await query(
-    `UPDATE provider_installations
-     SET suspended_at = NOW()
-     WHERE id = $1
-     RETURNING *`,
-    [id]
-  );
-  const row = result.rows[0];
+  const [row] = await db
+    .update(providerInstallations)
+    .set({ suspendedAt: sql`NOW()` })
+    .where(eq(providerInstallations.id, id))
+    .returning();
   logger.info({ msg: 'softDeleteInstallation', id });
   return row;
 }
@@ -52,14 +60,11 @@ export async function softDeleteInstallation(id) {
  * Un-suspend an installation by internal id.
  */
 export async function unsuspendInstallation(id) {
-  const result = await query(
-    `UPDATE provider_installations
-     SET suspended_at = NULL
-     WHERE id = $1
-     RETURNING *`,
-    [id]
-  );
-  const row = result.rows[0];
+  const [row] = await db
+    .update(providerInstallations)
+    .set({ suspendedAt: null })
+    .where(eq(providerInstallations.id, id))
+    .returning();
   logger.info({ msg: 'unsuspendInstallation', id });
   return row;
 }
@@ -69,38 +74,50 @@ export async function unsuspendInstallation(id) {
  * @returns {object|null}
  */
 export async function findInstallationByExternalId(externalId) {
-  const result = await query(
-    `SELECT * FROM provider_installations WHERE external_installation_id = $1`,
-    [externalId]
-  );
-  return result.rows[0] ?? null;
+  const [row] = await db
+    .select()
+    .from(providerInstallations)
+    .where(eq(providerInstallations.externalInstallationId, externalId))
+    .limit(1);
+  return row ?? null;
 }
 
 /**
  * Add (or re-link) a repo to an installation.
  * Soft-deletes any other active link for the same repo_external_id first (cross-org transfer).
+ *
+ * The UNIQUE is a PARTIAL index on (installation_id, repo_external_id) WHERE removed_at IS NULL,
+ * so the ON CONFLICT target must include the same WHERE clause (`targetWhere`).
  */
 export async function addRepoToInstallation(installationId, { repo_external_id, repo_full_name }) {
-  // Soft-delete existing active links for this repo on any other installation
-  await query(
-    `UPDATE provider_installation_repos
-     SET removed_at = NOW()
-     WHERE repo_external_id = $1
-       AND installation_id != $2
-       AND removed_at IS NULL`,
-    [repo_external_id, installationId]
-  );
+  await db
+    .update(providerInstallationRepos)
+    .set({ removedAt: sql`NOW()` })
+    .where(
+      and(
+        eq(providerInstallationRepos.repoExternalId, repo_external_id),
+        ne(providerInstallationRepos.installationId, installationId),
+        isNull(providerInstallationRepos.removedAt),
+      ),
+    );
 
-  const result = await query(
-    `INSERT INTO provider_installation_repos (installation_id, repo_external_id, repo_full_name)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (installation_id, repo_external_id) DO UPDATE SET
-       repo_full_name = EXCLUDED.repo_full_name,
-       removed_at     = NULL
-     RETURNING *`,
-    [installationId, repo_external_id, repo_full_name]
-  );
-  const row = result.rows[0];
+  const [row] = await db
+    .insert(providerInstallationRepos)
+    .values({
+      installationId,
+      repoExternalId: repo_external_id,
+      repoFullName: repo_full_name,
+    })
+    .onConflictDoUpdate({
+      target: [providerInstallationRepos.installationId, providerInstallationRepos.repoExternalId],
+      targetWhere: isNull(providerInstallationRepos.removedAt),
+      set: {
+        repoFullName: sql`EXCLUDED.repo_full_name`,
+        removedAt: null,
+      },
+    })
+    .returning();
+
   logger.info({ msg: 'addRepoToInstallation', installationId, repo_external_id, repo_full_name });
   return row;
 }
@@ -109,16 +126,17 @@ export async function addRepoToInstallation(installationId, { repo_external_id, 
  * Soft-delete a repo link from an installation.
  */
 export async function removeRepoFromInstallation(installationId, repoExternalId) {
-  const result = await query(
-    `UPDATE provider_installation_repos
-     SET removed_at = NOW()
-     WHERE installation_id = $1
-       AND repo_external_id = $2
-       AND removed_at IS NULL
-     RETURNING *`,
-    [installationId, repoExternalId]
-  );
-  const row = result.rows[0];
+  const [row] = await db
+    .update(providerInstallationRepos)
+    .set({ removedAt: sql`NOW()` })
+    .where(
+      and(
+        eq(providerInstallationRepos.installationId, installationId),
+        eq(providerInstallationRepos.repoExternalId, repoExternalId),
+        isNull(providerInstallationRepos.removedAt),
+      ),
+    )
+    .returning();
   logger.info({ msg: 'removeRepoFromInstallation', installationId, repoExternalId });
   return row;
 }

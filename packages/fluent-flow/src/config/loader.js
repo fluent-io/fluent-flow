@@ -2,7 +2,8 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import yaml from 'js-yaml';
-import { query } from '../db/client.js';
+import { eq, gt, sql } from 'drizzle-orm';
+import { db, schema } from '@fluent-flow/db';
 import { validateDefaults, validateRepoConfig, validateMergedConfig } from './schema.js';
 import { getRepoFileContents } from '../providers/github/rest.js';
 import logger from '../logger.js';
@@ -88,13 +89,14 @@ async function fetchRepoConfig(owner, repo) {
  */
 async function getDbCache(repoKey) {
   try {
-    const result = await query(
-      'SELECT config FROM config_cache WHERE repo = $1 AND expires_at > NOW()',
-      [repoKey]
-    );
-    if (result.rows.length > 0) {
-      return result.rows[0].config;
-    }
+    const rows = await db
+      .select({ config: schema.configCache.config })
+      .from(schema.configCache)
+      .where(
+        sql`${schema.configCache.repo} = ${repoKey} AND ${schema.configCache.expiresAt} > NOW()`,
+      )
+      .limit(1);
+    if (rows.length > 0) return rows[0].config;
   } catch (err) {
     logger.error({ msg: 'Failed to read config cache from DB', error: err.message });
   }
@@ -108,13 +110,14 @@ async function getDbCache(repoKey) {
  */
 async function setDbCache(repoKey, config) {
   try {
-    await query(
-      `INSERT INTO config_cache (repo, config, fetched_at, expires_at)
-       VALUES ($1, $2, NOW(), NOW() + $3::interval)
-       ON CONFLICT (repo) DO UPDATE
-         SET config = $2, fetched_at = NOW(), expires_at = NOW() + $3::interval`,
-      [repoKey, JSON.stringify(config), `${CONFIG_CACHE_TTL_MS} milliseconds`]
-    );
+    const ttl = sql`NOW() + (${CONFIG_CACHE_TTL_MS} * interval '1 millisecond')`;
+    await db
+      .insert(schema.configCache)
+      .values({ repo: repoKey, config, fetchedAt: sql`NOW()`, expiresAt: ttl })
+      .onConflictDoUpdate({
+        target: schema.configCache.repo,
+        set: { config, fetchedAt: sql`NOW()`, expiresAt: ttl },
+      });
   } catch (err) {
     logger.error({ msg: 'Failed to write config cache to DB', error: err.message });
   }
@@ -176,7 +179,7 @@ export async function invalidateConfig(owner, repo) {
   const repoKey = `${owner}/${repo}`;
   memoryCache.delete(repoKey);
   try {
-    await query('DELETE FROM config_cache WHERE repo = $1', [repoKey]);
+    await db.delete(schema.configCache).where(eq(schema.configCache.repo, repoKey));
   } catch (err) {
     logger.error({ msg: 'Failed to invalidate config cache', error: err.message });
   }

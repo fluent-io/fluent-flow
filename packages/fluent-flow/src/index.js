@@ -1,7 +1,7 @@
 import './tracing.cjs';
 import express from 'express';
 import { captureRawBody } from './providers/github/webhook-verify.js';
-import { getPool, closePool, healthCheck, runMigrations } from './db/client.js';
+import { closePool, healthCheck, runMigrations } from './db/client.js';
 import { loadDefaults } from './config/loader.js';
 import { loadAgents } from './config/agents.js';
 import { validateEnv } from './config/env.js';
