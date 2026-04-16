@@ -6,6 +6,28 @@ import logger from '../logger.js';
 const { agents } = schema;
 
 /**
+ * Normalize a Drizzle camelCase agent row to the snake_case shape the rest of
+ * the app reads. The legacy raw-pg code returned postgres-native snake_case,
+ * and consumers like `notifications/dispatcher.js` (which reads
+ * `dbAgent.agent_type` and spreads `dbAgent.transport_meta`) + the HTTP API
+ * surface (routes/agents.js uses snake_case request bodies, so responses
+ * should match) rely on that shape.
+ */
+function toSnakeAgent(row) {
+  if (!row) return row;
+  return {
+    id: row.id,
+    org_id: row.orgId,
+    agent_type: row.agentType,
+    transport: row.transport,
+    transport_meta: row.transportMeta,
+    repos: row.repos,
+    created_at: row.createdAt,
+    updated_at: row.updatedAt,
+  };
+}
+
+/**
  * Create an agent.
  */
 export async function createAgent({ id, orgId, agentType, transport, transportMeta = {}, repos = [] }) {
@@ -15,7 +37,7 @@ export async function createAgent({ id, orgId, agentType, transport, transportMe
     .returning();
   audit('agent_created', { data: { orgId, agentId: id } });
   logger.info({ msg: 'Agent created', orgId, agentId: id, agentType, transport });
-  return row;
+  return toSnakeAgent(row);
 }
 
 /**
@@ -27,14 +49,15 @@ export async function getAgent(orgId, agentId) {
     .from(agents)
     .where(and(eq(agents.orgId, orgId), eq(agents.id, agentId)))
     .limit(1);
-  return row ?? null;
+  return toSnakeAgent(row) ?? null;
 }
 
 /**
  * List all agents for an org.
  */
 export async function listAgents(orgId) {
-  return db.select().from(agents).where(eq(agents.orgId, orgId)).orderBy(agents.createdAt);
+  const rows = await db.select().from(agents).where(eq(agents.orgId, orgId)).orderBy(agents.createdAt);
+  return rows.map(toSnakeAgent);
 }
 
 /**
@@ -54,7 +77,7 @@ export async function updateAgent(orgId, agentId, fields) {
     .where(and(eq(agents.orgId, orgId), eq(agents.id, agentId)))
     .returning();
   if (row) audit('agent_updated', { data: { orgId, agentId, fields: appliedFields } });
-  return row ?? null;
+  return toSnakeAgent(row) ?? null;
 }
 
 /**
