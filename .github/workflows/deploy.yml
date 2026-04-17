@@ -22,7 +22,7 @@ jobs:
 
       - name: Validate deployment secrets
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ vars.DATABASE_URL }}
           FF_GITHUB_APP_ID: ${{ secrets.FF_GITHUB_APP_ID }}
           FF_GITHUB_APP_PRIVATE_KEY: ${{ secrets.FF_GITHUB_APP_PRIVATE_KEY }}
           FF_GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.FF_GITHUB_APP_WEBHOOK_SECRET }}
@@ -55,7 +55,7 @@ jobs:
 
       - name: Write runtime env file
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_URL: ${{ vars.DATABASE_URL }}
           FF_GITHUB_APP_ID: ${{ secrets.FF_GITHUB_APP_ID }}
           FF_GITHUB_APP_PRIVATE_KEY: ${{ secrets.FF_GITHUB_APP_PRIVATE_KEY }}
           FF_GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.FF_GITHUB_APP_WEBHOOK_SECRET }}
