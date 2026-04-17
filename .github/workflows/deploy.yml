@@ -66,7 +66,8 @@ jobs:
           NEXTAUTH_URL: ${{ secrets.NEXTAUTH_URL }}
         run: |
           set -euo pipefail
-          cat > .env <<EOF
+          env_file=$(mktemp /tmp/fluent-flow-deploy.XXXXXX.env)
+          cat > "$env_file" <<EOF
           DATABASE_URL=${DATABASE_URL}
           FF_GITHUB_APP_ID=${FF_GITHUB_APP_ID}
           FF_GITHUB_APP_PRIVATE_KEY=$(printf '%s' "${FF_GITHUB_APP_PRIVATE_KEY}" | base64 | tr -d '\n')
@@ -78,7 +79,8 @@ jobs:
           NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
           NEXTAUTH_URL=${NEXTAUTH_URL}
           EOF
-          chmod 600 .env
+          chmod 600 "$env_file"
+          printf 'DEPLOY_ENV_FILE=%s\n' "$env_file" >> "$GITHUB_ENV"
 
       - name: Write deployment override
         run: |
@@ -106,29 +108,29 @@ jobs:
           EOF
 
       - name: Validate compose config
-        run: docker compose -f docker-compose.yml -f docker-compose.override.yml config
+        run: docker compose --env-file "$DEPLOY_ENV_FILE" -f docker-compose.yml -f docker-compose.override.yml config
 
       - name: Build and deploy
-        run: docker compose -f docker-compose.yml -f docker-compose.override.yml up -d --build --remove-orphans
+        run: docker compose --env-file "$DEPLOY_ENV_FILE" -f docker-compose.yml -f docker-compose.override.yml up -d --build --remove-orphans
 
       - name: Wait for fluent-flow health endpoint
         run: |
           set -euo pipefail
           for attempt in $(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1:3847/health > /tmp/fluent-flow-health.json; then
+            if curl --fail --silent http://127.0.0.1:3847/api/health > /tmp/fluent-flow-health.json; then
               cat /tmp/fluent-flow-health.json
               exit 0
             fi
             sleep 5
           done
           echo "fluent-flow health check failed" >&2
-          docker compose -f docker-compose.yml -f docker-compose.override.yml ps
+          docker compose --env-file "$DEPLOY_ENV_FILE" -f docker-compose.yml -f docker-compose.override.yml ps
           exit 1
 
       - name: Show running services
         if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.override.yml ps
+        run: docker compose --env-file "$DEPLOY_ENV_FILE" -f docker-compose.yml -f docker-compose.override.yml ps
 
       - name: Clean deployment secrets
         if: always()
-        run: rm -f .env docker-compose.override.yml
+        run: rm -f "$DEPLOY_ENV_FILE" docker-compose.override.yml
