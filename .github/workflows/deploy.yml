@@ -65,17 +65,17 @@ jobs:
           done
 
           python3 - <<PY
-import hashlib, os
-for key in [
-    "FF_GITHUB_CLIENT_ID",
-    "FF_GITHUB_CLIENT_SECRET",
-    "NEXTAUTH_SECRET",
-]:
-    value = os.environ[key]
-    print(
-        f"{key}: len={len(value)} prefix={value[:4]} suffix={value[-4:]} sha256={hashlib.sha256(value.encode()).hexdigest()}"
-    )
-PY
+          import hashlib, os
+          for key in [
+              "FF_GITHUB_CLIENT_ID",
+              "FF_GITHUB_CLIENT_SECRET",
+              "NEXTAUTH_SECRET",
+          ]:
+              value = os.environ[key]
+              print(
+                  f"{key}: len={len(value)} prefix={value[:4]} suffix={value[-4:]} sha256={hashlib.sha256(value.encode()).hexdigest()}"
+              )
+          PY
 
       - name: Write runtime env file
         env:
@@ -115,24 +115,24 @@ PY
         run: |
           set -euo pipefail
           python3 - <<PY
-import hashlib
-from pathlib import Path
-values = {}
-for raw in Path("$DEPLOY_ENV_FILE").read_text().splitlines():
-    if not raw or raw.startswith('#') or '=' not in raw:
-        continue
-    key, value = raw.split('=', 1)
-    values[key] = value
-for key in [
-    "GITHUB_CLIENT_ID",
-    "GITHUB_CLIENT_SECRET",
-    "NEXTAUTH_SECRET",
-]:
-    value = values[key]
-    print(
-        f"{key}: len={len(value)} prefix={value[:4]} suffix={value[-4:]} sha256={hashlib.sha256(value.encode()).hexdigest()}"
-    )
-PY
+          import hashlib
+          from pathlib import Path
+          values = {}
+          for raw in Path("$DEPLOY_ENV_FILE").read_text().splitlines():
+              if not raw or raw.startswith('#') or '=' not in raw:
+                  continue
+              key, value = raw.split('=', 1)
+              values[key] = value
+          for key in [
+              "GITHUB_CLIENT_ID",
+              "GITHUB_CLIENT_SECRET",
+              "NEXTAUTH_SECRET",
+          ]:
+              value = values[key]
+              print(
+                  f"{key}: len={len(value)} prefix={value[:4]} suffix={value[-4:]} sha256={hashlib.sha256(value.encode()).hexdigest()}"
+              )
+          PY
 
       - name: Stop after debug fingerprinting
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_only }}
