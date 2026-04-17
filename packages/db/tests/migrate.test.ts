@@ -62,7 +62,7 @@ describe('stampBaselineIfLiveDb', () => {
         if (sql.includes('information_schema.tables')) {
           // First probe: __drizzle_migrations → false. Second: orgs → true. Third: provider_installations → false.
           probeCount++;
-          return { rows: [{ exists: probeCount == 2 }] as T[] };
+          return { rows: [{ exists: probeCount === 2 }] as T[] };
         }
         return { rows: [] as T[] };
       },
