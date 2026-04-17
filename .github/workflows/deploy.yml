@@ -11,6 +11,7 @@ concurrency:
 
 jobs:
   deploy:
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     name: Deploy to G10
     runs-on: [self-hosted, linux, x64, g10]
     timeout-minutes: 30
@@ -67,10 +68,14 @@ jobs:
         run: |
           set -euo pipefail
           env_file=$(mktemp /tmp/fluent-flow-deploy.XXXXXX.env)
+          private_key_value=$(printf '%s' "${FF_GITHUB_APP_PRIVATE_KEY}")
+          if printf '%s' "$private_key_value" | grep -q 'BEGIN '; then
+            private_key_value=$(printf '%s' "$private_key_value" | base64 | tr -d '\n')
+          fi
           cat > "$env_file" <<EOF
           DATABASE_URL=${DATABASE_URL}
           FF_GITHUB_APP_ID=${FF_GITHUB_APP_ID}
-          FF_GITHUB_APP_PRIVATE_KEY=$(printf '%s' "${FF_GITHUB_APP_PRIVATE_KEY}" | base64 | tr -d '\n')
+          FF_GITHUB_APP_PRIVATE_KEY=${private_key_value}
           FF_GITHUB_APP_WEBHOOK_SECRET=${FF_GITHUB_APP_WEBHOOK_SECRET}
           MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
           POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
