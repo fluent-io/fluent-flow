@@ -7,6 +7,8 @@ import fs from 'node:fs/promises';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = path.resolve(__dirname, './migrations');
+const MIGRATIONS_TABLE = '__drizzle_migrations';
+const MIGRATIONS_SCHEMA = 'drizzle';
 
 /** Minimal pool surface used by the stamper — lets tests inject a fake. */
 export interface StampablePool {
@@ -28,7 +30,11 @@ export interface StampablePool {
  */
 export async function runMigrations(): Promise<void> {
   await stampBaselineIfLiveDb({ pool: pool as unknown as StampablePool, migrationsDir: MIGRATIONS_DIR });
-  await migrate(db, { migrationsFolder: MIGRATIONS_DIR });
+  await migrate(db, {
+    migrationsFolder: MIGRATIONS_DIR,
+    migrationsTable: MIGRATIONS_TABLE,
+    migrationsSchema: MIGRATIONS_SCHEMA,
+  });
 }
 
 /**
@@ -47,12 +53,12 @@ export async function stampBaselineIfLiveDb({
   pool: StampablePool;
   migrationsDir: string;
 }): Promise<void> {
-  const drizzleTableExists = await tableExists(p, '__drizzle_migrations');
+  const drizzleTableExists = await tableExists(p, MIGRATIONS_TABLE, MIGRATIONS_SCHEMA);
   const liveDbSentinelTables = ['orgs', 'provider_installations'];
 
   if (drizzleTableExists) {
     const { rows } = await p.query<{ count: string }>(
-      `SELECT COUNT(*)::text AS count FROM public.__drizzle_migrations`
+      `SELECT COUNT(*)::text AS count FROM ${MIGRATIONS_SCHEMA}.${MIGRATIONS_TABLE}`
     );
     if (Number(rows[0]?.count ?? 0) > 0) return;
   }
@@ -65,7 +71,8 @@ export async function stampBaselineIfLiveDb({
   if (!hasLegacySchema) return;
 
   await p.query(
-    `CREATE TABLE IF NOT EXISTS public.__drizzle_migrations (
+    `CREATE SCHEMA IF NOT EXISTS ${MIGRATIONS_SCHEMA};
+       CREATE TABLE IF NOT EXISTS ${MIGRATIONS_SCHEMA}.${MIGRATIONS_TABLE} (
        id SERIAL PRIMARY KEY,
        hash TEXT NOT NULL,
        created_at BIGINT
@@ -77,23 +84,23 @@ export async function stampBaselineIfLiveDb({
   // the insert is truly idempotent under concurrency.
   await p.query(
     `CREATE UNIQUE INDEX IF NOT EXISTS __drizzle_migrations_hash_idx
-       ON public.__drizzle_migrations (hash)`
+       ON ${MIGRATIONS_SCHEMA}.${MIGRATIONS_TABLE} (hash)`
   );
   const baselineHash = await computeBaselineHash(migrationsDir);
   await p.query(
-    `INSERT INTO public.__drizzle_migrations (hash, created_at) VALUES ($1, $2)
+    `INSERT INTO ${MIGRATIONS_SCHEMA}.${MIGRATIONS_TABLE} (hash, created_at) VALUES ($1, $2)
      ON CONFLICT (hash) DO NOTHING`,
     [baselineHash, Date.now()]
   );
 }
 
-async function tableExists(p: StampablePool, name: string): Promise<boolean> {
+async function tableExists(p: StampablePool, name: string, schema = 'public'): Promise<boolean> {
   const { rows } = await p.query<{ exists: boolean }>(
     `SELECT EXISTS (
        SELECT 1 FROM information_schema.tables
-       WHERE table_schema = 'public' AND table_name = $1
+       WHERE table_schema = $1 AND table_name = $2
      ) AS exists`,
-    [name]
+    [schema, name]
   );
   return rows[0]?.exists ?? false;
 }
