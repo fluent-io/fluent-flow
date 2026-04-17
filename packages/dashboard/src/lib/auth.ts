@@ -1,6 +1,6 @@
 import type { NextAuthOptions, Session } from 'next-auth';
 import GitHubProvider from 'next-auth/providers/github';
-import { upsertUser, getUserOrgs } from '@fluent-flow/db';
+import { upsertUser, getUserOrgs, bootstrapFirstUser } from '@fluent-flow/db';
 import type { UserOrg } from '@fluent-flow/db';
 
 declare module 'next-auth' {
@@ -26,12 +26,13 @@ export const authOptions: NextAuthOptions = {
   callbacks: {
     async signIn({ user, profile }) {
       const ghProfile = profile as { id: number; login: string; avatar_url?: string };
-      await upsertUser({
+      const dbUser = await upsertUser({
         github_id: ghProfile.id,
         login: ghProfile.login,
         email: user.email ?? null,
         avatar_url: ghProfile.avatar_url ?? null,
       });
+      await bootstrapFirstUser(dbUser.id);
       return true;
     },
     async jwt({ token, profile }) {
