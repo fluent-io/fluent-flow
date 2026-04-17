@@ -48,7 +48,7 @@ export async function stampBaselineIfLiveDb({
   migrationsDir: string;
 }): Promise<void> {
   const drizzleTableExists = await tableExists(p, '__drizzle_migrations');
-  const providerInstallationsExists = await tableExists(p, 'provider_installations');
+  const liveDbSentinelTables = ['orgs', 'provider_installations'];
 
   if (drizzleTableExists) {
     const { rows } = await p.query<{ count: string }>(
@@ -57,7 +57,12 @@ export async function stampBaselineIfLiveDb({
     if (Number(rows[0]?.count ?? 0) > 0) return;
   }
 
-  if (!providerInstallationsExists) return;
+  const liveDbSentinelResults = await Promise.all(
+    liveDbSentinelTables.map((tableName) => tableExists(p, tableName))
+  );
+  const hasLegacySchema = liveDbSentinelResults.some(Boolean);
+
+  if (!hasLegacySchema) return;
 
   await p.query(
     `CREATE TABLE IF NOT EXISTS public.__drizzle_migrations (

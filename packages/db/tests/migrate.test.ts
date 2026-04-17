@@ -53,19 +53,17 @@ describe('stampBaselineIfLiveDb', () => {
     expect(pool.calls.some((c) => c.sql.includes('CREATE TABLE'))).toBe(false);
   });
 
-  it('stamps when live DB has core tables but no drizzle tracking', async () => {
-    let probeCount = 0;
-    const pool = {
-      calls: [] as QueryCall[],
-      async query<T = unknown>(sql: string, params?: unknown[]) {
-        pool.calls.push({ sql, params });
-        if (sql.includes('information_schema.tables')) {
-          // First probe: __drizzle_migrations → false. Second: provider_installations → true.
-          probeCount++;
-          return { rows: [{ exists: probeCount === 2 }] as T[] };
-        }
-        return { rows: [] as T[] };
-      },
+  it('stamps when live DB has legacy baseline tables but no drizzle tracking', async () => {
+    const pool = makePool({});
+    const originalQuery = pool.query.bind(pool);
+    pool.query = async <T = unknown>(sql: string, params?: unknown[]) => {
+      if (sql.includes('information_schema.tables')) {
+        const tableName = params?.[0];
+        if (tableName === '__drizzle_migrations') return { rows: [{ exists: false }] as T[] };
+        if (tableName === 'orgs') return { rows: [{ exists: true }] as T[] };
+        if (tableName === 'provider_installations') return { rows: [{ exists: false }] as T[] };
+      }
+      return originalQuery(sql, params);
     };
     await stampBaselineIfLiveDb({ pool, migrationsDir });
     const sqls = pool.calls.map((c) => c.sql);
@@ -77,6 +75,22 @@ describe('stampBaselineIfLiveDb', () => {
     expect(insert).toBeDefined();
     expect(insert!.sql).toContain('ON CONFLICT (hash) DO NOTHING');
     expect(insert!.params?.[0]).toBe('deadbeef');
+  });
+
+  it('stamps when provider_installations exists but orgs does not', async () => {
+    const pool = makePool({});
+    const originalQuery = pool.query.bind(pool);
+    pool.query = async <T = unknown>(sql: string, params?: unknown[]) => {
+      if (sql.includes('information_schema.tables')) {
+        const tableName = params?.[0];
+        if (tableName === '__drizzle_migrations') return { rows: [{ exists: false }] as T[] };
+        if (tableName === 'orgs') return { rows: [{ exists: false }] as T[] };
+        if (tableName === 'provider_installations') return { rows: [{ exists: true }] as T[] };
+      }
+      return originalQuery(sql, params);
+    };
+    await stampBaselineIfLiveDb({ pool, migrationsDir });
+    expect(pool.calls.some((c) => c.sql.includes('INSERT INTO public.__drizzle_migrations'))).toBe(true);
   });
 
   it('does nothing when drizzle table already has rows (already migrated)', async () => {
