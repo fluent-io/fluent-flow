@@ -1,7 +1,7 @@
-export { listAgents, getAgentDetail } from './agents';
-export { getAgentSessions } from './sessions';
-export { getAgentClaims } from './claims';
-export { upsertUser, getUserOrgs } from './users';
-export { regenerateKey, getKeyInfo } from './tokens';
-export { listPipelines, getPipelineDetail } from './pipelines';
-export type { PipelineListItem, PipelineStage, PipelineDetailClaim } from './pipelines';
+export { listAgents, getAgentDetail } from './agents.js';
+export { getAgentSessions } from './sessions.js';
+export { getAgentClaims } from './claims.js';
+export { upsertUser, getUserOrgs } from './users.js';
+export { regenerateKey, getKeyInfo } from './tokens.js';
+export { listPipelines, getPipelineDetail } from './pipelines.js';
+export type { PipelineListItem, PipelineStage, PipelineDetailClaim } from './pipelines.js';

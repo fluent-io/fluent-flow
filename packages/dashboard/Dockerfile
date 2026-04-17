@@ -1,25 +1,60 @@
-FROM node:20-alpine
+# Stage 1: Build @fluent-flow/db (dashboard imports from it at build time)
+FROM node:20-alpine AS db-builder
 WORKDIR /app
 
-# Enable corepack for yarn (required by dashboard's packageManager field)
-RUN corepack enable
+COPY package*.json turbo.json ./
+COPY packages/db ./packages/db
+COPY packages/fluent-flow/package.json ./packages/fluent-flow/package.json
+COPY packages/fluent-flow-runner/package.json ./packages/fluent-flow-runner/package.json
+COPY packages/dashboard/package.json ./packages/dashboard/package.json
 
-# Copy workspace root files
-COPY package*.json ./
+RUN npm ci --workspace packages/db
+RUN npm run build --workspace packages/db
 
-# Copy dashboard package
+# Stage 2: Build the Next.js dashboard
+FROM node:20-alpine AS dashboard-builder
+WORKDIR /app
+
+COPY package*.json turbo.json ./
 COPY packages/dashboard ./packages/dashboard
+COPY packages/fluent-flow/package.json ./packages/fluent-flow/package.json
+COPY packages/fluent-flow-runner/package.json ./packages/fluent-flow-runner/package.json
 
-# Install all workspace dependencies (including root)
-RUN npm ci
+COPY --from=db-builder /app/packages/db/package.json ./packages/db/package.json
+COPY --from=db-builder /app/packages/db/dist ./packages/db/dist
 
-# Build the dashboard Next.js app
+RUN npm ci --workspace packages/dashboard
+
+# @fluent-flow/db opens a pg Pool at module load (client.ts). `next build`
+# imports the module during static analysis, so a dummy URL is required to
+# get past the Pool() construction. The build doesn't actually connect.
+ARG DATABASE_URL=postgres://build:build@localhost:5432/build
+ENV DATABASE_URL=$DATABASE_URL
+
 RUN npm run build --workspace packages/dashboard
+
+# Stage 3: Runtime
+FROM node:20-alpine AS runtime
+WORKDIR /app
+
+COPY package*.json turbo.json ./
+COPY packages/dashboard/package.json ./packages/dashboard/package.json
+COPY packages/fluent-flow/package.json ./packages/fluent-flow/package.json
+COPY packages/fluent-flow-runner/package.json ./packages/fluent-flow-runner/package.json
+
+COPY --from=db-builder /app/packages/db/package.json ./packages/db/package.json
+COPY --from=db-builder /app/packages/db/dist ./packages/db/dist
+
+# Next.js build outputs
+COPY --from=dashboard-builder /app/packages/dashboard/.next ./packages/dashboard/.next
+COPY --from=dashboard-builder /app/packages/dashboard/public ./packages/dashboard/public
+COPY --from=dashboard-builder /app/packages/dashboard/next.config.* ./packages/dashboard/
+
+RUN npm ci --omit=dev --workspace packages/dashboard
 
 WORKDIR /app/packages/dashboard
 
 EXPOSE 3000
-
 ENV NODE_ENV=production
 
 CMD ["npm", "start"]
