@@ -69,7 +69,7 @@ jobs:
           cat > .env <<EOF
           DATABASE_URL=${DATABASE_URL}
           FF_GITHUB_APP_ID=${FF_GITHUB_APP_ID}
-          FF_GITHUB_APP_PRIVATE_KEY=${FF_GITHUB_APP_PRIVATE_KEY}
+          FF_GITHUB_APP_PRIVATE_KEY=$(printf '%s' "${FF_GITHUB_APP_PRIVATE_KEY}" | base64 | tr -d '\n')
           FF_GITHUB_APP_WEBHOOK_SECRET=${FF_GITHUB_APP_WEBHOOK_SECRET}
           MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
           POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -80,15 +80,13 @@ jobs:
           EOF
           chmod 600 .env
 
-      - name: Ensure deployment override exists
+      - name: Write deployment override
         run: |
           set -euo pipefail
-          if [ ! -f docker-compose.override.yml ]; then
-            cat > docker-compose.override.yml <<'EOF'
+          cat > docker-compose.override.yml <<'EOF'
           services:
             fluent-flow:
               environment:
-                NODE_OPTIONS: --require ./src/tracing.cjs
                 OTEL_EXPORTER_OTLP_ENDPOINT: http://signoz-otel-collector:4318
                 OTEL_SERVICE_NAME: fluent-flow
               networks:
@@ -106,7 +104,6 @@ jobs:
             signoz-net:
               external: true
           EOF
-          fi
 
       - name: Validate compose config
         run: docker compose -f docker-compose.yml -f docker-compose.override.yml config
@@ -131,3 +128,7 @@ jobs:
       - name: Show running services
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.override.yml ps
+
+      - name: Clean deployment secrets
+        if: always()
+        run: rm -f .env docker-compose.override.yml
