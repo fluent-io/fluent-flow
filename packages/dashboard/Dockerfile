@@ -47,7 +47,6 @@ COPY --from=db-builder /app/packages/db/dist ./packages/db/dist
 
 # Next.js build outputs
 COPY --from=dashboard-builder /app/packages/dashboard/.next ./packages/dashboard/.next
-COPY --from=dashboard-builder /app/packages/dashboard/public ./packages/dashboard/public
 COPY --from=dashboard-builder /app/packages/dashboard/next.config.* ./packages/dashboard/
 
 RUN npm ci --omit=dev --workspace packages/dashboard
