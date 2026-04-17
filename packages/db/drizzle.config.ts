@@ -12,7 +12,7 @@ export default {
   // already applied to prod.
   migrations: {
     table: '__drizzle_migrations',
-    schema: 'public',
+    schema: 'drizzle',
   },
   verbose: true,
   strict: true,
