@@ -54,14 +54,7 @@ describe('stampBaselineIfLiveDb', () => {
   });
 
   it('stamps when live DB has legacy baseline tables but no drizzle tracking', async () => {
-    const pool = makePool({
-      "table_name = $1": [
-        { exists: false },
-        { exists: true },
-        { exists: false },
-      ],
-    });
-    let informationSchemaProbe = 0;
+    const pool = makePool({});
     const originalQuery = pool.query.bind(pool);
     pool.query = async <T = unknown>(sql: string, params?: unknown[]) => {
       if (sql.includes('information_schema.tables')) {
@@ -70,12 +63,13 @@ describe('stampBaselineIfLiveDb', () => {
         if (tableName === 'orgs') return { rows: [{ exists: true }] as T[] };
         if (tableName === 'provider_installations') return { rows: [{ exists: false }] as T[] };
       }
-      informationSchemaProbe++;
       return originalQuery(sql, params);
     };
     await stampBaselineIfLiveDb({ pool, migrationsDir });
     const sqls = pool.calls.map((c) => c.sql);
     expect(sqls.some((s) => s.includes('CREATE TABLE IF NOT EXISTS public.__drizzle_migrations'))).toBe(true);
+    // Unique index on hash is required for ON CONFLICT (hash) to fire under
+    // concurrent first-boot; without it duplicate baseline stamps could slip in.
     expect(sqls.some((s) => s.includes('CREATE UNIQUE INDEX IF NOT EXISTS __drizzle_migrations_hash_idx'))).toBe(true);
     const insert = pool.calls.find((c) => c.sql.includes('INSERT INTO public.__drizzle_migrations'));
     expect(insert).toBeDefined();
