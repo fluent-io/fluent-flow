@@ -9,9 +9,9 @@ COPY packages/fluent-flow/package.json ./packages/fluent-flow/package.json
 COPY packages/fluent-flow-runner/package.json ./packages/fluent-flow-runner/package.json
 COPY packages/dashboard/package.json ./packages/dashboard/package.json
 
-# Install every workspace's deps — @fluent-flow/db's devDeps (tsc, drizzle-kit)
-# are required to run the build step below.
-RUN npm ci --include-workspace-root
+# Install only the db workspace's deps (includes devDeps like tsc, drizzle-kit
+# needed for the build step). Avoids pulling in unrelated workspace deps.
+RUN npm ci --workspace packages/db
 
 # Emits packages/db/dist/*.js + *.d.ts and copies src/migrations into
 # dist/migrations (tsc doesn't emit .sql/.json on its own).
@@ -31,10 +31,10 @@ COPY packages/dashboard/package.json ./packages/dashboard/package.json
 COPY --from=db-builder /app/packages/db/package.json ./packages/db/package.json
 COPY --from=db-builder /app/packages/db/dist ./packages/db/dist
 
-# Prod-only install. Resolves @fluent-flow/db via workspace symlink and
-# installs its runtime deps (drizzle-orm, drizzle-zod, pg, zod) alongside
-# fluent-flow's own prod deps.
-RUN npm ci --omit=dev --include-workspace-root
+# Prod-only install for the fluent-flow workspace only. Resolves
+# @fluent-flow/db via the workspace link and installs the runtime deps
+# needed by fluent-flow without pulling in unrelated workspaces.
+RUN npm ci --omit=dev --workspace packages/fluent-flow
 
 WORKDIR /app/packages/fluent-flow
 
