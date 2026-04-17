@@ -28,8 +28,8 @@ jobs:
           FF_GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.FF_GITHUB_APP_WEBHOOK_SECRET }}
           MCP_AUTH_TOKEN: ${{ secrets.MCP_AUTH_TOKEN }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          GITHUB_CLIENT_ID: ${{ secrets.GITHUB_CLIENT_ID }}
-          GITHUB_CLIENT_SECRET: ${{ secrets.GITHUB_CLIENT_SECRET }}
+          FF_GITHUB_CLIENT_ID: ${{ secrets.FF_GITHUB_CLIENT_ID }}
+          FF_GITHUB_CLIENT_SECRET: ${{ secrets.FF_GITHUB_CLIENT_SECRET }}
           NEXTAUTH_SECRET: ${{ secrets.NEXTAUTH_SECRET }}
           NEXTAUTH_URL: ${{ vars.NEXTAUTH_URL }}
         run: |
@@ -41,8 +41,8 @@ jobs:
             FF_GITHUB_APP_WEBHOOK_SECRET
             MCP_AUTH_TOKEN
             POSTGRES_PASSWORD
-            GITHUB_CLIENT_ID
-            GITHUB_CLIENT_SECRET
+            FF_GITHUB_CLIENT_ID
+            FF_GITHUB_CLIENT_SECRET
             NEXTAUTH_SECRET
             NEXTAUTH_URL
           )
@@ -61,8 +61,8 @@ jobs:
           FF_GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.FF_GITHUB_APP_WEBHOOK_SECRET }}
           MCP_AUTH_TOKEN: ${{ secrets.MCP_AUTH_TOKEN }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          GITHUB_CLIENT_ID: ${{ secrets.GITHUB_CLIENT_ID }}
-          GITHUB_CLIENT_SECRET: ${{ secrets.GITHUB_CLIENT_SECRET }}
+          FF_GITHUB_CLIENT_ID: ${{ secrets.FF_GITHUB_CLIENT_ID }}
+          FF_GITHUB_CLIENT_SECRET: ${{ secrets.FF_GITHUB_CLIENT_SECRET }}
           NEXTAUTH_SECRET: ${{ secrets.NEXTAUTH_SECRET }}
           NEXTAUTH_URL: ${{ vars.NEXTAUTH_URL }}
         run: |
@@ -79,8 +79,8 @@ jobs:
           FF_GITHUB_APP_WEBHOOK_SECRET=${FF_GITHUB_APP_WEBHOOK_SECRET}
           MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
           POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-          GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID}
-          GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET}
+          GITHUB_CLIENT_ID=${FF_GITHUB_CLIENT_ID}
+          GITHUB_CLIENT_SECRET=${FF_GITHUB_CLIENT_SECRET}
           NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
           NEXTAUTH_URL=${NEXTAUTH_URL}
           EOF
