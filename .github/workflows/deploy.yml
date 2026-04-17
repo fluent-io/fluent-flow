@@ -144,6 +144,11 @@ jobs:
         if: always()
         run: docker compose --env-file "$DEPLOY_ENV_FILE" -f docker-compose.yml -f docker-compose.override.yml ps
 
+      - name: Show service logs on failure
+        if: failure()
+        run: |
+          docker compose --env-file "$DEPLOY_ENV_FILE" -f docker-compose.yml -f docker-compose.override.yml logs --tail=200 fluent-flow dashboard || true
+
       - name: Clean deployment secrets
         if: always()
         run: rm -f "$DEPLOY_ENV_FILE" docker-compose.override.yml
