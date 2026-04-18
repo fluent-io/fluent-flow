@@ -27,6 +27,22 @@ describe('upsertUser', () => {
     expect(result.github_id).toBe(12345);
     expect(mockQuery.mock.calls[0][0]).toContain('ON CONFLICT');
   });
+
+  it('preserves existing email/avatar_url via COALESCE when input has null', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        id: 1, github_id: 12345, login: 'victor',
+        email: null, avatar_url: null,
+        is_superadmin: false, created_at: new Date(), updated_at: new Date(),
+      }],
+    });
+
+    await upsertUser({ github_id: 12345, login: 'victor', email: null, avatar_url: null });
+
+    const sql = mockQuery.mock.calls[0][0] as string;
+    expect(sql).toContain('email = COALESCE(EXCLUDED.email, users.email)');
+    expect(sql).toContain('avatar_url = COALESCE(EXCLUDED.avatar_url, users.avatar_url)');
+  });
 });
 
 describe('getUserOrgs', () => {
@@ -54,7 +70,7 @@ describe('getUserOrgs', () => {
 describe('linkUserToOrg', () => {
   beforeEach(() => { mockQuery.mockReset(); });
 
-  it('inserts user_orgs row with ON CONFLICT DO NOTHING', async () => {
+  it('upserts user_orgs row, updating role on conflict so installer lands at admin', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [] });
 
     await linkUserToOrg(42, 'acme', 'admin');
@@ -62,8 +78,7 @@ describe('linkUserToOrg', () => {
     expect(mockQuery).toHaveBeenCalledTimes(1);
     const [sql, params] = mockQuery.mock.calls[0];
     expect(sql).toContain('INSERT INTO user_orgs');
-    expect(sql).toContain('ON CONFLICT');
-    expect(sql).toContain('DO NOTHING');
+    expect(sql).toContain('ON CONFLICT (user_id, org_id) DO UPDATE SET role = EXCLUDED.role');
     expect(params).toEqual([42, 'acme', 'admin']);
   });
 
