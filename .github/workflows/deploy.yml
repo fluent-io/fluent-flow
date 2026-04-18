@@ -209,34 +209,52 @@ jobs:
           set -euo pipefail
           fail=0
 
-          check() {
-            local name="$1" expected_ne="$2" actual="$3"
-            if [ "$actual" = "$expected_ne" ]; then
-              echo "❌ $name: got $actual (expected anything except $expected_ne)"
+          # All curls get strict timeouts so a partially-hung service fails
+          # fast instead of stalling the deploy job.
+          CURL="curl -sS --connect-timeout 5 --max-time 10"
+
+          check_ne() {
+            local name="$1" forbidden="$2" actual="$3"
+            if [ "$actual" = "$forbidden" ]; then
+              echo "❌ $name: got $actual (expected anything except $forbidden)"
               fail=1
             else
               echo "✅ $name: $actual"
             fi
           }
 
+          check_eq() {
+            local name="$1" expected="$2" actual="$3"
+            if [ "$actual" = "$expected" ]; then
+              echo "✅ $name: $actual"
+            else
+              echo "❌ $name: got $actual (expected $expected)"
+              fail=1
+            fi
+          }
+
           # 1. GitHub App webhook endpoint exists at the configured URL (not 404).
           # Uses an empty POST — signature check will return 401, which is fine here.
           # The only status that signals a real wiring bug is 404.
-          status=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+          status=$($CURL -o /dev/null -w '%{http_code}' -X POST \
             -H 'content-type: application/json' -d '{}' \
-            http://127.0.0.1:3847/webhooks/github-app)
-          check "github-app webhook route mounted" "404" "$status"
+            http://127.0.0.1:3847/webhooks/github-app || echo "000")
+          check_ne "github-app webhook route mounted" "404" "$status"
 
-          # 2. Dashboard login page serves 200 and the expected sign-in CTA.
-          body=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/login)
-          check "dashboard /login reachable" "000" "$body"
-          login_html=$(curl -s http://127.0.0.1:3000/login)
-          if ! printf '%s' "$login_html" | grep -q 'Sign in with GitHub'; then
+          # 2. Dashboard login page serves exactly 200.
+          login_tmp=$(mktemp)
+          status=$($CURL -o "$login_tmp" -w '%{http_code}' http://127.0.0.1:3000/login || echo "000")
+          check_eq "dashboard /login returns 200" "200" "$status"
+
+          # 3. Dashboard bundle contains the sign-in CTA (guards against
+          # stale builds where the container is up but serving old chunks).
+          if ! grep -q 'Sign in with GitHub' "$login_tmp"; then
             echo "❌ dashboard /login missing 'Sign in with GitHub' — build may be stale"
             fail=1
           else
             echo "✅ dashboard /login contains sign-in CTA"
           fi
+          rm -f "$login_tmp"
 
           if [ $fail -ne 0 ]; then
             echo "smoke tests failed — deploy is live but broken" >&2
