@@ -117,8 +117,11 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
         log.info('No claim_type in work payload, defaulting to review_fix');
       }
       const prompt = resolvePrompt({ claimType, work });
+      if (!work.agentType) {
+        throw new Error(`Work item ${repo}#${prNumber} has no agentType — server routing bug`);
+      }
       cmd = resolveCommand({
-        agentType: work.agentType ?? 'claude-code',
+        agentType: work.agentType,
         prompt,
         transportCommand: work.transportCommand,
       });

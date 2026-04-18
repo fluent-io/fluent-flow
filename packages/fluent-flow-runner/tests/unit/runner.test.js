@@ -112,6 +112,7 @@ describe('runner', () => {
         repo: 'org/repo',
         prNumber: 7,
         attempt: 1,
+        agentType: 'claude-code',
       };
 
       let pollCount = 0;
@@ -159,6 +160,7 @@ describe('runner', () => {
         repo: 'org/repo',
         prNumber: 7,
         attempt: 1,
+        agentType: 'claude-code',
       };
 
       let pollCount = 0;
@@ -206,6 +208,7 @@ describe('runner', () => {
         repo: 'org/repo',
         prNumber: 7,
         attempt: 1,
+        agentType: 'claude-code',
       };
 
       let pollCount = 0;
@@ -250,6 +253,7 @@ describe('runner', () => {
         repo: 'org/repo',
         prNumber: 7,
         attempt: 1,
+        agentType: 'claude-code',
       };
 
       let pollCount = 0;
@@ -288,6 +292,7 @@ describe('runner', () => {
         repo: 'org/repo',
         prNumber: 7,
         attempt: 1,
+        agentType: 'claude-code',
       };
 
       let pollCount = 0;
@@ -344,6 +349,7 @@ describe('runner', () => {
         repo: 'org/repo',
         prNumber: 7,
         attempt: 2,
+        agentType: 'claude-code',
       };
 
       let pollCount = 0;
@@ -389,6 +395,7 @@ describe('runner', () => {
         repo: 'org/repo',
         prNumber: 7,
         attempt: 1,
+        agentType: 'claude-code',
       };
 
       let pollCount = 0;
@@ -442,6 +449,7 @@ describe('runner', () => {
         repo: 'org/repo',
         prNumber: 7,
         attempt: 1,
+        agentType: 'claude-code',
       };
 
       let pollCount = 0;
@@ -559,6 +567,7 @@ describe('runner', () => {
         prNumber: 10,
         attempt: 1,
         branch: 'feature/x',
+        agentType: 'claude-code',
       };
 
       let pollCount = 0;
@@ -592,6 +601,7 @@ describe('runner', () => {
         repo: 'org/repo',
         prNumber: 7,
         attempt: 1,
+        agentType: 'claude-code',
       };
 
       let pollCount = 0;

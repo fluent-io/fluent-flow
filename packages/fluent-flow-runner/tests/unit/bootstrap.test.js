@@ -68,25 +68,22 @@ describe('bootstrap', () => {
     );
   });
 
-  it('defaults agent_type to claude-code when not provided', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ id: 'test', agent_type: 'claude-code', transport: 'long_poll' }),
-    });
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ token: 'ff_tok', label: 'auto-testhost' }),
-    });
+  it('throws when agentType is not provided and no FLUENT_FLOW_AGENT_TYPE env var', async () => {
+    const origEnv = process.env.FLUENT_FLOW_AGENT_TYPE;
+    delete process.env.FLUENT_FLOW_AGENT_TYPE;
 
-    await bootstrap({
-      server: 'https://flow.example.com',
-      agentId: 'test',
-      mcpAuthToken: 'secret_value_here',
-      fetch: fetchMock,
-    });
-
-    const registerBody = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(registerBody.agent_type).toBe('claude-code');
+    try {
+      await expect(bootstrap({
+        server: 'https://flow.example.com',
+        agentId: 'test',
+        mcpAuthToken: 'secret_value_here',
+        fetch: fetchMock,
+      })).rejects.toThrow(/agentType/);
+      // Must fail before hitting the network.
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      if (origEnv !== undefined) process.env.FLUENT_FLOW_AGENT_TYPE = origEnv;
+    }
   });
 
   it('uses FLUENT_FLOW_AGENT_TYPE env var when agentType not provided', async () => {
@@ -129,6 +126,7 @@ describe('bootstrap', () => {
         agentId: 'bad-agent',
         mcpAuthToken: 'bad-token-value',
         fetch: fetchMock,
+        agentType: 'claude-code',
       }),
     ).rejects.toThrow('Agent registration failed: 403');
   });
@@ -150,6 +148,7 @@ describe('bootstrap', () => {
         agentId: 'my-agent',
         mcpAuthToken: 'secret_value_here',
         fetch: fetchMock,
+        agentType: 'claude-code',
       }),
     ).rejects.toThrow('Token generation failed: 500');
   });
@@ -169,6 +168,7 @@ describe('bootstrap', () => {
       agentId: 'x',
       mcpAuthToken: 'secret_value_here',
       fetch: fetchMock,
+      agentType: 'claude-code',
     });
 
     expect(fetchMock.mock.calls[0][0]).toBe('https://flow.example.com/api/agents');
@@ -182,6 +182,7 @@ describe('bootstrap', () => {
         agentId: 'test',
         mcpAuthToken: '',
         fetch: fetchMock,
+        agentType: 'claude-code',
       }),
     ).rejects.toThrow('MCP_AUTH_TOKEN is required');
   });
@@ -193,6 +194,7 @@ describe('bootstrap', () => {
         agentId: 'test',
         mcpAuthToken: 'short',
         fetch: fetchMock,
+        agentType: 'claude-code',
       }),
     ).rejects.toThrow('MCP_AUTH_TOKEN must be at least 8 characters');
   });
@@ -210,6 +212,7 @@ describe('bootstrap', () => {
         agentId: 'test',
         mcpAuthToken: 'valid_long_token',
         fetch: fetchMock,
+        agentType: 'claude-code',
       });
       expect.unreachable('Should have thrown');
     } catch (err) {
@@ -233,6 +236,7 @@ describe('bootstrap', () => {
         agentId: 'test',
         mcpAuthToken: secretToken,
         fetch: fetchMock,
+        agentType: 'claude-code',
       });
       expect.unreachable('Should have thrown');
     } catch (err) {
@@ -255,6 +259,7 @@ describe('bootstrap', () => {
       agentId: 'my agent',
       mcpAuthToken: 'valid_long_token',
       fetch: fetchMock,
+      agentType: 'claude-code',
     });
 
     expect(fetchMock.mock.calls[1][0]).toBe('https://flow.example.com/api/agents/my%20agent/tokens');
@@ -276,6 +281,7 @@ describe('bootstrap', () => {
       agentId: 'existing-agent',
       mcpAuthToken: 'valid_long_token',
       fetch: fetchMock,
+      agentType: 'claude-code',
     });
 
     expect(result).toEqual({ token: 'ff_generated_token' });
@@ -300,6 +306,7 @@ describe('bootstrap', () => {
         agentId: 'test',
         mcpAuthToken: 'valid_long_token',
         fetch: fetchMock,
+        agentType: 'claude-code',
       });
       expect.unreachable('Should have thrown');
     } catch (err) {
