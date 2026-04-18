@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { db, schema } from '@fluent-flow/db';
+import { db, schema, upsertUser, linkUserToOrg } from '@fluent-flow/db';
 import {
   upsertInstallation,
   softDeleteInstallation,
@@ -27,13 +27,15 @@ async function ensureOrg(login) {
 
 /**
  * Handle GitHub App installation.created event.
- * Ensures the org row exists, then upserts the installation.
+ * Ensures the org row exists, upserts the installation, and links the
+ * installing user (payload.sender) to the org as admin so they can use
+ * the dashboard immediately.
  *
- * @param {{ installation: object }} payload
+ * @param {{ installation: object, sender?: object }} payload
  * @returns {Promise<object>} The upserted installation row
  */
 export async function handleInstallationCreated(payload) {
-  const { installation } = payload;
+  const { installation, sender } = payload;
   const { id: externalId, account, permissions, events } = installation;
   const accountLogin = account.login;
   const accountType = account.type;
@@ -48,6 +50,26 @@ export async function handleInstallationCreated(payload) {
     permissions: permissions ?? {},
     events: events ?? [],
   });
+
+  // Link the installer so they have dashboard access to the newly-installed
+  // org. Pre-creating the user row means they'll be linked even before their
+  // first OAuth sign-in (upsertUser is ON CONFLICT on github_id).
+  if (sender?.id && sender?.login && sender?.type !== 'Bot') {
+    try {
+      const user = await upsertUser({
+        github_id: sender.id,
+        login: sender.login,
+        email: null,
+        avatar_url: sender.avatar_url ?? null,
+      });
+      await linkUserToOrg(user.id, accountLogin, 'admin');
+      logger.info({ msg: 'handleInstallationCreated: linked sender', userId: user.id, login: sender.login, orgId: accountLogin });
+    } catch (err) {
+      // Don't fail the whole webhook if linking fails — the install itself
+      // succeeded and the user can recover via a later sign-in path.
+      logger.error({ msg: 'handleInstallationCreated: failed to link sender', error: err.message, login: sender.login, orgId: accountLogin });
+    }
+  }
 
   logger.info({ msg: 'handleInstallationCreated', externalId, accountLogin });
   return row;

@@ -30,3 +30,20 @@ export async function getUserOrgs(userId: number): Promise<UserOrg[]> {
   const result = await query(sql, [userId]);
   return result.rows.map((row: unknown) => userOrgSchema.parse(row));
 }
+
+/**
+ * Idempotently link a user to an org with the given role. Used by the GitHub
+ * App installation webhook to give the installer admin access to the new org.
+ */
+export async function linkUserToOrg(
+  userId: number,
+  orgId: string,
+  role: 'member' | 'admin' = 'member',
+): Promise<void> {
+  const sql = `
+    INSERT INTO user_orgs (user_id, org_id, role)
+    VALUES ($1, $2, $3)
+    ON CONFLICT (user_id, org_id) DO NOTHING
+  `;
+  await query(sql, [userId, orgId, role]);
+}
