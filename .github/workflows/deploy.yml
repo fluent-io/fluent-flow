@@ -200,6 +200,71 @@ jobs:
           docker compose --env-file "$DEPLOY_ENV_FILE" -f docker-compose.yml -f docker-compose.override.yml ps
           exit 1
 
+      # Post-deploy smoke checks. Verifies the wiring at seams that unit/integration
+      # tests can't reach: routing through the actual built container, static bundle
+      # content, presence of routes the GitHub App webhook configuration points at.
+      # Any failure here means the deploy is live but wrong — fail loud.
+      - name: Smoke test deployed endpoints
+        run: |
+          set -euo pipefail
+          fail=0
+
+          # All curls get strict timeouts so a partially-hung service fails
+          # fast instead of stalling the deploy job.
+          CURL="curl -sS --connect-timeout 5 --max-time 10"
+
+          check_ne() {
+            local name="$1" forbidden="$2" actual="$3"
+            if [ "$actual" = "$forbidden" ]; then
+              echo "❌ $name: got $actual (expected anything except $forbidden)"
+              fail=1
+            else
+              echo "✅ $name: $actual"
+            fi
+          }
+
+          check_eq() {
+            local name="$1" expected="$2" actual="$3"
+            if [ "$actual" = "$expected" ]; then
+              echo "✅ $name: $actual"
+            else
+              echo "❌ $name: got $actual (expected $expected)"
+              fail=1
+            fi
+          }
+
+          # 1. GitHub App webhook endpoint exists at the configured URL and
+          # is protected by signature verification. An unsigned POST with a
+          # well-formed JSON body must return exactly 401:
+          #   - 404 → route is mounted at the wrong path
+          #   - 200 → signature verification is missing/broken (security bug)
+          #   - 000 → curl failed (service unreachable / port not listening)
+          # any other status → something changed in the middleware ordering
+          status=$($CURL -o /dev/null -w '%{http_code}' -X POST \
+            -H 'content-type: application/json' -d '{}' \
+            http://127.0.0.1:3847/webhooks/github-app || echo "000")
+          check_eq "github-app webhook route mounted + signed" "401" "$status"
+
+          # 2. Dashboard login page serves exactly 200.
+          login_tmp=$(mktemp)
+          status=$($CURL -o "$login_tmp" -w '%{http_code}' http://127.0.0.1:3000/login || echo "000")
+          check_eq "dashboard /login returns 200" "200" "$status"
+
+          # 3. Dashboard bundle contains the sign-in CTA (guards against
+          # stale builds where the container is up but serving old chunks).
+          if ! grep -q 'Sign in with GitHub' "$login_tmp"; then
+            echo "❌ dashboard /login missing 'Sign in with GitHub' — build may be stale"
+            fail=1
+          else
+            echo "✅ dashboard /login contains sign-in CTA"
+          fi
+          rm -f "$login_tmp"
+
+          if [ $fail -ne 0 ]; then
+            echo "smoke tests failed — deploy is live but broken" >&2
+            exit 1
+          fi
+
       - name: Show running services
         if: always()
         run: docker compose --env-file "$DEPLOY_ENV_FILE" -f docker-compose.yml -f docker-compose.override.yml ps
