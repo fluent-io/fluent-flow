@@ -31,7 +31,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
             Install the Fluent Flow GitHub App on an organization or your personal account to connect your repos.
           </p>
           <Button asChild>
-            <a href={INSTALL_URL} rel="noopener noreferrer">Install on GitHub</a>
+            <a href={INSTALL_URL}>Install on GitHub</a>
           </Button>
         </div>
       </div>
