@@ -233,13 +233,17 @@ jobs:
             fi
           }
 
-          # 1. GitHub App webhook endpoint exists at the configured URL (not 404).
-          # Uses an empty POST — signature check will return 401, which is fine here.
-          # The only status that signals a real wiring bug is 404.
+          # 1. GitHub App webhook endpoint exists at the configured URL and
+          # is protected by signature verification. An unsigned POST with a
+          # well-formed JSON body must return exactly 401:
+          #   - 404 → route is mounted at the wrong path
+          #   - 200 → signature verification is missing/broken (security bug)
+          #   - 000 → curl failed (service unreachable / port not listening)
+          # any other status → something changed in the middleware ordering
           status=$($CURL -o /dev/null -w '%{http_code}' -X POST \
             -H 'content-type: application/json' -d '{}' \
             http://127.0.0.1:3847/webhooks/github-app || echo "000")
-          check_ne "github-app webhook route mounted" "404" "$status"
+          check_eq "github-app webhook route mounted + signed" "401" "$status"
 
           # 2. Dashboard login page serves exactly 200.
           login_tmp=$(mktemp)

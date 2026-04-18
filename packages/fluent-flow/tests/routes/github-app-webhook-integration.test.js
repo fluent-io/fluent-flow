@@ -12,7 +12,9 @@ vi.mock('../../src/logger.js', async () => {
 // unit test (tests/providers/github/webhook-verify.test.js) — this test is
 // about wiring.
 vi.mock('../../src/providers/github/webhook-verify.js', () => ({
-  captureRawBody: (_req, _res, buf) => buf,
+  // Mirror the real implementation: attach buf to req.rawBody so the
+  // downstream signature middleware can read it if the mock is ever relaxed.
+  captureRawBody: (req, _res, buf) => { req.rawBody = buf; },
   webhookSignatureMiddleware: (_req, _res, next) => next(),
   appWebhookSignatureMiddleware: (_req, _res, next) => next(),
 }));
