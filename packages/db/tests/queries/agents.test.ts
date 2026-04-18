@@ -5,7 +5,7 @@ vi.mock('../../src/pool', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
 }));
 
-const { listAgents, getAgentDetail } = await import('../../src/queries/agents');
+const { listAgents, getAgentDetail, createAgent } = await import('../../src/queries/agents');
 
 describe('listAgents', () => {
   beforeEach(() => { mockQuery.mockReset(); });
@@ -59,5 +59,48 @@ describe('getAgentDetail', () => {
 
     const result = await getAgentDetail(['fluent-io'], 'ff-runner');
     expect(result?.id).toBe('ff-runner');
+  });
+});
+
+describe('createAgent', () => {
+  beforeEach(() => { mockQuery.mockReset(); });
+
+  it('inserts an agent row with the provided fields and returns it', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        id: 'laptop-1', org_id: 'fluent-io', agent_type: 'claude-code',
+        transport: 'long_poll', transport_meta: {}, repos: [],
+        created_at: new Date(), updated_at: new Date(),
+      }],
+    });
+
+    const result = await createAgent({
+      id: 'laptop-1',
+      orgId: 'fluent-io',
+      agentType: 'claude-code',
+      transport: 'long_poll',
+    });
+
+    expect(result.id).toBe('laptop-1');
+    expect(result.org_id).toBe('fluent-io');
+    const [sql, params] = mockQuery.mock.calls[0];
+    expect(sql).toContain('INSERT INTO agents');
+    expect(params).toEqual(['laptop-1', 'fluent-io', 'claude-code', 'long_poll', {}, []]);
+  });
+
+  it('accepts optional transportMeta and repos', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        id: 'x', org_id: 'o', agent_type: 'claude-code', transport: 'long_poll',
+        transport_meta: { foo: 1 }, repos: ['o/a'], created_at: new Date(), updated_at: new Date(),
+      }],
+    });
+
+    await createAgent({
+      id: 'x', orgId: 'o', agentType: 'claude-code', transport: 'long_poll',
+      transportMeta: { foo: 1 }, repos: ['o/a'],
+    });
+
+    expect(mockQuery.mock.calls[0][1]).toEqual(['x', 'o', 'claude-code', 'long_poll', { foo: 1 }, ['o/a']]);
   });
 });

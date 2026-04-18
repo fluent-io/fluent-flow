@@ -1,6 +1,6 @@
-import { randomBytes, createHash } from 'crypto';
+import { createHash } from 'crypto';
 import { and, eq, gt, isNull, or, sql } from 'drizzle-orm';
-import { db, schema } from '@fluent-flow/db';
+import { db, schema, createToken as dbCreateToken } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 import logger from '../logger.js';
 
@@ -13,26 +13,21 @@ export function hashToken(plaintext) {
 }
 
 /**
- * Create a new agent token. Returns the plaintext token (only shown once).
+ * Create a new agent token. Delegates the insert to @fluent-flow/db; keeps
+ * audit + logging at the server boundary (dashboard calls the db version
+ * directly with its own session-scoped auth).
  */
 export async function createToken(orgId, agentId, label = null, expiresAt = null) {
-  const plaintext = TOKEN_PREFIX + randomBytes(32).toString('hex');
-  const hash = hashToken(plaintext);
+  const result = await dbCreateToken({
+    orgId,
+    agentId,
+    label: label ?? 'default',
+    expiresAt: expiresAt ?? undefined,
+  });
 
-  const [row] = await db
-    .insert(agentTokens)
-    .values({ orgId, agentId, tokenHash: hash, label, expiresAt })
-    .returning({
-      id: agentTokens.id,
-      org_id: agentTokens.orgId,
-      agent_id: agentTokens.agentId,
-      label: agentTokens.label,
-      created_at: agentTokens.createdAt,
-    });
-
-  audit('agent_token_created', { data: { orgId, agentId, tokenId: row.id } });
-  logger.info({ msg: 'Agent token created', orgId, agentId, tokenId: row.id });
-  return { plaintext, ...row };
+  audit('agent_token_created', { data: { orgId, agentId, tokenId: result.id } });
+  logger.info({ msg: 'Agent token created', orgId, agentId, tokenId: result.id });
+  return { plaintext: result.plaintext, id: result.id, org_id: orgId, agent_id: agentId, label };
 }
 
 /**

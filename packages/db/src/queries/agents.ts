@@ -38,3 +38,34 @@ export async function getAgentDetail(orgIds: string[], agentId: string): Promise
   if (result.rows.length === 0) return null;
   return agentSchema.parse(result.rows[0]);
 }
+
+export interface CreateAgentInput {
+  id: string;
+  orgId: string;
+  agentType: string;
+  transport: string;
+  transportMeta?: Record<string, unknown>;
+  repos?: string[];
+}
+
+/**
+ * Insert an agent row. Used by both the dashboard's session-authed "+ New
+ * agent" flow and the fluent-flow server's MCP admin API (which wraps this
+ * with audit + logging).
+ */
+export async function createAgent(input: CreateAgentInput): Promise<Agent> {
+  const sql = `
+    INSERT INTO agents (id, org_id, agent_type, transport, transport_meta, repos)
+    VALUES ($1, $2, $3, $4, $5, $6)
+    RETURNING *
+  `;
+  const result = await query(sql, [
+    input.id,
+    input.orgId,
+    input.agentType,
+    input.transport,
+    input.transportMeta ?? {},
+    input.repos ?? [],
+  ]);
+  return agentSchema.parse(result.rows[0]);
+}
