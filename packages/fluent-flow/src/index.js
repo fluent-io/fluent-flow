@@ -55,7 +55,10 @@ app.use((req, res, next) => {
 
 // Mount routes
 app.use('/api', webhookRouter);
-app.use('/api', githubAppWebhookRouter);
+// github-app-webhook is mounted at root (not /api) so the route resolves at
+// /webhooks/github-app — the URL configured on GitHub's App Webhook settings.
+// Other routers stay under /api as they're internal API endpoints.
+app.use(githubAppWebhookRouter);
 app.use('/api', transitionRouter);
 app.use('/api', pauseRouter);
 app.use('/api', stateRouter);
