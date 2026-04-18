@@ -1,7 +1,8 @@
 'use client';
 
+import { useEffect } from 'react';
 import { useSession } from 'next-auth/react';
-import { redirect } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 
 const GITHUB_APP_SLUG = process.env.NEXT_PUBLIC_GITHUB_APP_SLUG ?? 'fluent-flow-ci';
@@ -9,6 +10,13 @@ const INSTALL_URL = `https://github.com/apps/${GITHUB_APP_SLUG}/installations/ne
 
 export function AuthGuard({ children }: { children: React.ReactNode }) {
   const { data: session, status } = useSession();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (status === 'unauthenticated') {
+      router.replace('/login');
+    }
+  }, [status, router]);
 
   if (status === 'loading') {
     return (
@@ -19,7 +27,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
   }
 
   if (!session) {
-    redirect('/login');
+    return null;
   }
 
   if (session.user.orgs.length === 0 && !session.user.isSuperadmin) {
