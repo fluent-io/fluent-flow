@@ -143,12 +143,18 @@ jobs:
       - name: Write deployment override
         run: |
           set -euo pipefail
-          cat > docker-compose.override.yml <<'EOF'
+          # Interpolating heredoc (<<EOF, not <<'EOF') so $GITHUB_SHA is
+          # substituted at write time. DEPLOY_SHA is injected per service
+          # so compose's config-hash changes every commit — otherwise
+          # `up -d --build` can produce a new image but treat the running
+          # container as up-to-date and skip the recreate.
+          cat > docker-compose.override.yml <<EOF
           services:
             fluent-flow:
               environment:
                 OTEL_EXPORTER_OTLP_ENDPOINT: http://signoz-otel-collector:4318
                 OTEL_SERVICE_NAME: fluent-flow
+                DEPLOY_SHA: ${GITHUB_SHA}
               networks:
                 - fluent-flow-net
                 - signoz-net
@@ -156,6 +162,7 @@ jobs:
             dashboard:
               environment:
                 NODE_ENV: production
+                DEPLOY_SHA: ${GITHUB_SHA}
               networks:
                 - fluent-flow-net
                 - signoz-net
