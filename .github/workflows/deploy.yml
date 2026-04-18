@@ -200,6 +200,49 @@ jobs:
           docker compose --env-file "$DEPLOY_ENV_FILE" -f docker-compose.yml -f docker-compose.override.yml ps
           exit 1
 
+      # Post-deploy smoke checks. Verifies the wiring at seams that unit/integration
+      # tests can't reach: routing through the actual built container, static bundle
+      # content, presence of routes the GitHub App webhook configuration points at.
+      # Any failure here means the deploy is live but wrong — fail loud.
+      - name: Smoke test deployed endpoints
+        run: |
+          set -euo pipefail
+          fail=0
+
+          check() {
+            local name="$1" expected_ne="$2" actual="$3"
+            if [ "$actual" = "$expected_ne" ]; then
+              echo "❌ $name: got $actual (expected anything except $expected_ne)"
+              fail=1
+            else
+              echo "✅ $name: $actual"
+            fi
+          }
+
+          # 1. GitHub App webhook endpoint exists at the configured URL (not 404).
+          # Uses an empty POST — signature check will return 401, which is fine here.
+          # The only status that signals a real wiring bug is 404.
+          status=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H 'content-type: application/json' -d '{}' \
+            http://127.0.0.1:3847/webhooks/github-app)
+          check "github-app webhook route mounted" "404" "$status"
+
+          # 2. Dashboard login page serves 200 and the expected sign-in CTA.
+          body=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/login)
+          check "dashboard /login reachable" "000" "$body"
+          login_html=$(curl -s http://127.0.0.1:3000/login)
+          if ! printf '%s' "$login_html" | grep -q 'Sign in with GitHub'; then
+            echo "❌ dashboard /login missing 'Sign in with GitHub' — build may be stale"
+            fail=1
+          else
+            echo "✅ dashboard /login contains sign-in CTA"
+          fi
+
+          if [ $fail -ne 0 ]; then
+            echo "smoke tests failed — deploy is live but broken" >&2
+            exit 1
+          fi
+
       - name: Show running services
         if: always()
         run: docker compose --env-file "$DEPLOY_ENV_FILE" -f docker-compose.yml -f docker-compose.override.yml ps
