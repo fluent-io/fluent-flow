@@ -8,9 +8,9 @@ vi.mock('../../src/logger.js', async () => {
 const mockUpsertUser = vi.fn();
 const mockLinkUserToOrg = vi.fn();
 // Captures every db.insert(...).values(...).onConflictDoUpdate(...) call.
-// ensureRepo is the only codepath that uses onConflictDoUpdate today, so
-// the contents reflect repo shell-row upserts. Reset in the individual
-// describe blocks that assert on it.
+// Within this test, installation-lifecycle is the only exercised codepath
+// that calls onConflictDoUpdate, so the contents reflect repo shell-row
+// upserts. Reset in the individual describe blocks that assert on it.
 const mockRepoInserts = [];
 
 vi.mock('@fluent-flow/db', () => ({
