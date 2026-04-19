@@ -43,8 +43,15 @@ function validateServerUrl(raw: string): { url: string } | { error: string } {
 }
 
 export async function POST(req: Request) {
-  // Fail fast if the fluent-flow server URL isn't configured — without it
-  // the generated command would point at whatever the fallback is, which
+  // Auth first — unauthenticated callers always get 401, never leak
+  // deployment-config details via a 500 they can trigger without a session.
+  const session = await getServerSession(authOptions);
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  // Then fail fast if the fluent-flow server URL isn't configured — without
+  // it the generated command would point at whatever the fallback is, which
   // silently misleads anyone running outside of production.
   const rawServerUrl = process.env.NEXT_PUBLIC_FLUENT_FLOW_URL;
   if (!rawServerUrl) {
@@ -61,11 +68,6 @@ export async function POST(req: Request) {
     );
   }
   const serverUrl = serverUrlResult.url;
-
-  const session = await getServerSession(authOptions);
-  if (!session) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
 
   let body: unknown;
   try {
