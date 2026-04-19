@@ -52,20 +52,18 @@ export async function POST(req: Request) {
 
   // Then fail fast if the fluent-flow server URL isn't configured — without
   // it the generated command would point at whatever the fallback is, which
-  // silently misleads anyone running outside of production.
+  // silently misleads anyone running outside of production. User-facing error
+  // stays generic; the specific reason (env var name, validation detail) is
+  // logged server-side only so it can't leak to the browser.
   const rawServerUrl = process.env.NEXT_PUBLIC_FLUENT_FLOW_URL;
   if (!rawServerUrl) {
-    return NextResponse.json(
-      { error: 'NEXT_PUBLIC_FLUENT_FLOW_URL is not configured on the dashboard deployment' },
-      { status: 500 },
-    );
+    console.error('[agents.POST] NEXT_PUBLIC_FLUENT_FLOW_URL is not set on the dashboard deployment');
+    return NextResponse.json({ error: 'Service misconfigured. Contact an administrator.' }, { status: 500 });
   }
   const serverUrlResult = validateServerUrl(rawServerUrl);
   if ('error' in serverUrlResult) {
-    return NextResponse.json(
-      { error: `NEXT_PUBLIC_FLUENT_FLOW_URL is invalid: ${serverUrlResult.error}` },
-      { status: 500 },
-    );
+    console.error(`[agents.POST] NEXT_PUBLIC_FLUENT_FLOW_URL is invalid: ${serverUrlResult.error}`);
+    return NextResponse.json({ error: 'Service misconfigured. Contact an administrator.' }, { status: 500 });
   }
   const serverUrl = serverUrlResult.url;
 

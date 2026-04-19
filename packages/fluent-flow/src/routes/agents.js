@@ -46,7 +46,7 @@ function adminAuth(req, res, next) {
   if (!token) {
     if (process.env.NODE_ENV === 'production') {
       logger.error({ msg: 'Admin API accessed without MCP_AUTH_TOKEN in production' });
-      return res.status(500).json({ error: 'Admin API misconfigured: MCP_AUTH_TOKEN is not set' });
+      return res.status(500).json({ error: 'Admin API misconfigured. Contact an administrator.' });
     }
     if (!adminAuthWarningLogged) {
       logger.warn({ msg: 'Admin API running without MCP_AUTH_TOKEN — unauthenticated access enabled (non-production only)' });

@@ -110,7 +110,7 @@ export function NewAgentDialog() {
       <DialogTrigger asChild>
         <Button>+ New agent</Button>
       </DialogTrigger>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-2xl">
         <DialogHeader>
           <DialogTitle>New agent</DialogTitle>
         </DialogHeader>
@@ -170,7 +170,7 @@ export function NewAgentDialog() {
         {step === 2 && command && (
           <div className="flex flex-col gap-3">
             <p className="text-sm">Run this on the machine where the runner should execute:</p>
-            <pre className="overflow-auto rounded bg-muted p-3 text-xs">{command}</pre>
+            <pre className="whitespace-pre-wrap break-all rounded bg-muted p-3 text-xs leading-relaxed">{command}</pre>
             <div className="flex items-center justify-between">
               <Button variant="outline" onClick={copyCommand}>
                 {copied ? 'Copied ✓' : 'Copy command'}

@@ -29,6 +29,17 @@ Read [packages/fluent-flow/README.md](packages/fluent-flow/README.md) for archit
 - Tests: Vitest, mocks in `tests/helpers/mocks.js`, run with `npm test`
 - Do not, under any circumstance, include any indication that code was co-authored by Claude Code.
 
+## Security
+
+**Application secrets and internal config must never leak to users.** That includes:
+
+- **Error messages returned to the browser / API clients.** Generic user-facing messages only ("Configuration error — contact support"); the real detail (env var names, stack traces, DB error codes, file paths, token prefixes) goes to `logger.error(...)` server-side only.
+- **UI surfaces.** Dialog/toast copy, form validation errors, and status strings must not name internal env vars, secret keys, service URLs, or DB/table shapes. If a screenshot of the UI could be posted publicly without editing, treat it as such.
+- **Logs and audit records.** Never log plaintext tokens, OAuth secrets, signing keys, or DB passwords. Hashes or prefixes (e.g. first 4 chars) are acceptable when they genuinely aid debugging; full values never are.
+- **Generated artifacts.** CLI commands, redirect URLs, or config files rendered for end users must not embed secrets that aren't scoped to that user (e.g., don't render server-admin tokens into a user-facing "run this" command).
+
+When in doubt: log the detail, surface a generic message. If a reviewer would flag a string as revealing internals, it doesn't belong in a user-visible response.
+
 ## Agent notification routing
 
 Notifications route to the agent that created the PR, not just the repo default:
