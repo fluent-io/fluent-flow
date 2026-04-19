@@ -1,5 +1,5 @@
 import { and, eq, sql } from 'drizzle-orm';
-import { db, schema } from '@fluent-flow/db';
+import { db, schema, createAgent as dbCreateAgent } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 import logger from '../logger.js';
 
@@ -28,16 +28,16 @@ function toSnakeAgent(row) {
 }
 
 /**
- * Create an agent.
+ * Create an agent. Delegates the insert to @fluent-flow/db and keeps the
+ * audit + logging side-effects here — the dashboard calls the db version
+ * directly (different auth surface) so audits must live at the server's
+ * write boundary, not in the db package.
  */
 export async function createAgent({ id, orgId, agentType, transport, transportMeta = {}, repos = [] }) {
-  const [row] = await db
-    .insert(agents)
-    .values({ id, orgId, agentType, transport, transportMeta, repos })
-    .returning();
+  const row = await dbCreateAgent({ id, orgId, agentType, transport, transportMeta, repos });
   audit('agent_created', { data: { orgId, agentId: id } });
   logger.info({ msg: 'Agent created', orgId, agentId: id, agentType, transport });
-  return toSnakeAgent(row);
+  return row;
 }
 
 /**

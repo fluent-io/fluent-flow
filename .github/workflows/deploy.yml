@@ -260,6 +260,14 @@ jobs:
           fi
           rm -f "$login_tmp"
 
+          # 4. Dashboard POST /api/agents is session-gated. An unauth'd POST
+          # must return 401 — proves the route is mounted AND the auth check
+          # is active. A 200/201 here would be a security regression.
+          status=$($CURL -o /dev/null -w '%{http_code}' -X POST \
+            -H 'content-type: application/json' -d '{}' \
+            http://127.0.0.1:3000/api/agents || echo "000")
+          check_eq "dashboard POST /api/agents gated" "401" "$status"
+
           if [ $fail -ne 0 ]; then
             echo "smoke tests failed — deploy is live but broken" >&2
             exit 1

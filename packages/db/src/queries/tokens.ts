@@ -46,3 +46,41 @@ export async function getKeyInfo(orgId: string, agentId: string): Promise<{ id: 
   );
   return result.rows[0] ?? null;
 }
+
+const DEFAULT_TTL_MS = 365 * 24 * 60 * 60 * 1000;
+
+export interface CreateTokenInput {
+  orgId: string;
+  agentId: string;
+  label: string;
+  /**
+   * - `undefined`: apply the default 1-year TTL.
+   * - `Date`: explicit expiry.
+   * - `null`: persist NULL — token never expires (validateToken treats NULL
+   *   expires_at as always-valid).
+   */
+  expiresAt?: Date | null;
+}
+
+/**
+ * Insert a new long-lived agent token row and return the plaintext (shown
+ * once). Used by the dashboard's "+ New agent" flow and by the fluent-flow
+ * server's MCP admin API. Plaintext is SHA-256-hashed before storage — only
+ * the hash lives in the DB.
+ */
+export async function createToken(input: CreateTokenInput): Promise<{ plaintext: string; id: number }> {
+  const plaintext = generateToken();
+  const hash = hashToken(plaintext);
+  // Distinguish `undefined` (apply default) from `null` (persist NULL).
+  const expiresAt = input.expiresAt === undefined
+    ? new Date(Date.now() + DEFAULT_TTL_MS)
+    : input.expiresAt;
+
+  const result = await query(
+    `INSERT INTO agent_tokens (org_id, agent_id, token_hash, label, expires_at)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id`,
+    [input.orgId, input.agentId, hash, input.label, expiresAt],
+  );
+  return { plaintext, id: result.rows[0].id };
+}

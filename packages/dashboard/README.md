@@ -53,16 +53,18 @@ GitHub OAuth app settings:
 npm run dev     # http://localhost:3000
 ```
 
-### First user bootstrap
+### Registering your first agent
 
-1. Log in with GitHub (creates your user record)
-2. Grant yourself superadmin and org access:
+1. Sign in and install the Fluent Flow GitHub App on your org — the install webhook creates the `orgs` row and links you as admin automatically.
+2. On the Agents page, click **+ New agent**. Enter an ID (e.g. `laptop-1`) and pick the agent type (`claude-code` by default — see [Agent types](#agent-types) below).
+3. Copy the `npx @fluent-flow/runner@latest run ...` command shown in the dialog and run it on the machine where the runner should live.
+4. The modal auto-detects when the runner connects and flips to the **Connected** step. Click Done.
 
-```sql
-UPDATE users SET is_superadmin = true WHERE login = '<your-github-login>';
-INSERT INTO user_orgs (user_id, org_id, role)
-VALUES ((SELECT id FROM users WHERE login = '<your-github-login>'), '<org-id>', 'admin');
-```
+The runner token is shown exactly once. If you lose it, delete the agent from the detail page and create a new one, or regenerate the key via `POST /api/agents/[id]/key`.
+
+### Agent types
+
+`agent_type` is a routing hint — which CLI tool the runner invokes when it claims work (`claude`, `aider`, `codex`, etc.). It is **not** the task role (`claim_type`: `spec`/`build`/`review_fix`/`test_verify`), which is decided per-claim by the server.
 
 ## API Routes
 
@@ -70,6 +72,7 @@ VALUES ((SELECT id FROM users WHERE login = '<your-github-login>'), '<org-id>', 
 |-------|--------|------|-------------|
 | `/api/auth/[...nextauth]` | * | — | NextAuth handler |
 | `/api/agents` | GET | any | List agents (org-scoped) |
+| `/api/agents` | POST | admin | Create a new agent + token, returns `npx @fluent-flow/runner …` command |
 | `/api/agents/[id]` | GET | any | Agent detail with sessions, claims, key info |
 | `/api/agents/[id]` | DELETE | admin+ | Delete agent and cascade |
 | `/api/agents/[id]/key` | POST | admin+ | Regenerate API key |

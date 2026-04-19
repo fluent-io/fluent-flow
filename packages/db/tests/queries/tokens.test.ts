@@ -10,7 +10,7 @@ vi.mock('../../src/pool', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
 }));
 
-const { regenerateKey, getKeyInfo } = await import('../../src/queries/tokens');
+const { regenerateKey, getKeyInfo, createToken } = await import('../../src/queries/tokens');
 
 describe('regenerateKey', () => {
   beforeEach(() => {
@@ -64,5 +64,63 @@ describe('getKeyInfo', () => {
 
     const result = await getKeyInfo('fluent-io', 'ff-runner');
     expect(result).toBeNull();
+  });
+});
+
+describe('createToken', () => {
+  beforeEach(() => { mockQuery.mockReset(); });
+
+  it('generates ff_ token, hashes it, stores with the provided label, returns plaintext + id', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 42 }] });
+
+    const result = await createToken({
+      orgId: 'fluent-io', agentId: 'laptop-1', label: 'dashboard-abc',
+    });
+
+    expect(result.plaintext).toMatch(/^ff_[0-9a-f]{64}$/);
+    expect(result.id).toBe(42);
+
+    const [sql, params] = mockQuery.mock.calls[0];
+    expect(sql).toContain('INSERT INTO agent_tokens');
+    expect(sql).toContain('RETURNING id');
+    // org_id, agent_id, token_hash, label, expires_at
+    expect(params).toHaveLength(5);
+    expect(params[0]).toBe('fluent-io');
+    expect(params[1]).toBe('laptop-1');
+    expect(params[2]).toMatch(/^[0-9a-f]{64}$/); // sha256 hex of plaintext
+    expect(params[3]).toBe('dashboard-abc');
+    const expiresAt = params[4] as Date;
+    const expected = Date.now() + 365 * 24 * 60 * 60 * 1000;
+    expect(Math.abs(expiresAt.getTime() - expected)).toBeLessThan(5000);
+  });
+
+  it('does not store the plaintext — only the SHA-256 hash', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 1 }] });
+
+    const result = await createToken({
+      orgId: 'o', agentId: 'a', label: 'l',
+    });
+
+    const [, params] = mockQuery.mock.calls[0];
+    expect(params[2]).not.toBe(result.plaintext);
+    expect(params[2]).not.toContain('ff_');
+  });
+
+  it('persists NULL expires_at when expiresAt is explicitly null (never expires)', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 1 }] });
+
+    await createToken({ orgId: 'o', agentId: 'a', label: 'l', expiresAt: null });
+
+    const [, params] = mockQuery.mock.calls[0];
+    expect(params[4]).toBeNull();
+  });
+
+  it('honours an explicit expiresAt Date', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 1 }] });
+    const when = new Date('2027-01-01T00:00:00Z');
+
+    await createToken({ orgId: 'o', agentId: 'a', label: 'l', expiresAt: when });
+
+    expect(mockQuery.mock.calls[0][1]?.[4]).toBe(when);
   });
 });
