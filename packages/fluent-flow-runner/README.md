@@ -1,4 +1,4 @@
-# fluent-flow-runner
+# @fluent-flow/runner
 
 CLI runner for [Fluent Flow](../fluent-flow/README.md). Connects to a Fluent Flow server, picks up fix claims (work assignments created when a code review fails), spawns the configured AI coding agent, and reports results.
 
@@ -106,7 +106,7 @@ Response includes a `token` field (`ff_...`). Save it — it is only shown once.
 ### 3. Install
 
 ```bash
-npm install -g fluent-flow-runner
+npm install -g @fluent-flow/runner
 ```
 
 Or from the repo:
