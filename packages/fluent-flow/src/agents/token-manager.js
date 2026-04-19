@@ -16,18 +16,30 @@ export function hashToken(plaintext) {
  * Create a new agent token. Delegates the insert to @fluent-flow/db; keeps
  * audit + logging at the server boundary (dashboard calls the db version
  * directly with its own session-scoped auth).
+ *
+ * `expiresAt` semantics:
+ *   - `undefined` → apply the db-layer default (1 year).
+ *   - `null`      → persist NULL; token never expires.
+ *   - `Date`      → explicit expiry.
  */
-export async function createToken(orgId, agentId, label = null, expiresAt = null) {
+export async function createToken(orgId, agentId, label = null, expiresAt) {
+  const effectiveLabel = label ?? 'default';
   const result = await dbCreateToken({
     orgId,
     agentId,
-    label: label ?? 'default',
-    expiresAt: expiresAt ?? undefined,
+    label: effectiveLabel,
+    expiresAt, // preserve undefined/null distinction for the db layer
   });
 
   audit('agent_token_created', { data: { orgId, agentId, tokenId: result.id } });
   logger.info({ msg: 'Agent token created', orgId, agentId, tokenId: result.id });
-  return { plaintext: result.plaintext, id: result.id, org_id: orgId, agent_id: agentId, label };
+  return {
+    plaintext: result.plaintext,
+    id: result.id,
+    org_id: orgId,
+    agent_id: agentId,
+    label: effectiveLabel,
+  };
 }
 
 /**

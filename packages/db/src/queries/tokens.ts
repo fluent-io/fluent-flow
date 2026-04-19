@@ -53,7 +53,13 @@ export interface CreateTokenInput {
   orgId: string;
   agentId: string;
   label: string;
-  expiresAt?: Date;
+  /**
+   * - `undefined`: apply the default 1-year TTL.
+   * - `Date`: explicit expiry.
+   * - `null`: persist NULL — token never expires (validateToken treats NULL
+   *   expires_at as always-valid).
+   */
+  expiresAt?: Date | null;
 }
 
 /**
@@ -65,7 +71,10 @@ export interface CreateTokenInput {
 export async function createToken(input: CreateTokenInput): Promise<{ plaintext: string; id: number }> {
   const plaintext = generateToken();
   const hash = hashToken(plaintext);
-  const expiresAt = input.expiresAt ?? new Date(Date.now() + DEFAULT_TTL_MS);
+  // Distinguish `undefined` (apply default) from `null` (persist NULL).
+  const expiresAt = input.expiresAt === undefined
+    ? new Date(Date.now() + DEFAULT_TTL_MS)
+    : input.expiresAt;
 
   const result = await query(
     `INSERT INTO agent_tokens (org_id, agent_id, token_hash, label, expires_at)

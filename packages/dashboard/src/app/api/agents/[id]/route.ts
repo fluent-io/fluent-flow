@@ -4,7 +4,7 @@ import { getAgentDetail, getAgentSessions, getAgentClaims, getKeyInfo, query } f
 import { authOptions, getOrgScope, hasRole } from '@/lib/auth';
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const session = await getServerSession(authOptions);
@@ -14,7 +14,24 @@ export async function GET(
 
   const { id } = await params;
   const { orgIds } = getOrgScope(session);
-  const agent = await getAgentDetail(orgIds, id);
+
+  // Agents are keyed by (org_id, id) — not globally unique. Callers that
+  // know which org they mean (e.g. the New Agent modal polling after
+  // create) pass `?org=<id>` to scope the lookup and avoid flipping to
+  // "connected" on a same-named agent in a different org.
+  const requestedOrg = new URL(request.url).searchParams.get('org');
+  const isSuperadmin = orgIds.length === 0;
+  let scope: string[];
+  if (requestedOrg) {
+    if (!isSuperadmin && !orgIds.includes(requestedOrg)) {
+      return NextResponse.json({ error: 'Forbidden: org not in user scope' }, { status: 403 });
+    }
+    scope = [requestedOrg];
+  } else {
+    scope = orgIds;
+  }
+
+  const agent = await getAgentDetail(scope, id);
 
   if (!agent) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
-import { listAgents, createAgent, createToken } from '@fluent-flow/db';
+import { listAgents, createAgent, createToken, query } from '@fluent-flow/db';
 import { authOptions, getOrgScope, hasRole } from '@/lib/auth';
 
 export async function GET() {
@@ -16,9 +16,19 @@ export async function GET() {
 
 const AGENT_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 const ALLOWED_AGENT_TYPES = new Set(['claude-code', 'codex', 'devin', 'openclaw', 'aider', 'custom']);
-const SERVER_URL = process.env.NEXT_PUBLIC_FLUENT_FLOW_URL ?? 'https://flow.fluentflow.tech';
 
 export async function POST(req: Request) {
+  // Fail fast if the fluent-flow server URL isn't configured — without it
+  // the generated command would point at whatever the fallback is, which
+  // silently misleads anyone running outside of production.
+  const serverUrl = process.env.NEXT_PUBLIC_FLUENT_FLOW_URL;
+  if (!serverUrl) {
+    return NextResponse.json(
+      { error: 'NEXT_PUBLIC_FLUENT_FLOW_URL is not configured on the dashboard deployment' },
+      { status: 500 },
+    );
+  }
+
   const session = await getServerSession(authOptions);
   if (!session) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -46,27 +56,14 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Forbidden: must be admin of the target org' }, { status: 403 });
   }
 
+  let agent;
   try {
-    const agent = await createAgent({
+    agent = await createAgent({
       id: agent_id,
       orgId: org_id,
       agentType: agent_type,
       transport: 'long_poll',
     });
-    const token = await createToken({
-      orgId: org_id,
-      agentId: agent_id,
-      label: `dashboard-${Date.now().toString(36)}`,
-    });
-
-    const command = [
-      'npx @fluent-flow/runner@latest run',
-      `--server ${SERVER_URL}`,
-      `--token ${token.plaintext}`,
-      `--agent-type ${agent_type}`,
-    ].join(' \\\n  ');
-
-    return NextResponse.json({ agent, token: token.plaintext, command }, { status: 201 });
   } catch (err) {
     const code = (err as { code?: string }).code;
     if (code === '23505') {
@@ -77,4 +74,31 @@ export async function POST(req: Request) {
     }
     throw err;
   }
+
+  // Compensating cleanup: if token creation fails after the agent row is
+  // written, we'd leave a credentials-less agent behind. Delete it before
+  // propagating the error so the user can retry cleanly.
+  let token;
+  try {
+    token = await createToken({
+      orgId: org_id,
+      agentId: agent_id,
+      label: `dashboard-${Date.now().toString(36)}`,
+    });
+  } catch (err) {
+    await query('DELETE FROM agents WHERE org_id = $1 AND id = $2', [org_id, agent_id]).catch(() => {});
+    throw err;
+  }
+
+  const command = [
+    'npx @fluent-flow/runner@latest run',
+    `--server ${serverUrl}`,
+    `--token ${token.plaintext}`,
+    `--agent-type ${agent_type}`,
+  ].join(' \\\n  ');
+
+  // `command` already embeds the plaintext token. Returning it again as a
+  // top-level field doubles the exposure surface — if a consumer logs the
+  // response, we'd log the token twice.
+  return NextResponse.json({ agent, command }, { status: 201 });
 }

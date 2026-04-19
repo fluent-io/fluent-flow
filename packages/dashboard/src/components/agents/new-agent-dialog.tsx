@@ -15,8 +15,14 @@ const AGENT_TYPES: AgentType[] = ['claude-code', 'codex', 'devin', 'openclaw', '
 export function NewAgentDialog() {
   const { data: session } = useSession();
   const router = useRouter();
-  const adminOrgs = (session?.user?.orgs ?? []).filter((o) => o.role === 'admin');
-  const canCreate = adminOrgs.length > 0 || session?.user?.isSuperadmin;
+  // Superadmins can create agents in any org they see — not just ones where
+  // they carry an explicit 'admin' user_orgs row. For regular users we still
+  // gate on 'admin' membership.
+  const isSuperadmin = !!session?.user?.isSuperadmin;
+  const eligibleOrgs = isSuperadmin
+    ? (session?.user?.orgs ?? [])
+    : (session?.user?.orgs ?? []).filter((o) => o.role === 'admin');
+  const canCreate = eligibleOrgs.length > 0;
 
   const [open, setOpen] = useState(false);
   const [step, setStep] = useState<Step>(1);
@@ -28,10 +34,10 @@ export function NewAgentDialog() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Default org to first admin org whenever the session loads or the dialog opens.
+  // Default org to first eligible org whenever the session loads or the dialog opens.
   useEffect(() => {
-    if (!orgId && adminOrgs.length > 0) setOrgId(adminOrgs[0].org_id);
-  }, [adminOrgs, orgId]);
+    if (!orgId && eligibleOrgs.length > 0) setOrgId(eligibleOrgs[0].org_id);
+  }, [eligibleOrgs, orgId]);
 
   function reset() {
     setStep(1);
@@ -68,12 +74,15 @@ export function NewAgentDialog() {
   }
 
   // Poll agent detail every 2s while on step 2; flip to step 3 when a session comes online.
+  // Scope the poll to the org we just created in — agents are keyed by
+  // (org_id, id), so sending orgId as `?org=` avoids matching a same-named
+  // agent in another org the user belongs to.
   useEffect(() => {
-    if (step !== 2 || !agentId) return;
+    if (step !== 2 || !agentId || !orgId) return;
     let cancelled = false;
     const check = async () => {
       try {
-        const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}`);
+        const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}?org=${encodeURIComponent(orgId)}`);
         if (!res.ok) return;
         const data = await res.json();
         const online = Array.isArray(data.sessions) && data.sessions.some((s: { status?: string }) => s.status === 'online');
@@ -83,7 +92,7 @@ export function NewAgentDialog() {
     const id = setInterval(check, 2000);
     check();
     return () => { cancelled = true; clearInterval(id); };
-  }, [step, agentId]);
+  }, [step, agentId, orgId]);
 
   async function copyCommand() {
     if (!command) return;
@@ -110,7 +119,7 @@ export function NewAgentDialog() {
 
         {step === 1 && (
           <div className="flex flex-col gap-3">
-            {adminOrgs.length > 1 && (
+            {eligibleOrgs.length > 1 && (
               <label className="flex flex-col gap-1 text-sm">
                 Organization
                 <select
@@ -118,7 +127,7 @@ export function NewAgentDialog() {
                   value={orgId}
                   onChange={(e) => setOrgId(e.target.value)}
                 >
-                  {adminOrgs.map((o) => (
+                  {eligibleOrgs.map((o) => (
                     <option key={o.org_id} value={o.org_id}>{o.org_id}</option>
                   ))}
                 </select>

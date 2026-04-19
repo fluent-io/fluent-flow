@@ -105,4 +105,22 @@ describe('createToken', () => {
     expect(params[2]).not.toBe(result.plaintext);
     expect(params[2]).not.toContain('ff_');
   });
+
+  it('persists NULL expires_at when expiresAt is explicitly null (never expires)', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 1 }] });
+
+    await createToken({ orgId: 'o', agentId: 'a', label: 'l', expiresAt: null });
+
+    const [, params] = mockQuery.mock.calls[0];
+    expect(params[4]).toBeNull();
+  });
+
+  it('honours an explicit expiresAt Date', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 1 }] });
+    const when = new Date('2027-01-01T00:00:00Z');
+
+    await createToken({ orgId: 'o', agentId: 'a', label: 'l', expiresAt: when });
+
+    expect(mockQuery.mock.calls[0][1]?.[4]).toBe(when);
+  });
 });
