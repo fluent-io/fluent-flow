@@ -26,12 +26,56 @@ async function ensureOrg(login) {
 }
 
 /**
- * Handle GitHub App installation.created event.
- * Ensures the org row exists, upserts the installation, and links the
- * installing user (payload.sender) to the org as admin so they can use
- * the dashboard immediately.
+ * Ensure a `repos` shell row exists for a repo linked to an installation.
+ * Implements the "unknown repos get shell rows so onboarding can complete
+ * async" behavior from the GitHub App provider integration design
+ * (docs/specs/2026-04-13-github-app-provider-integration-design.md).
  *
- * @param {{ installation: object, sender?: object }} payload
+ * The id column is `text` and doubles as the `owner/repo` slug so downstream
+ * code (agents.repos array, agent_claims.repo) can join by string identity.
+ * On conflict we re-link `installation_id` and update org/name so
+ * re-installs and cross-org transfers land on the latest installation.
+ *
+ * @param {{ orgId: string, installationId: number|null, repoExternalId: number|null, repoFullName: string }} input
+ */
+async function ensureRepo({ orgId, installationId, repoExternalId, repoFullName }) {
+  await db
+    .insert(repos)
+    .values({
+      id: repoFullName,
+      orgId,
+      repoExternalId,
+      repoFullName,
+      provider: 'github',
+      installationId,
+    })
+    .onConflictDoUpdate({
+      target: repos.id,
+      set: {
+        installationId,
+        repoFullName,
+        orgId,
+      },
+    });
+}
+
+/**
+ * Handle GitHub App installation.created event.
+ * Ensures the org row exists, upserts the installation, links the installing
+ * user (payload.sender) to the org as admin, and materializes a `repos` row
+ * for each repository delivered in the payload so the dashboard's pipeline
+ * and agent flows can resolve the repo immediately.
+ *
+ * Note on `payload.repositories`:
+ *   - `repository_selection: 'selected'` → repositories[] lists exactly what
+ *     the user picked; `installation_repositories.added` also fires
+ *     separately.
+ *   - `repository_selection: 'all'` → repositories[] contains what the App
+ *     has access to at install time (capped by GitHub). For orgs with more
+ *     repos than fit in the payload, fall back to later
+ *     `installation_repositories.added` events or an API sync.
+ *
+ * @param {{ installation: object, sender?: object, repositories?: object[] }} payload
  * @returns {Promise<object>} The upserted installation row
  */
 export async function handleInstallationCreated(payload) {
@@ -71,7 +115,26 @@ export async function handleInstallationCreated(payload) {
     }
   }
 
-  logger.info({ msg: 'handleInstallationCreated', externalId, accountLogin });
+  // Materialize shell repos so later pipeline/agent queries can resolve them.
+  // Errors per-repo don't fail the whole webhook — the org/installation rows
+  // are already in place and missing repos can be reconciled via
+  // `installation_repositories.added` redeliveries.
+  const payloadRepos = Array.isArray(payload.repositories) ? payload.repositories : [];
+  for (const r of payloadRepos) {
+    if (!r?.full_name) continue;
+    try {
+      await ensureRepo({
+        orgId: accountLogin,
+        installationId: row.id,
+        repoExternalId: r.id ?? null,
+        repoFullName: r.full_name,
+      });
+    } catch (err) {
+      logger.error({ msg: 'handleInstallationCreated: failed to ensure repo', error: err.message, repo: r.full_name });
+    }
+  }
+
+  logger.info({ msg: 'handleInstallationCreated', externalId, accountLogin, reposEnsured: payloadRepos.length });
   return row;
 }
 
@@ -152,6 +215,19 @@ export async function handleInstallationRepositoriesAdded(payload) {
       repo_external_id: repo.id,
       repo_full_name: repo.full_name,
     });
+    // Also materialize / relink the shell row in `repos` so pipeline and
+    // agent queries can resolve the repo. Scoped per-repo try/catch so a
+    // single failure doesn't skip the remaining repos in the payload.
+    try {
+      await ensureRepo({
+        orgId: inst.org_id,
+        installationId: inst.id,
+        repoExternalId: repo.id ?? null,
+        repoFullName: repo.full_name,
+      });
+    } catch (err) {
+      logger.error({ msg: 'handleInstallationRepositoriesAdded: failed to ensure repo', error: err.message, repo: repo.full_name });
+    }
   }
 
   logger.info({ msg: 'handleInstallationRepositoriesAdded', installationId: inst.id, count: repositories_added.length });
