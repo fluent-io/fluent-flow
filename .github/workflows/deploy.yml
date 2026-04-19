@@ -163,6 +163,7 @@ jobs:
               environment:
                 NODE_ENV: production
                 DEPLOY_SHA: ${GITHUB_SHA}
+                NEXT_PUBLIC_FLUENT_FLOW_URL: https://flow.fluentflow.tech
               networks:
                 - fluent-flow-net
                 - signoz-net
