@@ -90,11 +90,13 @@ export async function POST(req: Request) {
     throw err;
   }
 
+  // The runner CLI has no subcommand today; agent_type is stored on the
+  // agents row, not passed per-run. Keep the command minimal so what the
+  // user sees matches what the CLI actually accepts.
   const command = [
-    'npx @fluent-flow/runner@latest run',
+    'npx @fluent-flow/runner@latest',
     `--server ${serverUrl}`,
     `--token ${token.plaintext}`,
-    `--agent-type ${agent_type}`,
   ].join(' \\\n  ');
 
   // `command` already embeds the plaintext token. Returning it again as a
