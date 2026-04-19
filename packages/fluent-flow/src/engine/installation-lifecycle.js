@@ -53,6 +53,7 @@ async function ensureRepo({ orgId, installationId, repoExternalId, repoFullName 
       target: repos.id,
       set: {
         installationId,
+        repoExternalId,
         repoFullName,
         orgId,
       },
@@ -120,6 +121,7 @@ export async function handleInstallationCreated(payload) {
   // are already in place and missing repos can be reconciled via
   // `installation_repositories.added` redeliveries.
   const payloadRepos = Array.isArray(payload.repositories) ? payload.repositories : [];
+  let reposEnsured = 0;
   for (const r of payloadRepos) {
     if (!r?.full_name) continue;
     try {
@@ -129,12 +131,19 @@ export async function handleInstallationCreated(payload) {
         repoExternalId: r.id ?? null,
         repoFullName: r.full_name,
       });
+      reposEnsured++;
     } catch (err) {
       logger.error({ msg: 'handleInstallationCreated: failed to ensure repo', error: err.message, repo: r.full_name });
     }
   }
 
-  logger.info({ msg: 'handleInstallationCreated', externalId, accountLogin, reposEnsured: payloadRepos.length });
+  logger.info({
+    msg: 'handleInstallationCreated',
+    externalId,
+    accountLogin,
+    reposInPayload: payloadRepos.length,
+    reposEnsured,
+  });
   return row;
 }
 
@@ -210,27 +219,39 @@ export async function handleInstallationRepositoriesAdded(payload) {
     return;
   }
 
+  // Per-repo try/catch wraps BOTH the installation link write AND the
+  // repos shell-row upsert — if either throws for one repo, remaining
+  // repos in the payload still get processed.
+  let processed = 0;
   for (const repo of repositories_added) {
-    await addRepoToInstallation(inst.id, {
-      repo_external_id: repo.id,
-      repo_full_name: repo.full_name,
-    });
-    // Also materialize / relink the shell row in `repos` so pipeline and
-    // agent queries can resolve the repo. Scoped per-repo try/catch so a
-    // single failure doesn't skip the remaining repos in the payload.
+    if (!repo?.full_name) continue;
     try {
+      await addRepoToInstallation(inst.id, {
+        repo_external_id: repo.id ?? null,
+        repo_full_name: repo.full_name,
+      });
       await ensureRepo({
         orgId: inst.org_id,
         installationId: inst.id,
         repoExternalId: repo.id ?? null,
         repoFullName: repo.full_name,
       });
+      processed++;
     } catch (err) {
-      logger.error({ msg: 'handleInstallationRepositoriesAdded: failed to ensure repo', error: err.message, repo: repo.full_name });
+      logger.error({
+        msg: 'handleInstallationRepositoriesAdded: failed to process repo',
+        error: err.message,
+        repo: repo.full_name,
+      });
     }
   }
 
-  logger.info({ msg: 'handleInstallationRepositoriesAdded', installationId: inst.id, count: repositories_added.length });
+  logger.info({
+    msg: 'handleInstallationRepositoriesAdded',
+    installationId: inst.id,
+    attempted: repositories_added.length,
+    processed,
+  });
 }
 
 /**
