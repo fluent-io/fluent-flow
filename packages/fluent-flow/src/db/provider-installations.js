@@ -140,3 +140,25 @@ export async function removeRepoFromInstallation(installationId, repoExternalId)
   logger.info({ msg: 'removeRepoFromInstallation', installationId, repoExternalId });
   return row;
 }
+
+/**
+ * Bulk soft-delete: mark every still-active provider_installation_repos row
+ * for this installation as removed. Used on installation.deleted (full
+ * uninstall) to cascade the tombstone to the repo links.
+ *
+ * Returns the count of rows soft-deleted.
+ */
+export async function softDeleteAllReposForInstallation(installationId) {
+  const rows = await db
+    .update(providerInstallationRepos)
+    .set({ removedAt: sql`NOW()` })
+    .where(
+      and(
+        eq(providerInstallationRepos.installationId, installationId),
+        isNull(providerInstallationRepos.removedAt),
+      ),
+    )
+    .returning({ id: providerInstallationRepos.id });
+  logger.info({ msg: 'softDeleteAllReposForInstallation', installationId, count: rows.length });
+  return rows.length;
+}

@@ -4,6 +4,7 @@ import {
   handleInstallationCreated,
   handleInstallationSuspended,
   handleInstallationUnsuspended,
+  handleInstallationDeleted,
   handleInstallationRepositoriesAdded,
   handleInstallationRepositoriesRemoved,
 } from '../engine/installation-lifecycle.js';
@@ -57,7 +58,7 @@ async function handleInstallationEvent(payload) {
       await handleInstallationUnsuspended(installation.id);
       break;
     case 'deleted':
-      await handleInstallationSuspended(installation.id);
+      await handleInstallationDeleted(installation.id);
       break;
     default:
       logger.info({ msg: 'Unhandled installation action', action });

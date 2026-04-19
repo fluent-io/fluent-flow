@@ -7,6 +7,7 @@ import {
   findInstallationByExternalId,
   addRepoToInstallation,
   removeRepoFromInstallation,
+  softDeleteAllReposForInstallation,
 } from '../db/provider-installations.js';
 import { parkForInstallation, unparkForInstallation } from '../db/outbound-queue.js';
 import logger from '../logger.js';
@@ -184,6 +185,35 @@ export async function handleInstallationSuspended(externalInstallationId) {
   await parkForInstallation(installation.id);
 
   logger.info({ msg: 'handleInstallationSuspended', installationId: installation.id, externalInstallationId });
+}
+
+/**
+ * Handle GitHub App installation.deleted event (full uninstall).
+ *
+ * Stronger than suspend: in addition to marking the installation suspended,
+ * cancelling in-flight claims, and parking the outbound queue (all done by
+ * handleInstallationSuspended), we also cascade the tombstone to
+ * provider_installation_repos so individual repo links are marked removed.
+ * That keeps the DB consistent with GitHub's view — a user who uninstalls
+ * shouldn't see active repo links for the installation they just removed.
+ *
+ * On reinstall GitHub generates a new installation id, so we don't clear
+ * repos.installation_id here — ensureRepo will re-link to the new
+ * installation on the next install-created webhook, and the old (deleted)
+ * id stays as a historical breadcrumb.
+ *
+ * @param {number} externalInstallationId
+ */
+export async function handleInstallationDeleted(externalInstallationId) {
+  // Reuse suspend behavior first — mark suspended_at, cancel claims, park
+  // queue. `deleted` is stronger-than-suspend, not a separate pipeline.
+  await handleInstallationSuspended(externalInstallationId);
+
+  const installation = await findInstallationByExternalId(externalInstallationId);
+  if (!installation) return;
+
+  await softDeleteAllReposForInstallation(installation.id);
+  logger.info({ msg: 'handleInstallationDeleted', installationId: installation.id, externalInstallationId });
 }
 
 /**
