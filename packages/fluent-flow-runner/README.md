@@ -2,6 +2,17 @@
 
 CLI runner for [Fluent Flow](../fluent-flow/README.md). Connects to a Fluent Flow server, picks up fix claims (work assignments created when a code review fails), spawns the configured AI coding agent, and reports results.
 
+## Preferred: register via the dashboard
+
+For typical users, don't use the Admin API below — it requires the server's `MCP_AUTH_TOKEN`, which is a server-admin secret. Instead:
+
+1. Sign in to the dashboard and install the Fluent Flow GitHub App on your org.
+2. Click **+ New agent** on the Agents page. Name the agent, pick a harness.
+3. Copy the displayed `npx fluent-flow-runner …` command (token pre-filled) and run it on the machine where your AI CLI lives.
+4. Modal auto-confirms when the runner connects.
+
+The rest of this README covers the **ops/CI path** — registering agents directly against the server without going through the dashboard. Use this when provisioning from CI, from scripts, or when acting as the server admin.
+
 ## Prerequisites
 
 In production, Admin API calls require `MCP_AUTH_TOKEN` — the shared secret configured on the Fluent Flow server. In development (when `MCP_AUTH_TOKEN` is not set on the server), the Admin API allows unauthenticated access. For production, find the token in your server's environment (e.g. `docker-compose.yml` or `.env`), then export it locally:
