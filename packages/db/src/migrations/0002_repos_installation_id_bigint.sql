@@ -1,0 +1,12 @@
+-- Widen repos.installation_id from INTEGER to BIGINT to match
+-- provider_installations.id (BIGINT). GitHub installation IDs can grow
+-- beyond int32; keeping the FK-candidate column as INTEGER risks
+-- insert/update overflow once IDs exceed 2,147,483,647.
+--
+-- Existing values fit in BIGINT without modification, but this is NOT a
+-- metadata-only change: integer → bigint isn't binary-coercible, so
+-- Postgres takes an ACCESS EXCLUSIVE lock and rewrites the table.
+-- Acceptable here because the `repos` table is currently small. If it
+-- grows before this ships, switch to the online-safe two-phase pattern
+-- (add new bigint column, backfill, swap).
+ALTER TABLE "repos" ALTER COLUMN "installation_id" TYPE bigint;
