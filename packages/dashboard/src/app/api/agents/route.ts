@@ -17,17 +17,50 @@ export async function GET() {
 const AGENT_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 const ALLOWED_AGENT_TYPES = new Set(['claude-code', 'codex', 'devin', 'openclaw', 'aider', 'custom']);
 
+// Strict validator for NEXT_PUBLIC_FLUENT_FLOW_URL. The generated CLI
+// command interpolates this value into a shell line, so we must reject
+// anything that could break out of the --server arg (whitespace, quotes,
+// control chars, shell metacharacters) before rendering the command.
+function validateServerUrl(raw: string): { url: string } | { error: string } {
+  const trimmed = raw.trim();
+  if (trimmed !== raw || /\s/.test(trimmed) || /[\x00-\x1f\x7f]/.test(trimmed)) {
+    return { error: 'contains whitespace or control characters' };
+  }
+  if (/["'`$;&|<>\\]/.test(trimmed)) {
+    return { error: 'contains shell-meaningful characters' };
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { error: 'not a valid URL' };
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { error: `protocol must be http or https (got "${parsed.protocol}")` };
+  }
+  // Normalise: drop trailing slash so the command is consistent.
+  return { url: trimmed.replace(/\/+$/, '') };
+}
+
 export async function POST(req: Request) {
   // Fail fast if the fluent-flow server URL isn't configured — without it
   // the generated command would point at whatever the fallback is, which
   // silently misleads anyone running outside of production.
-  const serverUrl = process.env.NEXT_PUBLIC_FLUENT_FLOW_URL;
-  if (!serverUrl) {
+  const rawServerUrl = process.env.NEXT_PUBLIC_FLUENT_FLOW_URL;
+  if (!rawServerUrl) {
     return NextResponse.json(
       { error: 'NEXT_PUBLIC_FLUENT_FLOW_URL is not configured on the dashboard deployment' },
       { status: 500 },
     );
   }
+  const serverUrlResult = validateServerUrl(rawServerUrl);
+  if ('error' in serverUrlResult) {
+    return NextResponse.json(
+      { error: `NEXT_PUBLIC_FLUENT_FLOW_URL is invalid: ${serverUrlResult.error}` },
+      { status: 500 },
+    );
+  }
+  const serverUrl = serverUrlResult.url;
 
   const session = await getServerSession(authOptions);
   if (!session) {
