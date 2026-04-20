@@ -49,7 +49,8 @@ describe('GET /api/agents/[id]', () => {
     });
     mockGetAgentDetail.mockResolvedValueOnce(null);
 
-    const response = await GET({} as Request, { params: Promise.resolve({ id: 'nonexistent' }) });
+    const request = new Request('http://localhost/api/agents/nonexistent');
+    const response = await GET(request, { params: Promise.resolve({ id: 'nonexistent' }) });
     expect(response.status).toBe(404);
   });
 
@@ -63,7 +64,8 @@ describe('GET /api/agents/[id]', () => {
     mockGetAgentClaims.mockResolvedValueOnce([]);
     mockGetKeyInfo.mockResolvedValueOnce({ id: 3, created_at: new Date() });
 
-    const response = await GET({} as Request, { params: Promise.resolve({ id: 'ff-runner' }) });
+    const request = new Request('http://localhost/api/agents/ff-runner');
+    const response = await GET(request, { params: Promise.resolve({ id: 'ff-runner' }) });
     const data = await response.json();
 
     expect(response.status).toBe(200);
