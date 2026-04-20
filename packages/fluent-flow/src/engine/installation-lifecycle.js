@@ -154,7 +154,7 @@ export async function handleInstallationCreated(payload) {
  *
  * @param {number} externalInstallationId
  */
-export async function handleInstallationSuspended(externalInstallationId) {
+export async function handleInstallationSuspended(externalInstallationId, { cancelReason = 'installation_suspended' } = {}) {
   const installation = await findInstallationByExternalId(externalInstallationId);
   if (!installation) {
     logger.warn({ msg: 'handleInstallationSuspended: installation not found', externalInstallationId });
@@ -164,6 +164,8 @@ export async function handleInstallationSuspended(externalInstallationId) {
   await softDeleteInstallation(installation.id);
 
   // Cancel in-flight claims for repos belonging to this installation.
+  // `cancelReason` is recorded on each claim's payload so audit readers can
+  // distinguish a recoverable suspend from a permanent delete.
   const affectedRepos = db
     .select({ id: repos.id })
     .from(repos)
@@ -173,7 +175,7 @@ export async function handleInstallationSuspended(externalInstallationId) {
     .set({
       status: 'cancelled',
       completedAt: sql`NOW()`,
-      payload: sql`${agentClaims.payload} || ${{ cancel_reason: 'installation_suspended' }}::jsonb`,
+      payload: sql`${agentClaims.payload} || ${{ cancel_reason: cancelReason }}::jsonb`,
     })
     .where(
       and(
@@ -184,7 +186,7 @@ export async function handleInstallationSuspended(externalInstallationId) {
 
   await parkForInstallation(installation.id);
 
-  logger.info({ msg: 'handleInstallationSuspended', installationId: installation.id, externalInstallationId });
+  logger.info({ msg: 'handleInstallationSuspended', installationId: installation.id, externalInstallationId, cancelReason });
   return installation;
 }
 
@@ -208,9 +210,9 @@ export async function handleInstallationSuspended(externalInstallationId) {
 export async function handleInstallationDeleted(externalInstallationId) {
   // Reuse suspend behavior first — mark suspended_at, cancel claims, park
   // queue. `deleted` is stronger-than-suspend, not a separate pipeline.
-  // handleInstallationSuspended now returns the installation (or null), so
-  // we don't need a second findInstallationByExternalId round-trip.
-  const installation = await handleInstallationSuspended(externalInstallationId);
+  // Pass the accurate cancel reason so claims don't get tagged as merely
+  // suspended when the install was permanently removed.
+  const installation = await handleInstallationSuspended(externalInstallationId, { cancelReason: 'installation_deleted' });
   if (!installation) return;
 
   await softDeleteAllReposForInstallation(installation.id);

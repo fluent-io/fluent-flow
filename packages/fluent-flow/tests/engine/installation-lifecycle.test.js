@@ -24,11 +24,13 @@ vi.mock('@fluent-flow/db', () => ({
         },
       }),
     }),
-    // Suspend/delete code paths read `db.select(...).from(...).where(...)`
-    // (to collect affected repo ids) and `db.update(...).set(...).where(...)`
-    // (to mark claims cancelled). These stubs are only exercised when tests
-    // call handleInstallationSuspended/Deleted.
-    select: () => ({ from: () => ({ where: async () => [] }) }),
+    // Suspend/delete code paths:
+    //   - `db.select(...).from(...).where(...)` builds a sub-select passed
+    //     into drizzle's inArray(...) — NOT awaited in production code.
+    //     Returning a plain sentinel (not a Promise) matches that usage so
+    //     the mock doesn't mask bugs where something starts awaiting it.
+    //   - `db.update(...).set(...).where(...)` IS awaited — mock as async.
+    select: () => ({ from: () => ({ where: () => ({ __subquery: 'mock' }) }) }),
     update: () => ({ set: () => ({ where: async () => [] }) }),
   },
   schema: { orgs: {}, agentClaims: {}, repos: { id: 'repos.id' } },
