@@ -24,6 +24,14 @@ vi.mock('@fluent-flow/db', () => ({
         },
       }),
     }),
+    // Suspend/delete code paths:
+    //   - `db.select(...).from(...).where(...)` builds a sub-select passed
+    //     into drizzle's inArray(...) — NOT awaited in production code.
+    //     Returning a plain sentinel (not a Promise) matches that usage so
+    //     the mock doesn't mask bugs where something starts awaiting it.
+    //   - `db.update(...).set(...).where(...)` IS awaited — mock as async.
+    select: () => ({ from: () => ({ where: () => ({ __subquery: 'mock' }) }) }),
+    update: () => ({ set: () => ({ where: async () => [] }) }),
   },
   schema: { orgs: {}, agentClaims: {}, repos: { id: 'repos.id' } },
   upsertUser: (...args) => mockUpsertUser(...args),
@@ -33,13 +41,16 @@ vi.mock('@fluent-flow/db', () => ({
 const mockUpsertInstallation = vi.fn().mockResolvedValue({ id: 999 });
 const mockFindInstallation = vi.fn();
 const mockAddRepoToInstallation = vi.fn();
+const mockSoftDeleteInstallation = vi.fn();
+const mockSoftDeleteAllReposForInstallation = vi.fn();
 vi.mock('../../src/db/provider-installations.js', () => ({
   upsertInstallation: (...args) => mockUpsertInstallation(...args),
-  softDeleteInstallation: vi.fn(),
+  softDeleteInstallation: (...args) => mockSoftDeleteInstallation(...args),
   unsuspendInstallation: vi.fn(),
   findInstallationByExternalId: (...args) => mockFindInstallation(...args),
   addRepoToInstallation: (...args) => mockAddRepoToInstallation(...args),
   removeRepoFromInstallation: vi.fn(),
+  softDeleteAllReposForInstallation: (...args) => mockSoftDeleteAllReposForInstallation(...args),
 }));
 
 vi.mock('../../src/db/outbound-queue.js', () => ({
@@ -47,8 +58,11 @@ vi.mock('../../src/db/outbound-queue.js', () => ({
   unparkForInstallation: vi.fn(),
 }));
 
-const { handleInstallationCreated, handleInstallationRepositoriesAdded } =
-  await import('../../src/engine/installation-lifecycle.js');
+const {
+  handleInstallationCreated,
+  handleInstallationRepositoriesAdded,
+  handleInstallationDeleted,
+} = await import('../../src/engine/installation-lifecycle.js');
 
 function buildPayload(overrides = {}) {
   return {
@@ -210,5 +224,35 @@ describe('handleInstallationRepositoriesAdded', () => {
 
     expect(mockAddRepoToInstallation).not.toHaveBeenCalled();
     expect(mockRepoInserts).toHaveLength(0);
+  });
+});
+
+describe('handleInstallationDeleted', () => {
+  beforeEach(() => {
+    mockFindInstallation.mockReset();
+    mockSoftDeleteInstallation.mockReset();
+    mockSoftDeleteAllReposForInstallation.mockReset();
+  });
+
+  it('cascades the tombstone: marks installation suspended AND soft-deletes all repo links', async () => {
+    mockFindInstallation.mockResolvedValue({ id: 42, org_id: 'acme' });
+    mockSoftDeleteInstallation.mockResolvedValue(undefined);
+    mockSoftDeleteAllReposForInstallation.mockResolvedValue(1);
+
+    await handleInstallationDeleted(12345);
+
+    // Suspend-level behaviour ran (via handleInstallationSuspended reuse).
+    expect(mockSoftDeleteInstallation).toHaveBeenCalledWith(42);
+    // Delete-specific cascade ran — the gap PR #82's review surfaced.
+    expect(mockSoftDeleteAllReposForInstallation).toHaveBeenCalledWith(42);
+  });
+
+  it('does nothing and does not cascade when the installation is not found', async () => {
+    mockFindInstallation.mockResolvedValue(null);
+
+    await handleInstallationDeleted(99999);
+
+    expect(mockSoftDeleteInstallation).not.toHaveBeenCalled();
+    expect(mockSoftDeleteAllReposForInstallation).not.toHaveBeenCalled();
   });
 });

@@ -112,6 +112,22 @@ See the README in each directory for details:
 - [Agents](src/agents/README.md) — registry, tokens, sessions, claims
 - [Config](config/README.md) — config system
 
+## GitHub App install lifecycle
+
+Webhooks land at `POST /webhooks/github-app` (not `/api/...` — matches the App's configured Webhook URL). Signature is verified via `FF_GITHUB_APP_WEBHOOK_SECRET`. Each event handler is idempotent so redeliveries are safe.
+
+| Event | DB writes |
+|-------|-----------|
+| `installation.created` | Upserts `orgs` (id = GitHub login), `provider_installations`, and a shell row in `repos` for each entry in `payload.repositories`. Upserts the `sender` as a `users` row and links them to the org as `admin` via `user_orgs`. |
+| `installation_repositories.added` | Inserts `provider_installation_repos` links and ensures `repos` shell rows exist (re-linking `installation_id` if a repo was previously under a different installation). |
+| `installation_repositories.removed` | Soft-deletes the matching `provider_installation_repos` rows (`removed_at = NOW()`). |
+| `installation.suspend` | Sets `provider_installations.suspended_at`, cancels in-flight `agent_claims`, parks the outbound queue. Leaves `provider_installation_repos` intact so `unsuspend` can resume without re-syncing. |
+| `installation.unsuspend` | Clears `suspended_at`, unparks outbound queue rows created in the last 24 hours. |
+| `installation.deleted` | Everything `suspend` does, **plus** soft-deletes every still-active `provider_installation_repos` row for the installation. `repos.installation_id` is left pointing at the (now-deleted) installation as a historical breadcrumb; a future reinstall re-links via `ensureRepo`. |
+
+Known limits:
+- When an org installs with `repository_selection: "all"` and has more repos than fit in `installation.created`'s `repositories[]` (cap ~100), only the first page gets shell rows at install time. Later events fill in the rest. There's no initial API-sync backfill yet — see [ROADMAP](../../ROADMAP.md).
+
 ## Database
 
 7 migrations in `src/db/migrations/`:

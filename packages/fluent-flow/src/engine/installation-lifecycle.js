@@ -7,6 +7,7 @@ import {
   findInstallationByExternalId,
   addRepoToInstallation,
   removeRepoFromInstallation,
+  softDeleteAllReposForInstallation,
 } from '../db/provider-installations.js';
 import { parkForInstallation, unparkForInstallation } from '../db/outbound-queue.js';
 import logger from '../logger.js';
@@ -151,18 +152,30 @@ export async function handleInstallationCreated(payload) {
  * Handle GitHub App installation.suspend event.
  * Soft-deletes the installation, cancels in-flight claims, and parks the queue.
  *
+ * Also reused by handleInstallationDeleted — pass a different
+ * `cancelReason` so the audit trail distinguishes temporary suspends from
+ * permanent uninstalls.
+ *
  * @param {number} externalInstallationId
+ * @param {{ cancelReason?: string }} [options]
+ * @param {string} [options.cancelReason='installation_suspended'] — tag
+ *   written onto each cancelled claim's payload.
+ * @returns {Promise<object|null>} The installation row (for reuse by
+ *   downstream handlers), or `null` when no installation matched the
+ *   external id.
  */
-export async function handleInstallationSuspended(externalInstallationId) {
+export async function handleInstallationSuspended(externalInstallationId, { cancelReason = 'installation_suspended' } = {}) {
   const installation = await findInstallationByExternalId(externalInstallationId);
   if (!installation) {
     logger.warn({ msg: 'handleInstallationSuspended: installation not found', externalInstallationId });
-    return;
+    return null;
   }
 
   await softDeleteInstallation(installation.id);
 
   // Cancel in-flight claims for repos belonging to this installation.
+  // `cancelReason` is recorded on each claim's payload so audit readers can
+  // distinguish a recoverable suspend from a permanent delete.
   const affectedRepos = db
     .select({ id: repos.id })
     .from(repos)
@@ -172,7 +185,7 @@ export async function handleInstallationSuspended(externalInstallationId) {
     .set({
       status: 'cancelled',
       completedAt: sql`NOW()`,
-      payload: sql`${agentClaims.payload} || ${{ cancel_reason: 'installation_suspended' }}::jsonb`,
+      payload: sql`${agentClaims.payload} || ${{ cancel_reason: cancelReason }}::jsonb`,
     })
     .where(
       and(
@@ -183,7 +196,40 @@ export async function handleInstallationSuspended(externalInstallationId) {
 
   await parkForInstallation(installation.id);
 
-  logger.info({ msg: 'handleInstallationSuspended', installationId: installation.id, externalInstallationId });
+  logger.info({ msg: 'handleInstallationSuspended', installationId: installation.id, externalInstallationId, cancelReason });
+  return installation;
+}
+
+/**
+ * Handle GitHub App installation.deleted event (full uninstall).
+ *
+ * Stronger than suspend: in addition to marking the installation suspended,
+ * cancelling in-flight claims, and parking the outbound queue (all done by
+ * handleInstallationSuspended), we also cascade the tombstone to
+ * provider_installation_repos so individual repo links are marked removed.
+ * That keeps the DB consistent with GitHub's view — a user who uninstalls
+ * shouldn't see active repo links for the installation they just removed.
+ *
+ * On reinstall GitHub generates a new installation id, so we don't clear
+ * repos.installation_id here — ensureRepo will re-link to the new
+ * installation on the next install-created webhook, and the old (deleted)
+ * id stays as a historical breadcrumb.
+ *
+ * @param {number} externalInstallationId
+ * @returns {Promise<object|null>} The installation row, or `null` when no
+ *   installation matched the external id.
+ */
+export async function handleInstallationDeleted(externalInstallationId) {
+  // Reuse suspend behavior first — mark suspended_at, cancel claims, park
+  // queue. `deleted` is stronger-than-suspend, not a separate pipeline.
+  // Pass the accurate cancel reason so claims don't get tagged as merely
+  // suspended when the install was permanently removed.
+  const installation = await handleInstallationSuspended(externalInstallationId, { cancelReason: 'installation_deleted' });
+  if (!installation) return null;
+
+  await softDeleteAllReposForInstallation(installation.id);
+  logger.info({ msg: 'handleInstallationDeleted', installationId: installation.id, externalInstallationId });
+  return installation;
 }
 
 /**
