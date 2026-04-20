@@ -22,6 +22,13 @@
       "when": 1776629181556,
       "tag": "0002_repos_installation_id_bigint",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1776729600000,
+      "tag": "0003_agent_sessions_expires_at_live_idx",
+      "breakpoints": true
     }
   ]
 }

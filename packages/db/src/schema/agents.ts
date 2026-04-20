@@ -33,6 +33,12 @@ export const agentSessions = pgTable('agent_sessions', {
   activeIdx: index('idx_agent_sessions_active')
     .on(t.orgId, t.agentId, t.status)
     .where(sql`${t.status} = 'online'`),
+  // Supports both the periodic expireSessions() UPDATE and every routing query
+  // that filters `status <> 'offline' AND expires_at > NOW()`. Partial so the
+  // index stays tight (offline rows pile up forever; we never seek them here).
+  expiresAtLiveIdx: index('idx_agent_sessions_expires_at_live')
+    .on(t.expiresAt)
+    .where(sql`${t.status} <> 'offline'`),
 }));
 
 export const agentTokens = pgTable('agent_tokens', {

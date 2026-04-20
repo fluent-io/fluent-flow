@@ -14,7 +14,12 @@ export async function expireSessionsTick() {
 export async function startSessionExpiryWorker() {
   logger.info({ msg: 'startSessionExpiryWorker: started', intervalMs: SLEEP_MS });
   while (true) {
-    await expireSessionsTick();
-    await new Promise((resolve) => setTimeout(resolve, SLEEP_MS));
+    try {
+      await expireSessionsTick();
+      await new Promise((resolve) => setTimeout(resolve, SLEEP_MS));
+    } catch (err) {
+      logger.error({ msg: 'startSessionExpiryWorker: unhandled error', error: err.message });
+      await new Promise((resolve) => setTimeout(resolve, SLEEP_MS));
+    }
   }
 }
