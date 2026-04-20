@@ -158,7 +158,7 @@ export async function handleInstallationSuspended(externalInstallationId) {
   const installation = await findInstallationByExternalId(externalInstallationId);
   if (!installation) {
     logger.warn({ msg: 'handleInstallationSuspended: installation not found', externalInstallationId });
-    return;
+    return null;
   }
 
   await softDeleteInstallation(installation.id);
@@ -185,6 +185,7 @@ export async function handleInstallationSuspended(externalInstallationId) {
   await parkForInstallation(installation.id);
 
   logger.info({ msg: 'handleInstallationSuspended', installationId: installation.id, externalInstallationId });
+  return installation;
 }
 
 /**
@@ -207,9 +208,9 @@ export async function handleInstallationSuspended(externalInstallationId) {
 export async function handleInstallationDeleted(externalInstallationId) {
   // Reuse suspend behavior first — mark suspended_at, cancel claims, park
   // queue. `deleted` is stronger-than-suspend, not a separate pipeline.
-  await handleInstallationSuspended(externalInstallationId);
-
-  const installation = await findInstallationByExternalId(externalInstallationId);
+  // handleInstallationSuspended now returns the installation (or null), so
+  // we don't need a second findInstallationByExternalId round-trip.
+  const installation = await handleInstallationSuspended(externalInstallationId);
   if (!installation) return;
 
   await softDeleteAllReposForInstallation(installation.id);

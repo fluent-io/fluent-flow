@@ -30,6 +30,7 @@ vi.mock('../../src/engine/installation-lifecycle.js', () => ({
   handleInstallationCreated: (...args) => mockHandleInstallationCreated(...args),
   handleInstallationSuspended: (...args) => mockHandleInstallationSuspended(...args),
   handleInstallationUnsuspended: (...args) => mockHandleInstallationUnsuspended(...args),
+  handleInstallationDeleted: vi.fn(),
   handleInstallationRepositoriesAdded: (...args) => mockHandleInstallationRepositoriesAdded(...args),
   handleInstallationRepositoriesRemoved: (...args) => mockHandleInstallationRepositoriesRemoved(...args),
 }));
