@@ -5,13 +5,22 @@ import type { AgentListItem, Agent } from '../schemas/agents.js';
 export async function listAgents(orgIds: string[]): Promise<AgentListItem[]> {
   const isSuper = orgIds.length === 0;
 
+  // Status is computed at read time: a stored 'online'/'busy' that has
+  // outlived its TTL surfaces as 'offline'. Writers keep setting status
+  // directly; readers don't trust stale 'online' rows left behind when a
+  // runner dies without hitting the /offline endpoint.
   const sql = `
     SELECT a.*,
       s.status,
       s.last_seen_at
     FROM agents a
     LEFT JOIN LATERAL (
-      SELECT status, last_seen_at
+      SELECT
+        CASE
+          WHEN status <> 'offline' AND expires_at > NOW() THEN status
+          ELSE 'offline'
+        END AS status,
+        last_seen_at
       FROM agent_sessions
       WHERE agent_id = a.id AND org_id = a.org_id
       ORDER BY last_seen_at DESC NULLS LAST

@@ -36,6 +36,19 @@ describe('listAgents', () => {
     expect(result).toEqual([]);
     expect(mockQuery.mock.calls[0][0]).not.toContain('org_id = ANY');
   });
+
+  it('computes status at read time: expired sessions surface as offline', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+
+    await listAgents(['fluent-io']);
+
+    const sql = mockQuery.mock.calls[0][0] as string;
+    // Guard the shape of the CASE expression — stored 'online'/'busy' must
+    // be downgraded to 'offline' when expires_at <= NOW().
+    expect(sql).toContain('CASE');
+    expect(sql).toContain(`status <> 'offline' AND expires_at > NOW()`);
+    expect(sql).toContain(`ELSE 'offline'`);
+  });
 });
 
 describe('getAgentDetail', () => {
