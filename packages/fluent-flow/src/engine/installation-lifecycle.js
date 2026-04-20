@@ -152,7 +152,17 @@ export async function handleInstallationCreated(payload) {
  * Handle GitHub App installation.suspend event.
  * Soft-deletes the installation, cancels in-flight claims, and parks the queue.
  *
+ * Also reused by handleInstallationDeleted — pass a different
+ * `cancelReason` so the audit trail distinguishes temporary suspends from
+ * permanent uninstalls.
+ *
  * @param {number} externalInstallationId
+ * @param {{ cancelReason?: string }} [options]
+ * @param {string} [options.cancelReason='installation_suspended'] — tag
+ *   written onto each cancelled claim's payload.
+ * @returns {Promise<object|null>} The installation row (for reuse by
+ *   downstream handlers), or `null` when no installation matched the
+ *   external id.
  */
 export async function handleInstallationSuspended(externalInstallationId, { cancelReason = 'installation_suspended' } = {}) {
   const installation = await findInstallationByExternalId(externalInstallationId);
@@ -206,6 +216,8 @@ export async function handleInstallationSuspended(externalInstallationId, { canc
  * id stays as a historical breadcrumb.
  *
  * @param {number} externalInstallationId
+ * @returns {Promise<object|null>} The installation row, or `null` when no
+ *   installation matched the external id.
  */
 export async function handleInstallationDeleted(externalInstallationId) {
   // Reuse suspend behavior first — mark suspended_at, cancel claims, park
@@ -213,10 +225,11 @@ export async function handleInstallationDeleted(externalInstallationId) {
   // Pass the accurate cancel reason so claims don't get tagged as merely
   // suspended when the install was permanently removed.
   const installation = await handleInstallationSuspended(externalInstallationId, { cancelReason: 'installation_deleted' });
-  if (!installation) return;
+  if (!installation) return null;
 
   await softDeleteAllReposForInstallation(installation.id);
   logger.info({ msg: 'handleInstallationDeleted', installationId: installation.id, externalInstallationId });
+  return installation;
 }
 
 /**
