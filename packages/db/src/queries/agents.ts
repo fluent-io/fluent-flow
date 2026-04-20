@@ -1,6 +1,7 @@
 import { query } from '../pool.js';
 import { agentListItemSchema, agentSchema } from '../schemas/agents.js';
 import type { AgentListItem, Agent } from '../schemas/agents.js';
+import { SESSION_STATUS_AT_READ_TIME } from './_helpers.js';
 
 export async function listAgents(orgIds: string[]): Promise<AgentListItem[]> {
   const isSuper = orgIds.length === 0;
@@ -16,10 +17,7 @@ export async function listAgents(orgIds: string[]): Promise<AgentListItem[]> {
     FROM agents a
     LEFT JOIN LATERAL (
       SELECT
-        CASE
-          WHEN status <> 'offline' AND expires_at > NOW() THEN status
-          ELSE 'offline'
-        END AS status,
+        ${SESSION_STATUS_AT_READ_TIME} AS status,
         last_seen_at
       FROM agent_sessions
       WHERE agent_id = a.id AND org_id = a.org_id

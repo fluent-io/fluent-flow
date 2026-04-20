@@ -6,6 +6,7 @@ vi.mock('../../src/pool', () => ({
 }));
 
 const { getAgentSessions } = await import('../../src/queries/sessions');
+const { SESSION_STATUS_AT_READ_TIME } = await import('../../src/queries/_helpers');
 
 describe('getAgentSessions', () => {
   beforeEach(() => { mockQuery.mockReset(); });
@@ -21,17 +22,15 @@ describe('getAgentSessions', () => {
     expect(sql).toContain('LIMIT 50');
   });
 
-  it('computes status at read time: expired sessions surface as offline', async () => {
+  it('computes status at read time via the shared SESSION_STATUS_AT_READ_TIME fragment', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [] });
 
     await getAgentSessions('fluent-io', 'pc-1');
 
     const sql = mockQuery.mock.calls[0][0] as string;
-    // Stored 'online'/'busy' that has outlived its TTL must surface as
-    // 'offline' — readers don't trust stale status left behind when a
-    // runner dies without hitting the /offline endpoint.
-    expect(sql).toContain('CASE');
-    expect(sql).toContain(`status <> 'offline' AND expires_at > NOW()`);
-    expect(sql).toContain(`ELSE 'offline'`);
+    expect(sql).toContain(SESSION_STATUS_AT_READ_TIME);
+    expect(SESSION_STATUS_AT_READ_TIME).toContain('CASE');
+    expect(SESSION_STATUS_AT_READ_TIME).toContain(`status <> 'offline' AND expires_at > NOW()`);
+    expect(SESSION_STATUS_AT_READ_TIME).toContain(`ELSE 'offline'`);
   });
 });
