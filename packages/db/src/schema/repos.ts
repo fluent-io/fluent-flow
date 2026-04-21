@@ -9,12 +9,16 @@ export const repos = pgTable('repos', {
   repoFullName: text('repo_full_name').notNull(),
   provider: text('provider').notNull().default('github'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  // installation_id is BIGINT to match provider_installations.id. Widened
-  // from INTEGER in migration 0002_repos_installation_id_bigint. No FK
-  // constraint: the old homegrown migration 016 added the column without
-  // one, and the drizzle baseline preserved that state. Add
-  // `.references(...)` + a follow-up migration if we want referential
-  // integrity.
+  // installation_id is BIGINT to match provider_installations.id (widened
+  // from INTEGER in migration 0002_repos_installation_id_bigint).
+  //
+  // FK NOTE: `repos_installation_id_fkey` REFERENCES provider_installations(id)
+  // IS present on prod (verified via pg_constraint 2026-04-21). It was added
+  // by the pre-baseline homegrown migration 016 and the Drizzle introspection
+  // that produced 0000_baseline.sql dropped it. Adding `.references(...)` here
+  // would bring the schema declaration in line with prod — deferred because it
+  // also needs a snapshot regen and a spot-check that no legacy rows violate
+  // the constraint.
   installationId: bigint('installation_id', { mode: 'number' }),
 }, (t) => ({
   orgIdIdx: index('idx_repos_org_id').on(t.orgId),

@@ -43,8 +43,8 @@ Each entry: the gap, the impact, and the rough shape of the fix.
 
 ### Schema cleanup
 
-- **`repos.installation_id` has no FK constraint.** Column exists and now has correct type (BIGINT), but no `REFERENCES provider_installations(id)`. Historical — old homegrown migration landed without it.
-  - **Fix shape:** add a migration declaring the FK. Need to confirm nothing in the existing data violates the constraint first.
+- **`repos.installation_id` FK exists on prod but isn't declared in the Drizzle schema.** `repos_installation_id_fkey` is enforced in the DB (verified 2026-04-21 via `pg_constraint` — the constraint blocked a delete ordering until `repos` went before `provider_installations`). But `packages/db/src/schema/repos.ts` declares the column without `.references()`, and its comment still claims "No FK constraint" — both wrong. A `drizzle-kit generate` would emit a drop-constraint migration against reality.
+  - **Fix shape:** add `.references(() => providerInstallations.id)` to the repos schema and regenerate the snapshot so drizzle's mental model matches prod. No DB migration needed.
 
 - **`agent_type` is a bad name.** Stored on `agents` and used as a routing hint (`claude-code`/`aider`/etc.). Users confuse it with `claim_type` (which is the role — `spec`/`build`/`fix`/`test`). Rename to `harness` to disambiguate.
   - **Fix shape:** migration renames `agents.agent_type` → `agents.harness`; update Drizzle schema, Zod schemas, UI strings, docs.
