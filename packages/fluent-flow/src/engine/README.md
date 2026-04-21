@@ -29,7 +29,7 @@ Config-driven state transitions with requirement validation.
 
 Automated code review dispatch and retry tracking.
 
-- `dispatchReview({ owner, repo, prNumber, ref, attempt, priorIssues, issueNumber })` — dismisses stale Fluent Flow reviews, then triggers `pr-review.yml` GitHub Actions workflow. Skips dispatch if issue is paused (`getActivePause`). Dispatched by the check-run handler after CI passes (not on PR open).
+- `dispatchReview({ owner, repo, prNumber, ref, attempt, priorIssues, issueNumber })` — dismisses stale Fluent Flow reviews, then creates a `claim_type: 'review'` claim via `claim-manager.createClaim`. An online runner picks it up via long-poll and invokes the configured harness (`claude-code` / `aider` / …) with a prompt that tells it to post a PR review comment terminated by `<!-- reviewer-result: {…} -->`. Skips dispatch if the issue is paused. Called by the check-run handler after CI passes (not on PR open). No GitHub Actions workflow is triggered — review runs on the user's runner.
 - `handleReviewResult({ ..., result, agentId })` — PASS: enable auto-merge, complete active claim. FAIL: increment retry, create claim (assigns runner session if available), notify agent with rich issue details and optional `on_failure` model/thinking config. FAIL at max retries: escalate (add `needs-human` label, record pause, reset counter). Claims are created before notification so `long_poll` runners have a `session_id` to route to.
 - `getRetryRecord(repo, prNumber)` — query `review_retries` table
 - `resetRetries(repo, prNumber)` — zero out counter and clear issues. Called after escalation and unconditionally on PR close to prevent stale retry records.

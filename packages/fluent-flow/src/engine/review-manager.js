@@ -4,7 +4,7 @@ import { audit } from '../db/client.js';
 
 const { reviewRetries } = schema;
 import { resolveConfig } from '../config/loader.js';
-import { dispatchWorkflow, addLabel, getReviews, dismissReview } from '../providers/github/rest.js';
+import { addLabel, getReviews, dismissReview } from '../providers/github/rest.js';
 import { enablePullRequestAutoMerge, getPRNodeId } from '../providers/github/graphql.js';
 import { recordPause, getActivePause } from './pause-manager.js';
 import { notifyReviewFailure, formatRichMessage } from '../notifications/dispatcher.js';
@@ -14,13 +14,22 @@ import { getProvider } from '../providers/index.js';
 import logger from '../logger.js';
 
 /**
- * Dispatch the pr-review GitHub Actions workflow for a repository.
+ * Dispatch an automated code review for a PR by creating a `review` claim.
+ *
+ * The claim is picked up by an online runner (long-poll) on the user's
+ * machine; the configured harness (claude-code, aider, etc.) produces the
+ * review and posts it as a PR review comment with a
+ * `<!-- reviewer-result: {…} -->` marker that `handleReviewResult` parses.
+ *
+ * Replaces the earlier `workflow_dispatch` on a per-repo `pr-review.yml` —
+ * target repos no longer need a workflow file or an API-key secret.
  *
  * @param {object} opts
  * @param {string} opts.owner
  * @param {string} opts.repo
  * @param {number} opts.prNumber
- * @param {string} [opts.ref='main'] - Branch to dispatch workflow on
+ * @param {string} [opts.ref='main'] - Head branch (passed to the harness so
+ *   its worktree can check out the PR head)
  * @param {number} [opts.attempt=1]
  * @param {Array} [opts.priorIssues=[]]
  * @returns {Promise<void>}
@@ -42,7 +51,8 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', atte
     }
   }
 
-  // Dismiss prior Fluent Flow reviews before dispatching new one
+  // Dismiss prior Fluent Flow reviews before dispatching new one so the
+  // single-review invariant `handleReviewResult` depends on holds.
   try {
     const reviews = await getReviews(owner, repo, prNumber);
     const staleReviews = reviews.filter(
@@ -60,14 +70,29 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', atte
     logger.warn({ msg: 'Failed to fetch reviews for dismiss', repo: repoKey, prNumber, error: err.message });
   }
 
-  await dispatchWorkflow(owner, repo, 'pr-review.yml', ref, {
-    pr_number: String(prNumber),
-    attempt: String(attempt),
-    prior_issues: JSON.stringify(priorIssues),
-  });
-
-  logger.info({ msg: 'Dispatched pr-review workflow', repo: repoKey, prNumber, attempt });
-  audit('review_dispatched', { repo: repoKey, data: { prNumber, attempt } });
+  try {
+    const newClaim = await createClaim({
+      orgId: config.org_id ?? 'self-hosted',
+      repo: repoKey,
+      prNumber,
+      attempt,
+      claimType: 'review',
+      payload: {
+        priorIssues,
+        onFailure: config.reviewer?.on_failure,
+        branch: ref,
+      },
+    });
+    if (newClaim) {
+      const providerClient = getProvider({ installation_id: newClaim.installation_id });
+      onClaimDispatched(providerClient, newClaim)
+        .catch((err) => logger.warn({ msg: 'onClaimDispatched failed', error: err.message }));
+    }
+    logger.info({ msg: 'Review claim created', repo: repoKey, prNumber, attempt });
+    audit('review_dispatched', { repo: repoKey, data: { prNumber, attempt } });
+  } catch (err) {
+    logger.error({ msg: 'Failed to create review claim', repo: repoKey, prNumber, error: err.message });
+  }
 }
 
 /**

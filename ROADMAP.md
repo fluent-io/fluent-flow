@@ -19,6 +19,8 @@ Rolling view of what's shipped, what's in flight, and what's known-missing.
 | #84 | server + db | Cascade repo-link tombstones on `installation.deleted`; `softDeleteAllReposForInstallation` + breadcrumb `repos.installation_id` preserved |
 | #85 | server + db + ci | Read-time session status (`CASE status <> 'offline' AND expires_at > NOW()`) via shared SQL fragment; scheduled `expireSessions` worker on boot; migrate+agent-detail test repairs; CI runs every workspace via turbo fan-out |
 | #86 | server + db + scripts | Wire `routeWebhookEvent` into App webhook (closed 6-day PR-review outage since the 2026-04-14 PAT cutover); install-scoped token for config fetch (joins to external installation id); populate `provider_installation_repos` on `installation.created`; one-shot `scripts/backfill-install-repos.js` |
+| #87 | docs + db | Correct the `repos.installation_id` FK gap — the FK is enforced on prod but absent from the Drizzle declaration; ROADMAP + schema comment updated to match reality |
+| pending | server + runner + docs | Migrate initial PR review from per-repo `pr-review.yml` workflow_dispatch to the runner-claim path — `dispatchReview` now creates a `claim_type: 'review'` claim; runner `prompts.js` gains a `review` template; deletes `review.yml`, `pr-review.yml`, `review.js`, `run-review.mjs`, `post-review.mjs`, `system-prompt.txt` from this repo; `onboard_repo` MCP tool stops writing workflow files; repos now need zero per-repo setup beyond the App install |
 
 ## In flight
 
@@ -69,7 +71,7 @@ Each entry: the gap, the impact, and the rough shape of the fix.
 
 Held in `docs/plans/` and `packages/fluent-flow/docs/plans/`:
 
-- Server-side reviewer (replace runner-based review with direct Claude API calls in the server) — `packages/fluent-flow/docs/plans/saas-github-app.md`
+- Server-hosted reviewer fallback — an alternate mode where the server itself makes the model call, for users who don't want to run a local runner. Sketched in `packages/fluent-flow/docs/plans/saas-github-app.md` but note the plan predates the runner-claim migration; sections referencing a per-repo `pr-review.yml` are stale.
 - VSCode extension — `packages/fluent-flow/docs/plans/vscode-extension.md`
 - Agent work queue redesign — `packages/fluent-flow/docs/plans/2026-03-28-agent-work-queue-plan.md`
 - Admin dashboard phase 2 (claim history, audit log viewer, notification preferences) — scoped in existing dashboard plan

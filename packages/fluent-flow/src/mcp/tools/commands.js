@@ -107,7 +107,7 @@ export function registerCommandTools(server) {
 
   server.tool(
     'onboard_repo',
-    'Onboard a GitHub repository to Fluent Flow by creating config and workflow files',
+    'Write a per-repo config override (.github/fluent-flow.yml) on the default branch. Optional — repos without the file fall back to global defaults. No workflow file or secrets are required under the runner-claim dispatch model.',
     {
       owner: z.string(),
       repo: z.string(),
@@ -118,67 +118,18 @@ export function registerCommandTools(server) {
     async ({ owner, repo, default_agent, agent_id, project_id }) => {
       audit('mcp_tool_call', { repo: `${owner}/${repo}`, actor: agent_id, data: { tool: 'onboard_repo' } });
       try {
-        // Check if either file already exists (GitHub Contents API returns 422 on duplicate)
-        const [configExists, workflowExists] = await Promise.all([
-          getFileExists(owner, repo, '.github/fluent-flow.yml'),
-          getFileExists(owner, repo, '.github/workflows/pr-review.yml'),
-        ]);
-
-        if (configExists || workflowExists) {
-          const message = configExists && workflowExists
-            ? `${owner}/${repo} is already onboarded`
-            : configExists
-              ? `${owner}/${repo} config already exists`
-              : `${owner}/${repo} review workflow already exists`;
+        if (await getFileExists(owner, repo, '.github/fluent-flow.yml')) {
           return {
-            content: [{ type: 'text', text: JSON.stringify({ ok: false, error: message, code: 'ALREADY_ONBOARDED' }) }],
+            content: [{ type: 'text', text: JSON.stringify({ ok: false, error: `${owner}/${repo} config already exists`, code: 'ALREADY_ONBOARDED' }) }],
             isError: true,
           };
         }
 
-        // Build config YAML safely via js-yaml
         const configObj = { default_agent };
         if (project_id) configObj.project_id = project_id;
         const configYaml = yaml.dump(configObj, { lineWidth: -1 });
 
-        // Build workflow YAML (static template, no user input)
-        const workflowYaml = [
-          'name: PR Review',
-          'on:',
-          '  workflow_dispatch:',
-          '    inputs:',
-          '      pr_number:',
-          '        required: true',
-          '        type: string',
-          '      attempt:',
-          '        required: false',
-          '        type: string',
-          '        default: "1"',
-          '      prior_issues:',
-          '        required: false',
-          '        type: string',
-          '        default: "[]"',
-          '',
-          'jobs:',
-          '  review:',
-          '    uses: fluent-io/fluent-flow/.github/workflows/review.yml@main',
-          '    with:',
-          '      pr_number: ${{ inputs.pr_number }}',
-          '      attempt: ${{ inputs.attempt }}',
-          '      prior_issues: ${{ inputs.prior_issues }}',
-          '    secrets:',
-          '      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}',
-          '      FLUENT_FLOW_URL: ${{ secrets.FLUENT_FLOW_URL }}',
-          '',
-        ].join('\n');
-
-        const commitMessage = 'chore: onboard to Fluent Flow';
-
-        // Create both files
-        await createFile(owner, repo, '.github/fluent-flow.yml', configYaml, commitMessage);
-        await createFile(owner, repo, '.github/workflows/pr-review.yml', workflowYaml, commitMessage);
-
-        // Invalidate config cache so next resolveConfig picks up the new file
+        await createFile(owner, repo, '.github/fluent-flow.yml', configYaml, 'chore: onboard to Fluent Flow');
         await invalidateConfig(owner, repo);
 
         console.log({ msg: 'Repo onboarded to Fluent Flow', owner, repo, default_agent });
@@ -188,7 +139,7 @@ export function registerCommandTools(server) {
             type: 'text',
             text: JSON.stringify({
               ok: true,
-              message: `${owner}/${repo} onboarded. Add repo secrets: ANTHROPIC_API_KEY, FLUENT_FLOW_URL`,
+              message: `${owner}/${repo} onboarded. No repo secrets needed — reviews run on the registered runner.`,
             }),
           }],
         };
