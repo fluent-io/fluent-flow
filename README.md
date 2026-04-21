@@ -19,38 +19,42 @@ Automated code review orchestrator for AI coding agents. Manages the review-fix 
 | [dashboard](packages/dashboard/) | Admin UI — Next.js dashboard for managing agents and monitoring pipelines |
 | [db](packages/db/) | Shared data access — pg pool, Zod schemas, org-scoped queries |
 
-## Getting Started
+## Using Fluent Flow (for org admins)
 
-### Server
+The production path — no code, no CLI setup beyond one `npx` command:
 
-```bash
-cd packages/fluent-flow
-cp .env.example .env   # configure DATABASE_URL, GITHUB_TOKEN, MCP_AUTH_TOKEN
-npm install
-npm run dev
-```
+1. **Install the GitHub App** on your org at the dashboard's install CTA. Creates your org, installation, and admin membership on first sign-in.
+2. **Click "+ New agent"** on the Agents page. Name the agent, pick a harness (`claude-code` default). The modal returns a runner command pre-filled with your token.
+3. **Run the generated `npx fluent-flow-runner …` command** on the machine where the AI CLI (e.g. `claude`) lives. Modal flips to "Connected" when the runner registers.
+4. Open a PR on any installed repo — Fluent Flow reviews it, creates a claim on failure, runner picks it up, agent pushes a fix, loop continues.
 
-See [server docs](packages/fluent-flow/README.md) for full setup, concepts, and configuration.
+## Getting Started (dev)
 
-### Runner
+This is a [Turborepo](https://turbo.build/) monorepo. All packages run together:
 
 ```bash
-# 1. Register an agent and generate a token (see runner docs)
-# 2. Run
-fluent-flow-runner --token ff_<token> --server http://localhost:3847 --verbose
+npm install         # install workspace deps
+npm run dev         # turbo run dev — server (3847) + dashboard (3000) in parallel
+npm test            # full test suite across packages
+npm run build       # build all packages
 ```
 
-See [runner docs](packages/fluent-flow-runner/README.md) for step-by-step setup.
-
-### Dashboard
+### Per-package
 
 ```bash
-cd packages/dashboard
-cp .env.example .env.local   # configure DATABASE_URL, GitHub OAuth, NEXTAUTH_SECRET
-npm run dev                   # http://localhost:3000
+cd packages/fluent-flow    && npm run dev   # server, reads .env.local via --env-file-if-exists
+cd packages/dashboard      && npm run dev   # Next.js, reads .env.local automatically
 ```
 
-See [dashboard docs](packages/dashboard/README.md) for setup and features.
+Copy each package's `.env.example` → `.env.local` and fill in secrets.
+
+Dashboard needs `NEXT_PUBLIC_FLUENT_FLOW_URL=http://localhost:3847` locally so the generated runner command points at your local server.
+
+Local runner (no publish yet — workspace-linked):
+
+```bash
+npx fluent-flow-runner --server http://127.0.0.1:3847 --token ff_<token>
+```
 
 ### Docker
 
@@ -60,18 +64,10 @@ docker compose up -d --build
 
 ## Documentation
 
-- [Design specs](docs/specs/) — Architecture and design decisions
-- [Implementation plans](docs/plans/) — Step-by-step build plans
-
-## Development
-
-This is a [Turborepo](https://turbo.build/) monorepo.
-
-```bash
-npm install         # install all dependencies
-npm test            # run all tests
-npm run build       # build all packages
-```
+- [Roadmap](ROADMAP.md) — shipped milestones, in-flight work, known gaps
+- [Design specs](docs/specs/) — architecture and design decisions
+- [Implementation plans](docs/plans/) — step-by-step build plans
+- Per-package docs: [fluent-flow](packages/fluent-flow/README.md), [fluent-flow-runner](packages/fluent-flow-runner/README.md), [dashboard](packages/dashboard/README.md), [db](packages/db/README.md)
 
 ## License
 
