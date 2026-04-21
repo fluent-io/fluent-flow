@@ -28,13 +28,16 @@ import logger from '../logger.js';
  * @param {string} opts.owner
  * @param {string} opts.repo
  * @param {number} opts.prNumber
- * @param {string} [opts.ref='main'] - Head branch (passed to the harness so
+ * @param {string} [opts.ref='main'] - PR head branch (passed to the harness so
  *   its worktree can check out the PR head)
+ * @param {string} [opts.headSha] - PR head commit SHA; required for GitHub
+ *   check-run creation via `onClaimDispatched`. Omit only when the SHA is not
+ *   known at call-site (e.g. the manual dispatch API route).
  * @param {number} [opts.attempt=1]
  * @param {Array} [opts.priorIssues=[]]
  * @returns {Promise<void>}
  */
-export async function dispatchReview({ owner, repo, prNumber, ref = 'main', attempt = 1, priorIssues = [], issueNumber }) {
+export async function dispatchReview({ owner, repo, prNumber, ref = 'main', headSha, attempt = 1, priorIssues = [], issueNumber }) {
   const repoKey = `${owner}/${repo}`;
   const config = await resolveConfig(owner, repo);
 
@@ -84,14 +87,20 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', atte
       },
     });
     if (newClaim) {
-      const providerClient = getProvider({ installation_id: newClaim.installation_id });
-      onClaimDispatched(providerClient, newClaim)
-        .catch((err) => logger.warn({ msg: 'onClaimDispatched failed', error: err.message }));
+      const installationId = newClaim.installation_id ?? config.installation_id;
+      if (installationId && headSha) {
+        const providerClient = getProvider({ installation_id: installationId });
+        onClaimDispatched(providerClient, { ...newClaim, head_sha: headSha, installation_id: installationId })
+          .catch((err) => logger.warn({ msg: 'onClaimDispatched failed', error: err.message }));
+      } else {
+        logger.warn({ msg: 'Skipping onClaimDispatched — missing installation_id or headSha', repo: repoKey, prNumber, claimId: newClaim.id });
+      }
     }
     logger.info({ msg: 'Review claim created', repo: repoKey, prNumber, attempt });
     audit('review_dispatched', { repo: repoKey, data: { prNumber, attempt } });
   } catch (err) {
     logger.error({ msg: 'Failed to create review claim', repo: repoKey, prNumber, error: err.message });
+    throw err;
   }
 }
 

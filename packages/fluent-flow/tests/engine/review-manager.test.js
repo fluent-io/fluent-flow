@@ -26,10 +26,12 @@ vi.mock('@fluent-flow/db', () => ({
   schema: { reviewRetries: {} },
 }));
 
+const mockResolveConfig = vi.fn().mockResolvedValue({
+  reviewer: { enabled: true, max_retries: 3 },
+  installation_id: 99,
+});
 vi.mock('../../src/config/loader.js', () => ({
-  resolveConfig: vi.fn().mockResolvedValue({
-    reviewer: { enabled: true, max_retries: 3 },
-  }),
+  resolveConfig: (...a) => mockResolveConfig(...a),
 }));
 
 const mockDispatchWorkflow = vi.fn();
@@ -61,22 +63,29 @@ vi.mock('../../src/agents/claim-manager.js', () => ({
   getActiveClaim: vi.fn(),
 }));
 
+const mockOnClaimDispatched = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../src/engine/check-run.js', () => ({
-  onClaimDispatched: vi.fn().mockResolvedValue(undefined),
+  onClaimDispatched: (...a) => mockOnClaimDispatched(...a),
   onClaimResolved: vi.fn().mockResolvedValue(undefined),
 }));
+const mockGetProvider = vi.fn().mockReturnValue({});
 vi.mock('../../src/providers/index.js', () => ({
-  getProvider: vi.fn().mockReturnValue({}),
+  getProvider: (...a) => mockGetProvider(...a),
 }));
 
 import { dispatchReview } from '../../src/engine/review-manager.js';
 
 beforeEach(() => {
   mockCreateClaim.mockReset();
-  mockCreateClaim.mockResolvedValue({ id: 1, installation_id: 42 });
+  // Real toSnakeClaim does NOT include installation_id — align mock with actual shape.
+  // installation_id must come from config.installation_id (the fallback path).
+  mockCreateClaim.mockResolvedValue({ id: 1, claim_type: 'review' });
   mockDispatchWorkflow.mockReset();
   mockGetReviews.mockClear();
   mockDismissReview.mockClear();
+  mockOnClaimDispatched.mockClear();
+  mockGetProvider.mockClear();
+  mockResolveConfig.mockResolvedValue({ reviewer: { enabled: true, max_retries: 3 }, installation_id: 99 });
 });
 
 describe('dispatchReview (runner-claim based)', () => {
@@ -129,5 +138,67 @@ describe('dispatchReview (runner-claim based)', () => {
 
     expect(mockDismissReview).toHaveBeenCalledWith('fluent-io', 'fluent-flow', 42, 99, 'Superseded by new review');
     expect(mockCreateClaim).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls onClaimDispatched with installation_id from config when headSha is provided', async () => {
+    await dispatchReview({
+      owner: 'fluent-io',
+      repo: 'fluent-flow',
+      prNumber: 42,
+      ref: 'feature/xyz',
+      headSha: 'abc123',
+      attempt: 1,
+      priorIssues: [],
+    });
+
+    expect(mockGetProvider).toHaveBeenCalledWith({ installation_id: 99 });
+    expect(mockOnClaimDispatched).toHaveBeenCalledTimes(1);
+    const [, claimArg] = mockOnClaimDispatched.mock.calls[0];
+    expect(claimArg.head_sha).toBe('abc123');
+    expect(claimArg.installation_id).toBe(99);
+  });
+
+  it('skips onClaimDispatched when headSha is not provided', async () => {
+    await dispatchReview({
+      owner: 'fluent-io',
+      repo: 'fluent-flow',
+      prNumber: 42,
+      ref: 'main',
+      attempt: 1,
+      priorIssues: [],
+    });
+
+    expect(mockOnClaimDispatched).not.toHaveBeenCalled();
+  });
+
+  it('skips onClaimDispatched when no installation_id is available', async () => {
+    mockResolveConfig.mockResolvedValueOnce({ reviewer: { enabled: true, max_retries: 3 } });
+
+    await dispatchReview({
+      owner: 'fluent-io',
+      repo: 'fluent-flow',
+      prNumber: 42,
+      ref: 'main',
+      headSha: 'abc123',
+      attempt: 1,
+      priorIssues: [],
+    });
+
+    expect(mockOnClaimDispatched).not.toHaveBeenCalled();
+  });
+
+  it('rethrows createClaim errors so callers can respond appropriately', async () => {
+    mockCreateClaim.mockRejectedValueOnce(new Error('DB connection lost'));
+
+    await expect(
+      dispatchReview({
+        owner: 'fluent-io',
+        repo: 'fluent-flow',
+        prNumber: 42,
+        ref: 'main',
+        attempt: 1,
+        priorIssues: [],
+      })
+    ).rejects.toThrow('DB connection lost');
   });
 });
