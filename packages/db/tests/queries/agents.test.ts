@@ -6,6 +6,7 @@ vi.mock('../../src/pool', () => ({
 }));
 
 const { listAgents, getAgentDetail, createAgent } = await import('../../src/queries/agents');
+const { SESSION_STATUS_AT_READ_TIME } = await import('../../src/queries/_helpers');
 
 describe('listAgents', () => {
   beforeEach(() => { mockQuery.mockReset(); });
@@ -35,6 +36,21 @@ describe('listAgents', () => {
     const result = await listAgents([]);
     expect(result).toEqual([]);
     expect(mockQuery.mock.calls[0][0]).not.toContain('org_id = ANY');
+  });
+
+  it('computes status at read time via the shared SESSION_STATUS_AT_READ_TIME fragment', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+
+    await listAgents(['fluent-io']);
+
+    const sql = mockQuery.mock.calls[0][0] as string;
+    // Drift guard: the query must use the shared constant so new display
+    // queries can't silently inline their own version of the CASE.
+    expect(sql).toContain(SESSION_STATUS_AT_READ_TIME);
+    // Shape guard: the constant itself must still encode the TTL downgrade.
+    expect(SESSION_STATUS_AT_READ_TIME).toContain('CASE');
+    expect(SESSION_STATUS_AT_READ_TIME).toContain(`status <> 'offline' AND expires_at > NOW()`);
+    expect(SESSION_STATUS_AT_READ_TIME).toContain(`ELSE 'offline'`);
   });
 });
 

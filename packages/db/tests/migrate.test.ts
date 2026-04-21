@@ -58,7 +58,8 @@ describe('stampBaselineIfLiveDb', () => {
     const originalQuery = pool.query.bind(pool);
     pool.query = async <T = unknown>(sql: string, params?: unknown[]) => {
       if (sql.includes('information_schema.tables')) {
-        const tableName = params?.[0];
+        // tableExists() queries with params [schema, tableName] — match on tableName ($2).
+        const tableName = params?.[1];
         if (tableName === '__drizzle_migrations') return { rows: [{ exists: false }] as T[] };
         if (tableName === 'orgs') return { rows: [{ exists: true }] as T[] };
         if (tableName === 'provider_installations') return { rows: [{ exists: false }] as T[] };
@@ -67,11 +68,11 @@ describe('stampBaselineIfLiveDb', () => {
     };
     await stampBaselineIfLiveDb({ pool, migrationsDir });
     const sqls = pool.calls.map((c) => c.sql);
-    expect(sqls.some((s) => s.includes('CREATE TABLE IF NOT EXISTS public.__drizzle_migrations'))).toBe(true);
+    expect(sqls.some((s) => s.includes('CREATE TABLE IF NOT EXISTS drizzle.__drizzle_migrations'))).toBe(true);
     // Unique index on hash is required for ON CONFLICT (hash) to fire under
     // concurrent first-boot; without it duplicate baseline stamps could slip in.
     expect(sqls.some((s) => s.includes('CREATE UNIQUE INDEX IF NOT EXISTS __drizzle_migrations_hash_idx'))).toBe(true);
-    const insert = pool.calls.find((c) => c.sql.includes('INSERT INTO public.__drizzle_migrations'));
+    const insert = pool.calls.find((c) => c.sql.includes('INSERT INTO drizzle.__drizzle_migrations'));
     expect(insert).toBeDefined();
     expect(insert!.sql).toContain('ON CONFLICT (hash) DO NOTHING');
     expect(insert!.params?.[0]).toBe('deadbeef');
@@ -82,7 +83,8 @@ describe('stampBaselineIfLiveDb', () => {
     const originalQuery = pool.query.bind(pool);
     pool.query = async <T = unknown>(sql: string, params?: unknown[]) => {
       if (sql.includes('information_schema.tables')) {
-        const tableName = params?.[0];
+        // tableExists() queries with params [schema, tableName] — match on tableName ($2).
+        const tableName = params?.[1];
         if (tableName === '__drizzle_migrations') return { rows: [{ exists: false }] as T[] };
         if (tableName === 'orgs') return { rows: [{ exists: false }] as T[] };
         if (tableName === 'provider_installations') return { rows: [{ exists: true }] as T[] };
@@ -90,7 +92,7 @@ describe('stampBaselineIfLiveDb', () => {
       return originalQuery(sql, params);
     };
     await stampBaselineIfLiveDb({ pool, migrationsDir });
-    expect(pool.calls.some((c) => c.sql.includes('INSERT INTO public.__drizzle_migrations'))).toBe(true);
+    expect(pool.calls.some((c) => c.sql.includes('INSERT INTO drizzle.__drizzle_migrations'))).toBe(true);
   });
 
   it('does nothing when drizzle table already has rows (already migrated)', async () => {
@@ -110,7 +112,7 @@ describe('stampBaselineIfLiveDb', () => {
       },
     };
     await stampBaselineIfLiveDb({ pool, migrationsDir });
-    expect(pool.calls.some((c) => c.sql.includes('INSERT INTO public.__drizzle_migrations'))).toBe(false);
+    expect(pool.calls.some((c) => c.sql.includes('INSERT INTO drizzle.__drizzle_migrations'))).toBe(false);
     expect(pool.calls.some((c) => c.sql.includes('CREATE TABLE'))).toBe(false);
   });
 });

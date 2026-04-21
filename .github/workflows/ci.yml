@@ -26,8 +26,5 @@ jobs:
           rm -f package-lock.json
           npm install
 
-      - name: Build @fluent-flow/db
-        run: npm run build --workspace=packages/db
-
-      - name: Run server tests
-        run: npm test --workspace=fluent-flow
+      - name: Run all tests (turbo fans out to every workspace; `test` depends on `^build`)
+        run: npm test

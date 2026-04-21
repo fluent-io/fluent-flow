@@ -5,6 +5,7 @@ import { loadAgents } from './config/agents.js';
 import { validateEnv } from './config/env.js';
 import { bootstrapSelfHosted } from './agents/org-manager.js';
 import { startOutboundWorker } from './workers/outbound.js';
+import { startSessionExpiryWorker } from './workers/session-expiry.js';
 import logger from './logger.js';
 import { createApp } from './app.js';
 
@@ -55,6 +56,9 @@ async function start() {
       // Start outbound queue worker after server is listening
       startOutboundWorker().catch((err) =>
         logger.error({ msg: 'Outbound worker crashed', error: err.message })
+      );
+      startSessionExpiryWorker().catch((err) =>
+        logger.error({ msg: 'Session expiry worker crashed', error: err.message })
       );
     });
   } catch (err) {
