@@ -83,6 +83,7 @@ describe('handleInstallationCreated', () => {
     mockLinkUserToOrg.mockReset();
     mockUpsertInstallation.mockClear();
     mockUpsertInstallation.mockResolvedValue({ id: 999 });
+    mockAddRepoToInstallation.mockReset();
     mockRepoInserts.length = 0;
   });
 
@@ -157,6 +158,32 @@ describe('handleInstallationCreated', () => {
       installationId: 42,
       repoFullName: 'acme/a',
       orgId: 'acme',
+    });
+  });
+
+  it('populates provider_installation_repos via addRepoToInstallation for each payload repo', async () => {
+    // `repository_selection: 'all'` installs deliver all repos in the
+    // installation.created payload and do NOT fire a separate
+    // installation_repositories.added event. handleInstallationCreated must
+    // therefore call addRepoToInstallation itself — otherwise the PIR join
+    // table stays empty for the active install and downstream lookups fail.
+    mockUpsertInstallation.mockResolvedValueOnce({ id: 42 });
+
+    await handleInstallationCreated(buildPayload({
+      repositories: [
+        { id: 1001, full_name: 'acme/a' },
+        { id: 1002, full_name: 'acme/b' },
+      ],
+    }));
+
+    expect(mockAddRepoToInstallation).toHaveBeenCalledTimes(2);
+    expect(mockAddRepoToInstallation).toHaveBeenCalledWith(42, {
+      repo_external_id: 1001,
+      repo_full_name: 'acme/a',
+    });
+    expect(mockAddRepoToInstallation).toHaveBeenCalledWith(42, {
+      repo_external_id: 1002,
+      repo_full_name: 'acme/b',
     });
   });
 
