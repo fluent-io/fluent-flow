@@ -35,6 +35,17 @@ vi.mock('../../src/engine/installation-lifecycle.js', () => ({
   handleInstallationRepositoriesRemoved: (...args) => mockHandleInstallationRepositoriesRemoved(...args),
 }));
 
+// Mock the shared webhook-event router so we can assert the App endpoint
+// forwards non-install events to it (check_run, pull_request, push, etc.).
+const mockRouteWebhookEvent = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../src/routes/webhook.js', async () => {
+  const actual = await vi.importActual('../../src/routes/webhook.js');
+  return {
+    ...actual,
+    routeWebhookEvent: (...args) => mockRouteWebhookEvent(...args),
+  };
+});
+
 // Other routes and dependencies that app.js imports transitively — we don't
 // use them in this test but they must not blow up on import.
 vi.mock('../../src/mcp/handler.js', () => ({
@@ -66,6 +77,7 @@ describe('POST /webhooks/github-app (route integration)', () => {
 
   beforeEach(() => {
     mockHandleInstallationCreated.mockClear();
+    mockRouteWebhookEvent.mockClear();
   });
 
   it('routes installation.created to the handler at the configured URL', async () => {
@@ -94,6 +106,61 @@ describe('POST /webhooks/github-app (route integration)', () => {
     const [receivedPayload] = mockHandleInstallationCreated.mock.calls[0];
     expect(receivedPayload.installation.id).toBe(98765);
     expect(receivedPayload.sender.login).toBe('vicpon');
+  });
+
+  it('forwards check_run.completed to routeWebhookEvent (non-install events must not drop)', async () => {
+    const payload = {
+      action: 'completed',
+      check_run: {
+        id: 42,
+        name: 'test (20)',
+        conclusion: 'success',
+        status: 'completed',
+        head_sha: 'abc123',
+        app: { slug: 'github-actions' },
+      },
+      repository: { full_name: 'fluent-io/fluent-flow' },
+      installation: { id: 125521931 },
+    };
+
+    const res = await fetch(`${baseUrl}/webhooks/github-app`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-github-event': 'check_run',
+      },
+      body: JSON.stringify(payload),
+    });
+
+    expect(res.status).toBe(200);
+    // Install handlers must NOT see this event.
+    expect(mockHandleInstallationCreated).not.toHaveBeenCalled();
+    // routeWebhookEvent must receive ('check_run', payload) so the existing
+    // handlers (handleCheckRun → handleCheckRunSuccess → dispatchReview) run.
+    expect(mockRouteWebhookEvent).toHaveBeenCalledTimes(1);
+    const [event, received] = mockRouteWebhookEvent.mock.calls[0];
+    expect(event).toBe('check_run');
+    expect(received.check_run.id).toBe(42);
+    expect(received.repository.full_name).toBe('fluent-io/fluent-flow');
+  });
+
+  it('forwards pull_request.opened to routeWebhookEvent', async () => {
+    const payload = {
+      action: 'opened',
+      pull_request: { number: 83, body: 'test', user: { login: 'vicpon' } },
+      repository: { full_name: 'fluent-io/fluent-flow' },
+      installation: { id: 125521931 },
+    };
+
+    const res = await fetch(`${baseUrl}/webhooks/github-app`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-github-event': 'pull_request' },
+      body: JSON.stringify(payload),
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockRouteWebhookEvent).toHaveBeenCalledTimes(1);
+    expect(mockRouteWebhookEvent.mock.calls[0][0]).toBe('pull_request');
   });
 
   it('does NOT mount the webhook under /api (regression guard for the Apr 2026 mount-path bug)', async () => {

@@ -126,6 +126,14 @@ export async function handleInstallationCreated(payload) {
   for (const r of payloadRepos) {
     if (!r?.full_name) continue;
     try {
+      // Populate both the denormalized repos shell row AND the PIR join row.
+      // `repository_selection: 'all'` installs don't fire a separate
+      // installation_repositories.added event, so this is the only chance to
+      // seed PIR for those installs.
+      await addRepoToInstallation(row.id, {
+        repo_external_id: r.id ?? null,
+        repo_full_name: r.full_name,
+      });
       await ensureRepo({
         orgId: accountLogin,
         installationId: row.id,

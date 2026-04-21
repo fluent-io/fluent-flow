@@ -59,6 +59,43 @@ function deepMerge(base, override) {
 }
 
 /**
+ * Resolve installation context for a repo from the materialized `repos` row,
+ * joined to `provider_installations` to surface the GitHub EXTERNAL id.
+ *
+ * `repos.installation_id` FKs to `provider_installations.id` (our internal
+ * DB id), but `getInstallationToken` / `/app/installations/:id/access_tokens`
+ * expects GitHub's external installation id — so we join and return that.
+ *
+ * Returns undefined when the repo isn't materialized (e.g. install webhook
+ * never arrived), which makes `getRepoFileContents` fall back to the legacy
+ * GITHUB_TOKEN PAT — acceptable for dev environments and for unknown-repo
+ * probes; in prod under the App this case means the repo isn't onboarded.
+ *
+ * @param {string} owner
+ * @param {string} repo
+ * @returns {Promise<{ installation_id: number }|undefined>}
+ */
+async function installationCtxForRepo(owner, repo) {
+  try {
+    const rows = await db
+      .select({ externalId: schema.providerInstallations.externalInstallationId })
+      .from(schema.repos)
+      .innerJoin(
+        schema.providerInstallations,
+        eq(schema.repos.installationId, schema.providerInstallations.id),
+      )
+      .where(eq(schema.repos.id, `${owner}/${repo}`))
+      .limit(1);
+    const externalId = rows[0]?.externalId;
+    if (!externalId) return undefined;
+    return { installation_id: Number(externalId) };
+  } catch (err) {
+    logger.error({ msg: 'Failed to resolve installation ctx for repo', owner, repo, error: err.message });
+    return undefined;
+  }
+}
+
+/**
  * Fetch repo config from GitHub and cache in DB.
  * @param {string} owner
  * @param {string} repo
@@ -66,7 +103,8 @@ function deepMerge(base, override) {
  */
 async function fetchRepoConfig(owner, repo) {
   try {
-    const content = await getRepoFileContents(owner, repo, '.github/fluent-flow.yml');
+    const ctx = await installationCtxForRepo(owner, repo);
+    const content = await getRepoFileContents(owner, repo, '.github/fluent-flow.yml', ctx);
     if (!content) return null;
 
     const decoded = Buffer.from(content, 'base64').toString('utf8');

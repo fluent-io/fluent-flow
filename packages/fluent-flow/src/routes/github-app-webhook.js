@@ -8,6 +8,7 @@ import {
   handleInstallationRepositoriesAdded,
   handleInstallationRepositoriesRemoved,
 } from '../engine/installation-lifecycle.js';
+import { routeWebhookEvent } from './webhook.js';
 import logger from '../logger.js';
 
 const router = Router();
@@ -41,7 +42,12 @@ async function routeAppWebhookEvent(event, payload) {
       await handleInstallationRepositoriesEvent(payload);
       break;
     default:
-      logger.info({ msg: 'Unhandled App webhook event', event });
+      // Forward all other events (pull_request, check_run, push, issues,
+      // issue_comment, pull_request_review, projects_v2_item) to the shared
+      // router. The PAT cutover in f668af9 (2026-04-14) dead-coded the prior
+      // caller of routeWebhookEvent and never re-wired it here — every non-
+      // install webhook has been silently dropping since.
+      await routeWebhookEvent(event, payload);
   }
 }
 
