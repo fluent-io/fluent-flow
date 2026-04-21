@@ -16,10 +16,13 @@ Rolling view of what's shipped, what's in flight, and what's known-missing.
 | #79 | dashboard | Dialog command overflow fix |
 | #80 | server + dashboard + docs | Stop leaking env var names in user-facing error responses; Security section added to CLAUDE.md |
 | #82 | server + db | `installation.*` webhooks materialize `repos` shell rows; migration 0002 widens `repos.installation_id` to BIGINT |
+| #84 | server + db | Cascade repo-link tombstones on `installation.deleted`; `softDeleteAllReposForInstallation` + breadcrumb `repos.installation_id` preserved |
+| #85 | server + db + ci | Read-time session status (`CASE status <> 'offline' AND expires_at > NOW()`) via shared SQL fragment; scheduled `expireSessions` worker on boot; migrate+agent-detail test repairs; CI runs every workspace via turbo fan-out |
+| #86 | server + db + scripts | Wire `routeWebhookEvent` into App webhook (closed 6-day PR-review outage since the 2026-04-14 PAT cutover); install-scoped token for config fetch (joins to external installation id); populate `provider_installation_repos` on `installation.created`; one-shot `scripts/backfill-install-repos.js` |
 
 ## In flight
 
-*Nothing currently open.* See the PR list on GitHub for truth.
+- **#83** — this docs refresh (root README overhaul + ROADMAP).
 
 ## Known gaps / next candidates
 
@@ -32,8 +35,8 @@ Each entry: the gap, the impact, and the rough shape of the fix.
 
 ### GitHub App install flow
 
-- **"All Repositories" at scale.** `installation.created` payload truncates at ~100 repos. Orgs with more repos only get partial `repos` rows; the rest materialize lazily via later events that mention them. No initial API backfill.
-  - **Fix shape:** on `installation.created`, enqueue a background task that calls `GET /app/installations/{id}/repositories` (paginated), iterates, upserts via `ensureRepo`. Uses App JWT + installation token from existing `app-auth.js`.
+- **"All Repositories" at scale.** `installation.created` payload truncates at ~100 repos. Orgs with more repos only get partial `repos`/PIR rows on install. A manual `scripts/backfill-install-repos.js --all-active` fixes it (PR #86) but there's no automatic sync.
+  - **Fix shape:** fire the same backfill logic automatically from the `installation.created` handler when the payload size hits the cap, or run it periodically. Reuse `scripts/backfill-install-repos.js`'s core as an exported function.
 
 - **Regenerate key from dashboard (session-authed).** Currently `/api/agents/[id]/key` POST is MCP admin only; there's no way for an org admin to re-issue a token if they close the New Agent modal without copying.
   - **Fix shape:** session-auth branch on the existing `/api/agents/[id]/key` handler. Gated on `hasRole(session, agent.org_id, 'admin')`.
@@ -46,11 +49,21 @@ Each entry: the gap, the impact, and the rough shape of the fix.
 - **`agent_type` is a bad name.** Stored on `agents` and used as a routing hint (`claude-code`/`aider`/etc.). Users confuse it with `claim_type` (which is the role — `spec`/`build`/`fix`/`test`). Rename to `harness` to disambiguate.
   - **Fix shape:** migration renames `agents.agent_type` → `agents.harness`; update Drizzle schema, Zod schemas, UI strings, docs.
 
+### Token minting bugs (internal vs external installation id)
+
+- **`workers/outbound.js` passes the wrong installation id.** The outbound queue worker reads `row.installation_id` (internal FK to `provider_installations.id`) and hands it straight to `getInstallationToken`, which then calls `GET /app/installations/{id}/access_tokens` — that endpoint expects GitHub's **external** installation id (8–9 digit number on the App install). Same bug pattern PR #86 fixed in `fetchRepoConfig`, in a separate hot path.
+  - **Fix shape:** join to `provider_installations` in the outbound worker's token path (or in `getInstallationToken` itself — safer, kills the whole class of bug) and pass the external id.
+
+### Routing tighter-than-display
+
+- **`touchSession` lacks `expires_at > NOW()` guard.** A runner whose session TTL lapsed can silently revive the dead row on its next heartbeat instead of being forced through `registerSession`. PR #85 only tightened the read path (display + routing queries). Correctness-leaning — noted as out-of-scope on PR #85.
+  - **Fix shape:** add `expires_at > NOW()` to the `touchSession` WHERE clause; if the update hits zero rows, the runner re-registers.
+
 ### Quality of life
 
-- **Backfill tool for existing installs.** Teams that installed before PR #82 have empty `repos` tables. Today the recovery path is toggling App repo access to force an `installation_repositories.added` redelivery. A one-off admin script that reads `provider_installation_repos` and synthesizes `repos` rows would be less surgical.
-
 - **Local dev ergonomics.** `npm install -g fluent-flow-runner` won't work until publish. Document the workspace-linked `npx fluent-flow-runner` path in the runner README more prominently.
+
+- **Consolidate webhook routers.** `webhook.js` exists only to host `routeWebhookEvent` + legacy 410 stubs; `github-app-webhook.js` forwards to it. Merge into one module now that PAT-era paths are fully retired.
 
 ## Longer-horizon work
 

@@ -39,9 +39,11 @@ Tokens authenticate runners. Format: `ff_` prefix (3 chars) + `randomBytes(32).t
 Sessions are ephemeral runner instances with TTL.
 - `registerSession(orgId, agentId, meta)` — 5min default TTL
 - `touchSession(orgId, agentId, sessionId)` — extends TTL on poll
-- `expireSessions()` — marks expired sessions offline
+- `expireSessions()` — marks expired sessions offline. Scheduled on boot via `workers/session-expiry.js` (60s tick); also re-used internally by `expireClaims`.
 - `resolveSession(orgId, agentId, repo, prNumber)` — PR affinity → first available
 - `setSessionStatus(orgId, agentId, sessionId, status)` — scoped by org+agent
+
+**Read-time status:** display queries (`listAgents`, `getAgentSessions` in `@fluent-flow/db`) project status through a shared `SESSION_STATUS_AT_READ_TIME` SQL fragment — a runner that died without calling `/offline` (crash, sleep, VPN drop) surfaces as `offline` as soon as its stored TTL lapses, without waiting for the expiry worker tick. Routing queries here already AND `expires_at > NOW()`, so dispatch never picks a zombie session.
 
 ### claim-manager.js
 Claims track work assignments per review attempt.
