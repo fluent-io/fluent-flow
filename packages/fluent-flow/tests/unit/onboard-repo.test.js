@@ -62,25 +62,7 @@ describe('onboard_repo tool', () => {
     expect(createFile).not.toHaveBeenCalled();
   });
 
-  it('returns error if workflow already exists', async () => {
-    getFileExists.mockImplementation((o, r, path) =>
-      Promise.resolve(path === '.github/workflows/pr-review.yml')
-    );
-
-    const result = await server.call('onboard_repo', {
-      owner: 'test-org',
-      repo: 'test-repo',
-      default_agent: 'my-agent',
-      agent_id: 'my-agent',
-    });
-
-    const parsed = JSON.parse(result.content[0].text);
-    expect(result.isError).toBe(true);
-    expect(parsed.code).toBe('ALREADY_ONBOARDED');
-    expect(createFile).not.toHaveBeenCalled();
-  });
-
-  it('checks both config and workflow paths', async () => {
+  it('checks only the fluent-flow.yml config path (no more per-repo workflow file)', async () => {
     getFileExists.mockResolvedValue(false);
     createFile.mockResolvedValue({});
     invalidateConfig.mockResolvedValue(undefined);
@@ -92,11 +74,11 @@ describe('onboard_repo tool', () => {
       agent_id: 'my-agent',
     });
 
+    expect(getFileExists).toHaveBeenCalledTimes(1);
     expect(getFileExists).toHaveBeenCalledWith('test-org', 'test-repo', '.github/fluent-flow.yml');
-    expect(getFileExists).toHaveBeenCalledWith('test-org', 'test-repo', '.github/workflows/pr-review.yml');
   });
 
-  it('creates config and workflow files on success', async () => {
+  it('creates only the config file on success (no workflow file, no API-key reminder)', async () => {
     getFileExists.mockResolvedValue(false);
     createFile.mockResolvedValue({});
     invalidateConfig.mockResolvedValue(undefined);
@@ -111,7 +93,8 @@ describe('onboard_repo tool', () => {
     const parsed = JSON.parse(result.content[0].text);
     expect(parsed.ok).toBe(true);
 
-    // Should create fluent-flow.yml with valid YAML
+    // Creates fluent-flow.yml with valid YAML.
+    expect(createFile).toHaveBeenCalledTimes(1);
     expect(createFile).toHaveBeenCalledWith(
       'test-org',
       'test-repo',
@@ -120,21 +103,12 @@ describe('onboard_repo tool', () => {
       'chore: onboard to Fluent Flow',
     );
 
-    // Should create workflow file
-    expect(createFile).toHaveBeenCalledWith(
-      'test-org',
-      'test-repo',
-      '.github/workflows/pr-review.yml',
-      expect.stringContaining('uses: fluent-io/fluent-flow/.github/workflows/review.yml@main'),
-      'chore: onboard to Fluent Flow',
-    );
-
-    // Should invalidate config cache
+    // Cache invalidated so next resolveConfig picks up the new file.
     expect(invalidateConfig).toHaveBeenCalledWith('test-org', 'test-repo');
 
-    // Should mention required secrets
-    expect(parsed.message).toContain('ANTHROPIC_API_KEY');
-    expect(parsed.message).toContain('FLUENT_FLOW_URL');
+    // No secret reminder — the harness on the user's runner has its own creds.
+    expect(parsed.message).not.toContain('ANTHROPIC_API_KEY');
+    expect(parsed.message).not.toContain('FLUENT_FLOW_URL');
   });
 
   it('includes project_id in config when provided', async () => {

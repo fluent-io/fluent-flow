@@ -226,8 +226,11 @@ export async function handleClaimResult(req, res) {
         try {
           const [owner, repoName] = repo.split('/');
           const { dispatchReview } = await import('../engine/review-manager.js');
-          await dispatchReview({ owner, repo: repoName, prNumber: pr_number, ref: 'main', attempt: attempt + 1 });
-          logger.info({ msg: 'Triggered re-review after test_verify completion', repo, prNumber: pr_number });
+          // test_verify claim stores the PR head branch in payload.branch (see check-run-handler);
+          // fall back to 'main' only if it's missing for some reason.
+          const headBranch = claim.payload?.branch ?? 'main';
+          await dispatchReview({ owner, repo: repoName, prNumber: pr_number, ref: headBranch, attempt: attempt + 1 });
+          logger.info({ msg: 'Triggered re-review after test_verify completion', repo, prNumber: pr_number, ref: headBranch });
         } catch (err) {
           logger.error({ msg: 'Failed to trigger re-review after test_verify', error: err.message });
         }

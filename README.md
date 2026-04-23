@@ -10,6 +10,54 @@ Automated code review orchestrator for AI coding agents. Manages the review-fix 
 4. The agent pushes a fix, triggering a re-review
 5. On pass, the PR is auto-merged. On repeated failure, a human is escalated
 
+## How data flows
+
+Three boundaries: **GitHub**, the **Fluent Flow server + DB**, and **one or
+more runners** you register to your org. Every interaction between them is a
+webhook, a GitHub API call, or a long-poll — there's no shared state.
+
+### 1. Install
+
+Install the GitHub App on your org. The server records the install and the
+repos it has access to. Re-installing, adding, or removing repos later keeps
+this in sync via `installation_repositories.*` webhooks.
+
+### 2. Register agents
+
+From the dashboard, create one or more agents. Each returns a runner command
+(`npx fluent-flow-runner --token ff_…`) that you run wherever you want the
+harness to execute. Each runner registers a session with the server and
+holds a long-poll open, waiting for work.
+
+### 3. Review + fix
+
+```
+Push → GitHub CI runs → check_run.completed webhook → server
+                                                        │
+                                                        └─→ finds an available agent
+                                                              │
+                                                              └─→ creates a review claim
+                                                                    │
+                                                   runner long-poll picks up the claim
+                                                                    │
+                                             spawns the configured harness (claude-code, aider, …)
+                                                                    │
+                                                     harness posts the review → server processes
+                  ┌─────────────────────────────────────────────────┴───────────────────────────────┐
+                PASS                                                                              FAIL
+                  │                                                                                  │
+                  └─→ enable auto-merge                                                              └─→ creates a fix claim
+                                                                                                       │
+                                                                             runner picks it up → harness pushes a fix commit
+                                                                                                       │
+                                                                                     back to check_run.completed, loop continues
+```
+
+Each step is idempotent — re-running any box produces the same result.
+Agents don't share state; the server is the only orchestrator. No per-repo
+workflow files or API-key secrets are required: the harness on your runner
+already has whatever credentials it needs.
+
 ## Packages
 
 | Package | Description |

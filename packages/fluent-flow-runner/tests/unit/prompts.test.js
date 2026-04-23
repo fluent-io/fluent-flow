@@ -3,8 +3,8 @@ import { resolvePrompt, CLAIM_TYPES } from '../../src/prompts.js';
 
 describe('prompts', () => {
   describe('CLAIM_TYPES', () => {
-    it('defines spec, build, review_fix, test_verify', () => {
-      expect(CLAIM_TYPES).toEqual(['spec', 'build', 'review_fix', 'test_verify']);
+    it('includes review alongside spec, build, review_fix, test_verify', () => {
+      expect(CLAIM_TYPES).toEqual(['spec', 'build', 'review', 'review_fix', 'test_verify']);
     });
   });
 
@@ -41,6 +41,28 @@ describe('prompts', () => {
       const prompt = resolvePrompt({ claimType: 'test_verify', work: { ...baseWork, message: 'Previous issues: ...' } });
       expect(typeof prompt).toBe('string');
       expect(prompt).toContain('test');
+    });
+
+    it('review template instructs the harness to post a review comment with the reviewer-result marker', () => {
+      const prompt = resolvePrompt({
+        claimType: 'review',
+        work: { ...baseWork, priorIssues: [] },
+      });
+      expect(typeof prompt).toBe('string');
+      expect(prompt).toContain('fluent-io/fluent-flow');
+      expect(prompt).toContain('42');
+      // The harness must emit a result the server can parse via handleReviewResult.
+      expect(prompt).toContain('reviewer-result:');
+      expect(prompt).toMatch(/PASS|FAIL/);
+    });
+
+    it('review template carries prior issues when the retry path runs', () => {
+      const prompt = resolvePrompt({
+        claimType: 'review',
+        work: { ...baseWork, priorIssues: [{ file: 'src/index.js', line: 5, issue: 'Null deref' }] },
+      });
+      expect(prompt).toContain('src/index.js');
+      expect(prompt).toContain('Null deref');
     });
 
     it('throws for unknown claim_type', () => {

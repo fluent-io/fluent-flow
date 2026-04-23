@@ -244,7 +244,7 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config) {
   try {
     await dispatchReview({
       owner, repo: repoName, prNumber: pr.number,
-      ref: pr.base?.ref ?? 'main', attempt, priorIssues, issueNumber,
+      ref: pr.head?.ref ?? 'main', headSha: checkRun.head_sha, attempt, priorIssues, issueNumber,
     });
     logger.info({ msg: 'Review dispatched after CI pass', repo: repoKey, prNumber: pr.number, attempt, trigger: triggerCheck ?? 'all-checks' });
   } catch (err) {
