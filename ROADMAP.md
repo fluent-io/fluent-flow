@@ -21,10 +21,11 @@ Rolling view of what's shipped, what's in flight, and what's known-missing.
 | #86 | server + db + scripts | Wire `routeWebhookEvent` into App webhook (closed 6-day PR-review outage since the 2026-04-14 PAT cutover); install-scoped token for config fetch (joins to external installation id); populate `provider_installation_repos` on `installation.created`; one-shot `scripts/backfill-install-repos.js` |
 | #87 | docs + db | Correct the `repos.installation_id` FK gap — the FK is enforced on prod but absent from the Drizzle declaration; ROADMAP + schema comment updated to match reality |
 | #88 | server + runner + docs | Migrate initial PR review from per-repo `pr-review.yml` workflow_dispatch to the runner-claim path — `dispatchReview` now creates a `claim_type: 'review'` claim; runner `prompts.js` gains a `review` template; deletes `review.yml`, `pr-review.yml`, `review.js`, `run-review.mjs`, `post-review.mjs`, `system-prompt.txt` from this repo; `onboard_repo` MCP tool stops writing workflow files; repos now need zero per-repo setup beyond the App install |
+| #89 | dashboard + db + server + docs | GitHub App onboarding action surface — `/repos` page, `GET /api/repos`, dashboard-initiated `POST /api/repos/{repoId}/claims`, `listRepos`/`createClaim`, Repos nav, BYOK README refresh, stale `packages/fluent-flow/DESIGN.md` deletion, and check-run handler GitHub App installation-auth fixes for commit→PR/check-run/annotation lookups |
 
 ## In flight
 
-- **#83** — this docs refresh (root README overhaul + ROADMAP).
+- None currently tracked in-repo. Next work should target the highest-risk known gaps below.
 
 ## Known gaps / next candidates
 
@@ -51,10 +52,19 @@ Each entry: the gap, the impact, and the rough shape of the fix.
 - **`agent_type` is a bad name.** Stored on `agents` and used as a routing hint (`claude-code`/`aider`/etc.). Users confuse it with `claim_type` (which is the role — `spec`/`build`/`fix`/`test`). Rename to `harness` to disambiguate.
   - **Fix shape:** migration renames `agents.agent_type` → `agents.harness`; update Drizzle schema, Zod schemas, UI strings, docs.
 
-### Token minting bugs (internal vs external installation id)
+### GitHub App auth/token bugs
+
+- **Some non-check-run webhook paths still fall back to PAT auth.** PR #89 fixed the check-run completion path by passing the webhook installation context through `getPRsForCommit`, `getCheckRunsForCommit`, and `getCheckRunAnnotations`. Production logs after deploy still showed a `pull_request.closed` review-dismissal path fetching reviews without installation context and returning 401. This does not block new check-run-triggered review claims, but it means cleanup/dismissal behavior is not fully App-auth-safe.
+  - **Fix shape:** audit every GitHub REST helper call from webhook handlers and require/pass a token context. Prefer making helpers fail fast in App mode when neither explicit installation context nor a valid fallback token exists.
+
 
 - **`workers/outbound.js` passes the wrong installation id.** The outbound queue worker reads `row.installation_id` (internal FK to `provider_installations.id`) and hands it straight to `getInstallationToken`, which then calls `GET /app/installations/{id}/access_tokens` — that endpoint expects GitHub's **external** installation id (8–9 digit number on the App install). Same bug pattern PR #86 fixed in `fetchRepoConfig`, in a separate hot path.
   - **Fix shape:** join to `provider_installations` in the outbound worker's token path (or in `getInstallationToken` itself — safer, kills the whole class of bug) and pass the external id.
+
+### Deploy/runtime reliability
+
+- **Deploy can build a new app image without recreating the running container.** On 2026-04-25, CI built `fluent-flow-fluent-flow:latest`, but the live `fluent-flow` container stayed on the old image until `docker compose up -d --force-recreate fluent-flow` was run manually. During the forced restart, runners saw transient Cloudflare 502s and retried.
+  - **Fix shape:** add `--force-recreate` or an equivalent deploy-sha image/container label change to the deploy workflow, and add a post-deploy smoke check that verifies the running container was created after the image build / exposes the expected `DEPLOY_SHA`.
 
 ### Routing tighter-than-display
 
@@ -63,7 +73,7 @@ Each entry: the gap, the impact, and the rough shape of the fix.
 
 ### Quality of life
 
-- **Local dev ergonomics.** `npm install -g fluent-flow-runner` won't work until publish. Document the workspace-linked `npx fluent-flow-runner` path in the runner README more prominently.
+- **Local dev ergonomics.** `npm install -g fluent-flow-runner` won't work until publish. Document the workspace-linked `npx fluent-flow-runner` path in the runner README more prominently, and prefer `https://flow.fluenthive.io` in runner examples to avoid tunnel/redirect confusion.
 
 - **Consolidate webhook routers.** `webhook.js` exists only to host `routeWebhookEvent` + legacy 410 stubs; `github-app-webhook.js` forwards to it. Merge into one module now that PAT-era paths are fully retired.
 
@@ -71,7 +81,7 @@ Each entry: the gap, the impact, and the rough shape of the fix.
 
 Held in `docs/plans/` and `packages/fluent-flow/docs/plans/`:
 
-- Server-hosted reviewer fallback — an alternate mode where the server itself makes the model call, for users who don't want to run a local runner. Sketched in `packages/fluent-flow/docs/plans/saas-github-app.md` but note the plan predates the runner-claim migration; sections referencing a per-repo `pr-review.yml` are stale.
+- Server-hosted reviewer fallback is no longer a near-term direction. Fluent Flow is BYOK / bring-your-own-subscription: model credentials live with the user's runner/harness, not on the server. Any stale docs proposing server-side model calls or per-repo `pr-review.yml` workflows should be deleted or rewritten before use.
 - VSCode extension — `packages/fluent-flow/docs/plans/vscode-extension.md`
 - Agent work queue redesign — `packages/fluent-flow/docs/plans/2026-03-28-agent-work-queue-plan.md`
 - Admin dashboard phase 2 (claim history, audit log viewer, notification preferences) — scoped in existing dashboard plan

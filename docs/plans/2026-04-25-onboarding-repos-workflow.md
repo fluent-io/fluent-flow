@@ -2,6 +2,23 @@
 
 > **Goal:** After installing the GitHub App, a user can see their repos, connect a runner, and initiate work — all from the dashboard.
 
+
+## Status — shipped in PR #89
+
+Merged to `main` on 2026-04-25. The PR delivered the repos page, repo list API, dashboard claim creation route, DB queries, Repos navigation, README refresh, and deletion of stale `packages/fluent-flow/DESIGN.md`.
+
+Verification performed after merge:
+- Local `main` fast-forwarded to `8e6b720`
+- Feature branch `feat/onboarding-repos-workflow` deleted locally
+- Full Vitest suite passed: 58 files passed, 1 skipped; 469 tests passed, 3 skipped
+- Production `fluent-flow` container was manually force-recreated after CI built a new image but did not replace the old running container
+- Health endpoint returned healthy after restart
+
+Important operational notes:
+- Runner 502s observed around 19:55 UTC were expected during the manual container restart; the runner backs off and retries.
+- The check-run completion auth bug was fixed by passing webhook installation context through commit→PR, check-run, and annotation GitHub REST calls.
+- A separate `pull_request.closed` review-dismissal path still emitted a GitHub 401 after restart; track this under GitHub App auth hardening, not as a blocker for new check-run-triggered review claims.
+
 ## Problem
 
 After connecting the GitHub App, the dashboard shows nothing useful:
@@ -116,8 +133,16 @@ Root `README.md` was updated to describe Fluent Flow as BYOK agent orchestration
 
 ## Acceptance criteria
 
-1. After GitHub App install, `/repos` shows all repos from the installation
-2. An agent with `repos: []` matches claims for any repo in its org
-3. From the repos page, a user can start a workflow (review/build/fix/test) on any repo
-4. Started workflows appear on the pipelines page
-5. Existing tests pass (≥469 green)
+1. ✅ After GitHub App install, `/repos` shows repos from the installation
+2. ✅ An agent with `repos: []` matches claims for any repo in its org
+3. ✅ From the repos page, a user can start a workflow (review/build/fix/test) on any repo with a PR number
+4. ✅ Started workflows appear on the pipelines page
+5. ✅ Existing tests pass (469 passed, 3 skipped after merge)
+
+## Follow-up candidates
+
+- Add route/query tests for `GET /api/repos`, `POST /api/repos/{repoId}/claims`, `listRepos()`, and `createClaim()`.
+- Support non-PR proactive work by making `agent_claims.pr_number` nullable and teaching runners/pipelines how to display non-PR claims.
+- Add repo filtering to `/pipelines` if repo cards need a direct “active claims for this repo” drill-down.
+- Harden remaining webhook GitHub REST calls to always use GitHub App installation context.
+- Fix deploy so a newly built app image always recreates the running container.
