@@ -45,13 +45,17 @@ export async function handleCheckRun(owner, repoName, payload, config) {
   if (action !== 'completed') return;
   if (isReviewCheckRun(checkRun)) return;
 
+  // Resolve installation context for authenticated GitHub API calls
+  const installationId = payload.installation?.id;
+  const ctx = installationId ? { installation_id: installationId } : undefined;
+
   if (checkRun.conclusion === 'failure') {
-    await handleCheckRunFailure(owner, repoName, checkRun, config);
+    await handleCheckRunFailure(owner, repoName, checkRun, config, ctx);
     return;
   }
 
   if (checkRun.conclusion === 'success' || checkRun.conclusion === 'neutral') {
-    await handleCheckRunSuccess(owner, repoName, checkRun, config);
+    await handleCheckRunSuccess(owner, repoName, checkRun, config, ctx);
   }
 }
 
@@ -67,10 +71,10 @@ function isTestCheckRun(checkRun) {
 /**
  * Handle CI failure — notify the configured agent, or create test failure work item.
  */
-async function handleCheckRunFailure(owner, repoName, checkRun, config) {
+async function handleCheckRunFailure(owner, repoName, checkRun, config, ctx) {
   let pr = null;
   try {
-    const prs = await getPRsForCommit(owner, repoName, checkRun.head_sha);
+    const prs = await getPRsForCommit(owner, repoName, checkRun.head_sha, ctx);
     if (prs && prs.length > 0) pr = prs[0];
   } catch (err) {
     logger.warn({ msg: 'Failed to fetch linked PRs for CI failure', repo: `${owner}/${repoName}`, sha: checkRun.head_sha, error: err.message });
@@ -123,7 +127,7 @@ async function handleCheckRunFailure(owner, repoName, checkRun, config) {
  * Handle CI success — dispatch automated review if configured.
  * Uses trigger_check for exact match, or falls back to waiting for all checks to pass.
  */
-async function handleCheckRunSuccess(owner, repoName, checkRun, config) {
+async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
   if (!config.reviewer?.enabled) return;
 
   const triggerCheck = config.reviewer?.trigger_check;
@@ -134,7 +138,7 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config) {
     if (!checkRun.name.startsWith(triggerCheck)) return;
   } else {
     try {
-      const allChecks = await getCheckRunsForCommit(owner, repoName, checkRun.head_sha);
+      const allChecks = await getCheckRunsForCommit(owner, repoName, checkRun.head_sha, ctx);
       const ciChecks = allChecks.filter((c) => !isReviewCheckRun(c));
       const allPassed = ciChecks.every(
         (c) => c.status === 'completed' && (c.conclusion === 'success' || c.conclusion === 'neutral')
@@ -151,7 +155,7 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config) {
 
   let pr = null;
   try {
-    const prs = await getPRsForCommit(owner, repoName, checkRun.head_sha);
+    const prs = await getPRsForCommit(owner, repoName, checkRun.head_sha, ctx);
     if (prs && prs.length > 0) pr = prs[0];
   } catch (err) {
     logger.warn({ msg: 'Failed to find linked PR for review dispatch', repo: repoKey, sha: checkRun.head_sha, error: err.message });
