@@ -1,110 +1,85 @@
 # Fluent Flow
 
-Automated code review orchestrator for AI coding agents. Manages the review-fix loop so agents focus on writing code — not deciding what to do next.
+Agent orchestration for development workflows. Fluent Flow receives GitHub events and dashboard actions, dispatches coding agents to do the work, and closes the loop — from review to implementation to verification.
 
-## How It Works
+**Bring your own subscription.** Fluent Flow never holds your API keys — your runner invokes the model locally with whatever credentials it already has.
 
-1. An AI agent opens a PR
-2. Fluent Flow runs an automated review
-3. If the review fails, the agent is notified with specific feedback
-4. The agent pushes a fix, triggering a re-review
-5. On pass, the PR is auto-merged. On repeated failure, a human is escalated
+## How it works
 
-## How data flows
+Three boundaries: **GitHub**, the **Fluent Flow server + DB**, and **one or more runners** you register to your org. The server orchestrates; runners execute.
 
-Three boundaries: **GitHub**, the **Fluent Flow server + DB**, and **one or
-more runners** you register to your org. Every interaction between them is a
-webhook, a GitHub API call, or a long-poll — there's no shared state.
+### Install
 
-### 1. Install
+Install the GitHub App on your org. The server records the installation and materializes repo rows for every repo the App can see. Adding, removing, or reinstalling repos later stays in sync via `installation_repositories.*` webhooks.
 
-Install the GitHub App on your org. The server records the install and the
-repos it has access to. Re-installing, adding, or removing repos later keeps
-this in sync via `installation_repositories.*` webhooks.
+### Connect a runner
 
-### 2. Register agents
+From the dashboard, create an agent. You get a runner command — run it wherever your AI CLI lives. The runner registers a session with the server and holds a long-poll open, waiting for work. Agents are scoped to all repos in their org by default.
 
-From the dashboard, create one or more agents. Each returns a runner command
-(`npx fluent-flow-runner --token ff_…`) that you run wherever you want the
-harness to execute. Each runner registers a session with the server and
-holds a long-poll open, waiting for work.
+### Do work
 
-### 3. Review + fix
+Two paths into the same engine:
 
+**Reactive** — GitHub events trigger claims automatically:
 ```
-Push → GitHub CI runs → check_run.completed webhook → server
-                                                        │
-                                                        └─→ finds an available agent
-                                                              │
-                                                              └─→ creates a review claim
-                                                                    │
-                                                   runner long-poll picks up the claim
-                                                                    │
-                                             spawns the configured harness (claude-code, aider, …)
-                                                                    │
-                                                     harness posts the review → server processes
-                  ┌─────────────────────────────────────────────────┴───────────────────────────────┐
-                PASS                                                                              FAIL
-                  │                                                                                  │
-                  └─→ enable auto-merge                                                              └─→ creates a fix claim
-                                                                                                       │
-                                                                             runner picks it up → harness pushes a fix commit
-                                                                                                       │
-                                                                                     back to check_run.completed, loop continues
+Push → CI completes → check_run.completed webhook → server
+  → creates a review claim → runner picks it up → harness posts review
+  → on failure, creates a fix claim → runner pushes a fix → loop continues
 ```
 
-Each step is idempotent — re-running any box produces the same result.
-Agents don't share state; the server is the only orchestrator. No per-repo
-workflow files or API-key secrets are required: the harness on your runner
-already has whatever credentials it needs.
+**Proactive** — you start work from the dashboard:
+```
+Pick a repo → describe the task → server creates a claim (build/fix/review/test)
+  → runner picks it up → harness does the work → result flows back
+```
+
+Both paths produce claims that flow through the same dispatch pipeline. The pipelines page shows all in-flight work regardless of how it started.
 
 ## Packages
 
 | Package | Description |
 |---------|-------------|
-| [fluent-flow](packages/fluent-flow/) | Server — review engine, agent registry, MCP server, webhook handler |
-| [fluent-flow-runner](packages/fluent-flow-runner/) | CLI runner — connects to the server, picks up work, spawns agents locally |
-| [dashboard](packages/dashboard/) | Admin UI — Next.js dashboard for managing agents and monitoring pipelines |
+| [fluent-flow](packages/fluent-flow/) | Server — claim dispatch, agent registry, webhook handler, MCP server |
+| [fluent-flow-runner](packages/fluent-flow-runner/) | CLI runner — connects to server, picks up claims, spawns harness locally |
+| [dashboard](packages/dashboard/) | Admin UI — Next.js dashboard for repos, agents, and pipeline monitoring |
 | [db](packages/db/) | Shared data access — pg pool, Zod schemas, org-scoped queries |
 
-## Using Fluent Flow (for org admins)
+## Quick start
 
-The production path — no code, no CLI setup beyond one `npx` command:
+### For org admins
 
-1. **Install the GitHub App** on your org at the dashboard's install CTA. Creates your org, installation, and admin membership on first sign-in.
-2. **Click "+ New agent"** on the Agents page. Name the agent, pick a harness (`claude-code` default). The modal returns a runner command pre-filled with your token.
-3. **Run the generated `npx fluent-flow-runner …` command** on the machine where the AI CLI (e.g. `claude`) lives. Modal flips to "Connected" when the runner registers.
-4. Open a PR on any installed repo — Fluent Flow reviews it, creates a claim on failure, runner picks it up, agent pushes a fix, loop continues.
+1. **Install the GitHub App** on your org via the dashboard install CTA.
+2. **Create an agent** on the Agents page. Name it, pick a harness (e.g. `claude-code`). Copy the runner command.
+3. **Run the command** on the machine where your AI CLI lives. The dashboard shows "Connected" when the runner registers.
+4. **Do work** — open a PR for an automatic review, or start a workflow from the Repos page.
 
-## Getting Started (dev)
+### For developers
 
-This is a [Turborepo](https://turbo.build/) monorepo. All packages run together:
+Turborepo monorepo. All packages run together:
 
 ```bash
 npm install         # install workspace deps
-npm run dev         # turbo run dev — server (3847) + dashboard (3000) in parallel
-npm test            # full test suite across packages
+npm run dev         # turbo run dev — server (3847) + dashboard (3000)
+npm test            # full test suite
 npm run build       # build all packages
 ```
 
-### Per-package
+Per-package:
 
 ```bash
-cd packages/fluent-flow    && npm run dev   # server, reads .env.local via --env-file-if-exists
-cd packages/dashboard      && npm run dev   # Next.js, reads .env.local automatically
+cd packages/fluent-flow    && npm run dev   # server
+cd packages/dashboard      && npm run dev   # Next.js
 ```
 
-Copy each package's `.env.example` → `.env.local` and fill in secrets.
+Copy `.env.example` → `.env.local` in each package. Dashboard needs `NEXT_PUBLIC_FLUENT_FLOW_URL=http://localhost:3847`.
 
-Dashboard needs `NEXT_PUBLIC_FLUENT_FLOW_URL=http://localhost:3847` locally so the generated runner command points at your local server.
-
-Local runner (no publish yet — workspace-linked):
+Local runner (workspace-linked, no publish yet):
 
 ```bash
 npx fluent-flow-runner --server http://127.0.0.1:3847 --token ff_<token>
 ```
 
-### Docker
+Docker:
 
 ```bash
 docker compose up -d --build
@@ -112,10 +87,10 @@ docker compose up -d --build
 
 ## Documentation
 
-- [Roadmap](ROADMAP.md) — shipped milestones, in-flight work, known gaps
+- [Roadmap](ROADMAP.md) — shipped, in-flight, known gaps
 - [Design specs](docs/specs/) — architecture and design decisions
 - [Implementation plans](docs/plans/) — step-by-step build plans
-- Per-package docs: [fluent-flow](packages/fluent-flow/README.md), [fluent-flow-runner](packages/fluent-flow-runner/README.md), [dashboard](packages/dashboard/README.md), [db](packages/db/README.md)
+- Per-package: [fluent-flow](packages/fluent-flow/README.md) · [runner](packages/fluent-flow-runner/README.md) · [dashboard](packages/dashboard/README.md) · [db](packages/db/README.md)
 
 ## License
 
