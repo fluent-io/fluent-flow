@@ -9,7 +9,7 @@ export async function GET() {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { orgIds } = getOrgScope(session);
-  const repos = await listRepos(orgIds);
+  const { orgIds, isSuperadmin } = getOrgScope(session);
+  const repos = await listRepos(orgIds, isSuperadmin);
   return NextResponse.json(repos);
 }

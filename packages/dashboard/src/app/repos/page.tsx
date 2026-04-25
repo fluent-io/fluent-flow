@@ -7,8 +7,8 @@ export default async function ReposPage() {
   const session = await getServerSession(authOptions);
   if (!session) return null;
 
-  const { orgIds } = getOrgScope(session);
-  const repos = await listRepos(orgIds);
+  const { orgIds, isSuperadmin } = getOrgScope(session);
+  const repos = await listRepos(orgIds, isSuperadmin);
 
   return (
     <div>

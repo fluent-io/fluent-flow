@@ -29,7 +29,7 @@ The **repos page** is the missing action surface. Pipelines shows state of work;
 Each repo shows:
 - Repo name (links to GitHub)
 - Connection status (active / installation suspended)
-- Active pipelines count (link to filtered pipelines view)
+- Active claims count (links to `/pipelines` — repo filtering is a future enhancement)
 - **Actions:** Start review / Start build / Start fix / Start test
 
 ### 2. Repo list API

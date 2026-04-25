@@ -11,8 +11,10 @@ export interface RepoListItem {
   active_claims: number;
 }
 
-export async function listRepos(orgIds: string[]): Promise<RepoListItem[]> {
-  const isSuper = orgIds.length === 0;
+export async function listRepos(orgIds: string[], isSuperadmin = false): Promise<RepoListItem[]> {
+  // Empty orgIds without superadmin means no org access, not global scope
+  if (orgIds.length === 0 && !isSuperadmin) return [];
+  const isSuper = isSuperadmin && orgIds.length === 0;
 
   const sql = `
     SELECT r.id, r.org_id, r.repo_full_name, r.provider, r.created_at,
@@ -63,8 +65,12 @@ export async function createClaim({
   try {
     await client.query('BEGIN');
 
+    // Lock the repo row with FOR UPDATE to serialize claim creation and prevent
+    // race conditions on attempt allocation. This locks per-repo (all PRs share
+    // the same repo row), which is acceptable since claim creation is low-frequency.
+    // For finer-grained concurrency, use pg_advisory_xact_lock(org_id, repo, pr_number).
     const repoResult = await client.query(
-      'SELECT id, org_id, repo_full_name FROM repos WHERE id = $1 FOR SHARE',
+      'SELECT id, org_id, repo_full_name FROM repos WHERE id = $1 FOR UPDATE',
       [repoId],
     );
     if (repoResult.rows.length === 0) {
@@ -73,14 +79,6 @@ export async function createClaim({
     }
 
     const repo = repoResult.rows[0] as { id: string; org_id: string; repo_full_name: string };
-
-    // Lock the repo row to serialize per (org, repo, pr) and prevent race conditions
-    // on attempt allocation. Two concurrent requests for the same PR will contend
-    // on this row lock, so only one computes MAX(attempt)+1 at a time.
-    await client.query(
-      'SELECT 1 FROM repos WHERE id = $1 FOR UPDATE',
-      [repoId],
-    );
     const attemptResult = await client.query(
       `SELECT COALESCE(MAX(attempt), 0) + 1 AS next_attempt
        FROM agent_claims
