@@ -82,7 +82,7 @@ async function handleCheckRunFailure(owner, repoName, checkRun, config, ctx) {
 
   // If this is a test check run, route to test-manager for work item creation
   if (isTestCheckRun(checkRun) && pr) {
-    const annotations = await getCheckRunAnnotations(owner, repoName, checkRun.id);
+    const annotations = await getCheckRunAnnotations(owner, repoName, checkRun.id, ctx);
     const testFailures = parseCheckAnnotations(annotations);
     const issueNumber = extractLinkedIssue(pr.body);
     await handleTestFailure({
