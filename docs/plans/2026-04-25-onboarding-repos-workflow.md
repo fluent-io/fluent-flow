@@ -7,7 +7,6 @@
 After connecting the GitHub App, the dashboard shows nothing useful:
 - No repos page — repos exist in the DB but are invisible
 - No way to initiate work from the dashboard
-- Agents default to `repos: []` — they never pick up claims even if dispatched
 - Pipelines page is empty until work exists — no starting point
 
 ## UX Flow
@@ -41,24 +40,22 @@ Each repo shows:
 ### 3. Workflow initiation
 
 **Route:** `POST /api/repos/{repoId}/claims`
-**Body:** `{ claim_type: 'review' | 'build' | 'fix' | 'test', description: string, pr_number?: number }`
+**Body:** `{ claim_type: 'review' | 'build' | 'fix' | 'test', description: string, pr_number: number }`
+
+The API maps dashboard types to runner claim types: `fix` → `review_fix`, `test` → `test_verify`.
 
 Creates an `agent_claim` row for the repo. The claim dispatcher matches it to an available agent (one that's online and belongs to the same org). No repo-scoping filter on the agent — agents work for all repos in their org by default.
 
 ### 4. Agent auto-scoping
 
-**Change:** `agents.repos` defaults to `[]` → treat empty array as "all repos in org" for claim matching.
-
-**Claim dispatch logic:** When matching claims to agents, if `agents.repos` is empty, the agent is eligible for any claim in the same org. Non-empty `agents.repos` continues to work as an explicit allowlist.
-
-This is a semantics change, not a migration: `repos: []` goes from "no repos" to "all repos." Any existing agents with empty repos arrays were already broken (never matching), so there's no backward-compat concern.
+**Already implemented:** The server's `session-manager.js` already treats `agents.repos = '{}'` (empty array) as matching all repos in the org. The claim matching SQL uses `a.repos = '{}' OR repo = ANY(a.repos)`, so agents with no explicit repo list are eligible for any claim in their org. No code change needed.
 
 ### 5. Claim creation from dashboard
 
 New dialog on the repos page: "Start workflow." Fields:
-- **Claim type** — review / build / fix / test
-- **Description** — what to do (required for build/fix, optional for review)
-- **PR number** — for review claims targeting a specific PR
+- **Claim type** — Review / Build / Fix / Test (mapped to runner types: `review_fix`, `test_verify`)
+- **PR number** — required (the runner pipeline ties claims to PRs)
+- **Description** — optional context passed to the runner as `payload.message`
 
 On submit → `POST /api/repos/{repoId}/claims` → claim created → agent picks it up → pipeline appears.
 
@@ -84,8 +81,9 @@ ORDER BY r.repo_full_name
 Insert into `agent_claims` with:
 - `org_id` from repo
 - `repo` = repo full name
-- `claim_type` from request
-- `payload` = `{ description, pr_number }`
+- `claim_type` = mapped runner type (e.g. `review_fix`, `test_verify`)
+- `payload` = `{ message: description }` (keyed as `message` to match runner prompt templates)
+- `pr_number` = required positive integer
 - `status` = 'pending'
 
 Existing claim dispatcher handles matching to an online agent.
@@ -102,20 +100,12 @@ Existing claim dispatcher handles matching to an online agent.
 
 **Modify:**
 - `packages/db/src/queries/index.ts` — export new queries
-- `packages/fluent-flow/src/agents/claim-manager.js` — empty `repos` → match all repos in org
 - Navigation component — add Repos link
 - `README.md` — update data flow, API paths, onboarding section
-- `packages/fluent-flow/DESIGN.md` — update architecture to reflect current claim-dispatch + GitHub App + dashboard
 
 ## 6. Doc refresh
 
-Root `README.md` and `packages/fluent-flow/DESIGN.md` are stale — they reference the old Express API paths and the Actions-based review flow. Update to reflect the current claim-dispatch architecture, GitHub App integration, and dashboard-driven agent registration.
-
-Also add the repos page + workflow initiation to the architecture docs.
-
-**Files to update:**
-- `README.md` — update data flow diagram, API paths, onboarding section
-- `packages/fluent-flow/DESIGN.md` — update architecture to reflect claim-dispatch, GitHub App, MCP server, dashboard
+Root `README.md` was updated to describe Fluent Flow as BYOK agent orchestration. `packages/fluent-flow/DESIGN.md` was deleted (100% stale — referenced old Express routes, per-repo config, Actions-based flow).
 
 ## Out of scope
 
@@ -130,4 +120,4 @@ Also add the repos page + workflow initiation to the architecture docs.
 2. An agent with `repos: []` matches claims for any repo in its org
 3. From the repos page, a user can start a workflow (review/build/fix/test) on any repo
 4. Started workflows appear on the pipelines page
-5. Existing tests pass (≥410 green)
+5. Existing tests pass (≥469 green)

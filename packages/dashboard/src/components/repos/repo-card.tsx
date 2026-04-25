@@ -5,6 +5,15 @@ import type { RepoListItem } from '@fluent-flow/db';
 import { Badge } from '@/components/ui/badge';
 import { StartWorkflowDialog } from './start-workflow-dialog';
 
+function StatusBadge({ isActive }: { isActive: boolean | null }) {
+  if (isActive === null) {
+    return <Badge variant="outline" className="border-yellow-800 bg-yellow-950 text-yellow-400">unknown</Badge>;
+  }
+  return isActive
+    ? <Badge variant="outline" className="border-green-800 bg-green-950 text-green-400">active</Badge>
+    : <Badge variant="outline" className="border-red-800 bg-red-950 text-red-400">suspended</Badge>;
+}
+
 export function RepoCard({ repo }: { repo: RepoListItem }) {
   return (
     <div className="rounded-lg border border-border bg-card p-4">
@@ -19,22 +28,14 @@ export function RepoCard({ repo }: { repo: RepoListItem }) {
             >
               {repo.repo_full_name}
             </a>
-            <Badge
-              variant="outline"
-              className={repo.is_active
-                ? 'border-green-800 bg-green-950 text-green-400'
-                : 'border-red-800 bg-red-950 text-red-400'
-              }
-            >
-              {repo.is_active ? 'active' : 'suspended'}
-            </Badge>
+            <StatusBadge isActive={repo.is_active} />
           </div>
           {repo.active_claims > 0 && (
             <Link
               href={`/pipelines?repo=${encodeURIComponent(repo.repo_full_name)}`}
               className="text-xs text-muted-foreground hover:text-foreground"
             >
-              {repo.active_claims} active pipeline{repo.active_claims !== 1 ? 's' : ''}
+              {repo.active_claims} active claim{repo.active_claims !== 1 ? 's' : ''}
             </Link>
           )}
         </div>

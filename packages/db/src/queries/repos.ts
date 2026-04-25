@@ -1,4 +1,4 @@
-import { query } from '../pool.js';
+import { query, getPool } from '../pool.js';
 
 export interface RepoListItem {
   id: string;
@@ -6,8 +6,8 @@ export interface RepoListItem {
   repo_full_name: string;
   provider: string;
   created_at: Date;
-  installation_id: number | null;
-  is_active: boolean;
+  installation_id: string | null;
+  is_active: boolean | null;
   active_claims: number;
 }
 
@@ -16,14 +16,18 @@ export async function listRepos(orgIds: string[]): Promise<RepoListItem[]> {
 
   const sql = `
     SELECT r.id, r.org_id, r.repo_full_name, r.provider, r.created_at,
-      r.installation_id,
-      pi.suspended_at IS NULL AS is_active,
+      r.installation_id::text AS installation_id,
+      CASE
+        WHEN pi.id IS NULL THEN NULL
+        WHEN pi.suspended_at IS NULL THEN TRUE
+        ELSE FALSE
+      END AS is_active,
       COUNT(DISTINCT c.id) FILTER (WHERE c.status IN ('pending', 'claimed')) AS active_claims
     FROM repos r
     LEFT JOIN provider_installations pi ON r.installation_id = pi.id
     LEFT JOIN agent_claims c ON c.repo = r.repo_full_name
     ${isSuper ? '' : 'WHERE r.org_id = ANY($1)'}
-    GROUP BY r.id, pi.suspended_at
+    GROUP BY r.id, pi.id, pi.suspended_at
     ORDER BY r.repo_full_name
   `;
 
@@ -46,33 +50,53 @@ export async function createClaim({
   repoId,
   claimType,
   description,
-  prNumber = 0,
+  prNumber,
 }: {
   repoId: string;
   claimType: string;
   description: string;
-  prNumber?: number;
+  prNumber: number;
 }): Promise<CreatedClaim | null> {
-  const repoResult = await query(
-    'SELECT id, org_id, repo_full_name FROM repos WHERE id = $1',
-    [repoId],
-  );
-  if (repoResult.rows.length === 0) return null;
+  const pool = getPool();
+  const client = await pool.connect();
 
-  const repo = repoResult.rows[0] as { id: string; org_id: string; repo_full_name: string };
+  try {
+    await client.query('BEGIN');
 
-  const attemptResult = await query(
-    'SELECT COALESCE(MAX(attempt), 0) + 1 AS next_attempt FROM agent_claims WHERE org_id = $1 AND repo = $2 AND pr_number = $3',
-    [repo.org_id, repo.repo_full_name, prNumber],
-  );
-  const attempt = (attemptResult.rows[0] as { next_attempt: number }).next_attempt;
+    const repoResult = await client.query(
+      'SELECT id, org_id, repo_full_name FROM repos WHERE id = $1 FOR SHARE',
+      [repoId],
+    );
+    if (repoResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return null;
+    }
 
-  const claimResult = await query(
-    `INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload)
-     VALUES ($1, $2, $3, $4, $5, 'pending', $6)
-     RETURNING id, org_id, repo, claim_type, status`,
-    [repo.org_id, repo.repo_full_name, prNumber, attempt, claimType, JSON.stringify({ description })],
-  );
+    const repo = repoResult.rows[0] as { id: string; org_id: string; repo_full_name: string };
 
-  return claimResult.rows[0] as CreatedClaim;
+    // Lock the attempt counter row range to prevent race conditions
+    const attemptResult = await client.query(
+      `SELECT COALESCE(MAX(attempt), 0) + 1 AS next_attempt
+       FROM agent_claims
+       WHERE org_id = $1 AND repo = $2 AND pr_number = $3
+       FOR UPDATE`,
+      [repo.org_id, repo.repo_full_name, prNumber],
+    );
+    const attempt = (attemptResult.rows[0] as { next_attempt: number }).next_attempt;
+
+    const claimResult = await client.query(
+      `INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload)
+       VALUES ($1, $2, $3, $4, $5, 'pending', $6)
+       RETURNING id, org_id, repo, claim_type, status`,
+      [repo.org_id, repo.repo_full_name, prNumber, attempt, claimType, JSON.stringify({ message: description })],
+    );
+
+    await client.query('COMMIT');
+    return claimResult.rows[0] as CreatedClaim;
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }
