@@ -70,7 +70,7 @@ SELECT r.id, r.org_id, r.repo_full_name, r.provider, r.created_at,
   COUNT(DISTINCT c.id) FILTER (WHERE c.status IN ('pending', 'claimed')) AS active_claims
 FROM repos r
 LEFT JOIN provider_installations pi ON r.installation_id = pi.id
-LEFT JOIN agent_claims c ON c.repo = r.id
+LEFT JOIN agent_claims c ON c.org_id = r.org_id AND c.repo = r.repo_full_name
 WHERE r.org_id = ANY($1)
 GROUP BY r.id, pi.suspended_at
 ORDER BY r.repo_full_name

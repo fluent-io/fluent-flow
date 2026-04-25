@@ -35,9 +35,9 @@ export function StartWorkflowDialog({ repoId, repoFullName }: { repoId: string; 
     setSubmitting(true);
     setError(null);
     try {
-      const pr = parseInt(prNumber, 10);
-      if (!prNumber || isNaN(pr) || pr < 1) {
-        throw new Error('PR number is required');
+      const pr = Number(prNumber);
+      if (!prNumber || !Number.isInteger(pr) || pr < 1) {
+        throw new Error('PR number is required and must be a positive integer');
       }
 
       const body: Record<string, unknown> = {
@@ -55,6 +55,7 @@ export function StartWorkflowDialog({ repoId, repoFullName }: { repoId: string; 
         const b = await res.json().catch(() => ({}));
         throw new Error((b as { error?: string }).error ?? `Request failed with ${res.status}`);
       }
+      reset();
       setOpen(false);
       router.push('/pipelines');
       router.refresh();
@@ -65,7 +66,7 @@ export function StartWorkflowDialog({ repoId, repoFullName }: { repoId: string; 
     }
   }
 
-  const canSubmit = prNumber && parseInt(prNumber, 10) > 0;
+  const canSubmit = prNumber && Number.isInteger(Number(prNumber)) && Number(prNumber) > 0;
 
   return (
     <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) reset(); }}>
@@ -93,13 +94,14 @@ export function StartWorkflowDialog({ repoId, repoFullName }: { repoId: string; 
               className="rounded border bg-background px-2 py-1"
               type="number"
               min={1}
+              step={1}
               value={prNumber}
               onChange={(e) => setPrNumber(e.target.value)}
               placeholder="123"
             />
           </label>
           <label className="flex flex-col gap-1 text-sm">
-            Description <span className="text-xs text-muted-foreground">(optional)</span>
+            Description
             <textarea
               className="rounded border bg-background px-2 py-1 text-sm"
               rows={3}

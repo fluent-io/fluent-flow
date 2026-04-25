@@ -25,7 +25,7 @@ export async function listRepos(orgIds: string[]): Promise<RepoListItem[]> {
       COUNT(DISTINCT c.id) FILTER (WHERE c.status IN ('pending', 'claimed')) AS active_claims
     FROM repos r
     LEFT JOIN provider_installations pi ON r.installation_id = pi.id
-    LEFT JOIN agent_claims c ON c.repo = r.repo_full_name
+    LEFT JOIN agent_claims c ON c.org_id = r.org_id AND c.repo = r.repo_full_name
     ${isSuper ? '' : 'WHERE r.org_id = ANY($1)'}
     GROUP BY r.id, pi.id, pi.suspended_at
     ORDER BY r.repo_full_name
@@ -74,12 +74,17 @@ export async function createClaim({
 
     const repo = repoResult.rows[0] as { id: string; org_id: string; repo_full_name: string };
 
-    // Lock the attempt counter row range to prevent race conditions
+    // Lock the repo row to serialize per (org, repo, pr) and prevent race conditions
+    // on attempt allocation. Two concurrent requests for the same PR will contend
+    // on this row lock, so only one computes MAX(attempt)+1 at a time.
+    await client.query(
+      'SELECT 1 FROM repos WHERE id = $1 FOR UPDATE',
+      [repoId],
+    );
     const attemptResult = await client.query(
       `SELECT COALESCE(MAX(attempt), 0) + 1 AS next_attempt
        FROM agent_claims
-       WHERE org_id = $1 AND repo = $2 AND pr_number = $3
-       FOR UPDATE`,
+       WHERE org_id = $1 AND repo = $2 AND pr_number = $3`,
       [repo.org_id, repo.repo_full_name, prNumber],
     );
     const attempt = (attemptResult.rows[0] as { next_attempt: number }).next_attempt;

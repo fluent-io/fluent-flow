@@ -47,8 +47,8 @@ export async function POST(req: Request, { params }: { params: { repoId: string 
     );
   }
 
-  if (typeof description !== 'string' || description.trim().length === 0) {
-    return NextResponse.json({ error: 'description is required and cannot be empty' }, { status: 400 });
+  if (description !== undefined && description !== null && typeof description !== 'string') {
+    return NextResponse.json({ error: 'description must be a string' }, { status: 400 });
   }
 
   if (typeof pr_number !== 'number' || !Number.isInteger(pr_number) || pr_number < 1) {
@@ -57,10 +57,14 @@ export async function POST(req: Request, { params }: { params: { repoId: string 
 
   const mappedType = CLAIM_TYPE_MAP[claim_type];
 
+  const finalDescription = typeof description === 'string' && description.trim().length > 0
+    ? description.trim()
+    : `${mappedType} on PR #${pr_number}`;
+
   const claim = await createClaim({
     repoId,
     claimType: mappedType,
-    description: description.trim(),
+    description: finalDescription,
     prNumber: pr_number,
   });
 

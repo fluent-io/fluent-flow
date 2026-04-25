@@ -32,7 +32,7 @@ export function RepoCard({ repo }: { repo: RepoListItem }) {
           </div>
           {repo.active_claims > 0 && (
             <Link
-              href={`/pipelines?repo=${encodeURIComponent(repo.repo_full_name)}`}
+              href="/pipelines"
               className="text-xs text-muted-foreground hover:text-foreground"
             >
               {repo.active_claims} active claim{repo.active_claims !== 1 ? 's' : ''}
