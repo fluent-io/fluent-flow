@@ -29,9 +29,11 @@ Push → CI completes → check_run.completed webhook → server
 
 **Proactive** — you start work from the dashboard:
 ```
-Pick a repo → describe the task → server creates a claim (build/fix/review/test)
+Pick a repo → choose type (Feature / Fix / Review / Spec) → describe the task
+  → server creates a claim (spec / build / review / fix / test)
   → runner picks it up → harness does the work → result flows back
 ```
+Feature claims auto-chain spec → build. Spec claims produce a plan for the user to create a PR. Fix and Review require an existing PR number.
 
 Both paths produce claims that flow through the same dispatch pipeline. The pipelines page shows all in-flight work regardless of how it started.
 
