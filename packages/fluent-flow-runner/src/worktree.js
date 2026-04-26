@@ -1,5 +1,6 @@
 import { execFile as execFileCb } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 /**
@@ -38,7 +39,17 @@ export async function prepareWorktree({ workDir, repo, prNumber, attempt, branch
   // 1. Clone if base repo doesn't exist
   if (!existsSync(join(baseDir, '.git'))) {
     mkdirSync(baseDir, { recursive: true });
-    await exec('git', ['clone', `https://github.com/${repo}.git`, baseDir]);
+    // Prefer SSH when available, fall back to HTTPS+token, then plain HTTPS
+    const sshKeyExists =
+      existsSync(join(homedir(), '.ssh', 'id_ed25519')) ||
+      existsSync(join(homedir(), '.ssh', 'id_rsa')) ||
+      !!process.env.SSH_AUTH_SOCK;
+    const gitUrl = sshKeyExists
+      ? `git@github.com:${repo}.git`
+      : process.env.GITHUB_TOKEN
+        ? `https://x-access-token:${process.env.GITHUB_TOKEN}@github.com/${repo}.git`
+        : `https://github.com/${repo}.git`;
+    await exec('git', ['clone', gitUrl, baseDir]);
   }
 
   // 2. Fetch latest

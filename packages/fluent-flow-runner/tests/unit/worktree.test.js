@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockExecFile = vi.fn();
 const mockExistsSync = vi.fn();
 const mockMkdirSync = vi.fn();
+const mockHomedir = vi.fn();
 
 vi.mock('node:child_process', () => ({
   execFile: (...args) => mockExecFile(...args),
@@ -10,6 +11,9 @@ vi.mock('node:child_process', () => ({
 vi.mock('node:fs', () => ({
   existsSync: (...args) => mockExistsSync(...args),
   mkdirSync: (...args) => mockMkdirSync(...args),
+}));
+vi.mock('node:os', () => ({
+  homedir: (...args) => mockHomedir(...args),
 }));
 
 const { prepareWorktree } = await import('../../src/worktree.js');
@@ -26,6 +30,8 @@ describe('worktree', () => {
   describe('prepareWorktree', () => {
     it('clones repo when base clone does not exist', async () => {
       mockExistsSync.mockReturnValue(false);
+      mockHomedir.mockReturnValue('/root');
+      delete process.env.SSH_AUTH_SOCK;
 
       await prepareWorktree({
         workDir: '/work',
@@ -35,11 +41,12 @@ describe('worktree', () => {
         branch: 'fix/something',
       });
 
-      expect(mockExecFile).toHaveBeenCalledWith(
-        'git', ['clone', 'https://github.com/fluent-io/fluent-flow.git', expect.stringContaining('fluent-flow')],
-        expect.anything(),
-        expect.any(Function)
-      );
+      const cloneCall = mockExecFile.mock.calls.find(c => c[1][0] === 'clone');
+      expect(cloneCall).toBeDefined();
+      const gitUrl = cloneCall[1][1];
+      // Should use plain HTTPS when no SSH key and no GITHUB_TOKEN
+      expect(gitUrl).toBe('https://github.com/fluent-io/fluent-flow.git');
+      expect(cloneCall[1][2]).toContain('fluent-flow');
     });
 
     it('skips clone when base clone exists', async () => {

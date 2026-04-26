@@ -15,6 +15,33 @@ The rest of this README covers the **ops/CI path** — registering agents direct
 
 ## Prerequisites
 
+### Git Authentication
+
+The runner needs access to clone repositories. **SSH is preferred** (keys don't expire, no token rotation):
+
+- Mount an SSH key into the container: `~/.ssh/id_ed25519` or `~/.ssh/id_rsa`
+- Ensure `known_hosts` is configured (or set `GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no"`)
+- The runner auto-detects SSH keys and uses `git@github.com:` URLs
+
+Alternatively, use HTTPS with a GitHub token:
+
+- Set `GITHUB_TOKEN` in the container environment
+- The runner uses `https://x-access-token:TOKEN@github.com/` URLs
+
+If neither is available, cloning public repos still works via plain HTTPS.
+
+### AI Agent Authentication
+
+The runner spawns AI coding agents (claude-code, codex, aider, etc.) as subprocesses. These agents need their own API keys:
+
+- Set `ANTHROPIC_API_KEY` for Claude Code
+- Set `OPENAI_API_KEY` for Codex/OpenAI-based agents
+- Any other keys your chosen agent requires
+
+The runner passes all environment variables through to spawned agents.
+
+### Admin API Authentication
+
 In production, Admin API calls require `MCP_AUTH_TOKEN` — the shared secret configured on the Fluent Flow server. In development (when `MCP_AUTH_TOKEN` is not set on the server), the Admin API allows unauthenticated access. For production, find the token in your server's environment (e.g. `docker-compose.yml` or `.env`), then export it locally:
 
 ```bash
