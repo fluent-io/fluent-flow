@@ -164,29 +164,26 @@ async function setDbCache(repoKey, config) {
 /**
  * Resolve the org_id for a repo by joining repos → provider_installations.
  *
- * Falls back to 'self-hosted' when no installation row exists (e.g. dev
- * environments, repos not yet onboarded via the App).
- *
  * @param {string} owner
  * @param {string} repo
  * @returns {Promise<string>}
+ * @throws {Error} When no installation row exists for the repo
  */
 export async function resolveOrgId(owner, repo) {
-  try {
-    const rows = await db
-      .select({ orgId: schema.providerInstallations.orgId })
-      .from(schema.repos)
-      .innerJoin(
-        schema.providerInstallations,
-        eq(schema.repos.installationId, schema.providerInstallations.id),
-      )
-      .where(eq(schema.repos.id, `${owner}/${repo}`))
-      .limit(1);
-    return rows[0]?.orgId ?? 'self-hosted';
-  } catch (err) {
-    logger.error({ msg: 'Failed to resolve org_id for repo', owner, repo, error: err.message });
-    return 'self-hosted';
+  const rows = await db
+    .select({ orgId: schema.providerInstallations.orgId })
+    .from(schema.repos)
+    .innerJoin(
+      schema.providerInstallations,
+      eq(schema.repos.installationId, schema.providerInstallations.id),
+    )
+    .where(eq(schema.repos.id, `${owner}/${repo}`))
+    .limit(1);
+  const orgId = rows[0]?.orgId;
+  if (!orgId) {
+    throw new Error(`No org_id found for repo ${owner}/${repo} — repo is not onboarded via the GitHub App`);
   }
+  return orgId;
 }
 
 /**
