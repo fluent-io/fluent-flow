@@ -24,7 +24,7 @@ export async function listPipelines(orgIds: string[]): Promise<PipelineListItem[
     SELECT
       c.org_id,
       c.repo,
-      c.pr_number,
+      MAX(c.pr_number) AS pr_number,
       MAX(c.attempt) AS latest_attempt,
       MAX(c.created_at) AS last_activity,
       COALESCE(json_agg(

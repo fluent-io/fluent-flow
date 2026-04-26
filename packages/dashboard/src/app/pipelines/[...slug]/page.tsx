@@ -33,8 +33,9 @@ export default async function PipelineDetailPage({ params }: { params: Promise<{
 
   const owner = slug[0];
   const repo = slug[1];
-  const prNumber = parseInt(slug[2], 10);
-  if (isNaN(prNumber)) notFound();
+  const prSegment = slug[2];
+  const prNumber = prSegment === 'no-pr' ? null : parseInt(prSegment, 10);
+  if (prNumber !== null && isNaN(prNumber)) notFound();
 
   const fullRepo = `${owner}/${repo}`;
   const { orgIds } = getOrgScope(session);
@@ -52,14 +53,14 @@ export default async function PipelineDetailPage({ params }: { params: Promise<{
       <div className="mb-4 text-xs text-muted-foreground">
         <Link href="/pipelines" className="text-primary hover:underline">Pipelines</Link>
         <span className="mx-1">/</span>
-        {fullRepo} #{prNumber}
+        {fullRepo} #{prNumber ?? 'Standalone'}
       </div>
 
       <div className="mb-6 rounded-lg border border-border bg-card p-5">
         <div className="flex items-start justify-between">
           <div>
             <div className="mb-2 flex items-center gap-2.5">
-              <h1 className="text-xl font-semibold">{fullRepo} #{prNumber}</h1>
+              <h1 className="text-xl font-semibold">{fullRepo} #{prNumber ?? 'Standalone'}</h1>
               <Badge variant="outline" className={`text-xs font-normal ${status.className}`}>
                 ● {status.label}
               </Badge>
@@ -71,14 +72,16 @@ export default async function PipelineDetailPage({ params }: { params: Promise<{
               <div>Duration: {totalDuration}</div>
             </div>
           </div>
-          <a
-            href={`https://github.com/${fullRepo}/pull/${prNumber}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-primary hover:underline"
-          >
-            View on GitHub ↗
-          </a>
+          {prNumber != null && (
+            <a
+              href={`https://github.com/${fullRepo}/pull/${prNumber}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-primary hover:underline"
+            >
+              View on GitHub ↗
+            </a>
+          )}
         </div>
       </div>
 

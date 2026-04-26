@@ -85,26 +85,29 @@ export async function createClaim({ orgId, repo, prNumber, attempt, agentId, pay
     expiresAt,
   };
 
-  const [claim] = prNumber != null
-    ? await db
-        .insert(agentClaims)
-        .values(insertValues)
-        .onConflictDoUpdate({
-          target: [agentClaims.orgId, agentClaims.repo, agentClaims.prNumber, agentClaims.attempt],
-          set: {
-            sessionId,
-            claimType,
-            status,
-            payload,
-            claimedAt,
-            expiresAt,
-          },
-        })
-        .returning()
-    : await db
-        .insert(agentClaims)
-        .values(insertValues)
-        .returning();
+  const updateSet = {
+    sessionId,
+    claimType,
+    status,
+    payload,
+    claimedAt,
+    expiresAt,
+  };
+
+  // NULL pr_number uses the partial unique index (org_id, repo, attempt)
+  // instead of the composite one that ignores NULLs.
+  const conflictTarget = prNumber == null
+    ? { target: 'agent_claims_org_repo_attempt_no_pr_key' }
+    : { target: [agentClaims.orgId, agentClaims.repo, agentClaims.prNumber, agentClaims.attempt] };
+
+  const [claim] = await db
+    .insert(agentClaims)
+    .values(insertValues)
+    .onConflictDoUpdate({
+      ...conflictTarget,
+      set: updateSet,
+    })
+    .returning();
 
   if (sessionId && resolvedAgentId) {
     await setSessionStatus(orgId, resolvedAgentId, sessionId, 'busy');

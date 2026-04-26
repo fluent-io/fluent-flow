@@ -36,6 +36,13 @@
       "when": 1777080000000,
       "tag": "0004_agent_claims_pr_number_nullable",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1777250000000,
+      "tag": "0005_agent_claims_partial_unique_null_pr",
+      "breakpoints": true
     }
   ]
 }

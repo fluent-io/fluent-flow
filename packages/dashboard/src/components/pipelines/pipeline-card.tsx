@@ -28,7 +28,6 @@ export function PipelineCard({ pipeline }: { pipeline: PipelineListItem }) {
   const status = derivePipelineStatus(pipeline.stages);
   const [owner, repo] = pipeline.repo.split('/');
   const prSlug = pipeline.pr_number != null ? `/${pipeline.pr_number}` : '/no-pr';
-  const prDisplay = pipeline.pr_number != null ? `#${pipeline.pr_number}` : 'Standalone';
 
   return (
     <div
