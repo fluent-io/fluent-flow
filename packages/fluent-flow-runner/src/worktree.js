@@ -71,9 +71,11 @@ export async function prepareWorktree({ workDir, repo, prNumber, attempt, branch
     });
 
     let lastError;
+    let successfulAuth = null;
     for (const attempt of attempts) {
       try {
         await exec('git', attempt.args);
+        successfulAuth = attempt.authMethod;
         lastError = undefined;
         break;
       } catch (err) {
@@ -90,6 +92,14 @@ export async function prepareWorktree({ workDir, repo, prNumber, attempt, branch
       }
     }
     if (lastError) throw lastError;
+
+    // Persist token auth for subsequent git operations (fetch, pull, etc.)
+    if (successfulAuth === 'https-token' && process.env.GITHUB_TOKEN) {
+      await exec('git', [
+        'config', '--local', 'http.https://github.com/.extraHeader',
+        `Authorization: token ${process.env.GITHUB_TOKEN}`,
+      ], { cwd: baseDir });
+    }
   }
 
   // 2. Fetch latest
