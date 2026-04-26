@@ -3,7 +3,7 @@ import { db, schema } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 
 const { reviewRetries } = schema;
-import { resolveConfig } from '../config/loader.js';
+import { resolveConfig, resolveOrgId } from '../config/loader.js';
 import { addLabel, getReviews, dismissReview } from '../providers/github/rest.js';
 import { enablePullRequestAutoMerge, getPRNodeId } from '../providers/github/graphql.js';
 import { recordPause, getActivePause } from './pause-manager.js';
@@ -74,8 +74,9 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', head
   }
 
   try {
+    const orgId = await resolveOrgId(owner, repo);
     const newClaim = await createClaim({
-      orgId: config.org_id ?? 'self-hosted',
+      orgId,
       repo: repoKey,
       prNumber,
       attempt,
@@ -148,10 +149,10 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
 
     // Complete the active claim for this PR (claim was created on FAIL, attempt may differ)
     try {
-      const orgId = config.org_id ?? 'self-hosted';
-      const activeClaim = await getActiveClaim(orgId, repoKey, prNumber);
+      const resolvedOrgId = await resolveOrgId(owner, repo);
+      const activeClaim = await getActiveClaim(resolvedOrgId, repoKey, prNumber);
       if (activeClaim) {
-        await completeClaim(orgId, repoKey, prNumber, activeClaim.attempt);
+        await completeClaim(resolvedOrgId, repoKey, prNumber, activeClaim.attempt);
         // Emit check-run resolved (fire-and-forget)
         const providerClient = getProvider({ installation_id: activeClaim.installation_id });
         onClaimResolved(providerClient, activeClaim, { conclusion: 'success' })
@@ -196,8 +197,9 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   // Always create claim (even without agentId) so polling agents can pick it up
   const explicitAgent = agentId;
   try {
+    const failOrgId = await resolveOrgId(owner, repo);
     const newClaim = await createClaim({
-      orgId: config.org_id ?? 'self-hosted',
+      orgId: failOrgId,
       repo: repoKey,
       prNumber,
       attempt,

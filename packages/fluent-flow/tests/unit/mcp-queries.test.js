@@ -8,7 +8,7 @@ vi.mock('../../src/engine/state-machine.js', () => ({
 }));
 vi.mock('../../src/engine/review-manager.js', () => ({ getRetryRecord: vi.fn() }));
 vi.mock('../../src/engine/pause-manager.js', () => ({ getActivePause: vi.fn() }));
-vi.mock('../../src/config/loader.js', () => ({ resolveConfig: vi.fn() }));
+vi.mock('../../src/config/loader.js', () => ({ resolveConfig: vi.fn(), resolveOrgId: vi.fn().mockResolvedValue('self-hosted') }));
 
 // Need to import after mocks
 import { getCurrentState, getTransitionHistory } from '../../src/engine/state-machine.js';

@@ -32,6 +32,7 @@ const mockResolveConfig = vi.fn().mockResolvedValue({
 });
 vi.mock('../../src/config/loader.js', () => ({
   resolveConfig: (...a) => mockResolveConfig(...a),
+  resolveOrgId: vi.fn().mockResolvedValue('self-hosted'),
 }));
 
 const mockDispatchWorkflow = vi.fn();
