@@ -196,8 +196,8 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
 
   // Always create claim (even without agentId) so polling agents can pick it up
   const explicitAgent = agentId;
-  const failOrgId = await resolveOrgId(owner, repo);
   try {
+    const failOrgId = await resolveOrgId(owner, repo);
     const newClaim = await createClaim({
       orgId: failOrgId,
       repo: repoKey,
