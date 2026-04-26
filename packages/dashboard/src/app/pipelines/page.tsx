@@ -23,7 +23,7 @@ export default async function PipelinesPage() {
       ) : (
         <div className="flex flex-col gap-3">
           {pipelines.map((p) => (
-            <PipelineCard key={`${p.repo}-${p.pr_number}`} pipeline={p} />
+            <PipelineCard key={`${p.repo}-${p.pr_number ?? 'standalone'}`} pipeline={p} />
           ))}
         </div>
       )}

@@ -5,12 +5,15 @@ import { authOptions, getOrgScope } from '@/lib/auth';
 
 /** Dashboard labels → runner claim types */
 const CLAIM_TYPE_MAP: Record<string, string> = {
-  review: 'review',
-  build: 'build',
-  fix: 'review_fix',
-  test: 'test_verify',
+  feature: 'spec',       // chains spec→build
+  fix:     'review_fix',
+  review:  'review',
+  spec:    'spec',       // standalone, no chain
 };
 const ALLOWED_DASHBOARD_TYPES = new Set(Object.keys(CLAIM_TYPE_MAP));
+
+/** Types that require a PR number */
+const PR_REQUIRED_TYPES = new Set(['fix', 'review']);
 
 type RouteContext = {
   params: Promise<{ repoId: string }>;
@@ -27,7 +30,7 @@ export async function POST(req: Request, { params }: RouteContext) {
 
   if (!isSuperadmin) {
     const repoCheck = await query(
-      'SELECT id FROM repos WHERE id = $1 AND org_id = ANY($2)',
+      'SELECT id, repo_full_name FROM repos WHERE id = $1 AND org_id = ANY($2)',
       [repoId, orgIds],
     );
     if (repoCheck.rows.length === 0) {
@@ -55,21 +58,46 @@ export async function POST(req: Request, { params }: RouteContext) {
     return NextResponse.json({ error: 'description must be a string' }, { status: 400 });
   }
 
-  if (typeof pr_number !== 'number' || !Number.isInteger(pr_number) || pr_number < 1) {
-    return NextResponse.json({ error: 'pr_number is required and must be a positive integer' }, { status: 400 });
-  }
-
   const mappedType = CLAIM_TYPE_MAP[claim_type];
+
+  // PR number validation
+  let prNumber: number | undefined;
+  if (PR_REQUIRED_TYPES.has(claim_type)) {
+    if (typeof pr_number !== 'number' || !Number.isInteger(pr_number) || pr_number < 1) {
+      return NextResponse.json(
+        { error: `pr_number is required for "${claim_type}" and must be a positive integer` },
+        { status: 400 },
+      );
+    }
+    prNumber = pr_number;
+  } else if (pr_number !== undefined && pr_number !== null) {
+    // Optional — validate if provided
+    if (typeof pr_number !== 'number' || !Number.isInteger(pr_number) || pr_number < 1) {
+      return NextResponse.json({ error: 'pr_number must be a positive integer' }, { status: 400 });
+    }
+    prNumber = pr_number;
+  }
 
   const finalDescription = typeof description === 'string' && description.trim().length > 0
     ? description.trim()
-    : `${mappedType} on PR #${pr_number}`;
+    : prNumber
+      ? `${mappedType} on PR #${prNumber}`
+      : `${mappedType}`;
+
+  // Build payload with auto_chain flag
+  const payload: Record<string, unknown> = {};
+  if (claim_type === 'feature') {
+    payload.auto_chain = true;
+  } else if (claim_type === 'spec') {
+    payload.auto_chain = false;
+  }
 
   const claim = await createClaim({
     repoId,
     claimType: mappedType,
     description: finalDescription,
-    prNumber: pr_number,
+    prNumber: prNumber ?? null,
+    payload,
   });
 
   if (!claim) {

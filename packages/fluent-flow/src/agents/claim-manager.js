@@ -72,30 +72,40 @@ export async function createClaim({ orgId, repo, prNumber, attempt, agentId, pay
   const claimedAt = sessionId ? new Date() : null;
   const expiresAt = sessionId ? new Date(Date.now() + ttlMs) : null;
 
+  const insertValues = {
+    orgId,
+    repo,
+    prNumber,
+    attempt,
+    sessionId,
+    claimType,
+    status,
+    payload,
+    claimedAt,
+    expiresAt,
+  };
+
+  const updateSet = {
+    sessionId,
+    claimType,
+    status,
+    payload,
+    claimedAt,
+    expiresAt,
+  };
+
+  // NULL pr_number uses the partial unique index (org_id, repo, attempt)
+  // instead of the composite one that ignores NULLs.
+  const conflictTarget = prNumber == null
+    ? { target: 'agent_claims_org_repo_attempt_no_pr_key' }
+    : { target: [agentClaims.orgId, agentClaims.repo, agentClaims.prNumber, agentClaims.attempt] };
+
   const [claim] = await db
     .insert(agentClaims)
-    .values({
-      orgId,
-      repo,
-      prNumber,
-      attempt,
-      sessionId,
-      claimType,
-      status,
-      payload,
-      claimedAt,
-      expiresAt,
-    })
+    .values(insertValues)
     .onConflictDoUpdate({
-      target: [agentClaims.orgId, agentClaims.repo, agentClaims.prNumber, agentClaims.attempt],
-      set: {
-        sessionId,
-        claimType,
-        status,
-        payload,
-        claimedAt,
-        expiresAt,
-      },
+      ...conflictTarget,
+      set: updateSet,
     })
     .returning();
 
@@ -121,7 +131,7 @@ async function finalizeClaim(orgId, repo, prNumber, attempt, finalStatus) {
       and(
         eq(agentClaims.orgId, orgId),
         eq(agentClaims.repo, repo),
-        eq(agentClaims.prNumber, prNumber),
+        prNumber != null ? eq(agentClaims.prNumber, prNumber) : sql`${agentClaims.prNumber} IS NULL`,
         eq(agentClaims.attempt, attempt),
         inArray(agentClaims.status, ['claimed', 'pending']),
       ),
@@ -179,17 +189,16 @@ export async function expireClaims() {
  * Get the active claim (pending or claimed) for a PR.
  */
 export async function getActiveClaim(orgId, repo, prNumber) {
+  const conditions = [
+    eq(agentClaims.orgId, orgId),
+    eq(agentClaims.repo, repo),
+    prNumber != null ? eq(agentClaims.prNumber, prNumber) : sql`${agentClaims.prNumber} IS NULL`,
+    inArray(agentClaims.status, ['pending', 'claimed']),
+  ];
   const [row] = await db
     .select()
     .from(agentClaims)
-    .where(
-      and(
-        eq(agentClaims.orgId, orgId),
-        eq(agentClaims.repo, repo),
-        eq(agentClaims.prNumber, prNumber),
-        inArray(agentClaims.status, ['pending', 'claimed']),
-      ),
-    )
+    .where(and(...conditions))
     .orderBy(desc(agentClaims.attempt))
     .limit(1);
   return toSnakeClaim(row) ?? null;
@@ -199,17 +208,16 @@ export async function getActiveClaim(orgId, repo, prNumber) {
  * Get a specific claim by org, repo, PR, and attempt.
  */
 export async function getClaimByAttempt(orgId, repo, prNumber, attempt) {
+  const conditions = [
+    eq(agentClaims.orgId, orgId),
+    eq(agentClaims.repo, repo),
+    prNumber != null ? eq(agentClaims.prNumber, prNumber) : sql`${agentClaims.prNumber} IS NULL`,
+    eq(agentClaims.attempt, attempt),
+  ];
   const [row] = await db
     .select()
     .from(agentClaims)
-    .where(
-      and(
-        eq(agentClaims.orgId, orgId),
-        eq(agentClaims.repo, repo),
-        eq(agentClaims.prNumber, prNumber),
-        eq(agentClaims.attempt, attempt),
-      ),
-    )
+    .where(and(...conditions))
     .limit(1);
   return toSnakeClaim(row) ?? null;
 }

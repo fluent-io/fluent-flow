@@ -11,8 +11,9 @@ export const CLAIM_TYPES = ['spec', 'build', 'review', 'review_fix', 'test_verif
  */
 const TEMPLATES = {
   spec({ repo, prNumber, message }) {
+    const prLabel = prNumber != null ? `PR #${prNumber}` : 'standalone';
     return [
-      `You are a spec agent for ${repo} (PR #${prNumber}).`,
+      `You are a spec agent for ${repo} (${prLabel}).`,
       '',
       'Your task is to analyze the requirements and create specification and implementation plan documents.',
       '',
@@ -29,8 +30,9 @@ const TEMPLATES = {
   },
 
   build({ repo, prNumber, message }) {
+    const prLabel = prNumber != null ? `PR #${prNumber}` : 'standalone';
     return [
-      `You are a build agent for ${repo} (PR #${prNumber}).`,
+      `You are a build agent for ${repo} (${prLabel}).`,
       '',
       'Your task is to implement code following the spec and plan documents.',
       '',

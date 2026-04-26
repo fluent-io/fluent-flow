@@ -27,23 +27,30 @@ export function PipelineCard({ pipeline }: { pipeline: PipelineListItem }) {
   const router = useRouter();
   const status = derivePipelineStatus(pipeline.stages);
   const [owner, repo] = pipeline.repo.split('/');
+  const prSlug = pipeline.pr_number != null ? `/${pipeline.pr_number}` : '/no-pr';
 
   return (
     <div
       className="cursor-pointer rounded-lg border border-border bg-card p-4 transition-colors hover:border-muted-foreground/30"
-      onClick={() => router.push(`/pipelines/${owner}/${repo}/${pipeline.pr_number}`)}
+      onClick={() => router.push(`/pipelines/${owner}/${repo}${prSlug}`)}
     >
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
-          <a
-            href={`https://github.com/${pipeline.repo}/pull/${pipeline.pr_number}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-sm font-medium text-primary hover:underline"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {pipeline.repo} #{pipeline.pr_number}
-          </a>
+          {pipeline.pr_number != null ? (
+            <a
+              href={`https://github.com/${pipeline.repo}/pull/${pipeline.pr_number}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm font-medium text-primary hover:underline"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {pipeline.repo} #{pipeline.pr_number}
+            </a>
+          ) : (
+            <span className="text-sm font-medium text-primary">
+              {pipeline.repo} — Standalone
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2">
           <Badge variant="outline" className={`text-xs font-normal ${status.className}`}>
