@@ -209,6 +209,9 @@ function SetupInstructions() {
     <div className="rounded-md border border-border bg-muted/50">
       <button
         type="button"
+        id="setup-instructions-toggle"
+        aria-expanded={open}
+        aria-controls="setup-instructions-content"
         className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium text-left hover:bg-muted/80 transition-colors rounded-md"
         onClick={() => setOpen(!open)}
       >
@@ -216,7 +219,7 @@ function SetupInstructions() {
         <span className="text-muted-foreground">{open ? '▾' : '▸'}</span>
       </button>
       {open && (
-        <div className="border-t border-border px-3 py-3 flex flex-col gap-3">
+        <div id="setup-instructions-content" className="border-t border-border px-3 py-3 flex flex-col gap-3">
           <div>
             <p className="text-xs font-medium mb-1">Git authentication</p>
             <p className="text-xs text-muted-foreground leading-relaxed">

@@ -20,13 +20,16 @@ The rest of this README covers the **ops/CI path** — registering agents direct
 The runner needs access to clone repositories. **SSH is preferred** (keys don't expire, no token rotation):
 
 - Mount an SSH key into the container: `~/.ssh/id_ed25519` or `~/.ssh/id_rsa`
-- Ensure `known_hosts` is configured (or set `GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no"`)
-- The runner auto-detects SSH keys and uses `git@github.com:` URLs
+- Add GitHub's SSH host keys to `known_hosts` to prevent TOFU prompts:
+  ```bash
+  ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts
+  ```
+- The runner auto-detects SSH keys and tries `git@github.com:` URLs first
 
 Alternatively, use HTTPS with a GitHub token:
 
 - Set `GITHUB_TOKEN` in the container environment
-- The runner uses `https://x-access-token:TOKEN@github.com/` URLs
+- The runner authenticates via `http.extraHeader` so the token is never embedded in the remote URL
 
 If neither is available, cloning public repos still works via plain HTTPS.
 

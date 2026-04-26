@@ -39,17 +39,52 @@ export async function prepareWorktree({ workDir, repo, prNumber, attempt, branch
   // 1. Clone if base repo doesn't exist
   if (!existsSync(join(baseDir, '.git'))) {
     mkdirSync(baseDir, { recursive: true });
-    // Prefer SSH when available, fall back to HTTPS+token, then plain HTTPS
+
+    // Build retry attempts: SSH first (if keys detected), then HTTPS+token, then plain HTTPS.
+    // Token auth uses http.extraHeader so the token is never embedded in the remote URL.
     const sshKeyExists =
       existsSync(join(homedir(), '.ssh', 'id_ed25519')) ||
       existsSync(join(homedir(), '.ssh', 'id_rsa')) ||
       !!process.env.SSH_AUTH_SOCK;
-    const gitUrl = sshKeyExists
-      ? `git@github.com:${repo}.git`
-      : process.env.GITHUB_TOKEN
-        ? `https://x-access-token:${process.env.GITHUB_TOKEN}@github.com/${repo}.git`
-        : `https://github.com/${repo}.git`;
-    await exec('git', ['clone', gitUrl, baseDir]);
+
+    const attempts = [];
+    if (sshKeyExists) {
+      attempts.push({
+        url: `git@github.com:${repo}.git`,
+        args: ['clone', `git@github.com:${repo}.git`, baseDir],
+      });
+    }
+    // Always add plain HTTPS (order matters: token version added after so it wins dedup)
+    attempts.push({
+      url: `https://github.com/${repo}.git`,
+      args: ['clone', `https://github.com/${repo}.git`, baseDir],
+    });
+    if (process.env.GITHUB_TOKEN) {
+      attempts.push({
+        url: `https://github.com/${repo}.git`,
+        args: [
+          '-c', `http.extraHeader=Authorization: token ${process.env.GITHUB_TOKEN}`,
+          'clone', `https://github.com/${repo}.git`, baseDir,
+        ],
+      });
+    }
+
+    // Deduplicate by URL — token version wins when both exist (last write wins)
+    const deduped = new Map();
+    for (const attempt of attempts) {
+      deduped.set(attempt.url, attempt);
+    }
+    let lastError;
+    for (const attempt of deduped.values()) {
+      try {
+        await exec('git', attempt.args);
+        lastError = undefined;
+        break;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    if (lastError) throw lastError;
   }
 
   // 2. Fetch latest
