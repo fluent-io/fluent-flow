@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -183,6 +183,8 @@ export function NewAgentDialog() {
             <p className="text-xs text-muted-foreground">
               The token is shown once. Copy it before closing — if lost, delete the agent and create a new one.
             </p>
+
+            <SetupInstructions />
           </div>
         )}
 
@@ -198,6 +200,72 @@ export function NewAgentDialog() {
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function SetupInstructions() {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  const toggleId = `${id}-toggle`;
+  const contentId = `${id}-content`;
+  return (
+    <div className="rounded-md border border-border bg-muted/50">
+      <button
+        type="button"
+        id={toggleId}
+        aria-expanded={open}
+        aria-controls={contentId}
+        className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium text-left hover:bg-muted/80 transition-colors rounded-md"
+        onClick={() => setOpen(!open)}
+      >
+        <span>⚙ Setup instructions</span>
+        <span className="text-muted-foreground">{open ? '▾' : '▸'}</span>
+      </button>
+      {open && (
+        <div id={contentId} className="border-t border-border px-3 py-3 flex flex-col gap-3">
+          <div>
+            <p className="text-xs font-medium mb-1">Git authentication</p>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              The runner needs access to clone repos.
+            </p>
+            <ul className="mt-1 list-disc list-inside text-xs text-muted-foreground space-y-0.5">
+              <li>
+                <span className="font-medium text-foreground">SSH key</span>{' '}
+                (recommended) — mount <code className="rounded bg-muted px-1 py-0.5 text-[11px]">~/.ssh/id_ed25519</code> or{' '}
+                <code className="rounded bg-muted px-1 py-0.5 text-[11px]">~/.ssh/id_rsa</code> into the container
+              </li>
+              <li>
+                <span className="font-medium text-foreground">GitHub token</span>{' '}
+                — set <code className="rounded bg-muted px-1 py-0.5 text-[11px]">GITHUB_TOKEN</code> env var (works for public &amp; private repos)
+              </li>
+            </ul>
+          </div>
+          <div>
+            <p className="text-xs font-medium mb-1">AI agent API keys</p>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              The spawned coding agent needs its own API key.
+            </p>
+            <ul className="mt-1 list-disc list-inside text-xs text-muted-foreground space-y-0.5">
+              <li>
+                Claude Code → <code className="rounded bg-muted px-1 py-0.5 text-[11px]">ANTHROPIC_API_KEY</code>
+              </li>
+              <li>
+                Codex → <code className="rounded bg-muted px-1 py-0.5 text-[11px]">OPENAI_API_KEY</code>
+              </li>
+              <li>
+                Aider / OpenClaw → set the corresponding provider key
+              </li>
+            </ul>
+          </div>
+          <div className="rounded bg-muted p-2">
+            <p className="text-xs text-muted-foreground">
+              Pass env vars when running the command, e.g.:{' '}
+              <code className="rounded bg-background px-1 py-0.5 text-[11px]">GITHUB_TOKEN=ghp_… ANTHROPIC_API_KEY=sk-ant-… npx fluent-flow-runner …</code>
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

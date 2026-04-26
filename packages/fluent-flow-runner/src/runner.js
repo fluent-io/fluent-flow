@@ -5,21 +5,12 @@ import { resolvePrompt } from './prompts.js';
 
 /**
  * Build an isolated environment for shell commands.
- * Only essential system variables are inherited — prevents leaking
- * sensitive credentials (AWS keys, tokens, etc.) to agent subprocesses.
+ * Passes all of process.env through so agent subprocesses receive
+ * API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.) and other
+ * needed configuration. Command-specific env vars override.
  */
-function buildIsolatedEnv(cmdEnv) {
-  const allowlist = ['PATH', 'HOME', 'USER', 'SHELL', 'TERM', 'LANG'];
-  if (process.platform === 'win32') {
-    allowlist.push('SYSTEMROOT', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA');
-  }
-  const base = {};
-  for (const key of allowlist) {
-    if (process.env[key] !== undefined) {
-      base[key] = process.env[key];
-    }
-  }
-  return { ...base, ...cmdEnv };
+function buildCommandEnv(cmdEnv) {
+  return { ...process.env, ...cmdEnv };
 }
 
 /** Default max consecutive poll failures before the runner stops. */
@@ -72,7 +63,7 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
         ? spawn(cmd.shell, [], {
             ...baseOpts,
             shell: true,
-            env: buildIsolatedEnv(cmd.env),
+            env: buildCommandEnv(cmd.env),
           })
         : spawn(cmd.bin, cmd.args, { ...baseOpts, shell: false });
 

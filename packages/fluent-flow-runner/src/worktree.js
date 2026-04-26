@@ -1,5 +1,6 @@
 import { execFile as execFileCb } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 /**
@@ -38,7 +39,67 @@ export async function prepareWorktree({ workDir, repo, prNumber, attempt, branch
   // 1. Clone if base repo doesn't exist
   if (!existsSync(join(baseDir, '.git'))) {
     mkdirSync(baseDir, { recursive: true });
-    await exec('git', ['clone', `https://github.com/${repo}.git`, baseDir]);
+
+    // Build retry attempts: SSH first (if keys detected), then HTTPS+token, then plain HTTPS.
+    // Token auth uses http.extraHeader so the token is never embedded in the remote URL.
+    const sshKeyExists =
+      existsSync(join(homedir(), '.ssh', 'id_ed25519')) ||
+      existsSync(join(homedir(), '.ssh', 'id_rsa')) ||
+      !!process.env.SSH_AUTH_SOCK;
+
+    const attempts = [];
+    if (sshKeyExists) {
+      attempts.push({
+        authMethod: 'ssh',
+        args: ['clone', `git@github.com:${repo}.git`, baseDir],
+      });
+    }
+    // HTTPS with token (preferred over plain HTTPS when available)
+    if (process.env.GITHUB_TOKEN) {
+      attempts.push({
+        authMethod: 'https-token',
+        args: [
+          '-c', `http.extraHeader=Authorization: token ${process.env.GITHUB_TOKEN}`,
+          'clone', `https://github.com/${repo}.git`, baseDir,
+        ],
+      });
+    }
+    // Plain HTTPS fallback — always attempted last
+    attempts.push({
+      authMethod: 'https-plain',
+      args: ['clone', `https://github.com/${repo}.git`, baseDir],
+    });
+
+    let lastError;
+    let successfulAuth = null;
+    for (const attempt of attempts) {
+      try {
+        await exec('git', attempt.args);
+        successfulAuth = attempt.authMethod;
+        lastError = undefined;
+        break;
+      } catch (err) {
+        lastError = err;
+        // Clean up partial clone so the next attempt starts fresh
+        const parentDir = join(baseDir, '..');
+        if (existsSync(baseDir)) {
+          rmSync(baseDir, { recursive: true, force: true });
+        }
+        // Ensure parent directory still exists
+        if (!existsSync(parentDir)) {
+          mkdirSync(parentDir, { recursive: true });
+        }
+      }
+    }
+    if (lastError) throw lastError;
+
+    // Persist token auth for subsequent git operations (fetch, pull, etc.)
+    if (successfulAuth === 'https-token' && process.env.GITHUB_TOKEN) {
+      await exec('git', [
+        'config', '--local', 'http.https://github.com/.extraHeader',
+        `Authorization: token ${process.env.GITHUB_TOKEN}`,
+      ], { cwd: baseDir });
+    }
   }
 
   // 2. Fetch latest

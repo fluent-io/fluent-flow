@@ -1,8 +1,9 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockExecFile = vi.fn();
 const mockExistsSync = vi.fn();
 const mockMkdirSync = vi.fn();
+const mockHomedir = vi.fn();
 
 vi.mock('node:child_process', () => ({
   execFile: (...args) => mockExecFile(...args),
@@ -11,21 +12,38 @@ vi.mock('node:fs', () => ({
   existsSync: (...args) => mockExistsSync(...args),
   mkdirSync: (...args) => mockMkdirSync(...args),
 }));
+vi.mock('node:os', () => ({
+  homedir: (...args) => mockHomedir(...args),
+}));
 
 const { prepareWorktree } = await import('../../src/worktree.js');
 
 describe('worktree', () => {
+  let savedEnv;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    savedEnv = { ...process.env };
+    mockHomedir.mockReturnValue('/root');
     mockExecFile.mockImplementation((cmd, args, opts, cb) => {
       if (typeof opts === 'function') { opts(null, '', ''); return; }
       cb(null, '', '');
     });
   });
 
+  afterEach(() => {
+    // Restore env to avoid cross-test mutation
+    for (const key of Object.keys(process.env)) {
+      if (!(key in savedEnv)) delete process.env[key];
+    }
+    Object.assign(process.env, savedEnv);
+  });
+
   describe('prepareWorktree', () => {
-    it('clones repo when base clone does not exist', async () => {
+    it('clones repo when base clone does not exist (plain HTTPS fallback)', async () => {
       mockExistsSync.mockReturnValue(false);
+      delete process.env.SSH_AUTH_SOCK;
+      delete process.env.GITHUB_TOKEN;
 
       await prepareWorktree({
         workDir: '/work',
@@ -35,11 +53,171 @@ describe('worktree', () => {
         branch: 'fix/something',
       });
 
-      expect(mockExecFile).toHaveBeenCalledWith(
-        'git', ['clone', 'https://github.com/fluent-io/fluent-flow.git', expect.stringContaining('fluent-flow')],
-        expect.anything(),
-        expect.any(Function)
-      );
+      const cloneCall = mockExecFile.mock.calls.find(c => c[1].includes('clone'));
+      expect(cloneCall).toBeDefined();
+      // Should use plain HTTPS when no SSH key and no GITHUB_TOKEN
+      expect(cloneCall[1]).toContain('https://github.com/fluent-io/fluent-flow.git');
+      expect(cloneCall[1][2]).toContain('fluent-flow'); // baseDir path
+    });
+
+    it('clones via SSH when SSH key is detected', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.includes('id_ed25519')) return true;
+        return false;
+      });
+      delete process.env.SSH_AUTH_SOCK;
+      delete process.env.GITHUB_TOKEN;
+
+      await prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        attempt: 1,
+        branch: 'fix/something',
+      });
+
+      const cloneCall = mockExecFile.mock.calls.find(c => c[1].includes('clone'));
+      expect(cloneCall).toBeDefined();
+      expect(cloneCall[1]).toContain('git@github.com:fluent-io/fluent-flow.git');
+    });
+
+    it('clones via HTTPS with token when GITHUB_TOKEN is set', async () => {
+      mockExistsSync.mockReturnValue(false);
+      delete process.env.SSH_AUTH_SOCK;
+      process.env.GITHUB_TOKEN = 'ghp_testtoken123';
+
+      await prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        attempt: 1,
+        branch: 'fix/something',
+      });
+
+      const cloneCall = mockExecFile.mock.calls.find(c => c[1].includes('clone'));
+      expect(cloneCall).toBeDefined();
+      expect(cloneCall[1]).toContain('https://github.com/fluent-io/fluent-flow.git');
+      // Should have -c http.extraHeader for token auth
+      expect(cloneCall[1]).toContain('-c');
+      expect(cloneCall[1].some(a => a.includes('http.extraHeader=Authorization: token ghp_testtoken123'))).toBe(true);
+    });
+
+    it('tries SSH first when both SSH key and GITHUB_TOKEN are available', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.includes('id_ed25519')) return true;
+        return false;
+      });
+      delete process.env.SSH_AUTH_SOCK;
+      process.env.GITHUB_TOKEN = 'ghp_testtoken123';
+
+      await prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        attempt: 1,
+        branch: 'fix/something',
+      });
+
+      const cloneCall = mockExecFile.mock.calls.find(c => c[1].includes('clone'));
+      expect(cloneCall).toBeDefined();
+      expect(cloneCall[1]).toContain('git@github.com:fluent-io/fluent-flow.git');
+    });
+
+    it('falls back to HTTPS when SSH fails and GITHUB_TOKEN is set', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.includes('id_ed25519')) return true;
+        return false;
+      });
+      delete process.env.SSH_AUTH_SOCK;
+      process.env.GITHUB_TOKEN = 'ghp_testtoken123';
+
+      // SSH clone fails, HTTPS with token succeeds
+      let callCount = 0;
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        callCount++;
+        if (typeof opts === 'function') { opts(null, '', ''); return; }
+        if (callCount === 1) {
+          // First call (SSH clone) fails
+          cb(new Error('Permission denied (publickey)'));
+          return;
+        }
+        cb(null, '', '');
+      });
+
+      await prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        attempt: 1,
+        branch: 'fix/something',
+      });
+
+      const cloneCalls = mockExecFile.mock.calls.filter(c => c[1].includes('clone'));
+      expect(cloneCalls).toHaveLength(2);
+      // First attempt: SSH
+      expect(cloneCalls[0][1]).toContain('git@github.com:fluent-io/fluent-flow.git');
+      // Second attempt: HTTPS with token (should have -c http.extraHeader)
+      expect(cloneCalls[1][1]).toContain('https://github.com/fluent-io/fluent-flow.git');
+      expect(cloneCalls[1][1]).toContain('-c');
+      expect(cloneCalls[1][1].some(a => a.includes('http.extraHeader'))).toBe(true);
+    });
+
+    it('falls back to plain HTTPS when token clone fails', async () => {
+      mockExistsSync.mockReturnValue(false);
+      delete process.env.SSH_AUTH_SOCK;
+      process.env.GITHUB_TOKEN = 'ghp_testtoken123';
+
+      // First clone attempt (token HTTPS) fails, second (plain HTTPS) succeeds
+      let callCount = 0;
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        callCount++;
+        if (typeof opts === 'function') { opts(null, '', ''); return; }
+        if (callCount === 1 && args.includes('clone')) {
+          // Token-based clone fails
+          cb(new Error('HTTP 401 Bad credentials'));
+          return;
+        }
+        cb(null, '', '');
+      });
+
+      await prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        attempt: 1,
+        branch: 'fix/something',
+      });
+
+      const cloneCalls = mockExecFile.mock.calls.filter(c => c[1].includes('clone'));
+      expect(cloneCalls).toHaveLength(2);
+      // First attempt: HTTPS with token
+      expect(cloneCalls[0][1]).toContain('https://github.com/fluent-io/fluent-flow.git');
+      expect(cloneCalls[0][1]).toContain('-c');
+      expect(cloneCalls[0][1].some(a => a.includes('http.extraHeader'))).toBe(true);
+      // Second attempt: plain HTTPS (no -c flag)
+      expect(cloneCalls[1][1]).toContain('https://github.com/fluent-io/fluent-flow.git');
+      expect(cloneCalls[1][1]).not.toContain('-c');
+    });
+
+    it('throws when all clone attempts fail', async () => {
+      mockExistsSync.mockReturnValue(false);
+      delete process.env.SSH_AUTH_SOCK;
+      process.env.GITHUB_TOKEN = 'ghp_testtoken123';
+
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        if (typeof opts === 'function') { opts(new Error('fail')); return; }
+        cb(new Error('fail'));
+      });
+
+      await expect(
+        prepareWorktree({
+          workDir: '/work',
+          repo: 'fluent-io/fluent-flow',
+          prNumber: 40,
+          attempt: 1,
+          branch: 'fix/something',
+        }),
+      ).rejects.toThrow('fail');
     });
 
     it('skips clone when base clone exists', async () => {

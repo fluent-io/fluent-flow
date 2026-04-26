@@ -198,9 +198,9 @@ describe('runner', () => {
       );
     });
 
-    it('uses an isolated environment for shell commands (no full process.env leak)', async () => {
-      // Set a fake secret in process.env
-      process.env.__TEST_SECRET_KEY = 'super-secret';
+    it('passes all env vars through to agent subprocess', async () => {
+      // Set a fake API key in process.env
+      process.env.__TEST_API_KEY = 'test-key-value';
 
       const work = {
         event: 'review_failed',
@@ -236,14 +236,14 @@ describe('runner', () => {
       await startPromise;
 
       const spawnEnv = mockSpawn.mock.calls[0][2].env;
-      // Isolated env must contain the explicitly passed var
+      // Env must contain the explicitly passed var
       expect(spawnEnv.FLUENT_FLOW_PROMPT).toBe('Fix it');
-      // Isolated env must contain PATH (essential)
+      // Env must contain process.env vars (e.g. API keys for AI agents)
+      expect(spawnEnv.__TEST_API_KEY).toBe('test-key-value');
+      // Env must contain PATH
       expect(spawnEnv.PATH).toBeDefined();
-      // Isolated env must NOT contain the fake secret
-      expect(spawnEnv.__TEST_SECRET_KEY).toBeUndefined();
 
-      delete process.env.__TEST_SECRET_KEY;
+      delete process.env.__TEST_API_KEY;
     });
 
     it('reports completed when agent exits 0', async () => {
