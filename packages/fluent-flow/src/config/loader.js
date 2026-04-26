@@ -162,6 +162,34 @@ async function setDbCache(repoKey, config) {
 }
 
 /**
+ * Resolve the org_id for a repo by joining repos → provider_installations.
+ *
+ * Falls back to 'self-hosted' when no installation row exists (e.g. dev
+ * environments, repos not yet onboarded via the App).
+ *
+ * @param {string} owner
+ * @param {string} repo
+ * @returns {Promise<string>}
+ */
+export async function resolveOrgId(owner, repo) {
+  try {
+    const rows = await db
+      .select({ orgId: schema.providerInstallations.orgId })
+      .from(schema.repos)
+      .innerJoin(
+        schema.providerInstallations,
+        eq(schema.repos.installationId, schema.providerInstallations.id),
+      )
+      .where(eq(schema.repos.id, `${owner}/${repo}`))
+      .limit(1);
+    return rows[0]?.orgId ?? 'self-hosted';
+  } catch (err) {
+    logger.error({ msg: 'Failed to resolve org_id for repo', owner, repo, error: err.message });
+    return 'self-hosted';
+  }
+}
+
+/**
  * Resolve the merged config for a repo.
  * Uses memory cache → DB cache → GitHub API, in that order.
  * @param {string} owner

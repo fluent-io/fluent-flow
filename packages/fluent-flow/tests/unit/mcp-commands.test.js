@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { makeTransitionRecord, makePauseRecord } from '../helpers/mocks.js';
 
 vi.mock('../../src/db/client.js', () => ({ query: vi.fn(), audit: vi.fn() }));
-vi.mock('../../src/config/loader.js', () => ({ resolveConfig: vi.fn(), invalidateConfig: vi.fn() }));
+vi.mock('../../src/config/loader.js', () => ({ resolveConfig: vi.fn(), invalidateConfig: vi.fn(), resolveOrgId: vi.fn().mockResolvedValue('self-hosted') }));
 vi.mock('../../src/engine/state-machine.js', () => ({ executeTransition: vi.fn(), getCurrentState: vi.fn() }));
 vi.mock('../../src/engine/review-manager.js', () => ({ dispatchReview: vi.fn() }));
 vi.mock('../../src/engine/pause-manager.js', () => ({ recordPause: vi.fn(), processResume: vi.fn() }));

@@ -8,6 +8,7 @@ vi.mock('../../src/db/client.js', () => ({ query: vi.fn(), audit: vi.fn() }));
 vi.mock('../../src/config/loader.js', () => ({
   resolveConfig: vi.fn().mockResolvedValue(null),
   invalidateConfig: vi.fn(),
+  resolveOrgId: vi.fn().mockResolvedValue('self-hosted'),
 }));
 vi.mock('../../src/engine/state-machine.js', () => ({
   executeTransition: vi.fn(),

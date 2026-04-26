@@ -8,6 +8,7 @@ import { and, eq } from 'drizzle-orm';
 import { db, schema } from '@fluent-flow/db';
 import { audit } from '../../db/client.js';
 import { createClaim } from '../../agents/claim-manager.js';
+import { resolveOrgId } from '../../config/loader.js';
 import logger from '../../logger.js';
 
 /**
@@ -205,14 +206,16 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
 
   // Check if a review_fix claim was recently completed for this PR — if so, create test_verify
   let hasReviewFixClaim = false;
+  let resolvedOrgId = 'self-hosted';
   try {
+    resolvedOrgId = await resolveOrgId(owner, repoName);
     const { agentClaims } = schema;
     const rows = await db
       .select({ one: agentClaims.id })
       .from(agentClaims)
       .where(
         and(
-          eq(agentClaims.orgId, config.org_id ?? 'self-hosted'),
+          eq(agentClaims.orgId, resolvedOrgId),
           eq(agentClaims.repo, repoKey),
           eq(agentClaims.prNumber, pr.number),
           eq(agentClaims.claimType, 'review_fix'),
@@ -228,7 +231,7 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
   if (hasReviewFixClaim) {
     try {
       await createClaim({
-        orgId: config.org_id ?? 'self-hosted',
+        orgId: resolvedOrgId,
         repo: repoKey,
         prNumber: pr.number,
         attempt: attempt + 1,
