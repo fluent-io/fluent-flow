@@ -36,6 +36,28 @@ describe('listPipelines', () => {
     expect(mockQuery.mock.calls[0][1]).toEqual([['fluent-io']]);
   });
 
+  it('returns pipelines with null pr_number (standalone claims)', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          org_id: 'fluent-io',
+          repo: 'fluent-io/fluent-flow',
+          pr_number: null,
+          latest_attempt: 1,
+          last_activity: new Date(),
+          stages: [
+            { claim_type: 'spec', status: 'pending', created_at: new Date().toISOString(), claimed_at: null, completed_at: null },
+          ],
+        },
+      ],
+    });
+
+    const result = await listPipelines(['fluent-io']);
+    expect(result).toHaveLength(1);
+    expect(result[0].pr_number).toBeNull();
+    expect(result[0].stages[0].claim_type).toBe('spec');
+  });
+
   it('returns all pipelines for superadmin (no org filter)', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [] });
 
@@ -64,6 +86,24 @@ describe('getPipelineDetail', () => {
     expect(result).toHaveLength(1);
     expect(result[0].claim_type).toBe('spec');
     expect(result[0].agent_id).toBe('ff-runner');
+  });
+
+  it('returns claims for a null-pr pipeline (standalone)', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 2, org_id: 'fluent-io', repo: 'fluent-io/fluent-flow', pr_number: null,
+          attempt: 1, session_id: 12, claim_type: 'spec', status: 'pending',
+          payload: { auto_chain: false }, claimed_at: null, completed_at: null,
+          expires_at: null, created_at: new Date(), agent_id: 'ff-runner', session_meta: {},
+        },
+      ],
+    });
+
+    const result = await getPipelineDetail(['fluent-io'], 'fluent-io/fluent-flow', null);
+    expect(result).toHaveLength(1);
+    expect(result[0].claim_type).toBe('spec');
+    expect(result[0].pr_number).toBeNull();
   });
 
   it('returns empty array when pipeline not found', async () => {

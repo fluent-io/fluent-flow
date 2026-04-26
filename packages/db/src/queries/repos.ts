@@ -53,11 +53,13 @@ export async function createClaim({
   claimType,
   description,
   prNumber,
+  payload: extraPayload,
 }: {
   repoId: string;
   claimType: string;
   description: string;
-  prNumber: number;
+  prNumber?: number | null;
+  payload?: Record<string, unknown>;
 }): Promise<CreatedClaim | null> {
   const pool = getPool();
   const client = await pool.connect();
@@ -82,16 +84,17 @@ export async function createClaim({
     const attemptResult = await client.query(
       `SELECT COALESCE(MAX(attempt), 0) + 1 AS next_attempt
        FROM agent_claims
-       WHERE org_id = $1 AND repo = $2 AND pr_number = $3`,
-      [repo.org_id, repo.repo_full_name, prNumber],
+       WHERE org_id = $1 AND repo = $2 AND pr_number ${prNumber != null ? '= $3' : 'IS NULL'}`,
+      prNumber != null ? [repo.org_id, repo.repo_full_name, prNumber] : [repo.org_id, repo.repo_full_name],
     );
     const attempt = (attemptResult.rows[0] as { next_attempt: number }).next_attempt;
 
+    const payload = { message: description, ...extraPayload };
     const claimResult = await client.query(
       `INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload)
        VALUES ($1, $2, $3, $4, $5, 'pending', $6)
        RETURNING id, org_id, repo, claim_type, status`,
-      [repo.org_id, repo.repo_full_name, prNumber, attempt, claimType, JSON.stringify({ message: description })],
+      [repo.org_id, repo.repo_full_name, prNumber ?? null, attempt, claimType, JSON.stringify(payload)],
     );
 
     await client.query('COMMIT');

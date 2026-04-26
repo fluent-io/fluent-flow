@@ -77,6 +77,9 @@ export async function getActiveSessions(orgId, agentId) {
  */
 export async function resolveSession(orgId, agentId, repo, prNumber) {
   try {
+    const prFilter = prNumber != null
+      ? eq(agentClaims.prNumber, prNumber)
+      : sql`${agentClaims.prNumber} IS NULL`;
     const [prev] = await db
       .select({ sessionId: agentClaims.sessionId })
       .from(agentClaims)
@@ -84,7 +87,7 @@ export async function resolveSession(orgId, agentId, repo, prNumber) {
         and(
           eq(agentClaims.orgId, orgId),
           eq(agentClaims.repo, repo),
-          eq(agentClaims.prNumber, prNumber),
+          prFilter,
           sql`${agentClaims.status} IN ('completed', 'expired')`,
         ),
       )
@@ -129,6 +132,9 @@ export async function resolveSession(orgId, agentId, repo, prNumber) {
  */
 export async function findAvailableSession(orgId, repo, prNumber) {
   try {
+    const prFilter = prNumber != null
+      ? eq(agentClaims.prNumber, prNumber)
+      : sql`${agentClaims.prNumber} IS NULL`;
     const [prev] = await db
       .select({ sessionId: agentClaims.sessionId })
       .from(agentClaims)
@@ -136,7 +142,7 @@ export async function findAvailableSession(orgId, repo, prNumber) {
         and(
           eq(agentClaims.orgId, orgId),
           eq(agentClaims.repo, repo),
-          eq(agentClaims.prNumber, prNumber),
+          prFilter,
           sql`${agentClaims.status} IN ('completed', 'expired')`,
         ),
       )

@@ -29,6 +29,13 @@
       "when": 1776729600000,
       "tag": "0003_agent_sessions_expires_at_live_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1777080000000,
+      "tag": "0004_agent_claims_pr_number_nullable",
+      "breakpoints": true
     }
   ]
 }

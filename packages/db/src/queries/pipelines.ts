@@ -11,7 +11,7 @@ export interface PipelineStage {
 export interface PipelineListItem {
   org_id: string;
   repo: string;
-  pr_number: number;
+  pr_number: number | null;
   latest_attempt: number;
   last_activity: Date;
   stages: PipelineStage[];
@@ -38,7 +38,7 @@ export async function listPipelines(orgIds: string[]): Promise<PipelineListItem[
       ), '[]'::json) AS stages
     FROM agent_claims c
     ${isSuper ? '' : 'WHERE c.org_id = ANY($1)'}
-    GROUP BY c.org_id, c.repo, c.pr_number
+    GROUP BY c.org_id, c.repo, COALESCE(c.pr_number, 0)
     ORDER BY last_activity DESC
     LIMIT 100
   `;
@@ -54,7 +54,7 @@ export interface PipelineDetailClaim {
   id: number;
   org_id: string;
   repo: string;
-  pr_number: number;
+  pr_number: number | null;
   attempt: number;
   session_id: number | null;
   claim_type: string;
@@ -68,7 +68,7 @@ export interface PipelineDetailClaim {
   session_meta: Record<string, unknown> | null;
 }
 
-export async function getPipelineDetail(orgIds: string[], repo: string, prNumber: number): Promise<PipelineDetailClaim[]> {
+export async function getPipelineDetail(orgIds: string[], repo: string, prNumber: number | null): Promise<PipelineDetailClaim[]> {
   const isSuper = orgIds.length === 0;
 
   const sql = `
@@ -78,16 +78,18 @@ export async function getPipelineDetail(orgIds: string[], repo: string, prNumber
       s.session_meta
     FROM agent_claims c
     LEFT JOIN agent_sessions s ON c.session_id = s.id
-    WHERE ${isSuper ? '' : 'c.org_id = ANY($1) AND '}c.repo = $${isSuper ? 1 : 2} AND c.pr_number = $${isSuper ? 2 : 3}
+    WHERE ${isSuper ? '' : 'c.org_id = ANY($1) AND '}c.repo = $${isSuper ? 1 : 2} AND c.pr_number ${prNumber != null ? `= $${isSuper ? 2 : 3}` : 'IS NULL'}
       AND c.attempt = (
         SELECT MAX(c2.attempt)
         FROM agent_claims c2
-        WHERE c2.org_id = c.org_id AND c2.repo = c.repo AND c2.pr_number = c.pr_number
+        WHERE c2.org_id = c.org_id AND c2.repo = c.repo AND c2.pr_number ${prNumber != null ? '= c.pr_number' : 'IS NULL'}
       )
     ORDER BY c.created_at ASC
   `;
 
-  const params = isSuper ? [repo, prNumber] : [orgIds, repo, prNumber];
+  const params = prNumber != null
+    ? (isSuper ? [repo, prNumber] : [orgIds, repo, prNumber])
+    : (isSuper ? [repo] : [orgIds, repo]);
   const result = await query(sql, params);
   return result.rows as PipelineDetailClaim[];
 }

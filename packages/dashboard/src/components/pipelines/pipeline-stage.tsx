@@ -3,6 +3,7 @@ import { cn } from '@/lib/utils';
 const stageConfig: Record<string, { label: string; color: string }> = {
   spec: { label: 'Spec', color: 'emerald' },
   build: { label: 'Build', color: 'amber' },
+  review: { label: 'Review', color: 'violet' },
   review_fix: { label: 'Review Fix', color: 'indigo' },
   test_verify: { label: 'Test Verify', color: 'cyan' },
   security_review: { label: 'Security', color: 'rose' },

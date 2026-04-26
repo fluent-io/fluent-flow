@@ -13,15 +13,17 @@ export async function GET(
   }
 
   const { slug } = await params;
-  if (slug.length < 3) {
-    return NextResponse.json({ error: 'Invalid path. Expected: owner/repo/prNumber' }, { status: 400 });
+  if (slug.length < 2) {
+    return NextResponse.json({ error: 'Invalid path. Expected: owner/repo or owner/repo/prNumber' }, { status: 400 });
   }
 
   const owner = slug[0];
   const repo = slug[1];
-  const prNumber = parseInt(slug[2], 10);
+  const rawPr = slug[2];
+  // "no-pr" segment means null pr_number (feature/spec claims)
+  const prNumber = rawPr === undefined ? null : (rawPr === 'no-pr' ? null : parseInt(rawPr, 10));
 
-  if (isNaN(prNumber)) {
+  if (rawPr !== undefined && rawPr !== 'no-pr' && isNaN(prNumber!)) {
     return NextResponse.json({ error: 'Invalid PR number' }, { status: 400 });
   }
 

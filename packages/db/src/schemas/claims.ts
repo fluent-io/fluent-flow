@@ -4,7 +4,7 @@ export const claimSchema = z.object({
   id: z.number(),
   org_id: z.string(),
   repo: z.string(),
-  pr_number: z.number(),
+  pr_number: z.number().nullable(),
   attempt: z.number(),
   session_id: z.number().nullable(),
   claim_type: z.string().default('review_fix'),

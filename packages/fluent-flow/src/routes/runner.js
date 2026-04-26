@@ -18,7 +18,7 @@ const PollSchema = z.object({
 const ClaimResultSchema = z.object({
   status: z.enum(['completed', 'failed']),
   repo: z.string().min(1),
-  pr_number: z.number().int().positive(),
+  pr_number: z.number().int().positive().nullable(),
   attempt: z.number().int().positive(),
 });
 
@@ -204,8 +204,8 @@ export async function handleClaimResult(req, res) {
 
       audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status, claimType } });
 
-      // Auto-chain: spec → build
-      if (claimType === 'spec') {
+      // Auto-chain: spec → build (only if payload.auto_chain !== false)
+      if (claimType === 'spec' && claim.payload?.auto_chain !== false) {
         try {
           await createClaim({
             orgId: org_id,

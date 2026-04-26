@@ -69,7 +69,7 @@ export const agentClaims = pgTable('agent_claims', {
   id: integer('id').primaryKey().generatedByDefaultAsIdentity(),
   orgId: text('org_id').notNull().references(() => orgs.id),
   repo: text('repo').notNull(),
-  prNumber: integer('pr_number').notNull(),
+  prNumber: integer('pr_number'),
   attempt: integer('attempt').notNull(),
   sessionId: integer('session_id').references(() => agentSessions.id),
   claimType: text('claim_type').default('review_fix'),
@@ -87,4 +87,8 @@ export const agentClaims = pgTable('agent_claims', {
   activeIdx: index('idx_agent_claims_active')
     .on(t.orgId, t.repo, t.prNumber)
     .where(sql`${t.status} = ANY (ARRAY['pending', 'claimed'])`),
+  // Index for listing claims with NULL pr_number (feature/spec claims)
+  activeNoPrIdx: index('idx_agent_claims_active_no_pr')
+    .on(t.orgId, t.repo)
+    .where(sql`${t.status} = ANY (ARRAY['pending', 'claimed']) AND ${t.prNumber} IS NULL`),
 }));
