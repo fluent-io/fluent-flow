@@ -9,7 +9,7 @@ import { resolvePrompt } from './prompts.js';
  * API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.) and other
  * needed configuration. Command-specific env vars override.
  */
-function buildIsolatedEnv(cmdEnv) {
+function buildCommandEnv(cmdEnv) {
   return { ...process.env, ...cmdEnv };
 }
 
@@ -63,7 +63,7 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
         ? spawn(cmd.shell, [], {
             ...baseOpts,
             shell: true,
-            env: buildIsolatedEnv(cmd.env),
+            env: buildCommandEnv(cmd.env),
           })
         : spawn(cmd.bin, cmd.args, { ...baseOpts, shell: false });
 

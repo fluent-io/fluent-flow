@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
@@ -205,13 +205,16 @@ export function NewAgentDialog() {
 
 function SetupInstructions() {
   const [open, setOpen] = useState(false);
+  const id = useId();
+  const toggleId = `${id}-toggle`;
+  const contentId = `${id}-content`;
   return (
     <div className="rounded-md border border-border bg-muted/50">
       <button
         type="button"
-        id="setup-instructions-toggle"
+        id={toggleId}
         aria-expanded={open}
-        aria-controls="setup-instructions-content"
+        aria-controls={contentId}
         className="flex w-full items-center justify-between px-3 py-2 text-xs font-medium text-left hover:bg-muted/80 transition-colors rounded-md"
         onClick={() => setOpen(!open)}
       >
@@ -219,7 +222,7 @@ function SetupInstructions() {
         <span className="text-muted-foreground">{open ? '▾' : '▸'}</span>
       </button>
       {open && (
-        <div id="setup-instructions-content" className="border-t border-border px-3 py-3 flex flex-col gap-3">
+        <div id={contentId} className="border-t border-border px-3 py-3 flex flex-col gap-3">
           <div>
             <p className="text-xs font-medium mb-1">Git authentication</p>
             <p className="text-xs text-muted-foreground leading-relaxed">

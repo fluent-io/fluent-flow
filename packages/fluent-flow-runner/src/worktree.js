@@ -1,5 +1,5 @@
 import { execFile as execFileCb } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -50,38 +50,43 @@ export async function prepareWorktree({ workDir, repo, prNumber, attempt, branch
     const attempts = [];
     if (sshKeyExists) {
       attempts.push({
-        url: `git@github.com:${repo}.git`,
+        authMethod: 'ssh',
         args: ['clone', `git@github.com:${repo}.git`, baseDir],
       });
     }
-    // Always add plain HTTPS (order matters: token version added after so it wins dedup)
-    attempts.push({
-      url: `https://github.com/${repo}.git`,
-      args: ['clone', `https://github.com/${repo}.git`, baseDir],
-    });
+    // HTTPS with token (preferred over plain HTTPS when available)
     if (process.env.GITHUB_TOKEN) {
       attempts.push({
-        url: `https://github.com/${repo}.git`,
+        authMethod: 'https-token',
         args: [
           '-c', `http.extraHeader=Authorization: token ${process.env.GITHUB_TOKEN}`,
           'clone', `https://github.com/${repo}.git`, baseDir,
         ],
       });
     }
+    // Plain HTTPS fallback — always attempted last
+    attempts.push({
+      authMethod: 'https-plain',
+      args: ['clone', `https://github.com/${repo}.git`, baseDir],
+    });
 
-    // Deduplicate by URL — token version wins when both exist (last write wins)
-    const deduped = new Map();
-    for (const attempt of attempts) {
-      deduped.set(attempt.url, attempt);
-    }
     let lastError;
-    for (const attempt of deduped.values()) {
+    for (const attempt of attempts) {
       try {
         await exec('git', attempt.args);
         lastError = undefined;
         break;
       } catch (err) {
         lastError = err;
+        // Clean up partial clone so the next attempt starts fresh
+        const parentDir = join(baseDir, '..');
+        if (existsSync(baseDir)) {
+          rmSync(baseDir, { recursive: true, force: true });
+        }
+        // Ensure parent directory still exists
+        if (!existsSync(parentDir)) {
+          mkdirSync(parentDir, { recursive: true });
+        }
       }
     }
     if (lastError) throw lastError;

@@ -162,6 +162,43 @@ describe('worktree', () => {
       expect(cloneCalls[1][1].some(a => a.includes('http.extraHeader'))).toBe(true);
     });
 
+    it('falls back to plain HTTPS when token clone fails', async () => {
+      mockExistsSync.mockReturnValue(false);
+      delete process.env.SSH_AUTH_SOCK;
+      process.env.GITHUB_TOKEN = 'ghp_testtoken123';
+
+      // First clone attempt (token HTTPS) fails, second (plain HTTPS) succeeds
+      let callCount = 0;
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        callCount++;
+        if (typeof opts === 'function') { opts(null, '', ''); return; }
+        if (callCount === 1 && args.includes('clone')) {
+          // Token-based clone fails
+          cb(new Error('HTTP 401 Bad credentials'));
+          return;
+        }
+        cb(null, '', '');
+      });
+
+      await prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        attempt: 1,
+        branch: 'fix/something',
+      });
+
+      const cloneCalls = mockExecFile.mock.calls.filter(c => c[1].includes('clone'));
+      expect(cloneCalls).toHaveLength(2);
+      // First attempt: HTTPS with token
+      expect(cloneCalls[0][1]).toContain('https://github.com/fluent-io/fluent-flow.git');
+      expect(cloneCalls[0][1]).toContain('-c');
+      expect(cloneCalls[0][1].some(a => a.includes('http.extraHeader'))).toBe(true);
+      // Second attempt: plain HTTPS (no -c flag)
+      expect(cloneCalls[1][1]).toContain('https://github.com/fluent-io/fluent-flow.git');
+      expect(cloneCalls[1][1]).not.toContain('-c');
+    });
+
     it('throws when all clone attempts fail', async () => {
       mockExistsSync.mockReturnValue(false);
       delete process.env.SSH_AUTH_SOCK;
