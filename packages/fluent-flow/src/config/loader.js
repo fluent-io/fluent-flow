@@ -162,6 +162,27 @@ async function setDbCache(repoKey, config) {
 }
 
 /**
+ * Resolve the org_id for a repo from the repos table.
+ *
+ * @param {string} owner
+ * @param {string} repo
+ * @returns {Promise<string>}
+ * @throws {Error} When no repo row or org_id exists for the repo
+ */
+export async function resolveOrgId(owner, repo) {
+  const rows = await db
+    .select({ orgId: schema.repos.orgId })
+    .from(schema.repos)
+    .where(eq(schema.repos.id, `${owner}/${repo}`))
+    .limit(1);
+  const orgId = rows[0]?.orgId;
+  if (!orgId) {
+    throw new Error(`No org_id found for repo ${owner}/${repo}`);
+  }
+  return orgId;
+}
+
+/**
  * Resolve the merged config for a repo.
  * Uses memory cache → DB cache → GitHub API, in that order.
  * @param {string} owner
