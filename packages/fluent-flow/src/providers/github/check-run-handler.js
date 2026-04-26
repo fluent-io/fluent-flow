@@ -206,9 +206,8 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
 
   // Check if a review_fix claim was recently completed for this PR — if so, create test_verify
   let hasReviewFixClaim = false;
-  let resolvedOrgId = 'self-hosted';
+  const resolvedOrgId = await resolveOrgId(owner, repoName);
   try {
-    resolvedOrgId = await resolveOrgId(owner, repoName);
     const { agentClaims } = schema;
     const rows = await db
       .select({ one: agentClaims.id })
