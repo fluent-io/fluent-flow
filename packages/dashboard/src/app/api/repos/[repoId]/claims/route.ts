@@ -12,13 +12,17 @@ const CLAIM_TYPE_MAP: Record<string, string> = {
 };
 const ALLOWED_DASHBOARD_TYPES = new Set(Object.keys(CLAIM_TYPE_MAP));
 
-export async function POST(req: Request, { params }: { params: { repoId: string } }) {
+type RouteContext = {
+  params: Promise<{ repoId: string }>;
+};
+
+export async function POST(req: Request, { params }: RouteContext) {
   const session = await getServerSession(authOptions);
   if (!session) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { repoId } = params;
+  const { repoId } = await params;
   const { orgIds, isSuperadmin } = getOrgScope(session);
 
   if (!isSuperadmin) {
