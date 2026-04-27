@@ -36,7 +36,7 @@ export async function POST(req: Request, { params }: RouteContext) {
 
   const { claim_type, description, pr_number } = (body ?? {}) as Record<string, unknown>;
 
-  if (claim_type !== undefined && claim_type !== START_WORKFLOW_CLAIM_TYPE) {
+  if (typeof claim_type !== 'string' || claim_type !== START_WORKFLOW_CLAIM_TYPE) {
     return NextResponse.json(
       { error: 'Start workflow only supports claim_type "spec". Other claim types are pipeline steps.' },
       { status: 400 },
