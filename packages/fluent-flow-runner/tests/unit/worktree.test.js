@@ -96,10 +96,8 @@ describe('worktree', () => {
 
       const cloneCall = mockExecFile.mock.calls.find(c => c[1].includes('clone'));
       expect(cloneCall).toBeDefined();
-      expect(cloneCall[1]).toContain('https://github.com/fluent-io/fluent-flow.git');
-      // Should have -c http.extraHeader for token auth
-      expect(cloneCall[1]).toContain('-c');
-      expect(cloneCall[1].some(a => a.includes('http.extraHeader=Authorization: token ghp_testtoken123'))).toBe(true);
+      // Should use x-access-token URL auth
+      expect(cloneCall[1]).toContain('https://x-access-token:ghp_testtoken123@github.com/fluent-io/fluent-flow.git');
     });
 
     it('tries SSH first when both SSH key and GITHUB_TOKEN are available', async () => {
@@ -156,10 +154,8 @@ describe('worktree', () => {
       expect(cloneCalls).toHaveLength(2);
       // First attempt: SSH
       expect(cloneCalls[0][1]).toContain('git@github.com:fluent-io/fluent-flow.git');
-      // Second attempt: HTTPS with token (should have -c http.extraHeader)
-      expect(cloneCalls[1][1]).toContain('https://github.com/fluent-io/fluent-flow.git');
-      expect(cloneCalls[1][1]).toContain('-c');
-      expect(cloneCalls[1][1].some(a => a.includes('http.extraHeader'))).toBe(true);
+      // Second attempt: HTTPS with x-access-token URL auth
+      expect(cloneCalls[1][1]).toContain('https://x-access-token:ghp_testtoken123@github.com/fluent-io/fluent-flow.git');
     });
 
     it('falls back to plain HTTPS when token clone fails', async () => {
@@ -190,13 +186,11 @@ describe('worktree', () => {
 
       const cloneCalls = mockExecFile.mock.calls.filter(c => c[1].includes('clone'));
       expect(cloneCalls).toHaveLength(2);
-      // First attempt: HTTPS with token
-      expect(cloneCalls[0][1]).toContain('https://github.com/fluent-io/fluent-flow.git');
-      expect(cloneCalls[0][1]).toContain('-c');
-      expect(cloneCalls[0][1].some(a => a.includes('http.extraHeader'))).toBe(true);
-      // Second attempt: plain HTTPS (no -c flag)
+      // First attempt: HTTPS with x-access-token URL auth
+      expect(cloneCalls[0][1]).toContain('https://x-access-token:ghp_testtoken123@github.com/fluent-io/fluent-flow.git');
+      // Second attempt: plain HTTPS (no token in URL)
       expect(cloneCalls[1][1]).toContain('https://github.com/fluent-io/fluent-flow.git');
-      expect(cloneCalls[1][1]).not.toContain('-c');
+      expect(cloneCalls[1][1].some(a => a.includes('x-access-token'))).toBe(false);
     });
 
     it('throws when all clone attempts fail', async () => {
