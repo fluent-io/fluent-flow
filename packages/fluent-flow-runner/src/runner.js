@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, execFile as execFileCb } from 'node:child_process';
 import { hostname, platform } from 'node:os';
 import { prepareWorktree } from './worktree.js';
 import { resolvePrompt } from './prompts.js';
@@ -103,8 +103,8 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
 
     let cmd;
     try {
-      const claimType = work.claim_type ?? 'review_fix';
-      if (!work.claim_type) {
+      const claimType = work.claim_type ?? work.claimType ?? 'review_fix';
+      if (!work.claim_type && !work.claimType) {
         log.info('No claim_type in work payload, defaulting to review_fix');
       }
       const prompt = resolvePrompt({ claimType, work });
@@ -176,6 +176,34 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
     activeWork = null;
   }
 
+  /**
+   * Authenticate gh CLI if GITHUB_TOKEN is set and gh is available.
+   */
+  async function ensureGhAuth() {
+    if (!process.env.GITHUB_TOKEN) return;
+    try {
+      const { execFile: ef } = await import('node:child_process');
+      await new Promise((resolve, reject) => {
+        const proc = ef('gh', ['auth', 'status'], { stdio: 'pipe' }, (err) => {
+          if (err) reject(err); else resolve();
+        });
+      });
+    } catch {
+      try {
+        await new Promise((resolve, reject) => {
+          const proc = execFileCb('gh', ['auth', 'login', '--with-token'], { stdio: ['pipe', 'pipe', 'pipe'] }, (err) => {
+            if (err) reject(err); else resolve();
+          });
+          proc.stdin.write(process.env.GITHUB_TOKEN + '\n');
+          proc.stdin.end();
+        });
+        log.info('gh CLI authenticated with GITHUB_TOKEN');
+      } catch (e) {
+        log.info('gh CLI not available or auth failed', { error: e.message });
+      }
+    }
+  }
+
   return {
     /**
      * Start the runner. Registers a session and enters the poll loop.
@@ -183,6 +211,8 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
      */
     async start() {
       running = true;
+
+      await ensureGhAuth();
 
       log.info('Registering session...');
       const session = await client.register(sessionMeta);

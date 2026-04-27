@@ -140,6 +140,7 @@ export async function handlePoll(req, res, opts = {}) {
           pr_number: pendingClaim.pr_number,
           attempt: pendingClaim.attempt,
           claim_id: pendingClaim.id,
+          claim_type: pendingClaim.claim_type,
           ...payload,
         },
       });
@@ -162,7 +163,7 @@ export async function handlePoll(req, res, opts = {}) {
       if (loopClaim) {
         await touchSession(org_id, agent_id, sessionId);
         const lp = typeof loopClaim.payload === 'string' ? JSON.parse(loopClaim.payload) : loopClaim.payload;
-        respond({ work: { repo: loopClaim.repo, pr_number: loopClaim.pr_number, attempt: loopClaim.attempt, claim_id: loopClaim.id, ...lp } });
+        respond({ work: { repo: loopClaim.repo, pr_number: loopClaim.pr_number, attempt: loopClaim.attempt, claim_id: loopClaim.id, claim_type: loopClaim.claim_type, ...lp } });
         return;
       }
       if (Date.now() - start >= pollTimeoutMs) {
