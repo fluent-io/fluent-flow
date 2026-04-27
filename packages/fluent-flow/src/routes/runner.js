@@ -107,6 +107,13 @@ export async function handlePoll(req, res, opts = {}) {
   const sessionId = parsed.data.session_id;
   const pollTimeoutMs = opts.pollTimeoutMs ?? 30000;
 
+  // Resolve the agent's type once for inclusion in work payloads
+  let agentType = 'claude-code'; // default
+  try {
+    const agentRows = await db.execute(sql`SELECT agent_type FROM agents WHERE org_id = ${org_id} AND id = ${agent_id}`);
+    if (agentRows.rows?.[0]?.agent_type) agentType = agentRows.rows[0].agent_type;
+  } catch {}
+
   let sent = false;
   const respond = (data) => {
     if (sent || res.headersSent) return;
@@ -141,6 +148,7 @@ export async function handlePoll(req, res, opts = {}) {
           attempt: pendingClaim.attempt,
           claim_id: pendingClaim.id,
           claim_type: pendingClaim.claim_type,
+          agentType,
           ...payload,
         },
       });
@@ -163,7 +171,7 @@ export async function handlePoll(req, res, opts = {}) {
       if (loopClaim) {
         await touchSession(org_id, agent_id, sessionId);
         const lp = typeof loopClaim.payload === 'string' ? JSON.parse(loopClaim.payload) : loopClaim.payload;
-        respond({ work: { repo: loopClaim.repo, pr_number: loopClaim.pr_number, attempt: loopClaim.attempt, claim_id: loopClaim.id, claim_type: loopClaim.claim_type, ...lp } });
+        respond({ work: { repo: loopClaim.repo, pr_number: loopClaim.pr_number, attempt: loopClaim.attempt, claim_id: loopClaim.id, claim_type: loopClaim.claim_type, agentType, ...lp } });
         return;
       }
       if (Date.now() - start >= pollTimeoutMs) {
