@@ -8,6 +8,7 @@ const nodeStyles: Record<string, string> = {
   pending: 'border-amber-500/50 bg-amber-950/50 text-amber-400/70',
   failed: 'border-red-500 bg-red-950 text-red-400',
   expired: 'border-red-500 bg-red-950 text-red-400',
+  cancelled: 'border-zinc-600 bg-zinc-900 text-zinc-400',
 };
 
 const lineStyles: Record<string, string> = {
@@ -16,6 +17,7 @@ const lineStyles: Record<string, string> = {
   pending: 'bg-border',
   failed: 'bg-red-800',
   expired: 'bg-red-800',
+  cancelled: 'bg-zinc-800',
 };
 
 function formatTime(date: Date | string | null): string {

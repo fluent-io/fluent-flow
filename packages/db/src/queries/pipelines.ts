@@ -17,8 +17,13 @@ export interface PipelineListItem {
   stages: PipelineStage[];
 }
 
-export async function listPipelines(orgIds: string[]): Promise<PipelineListItem[]> {
+export async function listPipelines(orgIds: string[], filter: 'active' | 'archived' | 'all' = 'active'): Promise<PipelineListItem[]> {
   const isSuper = orgIds.length === 0;
+
+  const archiveFilter =
+    filter === 'active' ? 'AND c.archived_at IS NULL'
+    : filter === 'archived' ? 'AND c.archived_at IS NOT NULL'
+    : '';
 
   const sql = `
     SELECT
@@ -37,7 +42,9 @@ export async function listPipelines(orgIds: string[]): Promise<PipelineListItem[
         ) ORDER BY c.created_at
       ), '[]'::json) AS stages
     FROM agent_claims c
-    ${isSuper ? '' : 'WHERE c.org_id = ANY($1)'}
+    WHERE 1=1
+      ${archiveFilter}
+      ${isSuper ? '' : 'AND c.org_id = ANY($1)'}
     GROUP BY c.org_id, c.repo, COALESCE(c.pr_number, 0)
     ORDER BY last_activity DESC
     LIMIT 100

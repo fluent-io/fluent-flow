@@ -13,3 +13,58 @@ export async function getAgentClaims(orgId: string, agentId: string): Promise<Cl
   const result = await query(sql, [orgId, agentId]);
   return result.rows.map((row: unknown) => claimSchema.parse(row));
 }
+
+/**
+ * Dismiss a single claim: set status to cancelled, archived_at and completed_at to NOW().
+ */
+export async function dismissClaim(id: number): Promise<void> {
+  await query(
+    `UPDATE agent_claims
+     SET status = 'cancelled', archived_at = NOW(), completed_at = NOW()
+     WHERE id = $1`,
+    [id],
+  );
+}
+
+/**
+ * Dismiss stale claims (pending or claimed) older than a threshold.
+ * Defaults to 24 hours if olderThanMs not provided.
+ */
+export async function dismissStaleClaims(orgIds: string[], olderThanMs = 86_400_000): Promise<number> {
+  const isSuper = orgIds.length === 0;
+  const sql = `
+    UPDATE agent_claims
+    SET status = 'cancelled', archived_at = NOW(), completed_at = NOW()
+    WHERE status IN ('pending', 'claimed')
+      AND created_at < NOW() - ($1 || ' milliseconds')::interval
+      ${isSuper ? '' : 'AND org_id = ANY($2)'}
+  `;
+  const params = isSuper ? [String(olderThanMs)] : [String(olderThanMs), orgIds];
+  const result = await query(sql, params);
+  return result.rowCount ?? 0;
+}
+
+/**
+ * Dismiss all active (pending or claimed) claims in a pipeline (repo + optional pr_number).
+ */
+export async function dismissPipelineClaims(orgIds: string[], repo: string, prNumber?: number | null): Promise<number> {
+  const isSuper = orgIds.length === 0;
+  const params: unknown[] = ['cancelled', repo];
+  if (!isSuper) params.push(orgIds);
+  if (prNumber != null) params.push(prNumber);
+
+  const orgFilter = isSuper ? '' : 'AND org_id = ANY($3)';
+  const prFilter = prNumber != null ? 'AND pr_number = $4' : (prNumber === null ? 'AND pr_number IS NULL' : '');
+
+  const sql = `
+    UPDATE agent_claims
+    SET status = $1, archived_at = NOW(), completed_at = NOW()
+    WHERE status IN ('pending', 'claimed')
+      AND repo = $2
+      ${orgFilter}
+      ${prFilter}
+  `;
+
+  const result = await query(sql, params);
+  return result.rowCount ?? 0;
+}

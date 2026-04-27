@@ -19,6 +19,7 @@ const statusStyles: Record<string, string> = {
   pending: 'bg-amber-950/50 border-amber-800/50 text-amber-400/70',
   failed: 'bg-red-950 border-red-800 text-red-400',
   expired: 'bg-red-950 border-red-800 text-red-400',
+  cancelled: 'bg-zinc-900 border-zinc-700 text-zinc-400',
 };
 
 const statusIcons: Record<string, string> = {
@@ -27,6 +28,7 @@ const statusIcons: Record<string, string> = {
   pending: '\u23F3',
   failed: '\u2717',
   expired: '\u2717',
+  cancelled: '\u2717',
 };
 
 function formatDuration(start: string | Date | null, end: string | Date | null): string {

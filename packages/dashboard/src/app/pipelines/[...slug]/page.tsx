@@ -5,11 +5,14 @@ import { authOptions, getOrgScope } from '@/lib/auth';
 import { PipelineTimeline } from '@/components/pipelines/pipeline-timeline';
 import { Badge } from '@/components/ui/badge';
 import { notFound } from 'next/navigation';
+import { DismissButton } from '@/components/pipelines/dismiss-button';
 
 function derivePipelineStatus(claims: { status: string }[]): { label: string; className: string } {
+  const hasCancelled = claims.every((s) => s.status === 'cancelled');
   const hasActive = claims.some((s) => s.status === 'pending' || s.status === 'claimed');
   const hasFailed = claims.some((s) => s.status === 'failed' || s.status === 'expired');
 
+  if (hasCancelled) return { label: 'cancelled', className: 'border-zinc-700 bg-zinc-900 text-zinc-400' };
   if (hasActive) return { label: 'in progress', className: 'border-amber-800 bg-amber-950 text-amber-400' };
   if (hasFailed) return { label: 'failed', className: 'border-red-800 bg-red-950 text-red-400' };
   return { label: 'completed', className: 'border-green-800 bg-green-950 text-green-400' };
@@ -47,6 +50,7 @@ export default async function PipelineDetailPage({ params }: { params: Promise<{
   const firstClaim = claims[0];
   const lastClaim = claims[claims.length - 1];
   const totalDuration = formatDuration(firstClaim.created_at, lastClaim.completed_at);
+  const hasDismissible = claims.some((c) => c.status === 'pending' || c.status === 'claimed');
 
   return (
     <div>
@@ -72,16 +76,21 @@ export default async function PipelineDetailPage({ params }: { params: Promise<{
               <div>Duration: {totalDuration}</div>
             </div>
           </div>
-          {prNumber != null && (
-            <a
-              href={`https://github.com/${fullRepo}/pull/${prNumber}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-primary hover:underline"
-            >
-              View on GitHub ↗
-            </a>
-          )}
+          <div className="flex items-center gap-2">
+            {hasDismissible && (
+              <DismissButton repo={fullRepo} prNumber={prNumber} />
+            )}
+            {prNumber != null && (
+              <a
+                href={`https://github.com/${fullRepo}/pull/${prNumber}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-primary hover:underline"
+              >
+                View on GitHub ↗
+              </a>
+            )}
+          </div>
         </div>
       </div>
 

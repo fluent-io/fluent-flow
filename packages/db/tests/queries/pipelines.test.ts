@@ -10,7 +10,7 @@ const { listPipelines, getPipelineDetail } = await import('../../src/queries/pip
 describe('listPipelines', () => {
   beforeEach(() => { mockQuery.mockReset(); });
 
-  it('returns pipelines grouped by PR for given orgs', async () => {
+  it('returns pipelines grouped by PR for given orgs (active filter default)', async () => {
     mockQuery.mockResolvedValueOnce({
       rows: [
         {
@@ -33,7 +33,22 @@ describe('listPipelines', () => {
     expect(result[0].pr_number).toBe(28);
     expect(result[0].stages).toHaveLength(2);
     expect(result[0].stages[0].claim_type).toBe('spec');
+    expect(mockQuery.mock.calls[0][0]).toContain('archived_at IS NULL');
     expect(mockQuery.mock.calls[0][1]).toEqual([['fluent-io']]);
+  });
+
+  it('filters archived pipelines when filter=archived', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    await listPipelines(['fluent-io'], 'archived');
+    expect(mockQuery.mock.calls[0][0]).toContain('archived_at IS NOT NULL');
+  });
+
+  it('shows all pipelines when filter=all', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    await listPipelines(['fluent-io'], 'all');
+    const sql = mockQuery.mock.calls[0][0] as string;
+    expect(sql).not.toContain('archived_at IS NULL');
+    expect(sql).not.toContain('archived_at IS NOT NULL');
   });
 
   it('returns pipelines with null pr_number (standalone claims)', async () => {
