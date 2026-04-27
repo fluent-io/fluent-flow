@@ -20,6 +20,7 @@ const ClaimResultSchema = z.object({
   repo: z.string().min(1),
   pr_number: z.number().int().positive().nullable(),
   attempt: z.number().int().positive(),
+  verdict: z.enum(['pass', 'fail']).optional(), // review verdict for chaining
 });
 
 /**
@@ -212,6 +213,23 @@ export async function handleClaimResult(req, res) {
       }
 
       audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status, claimType } });
+
+      // Auto-chain: review FAIL → review_fix
+      if (claimType === 'review' && parsed.data.verdict === 'fail') {
+        try {
+          await createClaim({
+            orgId: org_id,
+            repo,
+            prNumber: pr_number,
+            attempt: attempt + 1,
+            claimType: 'review_fix',
+            payload: { source_claim_id: claim.id, branch: claim.payload?.branch },
+          });
+          logger.info({ msg: 'Auto-created review_fix claim after FAIL review', repo, prNumber: pr_number, attempt: attempt + 1 });
+        } catch (err) {
+          logger.error({ msg: 'Failed to create review_fix claim', error: err.message });
+        }
+      }
 
       // Auto-chain: spec → build (only if payload.auto_chain !== false)
       if (claimType === 'spec' && claim.payload?.auto_chain !== false) {

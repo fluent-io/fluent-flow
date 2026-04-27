@@ -69,7 +69,9 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
 
       activeProcess = proc;
 
+      const chunks = [];
       proc.stdout.on('data', (data) => {
+        chunks.push(data);
         log.debug('agent:stdout', { data: data.toString().trimEnd() });
       });
 
@@ -79,7 +81,7 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
 
       proc.on('close', (code) => {
         activeProcess = null;
-        resolve(code ?? 1);
+        resolve({ exitCode: code ?? 1, stdout: Buffer.concat(chunks).toString() });
       });
 
       proc.on('error', (err) => {
@@ -146,13 +148,14 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
       }
     }
 
-    let exitCode;
+    let result;
     try {
-      exitCode = await execute(cmd, agentCwd);
+      result = await execute(cmd, agentCwd);
     } catch (err) {
       log.error('Agent process error', { error: err.message });
-      exitCode = 1;
+      result = { exitCode: 1, stdout: '' };
     }
+    const { exitCode, stdout: agentOutput } = result;
 
     // Always clean up worktree
     if (worktreeCleanup) {
@@ -167,8 +170,32 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
     const status = exitCode === 0 ? 'completed' : 'failed';
     log.info('Agent finished', { repo, prNumber, attempt, exitCode, status });
 
+    // Parse review verdict from agent output for chaining
+    let verdict;
+    const claimType = work.claim_type ?? work.claimType;
+    if (status === 'completed' && claimType === 'review' && agentOutput) {
+      try {
+        // Claude Code returns JSON with a "result" field containing the text
+        const parsed = JSON.parse(agentOutput);
+        const text = parsed.result ?? agentOutput;
+        if (/<!--\s*reviewer-result:\s*\{\s*"status"\s*:\s*"FAIL"/i.test(text)) {
+          verdict = 'fail';
+          log.info('Review verdict: FAIL');
+        } else if (/<!--\s*reviewer-result:/i.test(text)) {
+          verdict = 'pass';
+          log.info('Review verdict: PASS');
+        }
+      } catch {
+        // Not JSON or no verdict marker — try raw text
+        if (/<!--\s*reviewer-result:\s*\{\s*"status"\s*:\s*"FAIL"/i.test(agentOutput)) {
+          verdict = 'fail';
+          log.info('Review verdict: FAIL (raw)');
+        }
+      }
+    }
+
     try {
-      await client.reportClaim({ status, repo, pr_number: prNumber, attempt });
+      await client.reportClaim({ status, repo, pr_number: prNumber, attempt, verdict });
     } catch (err) {
       log.error('Failed to report claim', { error: err.message });
     }
