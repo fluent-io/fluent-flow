@@ -99,13 +99,17 @@ describe('POST /api/pipelines', () => {
     expect(mockDismissStaleClaims).toHaveBeenCalledWith([], undefined);
   });
 
-  it('rejects dismiss-stale for non-superadmin', async () => {
+  it('allows dismiss-stale for non-superadmin org members', async () => {
     mockGetServerSession.mockResolvedValueOnce({
       user: { id: 1, isSuperadmin: false, orgs: [{ org_id: 'fluent-io' }] },
     });
+    mockDismissStaleClaims.mockResolvedValueOnce(2);
 
     const response = await POST(makeRequest({ action: 'dismiss-stale' }));
-    expect(response.status).toBe(403);
+    const data = await response.json();
+    expect(response.status).toBe(200);
+    expect(data.dismissed).toBe(2);
+    expect(mockDismissStaleClaims).toHaveBeenCalledWith(['fluent-io'], undefined);
   });
 
   it('dismisses stale claims with custom threshold', async () => {
