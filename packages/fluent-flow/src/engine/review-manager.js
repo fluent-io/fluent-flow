@@ -224,12 +224,16 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   const explicitAgent = agentId;
   try {
     const failOrgId = await resolveOrgId(owner, repo);
+    // Use attempt + 1 to avoid upserting the original review claim.
+    // The unique constraint is (org_id, repo, pr_number, attempt), so
+    // reusing the same attempt would overwrite the completed review.
     const newClaim = await createClaim({
       orgId: failOrgId,
       repo: repoKey,
       prNumber,
-      attempt,
+      attempt: attempt + 1,
       agentId: explicitAgent,
+      claimType: 'review_fix',
       payload: {
         message: formatRichMessage({ repo: repoKey, prNumber, attempt, blocking, advisory }),
         issues: allIssues,

@@ -85,17 +85,9 @@ export async function createClaim({ orgId, repo, prNumber, attempt, agentId, pay
     expiresAt,
   };
 
-  const updateSet = {
-    sessionId,
-    claimType,
-    status,
-    payload,
-    claimedAt,
-    expiresAt,
-  };
-
-  // NULL pr_number uses the partial unique index (org_id, repo, attempt)
-  // instead of the composite one that ignores NULLs.
+  // Insert only — never overwrite an existing claim.
+  // The unique constraint (org_id, repo, pr_number, attempt) ensures
+  // each claim is immutable once created.
   const conflictTarget = prNumber == null
     ? { target: 'agent_claims_org_repo_attempt_no_pr_key' }
     : { target: [agentClaims.orgId, agentClaims.repo, agentClaims.prNumber, agentClaims.attempt] };
@@ -103,11 +95,13 @@ export async function createClaim({ orgId, repo, prNumber, attempt, agentId, pay
   const [claim] = await db
     .insert(agentClaims)
     .values(insertValues)
-    .onConflictDoUpdate({
-      ...conflictTarget,
-      set: updateSet,
-    })
+    .onConflictDoNothing({ ...conflictTarget })
     .returning();
+
+  if (!claim) {
+    logger.info({ msg: 'Claim already exists, skipping', orgId, repo, prNumber, attempt, claimType });
+    return null;
+  }
 
   if (sessionId && resolvedAgentId) {
     await setSessionStatus(orgId, resolvedAgentId, sessionId, 'busy');
