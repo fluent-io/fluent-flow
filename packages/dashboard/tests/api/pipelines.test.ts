@@ -86,9 +86,9 @@ describe('POST /api/pipelines', () => {
     expect(response.status).toBe(401);
   });
 
-  it('dismisses stale claims', async () => {
+  it('dismisses stale claims (superadmin)', async () => {
     mockGetServerSession.mockResolvedValueOnce({
-      user: { id: 1, isSuperadmin: false, orgs: [{ org_id: 'fluent-io' }] },
+      user: { id: 1, isSuperadmin: true, orgs: [] },
     });
     mockDismissStaleClaims.mockResolvedValueOnce(3);
 
@@ -96,7 +96,16 @@ describe('POST /api/pipelines', () => {
     const data = await response.json();
     expect(response.status).toBe(200);
     expect(data.dismissed).toBe(3);
-    expect(mockDismissStaleClaims).toHaveBeenCalledWith(['fluent-io'], undefined);
+    expect(mockDismissStaleClaims).toHaveBeenCalledWith([], undefined);
+  });
+
+  it('rejects dismiss-stale for non-superadmin', async () => {
+    mockGetServerSession.mockResolvedValueOnce({
+      user: { id: 1, isSuperadmin: false, orgs: [{ org_id: 'fluent-io' }] },
+    });
+
+    const response = await POST(makeRequest({ action: 'dismiss-stale' }));
+    expect(response.status).toBe(403);
   });
 
   it('dismisses stale claims with custom threshold', async () => {
