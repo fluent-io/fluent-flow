@@ -34,6 +34,9 @@ export async function POST(request: Request) {
   const { action, repo, pr_number, older_than_ms } = (body ?? {}) as Record<string, unknown>;
 
   if (action === 'dismiss-stale') {
+    if (!isSuperadmin && orgIds.length === 0) {
+      return NextResponse.json({ error: 'Forbidden: no org membership' }, { status: 403 });
+    }
     const olderThanMs = typeof older_than_ms === 'number' ? older_than_ms : undefined;
     const count = await dismissStaleClaims(orgIds, olderThanMs);
     return NextResponse.json({ dismissed: count });

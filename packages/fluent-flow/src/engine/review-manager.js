@@ -100,6 +100,8 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', head
 
       // If the claim was pre-assigned to a runner session, push the work
       // via long-poll so the runner picks it up on next poll.
+      // TODO: in multi-agent setups, derive agentId from the session's
+      // agent_sessions.agent_id instead of config.
       if (newClaim.session_id) {
         try {
           const agentId = config.default_agent ?? config.agent_id;

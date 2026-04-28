@@ -54,9 +54,11 @@ vi.mock('../../src/engine/pause-manager.js', () => ({
   recordPause: vi.fn(),
   getActivePause: vi.fn().mockResolvedValue(null),
 }));
+const mockDispatch = vi.fn();
 vi.mock('../../src/notifications/dispatcher.js', () => ({
   notifyReviewFailure: vi.fn(),
   formatRichMessage: vi.fn().mockReturnValue('msg'),
+  dispatch: (...a) => mockDispatch(...a),
 }));
 
 const mockCreateClaim = vi.fn();
@@ -89,6 +91,7 @@ beforeEach(() => {
   mockOnClaimDispatched.mockClear();
   mockGetProvider.mockClear();
   mockResolveConfig.mockResolvedValue({ reviewer: { enabled: true, max_retries: 3 } });
+  mockDispatch.mockClear();
 });
 
 describe('dispatchReview (runner-claim based)', () => {
@@ -189,6 +192,58 @@ describe('dispatchReview (runner-claim based)', () => {
     });
 
     expect(mockOnClaimDispatched).not.toHaveBeenCalled();
+  });
+
+  it('pushes pre-assigned claim to runner via long-poll dispatch', async () => {
+    mockCreateClaim.mockResolvedValueOnce({ id: 1, claim_type: 'review', session_id: 42 });
+    mockResolveConfig.mockResolvedValueOnce({ reviewer: { enabled: true, max_retries: 3 }, default_agent: 'cc-1' });
+
+    await dispatchReview({
+      owner: 'fluent-io',
+      repo: 'fluent-flow',
+      prNumber: 42,
+      ref: 'main',
+      attempt: 1,
+      priorIssues: [],
+    });
+
+    expect(mockDispatch).toHaveBeenCalledWith({
+      agentId: 'cc-1',
+      event: 'review',
+      payload: expect.objectContaining({ session_id: 42, repo: 'fluent-io/fluent-flow', prNumber: 42 }),
+    });
+  });
+
+  it('does not dispatch via long-poll when claim has no session_id', async () => {
+    mockCreateClaim.mockResolvedValueOnce({ id: 1, claim_type: 'review' });
+    mockResolveConfig.mockResolvedValueOnce({ reviewer: { enabled: true, max_retries: 3 }, default_agent: 'cc-1' });
+
+    await dispatchReview({
+      owner: 'fluent-io',
+      repo: 'fluent-flow',
+      prNumber: 42,
+      ref: 'main',
+      attempt: 1,
+      priorIssues: [],
+    });
+
+    expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
+  it('does not dispatch via long-poll when no agent is configured', async () => {
+    mockCreateClaim.mockResolvedValueOnce({ id: 1, claim_type: 'review', session_id: 42 });
+    mockResolveConfig.mockResolvedValueOnce({ reviewer: { enabled: true, max_retries: 3 } });
+
+    await dispatchReview({
+      owner: 'fluent-io',
+      repo: 'fluent-flow',
+      prNumber: 42,
+      ref: 'main',
+      attempt: 1,
+      priorIssues: [],
+    });
+
+    expect(mockDispatch).not.toHaveBeenCalled();
   });
 
   it('rethrows createClaim errors so callers can respond appropriately', async () => {
