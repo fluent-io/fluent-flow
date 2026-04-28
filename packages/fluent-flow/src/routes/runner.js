@@ -8,6 +8,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 import logger from '../logger.js';
+import { getInstallationToken } from '../providers/github/token-cache.js';
 
 const router = Router();
 
@@ -142,6 +143,22 @@ export async function handlePoll(req, res, opts = {}) {
       const payload = typeof pendingClaim.payload === 'string'
         ? JSON.parse(pendingClaim.payload)
         : pendingClaim.payload;
+
+      // Resolve GitHub App installation token for the repo's org so the runner
+      // posts reviews as the GitHub App bot, not a personal account.
+      let githubToken;
+      try {
+        const [owner] = pendingClaim.repo.split('/');
+        const repoRow = await db.execute(sql`SELECT installation_id FROM repos WHERE org_id = ${org_id} AND name = ${pendingClaim.repo.split('/')[1]} LIMIT 1`);
+        const installationId = repoRow.rows?.[0]?.installation_id;
+        if (installationId) {
+          githubToken = await getInstallationToken(installationId);
+          logger.debug({ msg: 'Resolved GitHub App token for runner', installationId });
+        }
+      } catch (err) {
+        logger.warn({ msg: 'Could not resolve GitHub App token, runner will fall back to GITHUB_TOKEN', error: err.message });
+      }
+
       respond({
         work: {
           repo: pendingClaim.repo,
@@ -150,6 +167,7 @@ export async function handlePoll(req, res, opts = {}) {
           claim_id: pendingClaim.id,
           claim_type: pendingClaim.claim_type,
           agentType,
+          ...(githubToken ? { githubToken } : {}),
           ...payload,
         },
       });

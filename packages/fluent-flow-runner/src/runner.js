@@ -103,6 +103,23 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
 
     log.info('Work received', { repo, prNumber, attempt, branch, event: work.event });
 
+    // Re-authenticate gh CLI with the GitHub App token if the server provides one,
+    // so reviews are posted as the GitHub App bot, not a personal account.
+    if (work.githubToken) {
+      try {
+        await new Promise((resolve, reject) => {
+          const proc = execFileCb('gh', ['auth', 'login', '--with-token'], { stdio: ['pipe', 'pipe', 'pipe'] }, (err) => {
+            if (err) reject(err); else resolve();
+          });
+          proc.stdin.write(work.githubToken + '\n');
+          proc.stdin.end();
+        });
+        log.info('gh CLI re-authenticated with GitHub App token');
+      } catch (e) {
+        log.warn('Failed to re-auth gh with GitHub App token, using fallback', { error: e.message });
+      }
+    }
+
     let cmd;
     try {
       const claimType = work.claim_type ?? work.claimType ?? 'review_fix';
