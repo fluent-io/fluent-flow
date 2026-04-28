@@ -78,6 +78,7 @@ export const agentClaims = pgTable('agent_claims', {
   claimedAt: timestamp('claimed_at', { withTimezone: true }),
   completedAt: timestamp('completed_at', { withTimezone: true }),
   expiresAt: timestamp('expires_at', { withTimezone: true }),
+  archivedAt: timestamp('archived_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   checkRunExternalId: bigint('check_run_external_id', { mode: 'number' }),
   headSha: text('head_sha'),

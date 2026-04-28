@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, execFile as execFileCb } from 'node:child_process';
 import { hostname, platform } from 'node:os';
 import { prepareWorktree } from './worktree.js';
 import { resolvePrompt } from './prompts.js';
@@ -69,7 +69,9 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
 
       activeProcess = proc;
 
+      const chunks = [];
       proc.stdout.on('data', (data) => {
+        chunks.push(data);
         log.debug('agent:stdout', { data: data.toString().trimEnd() });
       });
 
@@ -79,7 +81,7 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
 
       proc.on('close', (code) => {
         activeProcess = null;
-        resolve(code ?? 1);
+        resolve({ exitCode: code ?? 1, stdout: Buffer.concat(chunks).toString() });
       });
 
       proc.on('error', (err) => {
@@ -101,10 +103,27 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
 
     log.info('Work received', { repo, prNumber, attempt, branch, event: work.event });
 
+    // Re-authenticate gh CLI with the GitHub App token if the server provides one,
+    // so reviews are posted as the GitHub App bot, not a personal account.
+    if (work.githubToken) {
+      try {
+        await new Promise((resolve, reject) => {
+          const proc = execFileCb('gh', ['auth', 'login', '--with-token'], { stdio: ['pipe', 'pipe', 'pipe'] }, (err) => {
+            if (err) reject(err); else resolve();
+          });
+          proc.stdin.write(work.githubToken + '\n');
+          proc.stdin.end();
+        });
+        log.info('gh CLI re-authenticated with GitHub App token');
+      } catch (e) {
+        log.warn('Failed to re-auth gh with GitHub App token, using fallback', { error: e.message });
+      }
+    }
+
     let cmd;
     try {
-      const claimType = work.claim_type ?? 'review_fix';
-      if (!work.claim_type) {
+      const claimType = work.claim_type ?? work.claimType ?? 'review_fix';
+      if (!work.claim_type && !work.claimType) {
         log.info('No claim_type in work payload, defaulting to review_fix');
       }
       const prompt = resolvePrompt({ claimType, work });
@@ -146,13 +165,14 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
       }
     }
 
-    let exitCode;
+    let result;
     try {
-      exitCode = await execute(cmd, agentCwd);
+      result = await execute(cmd, agentCwd);
     } catch (err) {
       log.error('Agent process error', { error: err.message });
-      exitCode = 1;
+      result = { exitCode: 1, stdout: '' };
     }
+    const { exitCode, stdout: agentOutput } = result;
 
     // Always clean up worktree
     if (worktreeCleanup) {
@@ -167,13 +187,67 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
     const status = exitCode === 0 ? 'completed' : 'failed';
     log.info('Agent finished', { repo, prNumber, attempt, exitCode, status });
 
+    // Parse review verdict from agent output for chaining
+    let verdict;
+    const claimType = work.claim_type ?? work.claimType;
+    if (status === 'completed' && claimType === 'review' && agentOutput) {
+      try {
+        // Claude Code returns JSON with a "result" field containing the text
+        const parsed = JSON.parse(agentOutput);
+        const text = parsed.result ?? agentOutput;
+        if (/<!--\s*reviewer-result:\s*\{\s*"status"\s*:\s*"FAIL"/i.test(text)) {
+          verdict = 'fail';
+          log.info('Review verdict: FAIL');
+        } else if (/<!--\s*reviewer-result:/i.test(text)) {
+          verdict = 'pass';
+          log.info('Review verdict: PASS');
+        }
+      } catch {
+        // Not JSON or no verdict marker — try raw text
+        if (/<!--\s*reviewer-result:\s*\{\s*"status"\s*:\s*"FAIL"/i.test(agentOutput)) {
+          verdict = 'fail';
+          log.info('Review verdict: FAIL (raw)');
+        } else if (/<!--\s*reviewer-result:/i.test(agentOutput)) {
+          verdict = 'pass';
+          log.info('Review verdict: PASS (raw)');
+        }
+      }
+    }
+
     try {
-      await client.reportClaim({ status, repo, pr_number: prNumber, attempt });
+      await client.reportClaim({ status, repo, pr_number: prNumber, attempt, verdict });
     } catch (err) {
       log.error('Failed to report claim', { error: err.message });
     }
 
     activeWork = null;
+  }
+
+  /**
+   * Authenticate gh CLI if GITHUB_TOKEN is set and gh is available.
+   */
+  async function ensureGhAuth() {
+    if (!process.env.GITHUB_TOKEN) return;
+    try {
+      await new Promise((resolve, reject) => {
+        execFileCb('gh', ['auth', 'status'], { stdio: 'pipe' }, (err) => {
+          if (err) reject(err); else resolve();
+        });
+      });
+    } catch {
+      try {
+        await new Promise((resolve, reject) => {
+          const proc = execFileCb('gh', ['auth', 'login', '--with-token'], { stdio: ['pipe', 'pipe', 'pipe'] }, (err) => {
+            if (err) reject(err); else resolve();
+          });
+          proc.stdin.write(process.env.GITHUB_TOKEN + '\n');
+          proc.stdin.end();
+        });
+        log.info('gh CLI authenticated with GITHUB_TOKEN');
+      } catch (e) {
+        log.info('gh CLI not available or auth failed', { error: e.message });
+      }
+    }
   }
 
   return {
@@ -183,6 +257,8 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
      */
     async start() {
       running = true;
+
+      await ensureGhAuth();
 
       log.info('Registering session...');
       const session = await client.register(sessionMeta);

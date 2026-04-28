@@ -17,8 +17,13 @@ export interface PipelineListItem {
   stages: PipelineStage[];
 }
 
-export async function listPipelines(orgIds: string[]): Promise<PipelineListItem[]> {
+export async function listPipelines(orgIds: string[], filter: 'active' | 'archived' | 'all' = 'active'): Promise<PipelineListItem[]> {
   const isSuper = orgIds.length === 0;
+
+  const archiveFilter =
+    filter === 'active' ? 'AND c.archived_at IS NULL'
+    : filter === 'archived' ? 'AND c.archived_at IS NOT NULL'
+    : '';
 
   const sql = `
     SELECT
@@ -37,7 +42,9 @@ export async function listPipelines(orgIds: string[]): Promise<PipelineListItem[
         ) ORDER BY c.created_at
       ), '[]'::json) AS stages
     FROM agent_claims c
-    ${isSuper ? '' : 'WHERE c.org_id = ANY($1)'}
+    WHERE 1=1
+      ${archiveFilter}
+      ${isSuper ? '' : 'AND c.org_id = ANY($1)'}
     GROUP BY c.org_id, c.repo, COALESCE(c.pr_number, 0)
     ORDER BY last_activity DESC
     LIMIT 100
@@ -68,8 +75,12 @@ export interface PipelineDetailClaim {
   session_meta: Record<string, unknown> | null;
 }
 
-export async function getPipelineDetail(orgIds: string[], repo: string, prNumber: number | null): Promise<PipelineDetailClaim[]> {
+export async function getPipelineDetail(orgIds: string[], repo: string, prNumber: number | null, filter: 'active' | 'archived' | 'all' = 'active'): Promise<PipelineDetailClaim[]> {
   const isSuper = orgIds.length === 0;
+  const archivedFilter =
+    filter === 'active' ? 'AND c.archived_at IS NULL'
+    : filter === 'archived' ? 'AND c.archived_at IS NOT NULL'
+    : '';
 
   const sql = `
     SELECT
@@ -79,6 +90,7 @@ export async function getPipelineDetail(orgIds: string[], repo: string, prNumber
     FROM agent_claims c
     LEFT JOIN agent_sessions s ON c.session_id = s.id
     WHERE ${isSuper ? '' : 'c.org_id = ANY($1) AND '}c.repo = $${isSuper ? 1 : 2} AND c.pr_number ${prNumber != null ? `= $${isSuper ? 2 : 3}` : 'IS NULL'}
+      ${archivedFilter}
       AND c.attempt = (
         SELECT MAX(c2.attempt)
         FROM agent_claims c2
