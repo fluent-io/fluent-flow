@@ -78,7 +78,7 @@ vi.mock('../../src/providers/index.js', () => ({
   getProvider: (...a) => mockGetProvider(...a),
 }));
 
-import { dispatchReview } from '../../src/engine/review-manager.js';
+import { dispatchReview, handleReviewResult } from '../../src/engine/review-manager.js';
 
 beforeEach(() => {
   mockCreateClaim.mockReset();
@@ -259,5 +259,42 @@ describe('dispatchReview (runner-claim based)', () => {
         priorIssues: [],
       })
     ).rejects.toThrow('DB connection lost');
+  });
+});
+
+describe('handleReviewResult', () => {
+  it('creates review_fix claim at attempt+1 on FAIL, preserving the original review claim', async () => {
+    await handleReviewResult({
+      owner: 'fluent-io',
+      repo: 'fluent-flow',
+      prNumber: 42,
+      issueNumber: 10,
+      result: { status: 'FAIL', blocking: [{ file: 'a.ts', line: 1, issue: 'bug' }], advisory: [], attempt: 1 },
+      reviewSha: 'abc123',
+      agentId: 'cc-1',
+      headBranch: 'main',
+    });
+
+    expect(mockCreateClaim).toHaveBeenCalledTimes(1);
+    const call = mockCreateClaim.mock.calls[0][0];
+    expect(call.attempt).toBe(2); // attempt + 1, not 1
+    expect(call.claimType).toBe('review_fix');
+    expect(call.repo).toBe('fluent-io/fluent-flow');
+    expect(call.prNumber).toBe(42);
+  });
+
+  it('does not create a claim on PASS', async () => {
+    const result = await handleReviewResult({
+      owner: 'fluent-io',
+      repo: 'fluent-flow',
+      prNumber: 42,
+      issueNumber: 10,
+      result: { status: 'PASS', blocking: [], advisory: [], attempt: 1 },
+      reviewSha: 'abc123',
+      headBranch: 'main',
+    });
+
+    expect(result.action).toBe('pass');
+    expect(mockCreateClaim).not.toHaveBeenCalled();
   });
 });
