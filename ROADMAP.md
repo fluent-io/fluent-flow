@@ -23,9 +23,9 @@ Rolling view of what's shipped, what's in flight, and what's known-missing.
 | #88 | server + runner + docs | Migrate initial PR review from per-repo `pr-review.yml` workflow_dispatch to the runner-claim path — `dispatchReview` now creates a `claim_type: 'review'` claim; runner `prompts.js` gains a `review` template; deletes `review.yml`, `pr-review.yml`, `review.js`, `run-review.mjs`, `post-review.mjs`, `system-prompt.txt` from this repo; `onboard_repo` MCP tool stops writing workflow files; repos now need zero per-repo setup beyond the App install |
 | #89 | dashboard + db + server + docs | GitHub App onboarding action surface — `/repos` page, `GET /api/repos`, dashboard-initiated `POST /api/repos/{repoId}/claims`, `listRepos`/`createClaim`, Repos nav, BYOK README refresh, stale `packages/fluent-flow/DESIGN.md` deletion, and check-run handler GitHub App installation-auth fixes for commit→PR/check-run/annotation lookups |
 | #90 | server | Next-15 route fix |
-| #91 | server + runner | Standalone claims + auto-chain — nullable `pr_number`, `StartWorkflowDialog` redesign, `CLAIM_TYPE_MAP`, claim → claim chaining |
-| #92 | server + db | Org ID from DB via `resolveOrgId` instead of relying on webhook payload alone |
-| #93 | runner | Runner env pass-through + git SSH/HTTPS auth with x-access-token URL embedding |
+| #91 | dashboard + db + server + runner | StartWorkflowDialog redesign — horizontal type selector (Feature/Fix/Review/Spec), adaptive placeholders, conditional PR field, nullable `pr_number` for standalone spec claims, partial unique index for NULL-PR claims, pipeline detail page handles standalone pipelines, auto_chain payload flag |
+| #92 | server | `resolveOrgId` fix — claims now resolve org_id from DB (`repos.orgId`) instead of hardcoded `'self-hosted'` fallback. Fixes claim-runner org mismatch that prevented runners from picking up dispatched reviews |
+| #93 | runner + dashboard | Runner env pass-through and git auth — all env vars passed to agent subprocess (fixes AI harness auth), git clone auto-detects SSH keys with HTTPS+token fallback via `http.extraHeader` (token never in URL), token persisted in repo-local config for subsequent fetches, auth setup instructions in New Agent dialog UI and README |
 | #95 | server | Spec-only workflow start validation |
 | #96 | server + runner + dashboard + db | Claim dismiss/archive (migration 0006, cancelled status, bulk/stale dismiss endpoints, pipeline filter UI); runner x-access-token git auth fix; review agent E2E flow (gh CLI auth, claim_type/agentType passthrough, inline review comments via `gh api`); GitHub App token for bot-posted reviews; auto-chain review FAIL→review_fix; reference Dockerfile + Docker deployment docs |
 
@@ -41,6 +41,14 @@ Each entry: the gap, the impact, and the rough shape of the fix.
 
 - **`@fluent-flow/runner` not published to npm.** Runner package name is still `fluent-flow-runner` (unscoped). Victor owns the `fluent-flow` npm scope. End users running `npx @fluent-flow/runner@latest` (the dashboard's generated command) will hit 404 until publish lands.
   - **Fix shape:** rename runner package to `@fluent-flow/runner`, add `publishConfig.access: public`, set up a release workflow (`release: { types: [published] }` + `NPM_TOKEN` secret), cut v0.1.0.
+
+### Reviewer reliability
+
+- **Review dispatch fires but runner can't clone.** Even after PR #93 (git auth), the runner container on G10 still needs SSH keys or `GITHUB_TOKEN` mounted. The code is ready but the Docker config hasn't been updated yet. Verify after next deploy.
+  - **Fix shape:** mount SSH key or set `GITHUB_TOKEN` in the runner's `docker-compose.yml` / `.env`.
+
+- **401 on GitHub API reviews endpoint during review dismissal.** The `pull_request.closed` / review-dismissal path still lacks installation context, falling back to PAT auth which 401s. Non-blocking for new review dispatch but means stale reviews aren't cleaned up.
+  - **Fix shape:** same as the "non-check-run webhook paths" gap below — pass installation context to all GitHub REST helpers.
 
 ### GitHub App install flow
 
