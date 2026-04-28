@@ -3,7 +3,7 @@ import { db, schema } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 
 const { reviewRetries } = schema;
-import { resolveConfig, resolveOrgId } from '../config/loader.js';
+import { resolveConfig, resolveOrgId, installationCtxForRepo } from '../config/loader.js';
 import { addLabel, getReviews, dismissReview } from '../providers/github/rest.js';
 import { enablePullRequestAutoMerge, getPRNodeId } from '../providers/github/graphql.js';
 import { recordPause, getActivePause } from './pause-manager.js';
@@ -88,7 +88,8 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', head
       },
     });
     if (newClaim) {
-      const installationId = newClaim.installation_id ?? config.installation_id;
+      const installCtx = await installationCtxForRepo(owner, repo);
+      const installationId = installCtx?.installation_id;
       if (installationId && headSha) {
         const providerClient = getProvider({ installation_id: installationId });
         onClaimDispatched(providerClient, { ...newClaim, head_sha: headSha, installation_id: installationId })

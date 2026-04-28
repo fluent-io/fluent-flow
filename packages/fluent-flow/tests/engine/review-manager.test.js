@@ -30,9 +30,11 @@ const mockResolveConfig = vi.fn().mockResolvedValue({
   reviewer: { enabled: true, max_retries: 3 },
   installation_id: 99,
 });
+const mockInstallationCtxForRepo = vi.fn().mockResolvedValue({ installation_id: 99 });
 vi.mock('../../src/config/loader.js', () => ({
   resolveConfig: (...a) => mockResolveConfig(...a),
   resolveOrgId: vi.fn().mockResolvedValue('self-hosted'),
+  installationCtxForRepo: (...a) => mockInstallationCtxForRepo(...a),
 }));
 
 const mockDispatchWorkflow = vi.fn();
@@ -86,7 +88,7 @@ beforeEach(() => {
   mockDismissReview.mockClear();
   mockOnClaimDispatched.mockClear();
   mockGetProvider.mockClear();
-  mockResolveConfig.mockResolvedValue({ reviewer: { enabled: true, max_retries: 3 }, installation_id: 99 });
+  mockResolveConfig.mockResolvedValue({ reviewer: { enabled: true, max_retries: 3 } });
 });
 
 describe('dispatchReview (runner-claim based)', () => {
@@ -174,6 +176,7 @@ describe('dispatchReview (runner-claim based)', () => {
 
   it('skips onClaimDispatched when no installation_id is available', async () => {
     mockResolveConfig.mockResolvedValueOnce({ reviewer: { enabled: true, max_retries: 3 } });
+    mockInstallationCtxForRepo.mockResolvedValueOnce(undefined);
 
     await dispatchReview({
       owner: 'fluent-io',
