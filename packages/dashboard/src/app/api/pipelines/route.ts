@@ -22,7 +22,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { orgIds } = getOrgScope(session);
+  const { orgIds, isSuperadmin } = getOrgScope(session);
 
   let body: unknown;
   try {
@@ -34,12 +34,18 @@ export async function POST(request: Request) {
   const { action, repo, pr_number, older_than_ms } = (body ?? {}) as Record<string, unknown>;
 
   if (action === 'dismiss-stale') {
+    if (!isSuperadmin) {
+      return NextResponse.json({ error: 'Forbidden: superadmin required for dismiss-stale' }, { status: 403 });
+    }
     const olderThanMs = typeof older_than_ms === 'number' ? older_than_ms : undefined;
     const count = await dismissStaleClaims(orgIds, olderThanMs);
     return NextResponse.json({ dismissed: count });
   }
 
   if (action === 'dismiss-pipeline') {
+    if (!isSuperadmin && orgIds.length === 0) {
+      return NextResponse.json({ error: 'Forbidden: no org membership' }, { status: 403 });
+    }
     if (typeof repo !== 'string' || !repo) {
       return NextResponse.json({ error: 'repo is required' }, { status: 400 });
     }

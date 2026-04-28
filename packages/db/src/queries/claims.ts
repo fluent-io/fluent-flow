@@ -50,11 +50,18 @@ export async function dismissStaleClaims(orgIds: string[], olderThanMs = 86_400_
 export async function dismissPipelineClaims(orgIds: string[], repo: string, prNumber?: number | null): Promise<number> {
   const isSuper = orgIds.length === 0;
   const params: unknown[] = ['cancelled', repo];
-  if (!isSuper) params.push(orgIds);
-  if (prNumber != null) params.push(prNumber);
-
-  const orgFilter = isSuper ? '' : 'AND org_id = ANY($3)';
-  const prFilter = prNumber != null ? 'AND pr_number = $4' : (prNumber === null ? 'AND pr_number IS NULL' : '');
+  let orgFilter = '';
+  if (!isSuper) {
+    params.push(orgIds);
+    orgFilter = `AND org_id = ANY($${params.length})`;
+  }
+  let prFilter = '';
+  if (prNumber != null) {
+    params.push(prNumber);
+    prFilter = `AND pr_number = $${params.length}`;
+  } else if (prNumber === null) {
+    prFilter = 'AND pr_number IS NULL';
+  }
 
   const sql = `
     UPDATE agent_claims

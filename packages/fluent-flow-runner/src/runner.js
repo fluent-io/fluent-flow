@@ -207,6 +207,9 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
         if (/<!--\s*reviewer-result:\s*\{\s*"status"\s*:\s*"FAIL"/i.test(agentOutput)) {
           verdict = 'fail';
           log.info('Review verdict: FAIL (raw)');
+        } else if (/<!--\s*reviewer-result:/i.test(agentOutput)) {
+          verdict = 'pass';
+          log.info('Review verdict: PASS (raw)');
         }
       }
     }
@@ -226,9 +229,8 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
   async function ensureGhAuth() {
     if (!process.env.GITHUB_TOKEN) return;
     try {
-      const { execFile: ef } = await import('node:child_process');
       await new Promise((resolve, reject) => {
-        const proc = ef('gh', ['auth', 'status'], { stdio: 'pipe' }, (err) => {
+        execFileCb('gh', ['auth', 'status'], { stdio: 'pipe' }, (err) => {
           if (err) reject(err); else resolve();
         });
       });

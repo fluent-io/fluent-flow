@@ -352,6 +352,8 @@ The runner tries three methods in order when cloning a repo:
 
 Each attempt cleans up the partial clone directory before trying the next.
 
+> **⚠️ Security note:** The HTTPS + token auth method writes the `GITHUB_TOKEN` in plaintext to `.git/config` inside the worktree directory via `git remote set-url`. The runner container is a controlled environment and worktrees are cleaned up after each claim, but anyone with filesystem access to the worktree directory can read the token. Do not persist worktrees to shared volumes or log `git remote -v` output.
+
 ### Common Issues
 
 | Issue | Cause | Fix |
