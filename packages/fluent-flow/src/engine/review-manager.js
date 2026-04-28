@@ -7,7 +7,7 @@ import { resolveConfig, resolveOrgId, installationCtxForRepo } from '../config/l
 import { addLabel, getReviews, dismissReview } from '../providers/github/rest.js';
 import { enablePullRequestAutoMerge, getPRNodeId } from '../providers/github/graphql.js';
 import { recordPause, getActivePause } from './pause-manager.js';
-import { notifyReviewFailure, formatRichMessage } from '../notifications/dispatcher.js';
+import { notifyReviewFailure, formatRichMessage, dispatch } from '../notifications/dispatcher.js';
 import { createClaim, completeClaim, getActiveClaim } from '../agents/claim-manager.js';
 import { onClaimDispatched, onClaimResolved } from './check-run.js';
 import { getProvider } from '../providers/index.js';
@@ -96,6 +96,29 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', head
           .catch((err) => logger.warn({ msg: 'onClaimDispatched failed', error: err.message }));
       } else {
         logger.warn({ msg: 'Skipping onClaimDispatched — missing installation_id or headSha', repo: repoKey, prNumber, claimId: newClaim.id });
+      }
+
+      // If the claim was pre-assigned to a runner session, push the work
+      // via long-poll so the runner picks it up on next poll.
+      if (newClaim.session_id) {
+        try {
+          const agentId = config.default_agent ?? config.agent_id;
+          if (agentId) {
+            await dispatch({
+              agentId,
+              event: 'review',
+              payload: {
+                orgId,
+                repo: repoKey,
+                prNumber,
+                session_id: newClaim.session_id,
+              },
+            });
+            logger.info({ msg: 'Pushed pre-assigned claim to runner via long-poll', sessionId: newClaim.session_id, claimId: newClaim.id });
+          }
+        } catch (err) {
+          logger.warn({ msg: 'Failed to push claim to runner via long-poll', error: err.message, claimId: newClaim.id });
+        }
       }
     }
     logger.info({ msg: 'Review claim created', repo: repoKey, prNumber, attempt });
