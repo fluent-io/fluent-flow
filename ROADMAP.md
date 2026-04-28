@@ -22,6 +22,12 @@ Rolling view of what's shipped, what's in flight, and what's known-missing.
 | #87 | docs + db | Correct the `repos.installation_id` FK gap — the FK is enforced on prod but absent from the Drizzle declaration; ROADMAP + schema comment updated to match reality |
 | #88 | server + runner + docs | Migrate initial PR review from per-repo `pr-review.yml` workflow_dispatch to the runner-claim path — `dispatchReview` now creates a `claim_type: 'review'` claim; runner `prompts.js` gains a `review` template; deletes `review.yml`, `pr-review.yml`, `review.js`, `run-review.mjs`, `post-review.mjs`, `system-prompt.txt` from this repo; `onboard_repo` MCP tool stops writing workflow files; repos now need zero per-repo setup beyond the App install |
 | #89 | dashboard + db + server + docs | GitHub App onboarding action surface — `/repos` page, `GET /api/repos`, dashboard-initiated `POST /api/repos/{repoId}/claims`, `listRepos`/`createClaim`, Repos nav, BYOK README refresh, stale `packages/fluent-flow/DESIGN.md` deletion, and check-run handler GitHub App installation-auth fixes for commit→PR/check-run/annotation lookups |
+| #90 | server | Next-15 route fix |
+| #91 | server + runner | Standalone claims + auto-chain — nullable `pr_number`, `StartWorkflowDialog` redesign, `CLAIM_TYPE_MAP`, claim → claim chaining |
+| #92 | server + db | Org ID from DB via `resolveOrgId` instead of relying on webhook payload alone |
+| #93 | runner | Runner env pass-through + git SSH/HTTPS auth with x-access-token URL embedding |
+| #95 | server | Spec-only workflow start validation |
+| #96 | server + runner + dashboard + db | Claim dismiss/archive (migration 0006, cancelled status, bulk/stale dismiss endpoints, pipeline filter UI); runner x-access-token git auth fix; review agent E2E flow (gh CLI auth, claim_type/agentType passthrough, inline review comments via `gh api`); GitHub App token for bot-posted reviews; auto-chain review FAIL→review_fix; reference Dockerfile + Docker deployment docs |
 
 ## In flight
 
@@ -57,9 +63,16 @@ Each entry: the gap, the impact, and the rough shape of the fix.
 - **Some non-check-run webhook paths still fall back to PAT auth.** PR #89 fixed the check-run completion path by passing the webhook installation context through `getPRsForCommit`, `getCheckRunsForCommit`, and `getCheckRunAnnotations`. Production logs after deploy still showed a `pull_request.closed` review-dismissal path fetching reviews without installation context and returning 401. This does not block new check-run-triggered review claims, but it means cleanup/dismissal behavior is not fully App-auth-safe.
   - **Fix shape:** audit every GitHub REST helper call from webhook handlers and require/pass a token context. Prefer making helpers fail fast in App mode when neither explicit installation context nor a valid fallback token exists.
 
-
-- **`workers/outbound.js` passes the wrong installation id.** The outbound queue worker reads `row.installation_id` (internal FK to `provider_installations.id`) and hands it straight to `getInstallationToken`, which then calls `GET /app/installations/{id}/access_tokens` — that endpoint expects GitHub's **external** installation id (8–9 digit number on the App install). Same bug pattern PR #86 fixed in `fetchRepoConfig`, in a separate hot path.
+- ~~**`workers/outbound.js` passes the wrong installation id.**~~ See also #96 fixed the same bug pattern in `fetchRepoConfig` / runner token lookup. The outbound worker still has the same class of bug — reads internal FK and passes to `getInstallationToken` which expects GitHub's external installation id.
   - **Fix shape:** join to `provider_installations` in the outbound worker's token path (or in `getInstallationToken` itself — safer, kills the whole class of bug) and pass the external id.
+
+### Review pipeline
+
+- **Verdict parsing is fragile for non-Claude-Code agents.** The review→review_fix auto-chain depends on the agent echoing a `<!-- reviewer-result -->` marker to stdout. Works for Claude Code but if the agent posts reviews via `gh api` directly (the new prompt), the marker goes to GitHub, not stdout. The auto-chain won't fire unless the agent also prints the marker.
+  - **Fix shape:** after the agent exits, fetch the latest review from GitHub API and parse the verdict from there.
+
+- **DismissStaleButton visible to non-superadmins.** The button renders for all logged-in users but the API returns 403. Should gate on `isSuperadmin`.
+  - **Fix shape:** pass `isSuperadmin` from session to client component, conditionally render.
 
 ### Deploy/runtime reliability
 
