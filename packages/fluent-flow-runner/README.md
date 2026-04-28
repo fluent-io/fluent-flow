@@ -29,7 +29,8 @@ The runner needs access to clone repositories. **SSH is preferred** (keys don't 
 Alternatively, use HTTPS with a GitHub token:
 
 - Set `GITHUB_TOKEN` in the container environment
-- The runner authenticates via `http.extraHeader` so the token is never embedded in the remote URL
+- The runner authenticates via `x-access-token` URL embedding so the token works reliably in Docker/container environments
+- After cloning, the remote URL is set with the token for subsequent fetch/pull operations
 
 If neither is available, cloning public repos still works via plain HTTPS.
 
@@ -239,6 +240,138 @@ On shutdown (`Ctrl+C`), the runner reports any active claim as failed before exi
 - **Stale session detection** — if the session expires or goes offline, the server returns 410 and the runner should re-register
 
 Built-in agent types (`claude-code`, `codex`, `aider`) spawn with `shell: false` — the prompt is passed as a discrete argument with no injection risk. Custom commands (`--command`) use `shell: true` with shell-character escaping.
+
+## Docker Deployment
+
+The runner is designed to run inside Docker alongside the Fluent Flow server. This section documents the production deployment architecture.
+
+### Architecture Overview
+
+```
+Host (G10)
+├── ~/fluent-flow/          # Fluent Flow server (docker compose)
+│   ├── fluent-flow         # API server (port 3847)
+│   ├── dashboard           # Next.js dashboard (port 3000)
+│   └── postgres            # Database
+├── ~/fluent-flow-runner/   # Runner (separate docker compose)
+│   ├── Dockerfile
+│   ├── docker-compose.yml
+│   ├── .env                # GITHUB_TOKEN + FLUENT_FLOW_RUNNER_TOKEN
+│   └── work/               # Agent worktrees
+└── Host home dir mounted read-only into runner container
+```
+
+The runner runs as a **separate docker-compose project** on the same Docker host. It joins the server's network (`fluent-flow_fluent-flow-net`) to communicate with the API.
+
+### Dockerfile
+
+```dockerfile
+FROM node:24-bookworm
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git ca-certificates curl openssh-client \
+  && rm -rf /var/lib/apt/lists/*
+RUN npm install -g @anthropic-ai/claude-code
+
+WORKDIR /app
+COPY package.json package-lock.json turbo.json ./
+COPY packages/fluent-flow-runner/package.json packages/fluent-flow-runner/package.json
+RUN npm ci --workspace packages/fluent-flow-runner --include-workspace-root
+COPY packages/fluent-flow-runner packages/fluent-flow-runner
+
+# Work dir owned by node (uid 1000)
+RUN mkdir -p /work && chown node:node /work
+
+WORKDIR /work
+USER node
+ENTRYPOINT ["node", "/app/packages/fluent-flow-runner/bin/fluent-flow-runner.js"]
+```
+
+**Key decisions:**
+- Runs as `USER node` (uid 1000) to match host user for volume permissions. The `node:24-bookworm` image already has uid 1000 as the `node` user.
+- Installs `openssh-client` so SSH git auth works.
+- All host config (`.claude`, `.ssh`, `.gitconfig`) must be mounted at `/home/node/` — **not** `/home/runner/` — because that's the `node` user's actual home directory.
+
+### docker-compose.yml
+
+```yaml
+services:
+  runner:
+    build:
+      context: /path/to/fluent-flow   # Server repo (for runner source)
+      dockerfile: /path/to/fluent-flow-runner/Dockerfile
+    container_name: fluent-flow-runner
+    env_file: .env
+    environment:
+      HOME: /home/node
+    command:
+      - --token
+      - ${FLUENT_FLOW_RUNNER_TOKEN}
+      - --server
+      - http://fluent-flow:3847    # Service name on the shared network
+      - --cwd
+      - /work
+      - --verbose
+    volumes:
+      - ./work:/work                                    # Agent worktrees
+      - ~/.claude:/home/node/.claude                    # Claude Code auth
+      - ~/.claude.json:/home/node/.claude.json          # Claude Code config
+      - ~/.codex:/home/node/.codex:ro                   # Codex config
+      - ~/.gitconfig:/home/node/.gitconfig:ro           # Git identity
+      - ~/.ssh:/home/node/.ssh:ro                       # SSH keys for git clone
+    networks:
+      - fluent-flow_fluent-flow-net
+    restart: unless-stopped
+
+networks:
+  fluent-flow_fluent-flow-net:
+    external: true
+```
+
+### Environment Variables (.env)
+
+```bash
+# Runner token (from dashboard "New Agent" flow or Admin API)
+FLUENT_FLOW_RUNNER_TOKEN=ff_xxxx
+
+# GitHub PAT with repo scope — used as HTTPS fallback when SSH key
+# doesn't have access to the target org. The runner tries SSH first,
+# then HTTPS with this token via x-access-token URL auth.
+GITHUB_TOKEN=ghp_xxxx
+
+# AI agent API keys are also passed through
+ANTHROPIC_API_KEY=sk-ant-xxxx
+```
+
+### Git Auth Flow
+
+The runner tries three methods in order when cloning a repo:
+
+1. **SSH** — if `~/.ssh/id_ed25519` or `id_rsa` exists. Fast and doesn't expire, but the SSH key must be for a GitHub account with repo access.
+2. **HTTPS + token** — if `GITHUB_TOKEN` is set. Uses `x-access-token` URL embedding (`https://x-access-token:$TOKEN@github.com/...`). After clone, the remote URL is set with the token for subsequent fetch operations.
+3. **Plain HTTPS** — fallback for public repos only.
+
+Each attempt cleans up the partial clone directory before trying the next.
+
+> **⚠️ Security note:** The HTTPS + token auth method writes the `GITHUB_TOKEN` in plaintext to `.git/config` inside the worktree directory via `git remote set-url`. The runner container is a controlled environment and worktrees are cleaned up after each claim, but anyone with filesystem access to the worktree directory can read the token. Do not persist worktrees to shared volumes or log `git remote -v` output.
+
+### Common Issues
+
+| Issue | Cause | Fix |
+|-------|-------|-----|
+| `Permission denied` on work dirs | Old container ran as root, new one as `node` | `sudo chown -R 1000:1000 ~/fluent-flow-runner/work/` |
+| `Host key verification failed` | Missing GitHub host keys in `known_hosts` | `ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts` before building |
+| SSH authenticates but `Repository not found` | SSH key is for a GitHub account without org access | Add `GITHUB_TOKEN` for an account with access, or use a different SSH key |
+| Claims stuck in `claimed` status | Runner session expired but claim wasn't released | Reset orphaned claims: `UPDATE agent_claims SET status='pending', claimed_at=NULL, session_id=NULL WHERE status='claimed' AND session_id IN (SELECT id FROM agent_sessions WHERE status='offline' OR expires_at < NOW());` |
+| Runner registered but not picking up claims | Claims already claimed by dead session | Same fix as above — orphaned claim reset |
+
+### Rebuilding After Changes
+
+```bash
+cd ~/fluent-flow-runner
+docker compose up -d --build --force-recreate
+```
+
+Always use `--force-recreate` to ensure the running container uses the new image.
 
 ## Token Management
 

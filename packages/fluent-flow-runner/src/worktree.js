@@ -41,7 +41,6 @@ export async function prepareWorktree({ workDir, repo, prNumber, attempt, branch
     mkdirSync(baseDir, { recursive: true });
 
     // Build retry attempts: SSH first (if keys detected), then HTTPS+token, then plain HTTPS.
-    // Token auth uses http.extraHeader so the token is never embedded in the remote URL.
     const sshKeyExists =
       existsSync(join(homedir(), '.ssh', 'id_ed25519')) ||
       existsSync(join(homedir(), '.ssh', 'id_rsa')) ||
@@ -54,14 +53,12 @@ export async function prepareWorktree({ workDir, repo, prNumber, attempt, branch
         args: ['clone', `git@github.com:${repo}.git`, baseDir],
       });
     }
-    // HTTPS with token (preferred over plain HTTPS when available)
+    // HTTPS with token via URL (x-access-token) — works in Docker/container environments
+    // where http.extraHeader may not be passed through correctly by git.
     if (process.env.GITHUB_TOKEN) {
       attempts.push({
         authMethod: 'https-token',
-        args: [
-          '-c', `http.extraHeader=Authorization: token ${process.env.GITHUB_TOKEN}`,
-          'clone', `https://github.com/${repo}.git`, baseDir,
-        ],
+        args: ['clone', `https://x-access-token:${process.env.GITHUB_TOKEN}@github.com/${repo}.git`, baseDir],
       });
     }
     // Plain HTTPS fallback — always attempted last
@@ -95,9 +92,10 @@ export async function prepareWorktree({ workDir, repo, prNumber, attempt, branch
 
     // Persist token auth for subsequent git operations (fetch, pull, etc.)
     if (successfulAuth === 'https-token' && process.env.GITHUB_TOKEN) {
+      // Set the remote URL to include the token so fetch/pull work
       await exec('git', [
-        'config', '--local', 'http.https://github.com/.extraHeader',
-        `Authorization: token ${process.env.GITHUB_TOKEN}`,
+        'remote', 'set-url', 'origin',
+        `https://x-access-token:${process.env.GITHUB_TOKEN}@github.com/${repo}.git`,
       ], { cwd: baseDir });
     }
   }

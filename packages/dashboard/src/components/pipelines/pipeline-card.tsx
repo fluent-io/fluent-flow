@@ -6,9 +6,11 @@ import { PipelineStage } from './pipeline-stage';
 import { Badge } from '@/components/ui/badge';
 
 function derivePipelineStatus(stages: { status: string }[]): { label: string; className: string } {
+  const allCancelled = stages.length > 0 && stages.every((s) => s.status === 'cancelled');
   const hasActive = stages.some((s) => s.status === 'pending' || s.status === 'claimed');
   const hasFailed = stages.some((s) => s.status === 'failed' || s.status === 'expired');
 
+  if (allCancelled) return { label: 'cancelled', className: 'border-zinc-700 bg-zinc-900 text-zinc-400' };
   if (hasActive) return { label: 'in progress', className: 'border-amber-800 bg-amber-950 text-amber-400' };
   if (hasFailed) return { label: 'failed', className: 'border-red-800 bg-red-950 text-red-400' };
   return { label: 'completed', className: 'border-green-800 bg-green-950 text-green-400' };

@@ -8,6 +8,8 @@ import { sql } from 'drizzle-orm';
 import { db } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 import logger from '../logger.js';
+import { getInstallationToken } from '../providers/github/token-cache.js';
+import { installationCtxForRepo } from '../config/loader.js';
 
 const router = Router();
 
@@ -20,6 +22,7 @@ const ClaimResultSchema = z.object({
   repo: z.string().min(1),
   pr_number: z.number().int().positive().nullable(),
   attempt: z.number().int().positive(),
+  verdict: z.enum(['pass', 'fail']).optional(), // review verdict for chaining
 });
 
 /**
@@ -107,6 +110,13 @@ export async function handlePoll(req, res, opts = {}) {
   const sessionId = parsed.data.session_id;
   const pollTimeoutMs = opts.pollTimeoutMs ?? 30000;
 
+  // Resolve the agent's type once for inclusion in work payloads
+  let agentType = 'claude-code'; // default
+  try {
+    const agentRows = await db.execute(sql`SELECT agent_type FROM agents WHERE org_id = ${org_id} AND id = ${agent_id}`);
+    if (agentRows.rows?.[0]?.agent_type) agentType = agentRows.rows[0].agent_type;
+  } catch {}
+
   let sent = false;
   const respond = (data) => {
     if (sent || res.headersSent) return;
@@ -134,12 +144,32 @@ export async function handlePoll(req, res, opts = {}) {
       const payload = typeof pendingClaim.payload === 'string'
         ? JSON.parse(pendingClaim.payload)
         : pendingClaim.payload;
+
+      // Resolve GitHub App installation token for the repo so the runner
+      // posts reviews as the GitHub App bot, not a personal account.
+      // Uses the EXTERNAL installation id (GitHub's numeric id) because
+      // getInstallationToken() calls /app/installations/:id/access_tokens.
+      let githubToken;
+      try {
+        const [owner, repoName] = pendingClaim.repo.split('/');
+        const ctx = await installationCtxForRepo(owner, repoName);
+        if (ctx?.installation_id) {
+          githubToken = await getInstallationToken(ctx.installation_id);
+          logger.info({ msg: 'Resolved GitHub App token for runner', installationId: ctx.installation_id });
+        }
+      } catch (err) {
+        logger.warn({ msg: 'Could not resolve GitHub App token, runner will fall back to GITHUB_TOKEN', error: err.message });
+      }
+
       respond({
         work: {
           repo: pendingClaim.repo,
           pr_number: pendingClaim.pr_number,
           attempt: pendingClaim.attempt,
           claim_id: pendingClaim.id,
+          claim_type: pendingClaim.claim_type,
+          agentType,
+          ...(githubToken ? { githubToken } : {}),
           ...payload,
         },
       });
@@ -162,7 +192,7 @@ export async function handlePoll(req, res, opts = {}) {
       if (loopClaim) {
         await touchSession(org_id, agent_id, sessionId);
         const lp = typeof loopClaim.payload === 'string' ? JSON.parse(loopClaim.payload) : loopClaim.payload;
-        respond({ work: { repo: loopClaim.repo, pr_number: loopClaim.pr_number, attempt: loopClaim.attempt, claim_id: loopClaim.id, ...lp } });
+        respond({ work: { repo: loopClaim.repo, pr_number: loopClaim.pr_number, attempt: loopClaim.attempt, claim_id: loopClaim.id, claim_type: loopClaim.claim_type, agentType, ...lp } });
         return;
       }
       if (Date.now() - start >= pollTimeoutMs) {
@@ -203,6 +233,23 @@ export async function handleClaimResult(req, res) {
       }
 
       audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status, claimType } });
+
+      // Auto-chain: review FAIL → review_fix
+      if (claimType === 'review' && parsed.data.verdict === 'fail') {
+        try {
+          await createClaim({
+            orgId: org_id,
+            repo,
+            prNumber: pr_number,
+            attempt: attempt + 1,
+            claimType: 'review_fix',
+            payload: { source_claim_id: claim.id, branch: claim.payload?.branch },
+          });
+          logger.info({ msg: 'Auto-created review_fix claim after FAIL review', repo, prNumber: pr_number, attempt: attempt + 1 });
+        } catch (err) {
+          logger.error({ msg: 'Failed to create review_fix claim', error: err.message });
+        }
+      }
 
       // Auto-chain: spec → build (only if payload.auto_chain !== false)
       if (claimType === 'spec' && claim.payload?.auto_chain !== false) {

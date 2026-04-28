@@ -2,18 +2,7 @@ import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
 import { createClaim, query } from '@fluent-flow/db';
 import { authOptions, getOrgScope } from '@/lib/auth';
-
-/** Dashboard labels → runner claim types */
-const CLAIM_TYPE_MAP: Record<string, string> = {
-  feature: 'spec',       // chains spec→build
-  fix:     'review_fix',
-  review:  'review',
-  spec:    'spec',       // standalone, no chain
-};
-const ALLOWED_DASHBOARD_TYPES = new Set(Object.keys(CLAIM_TYPE_MAP));
-
-/** Types that require a PR number */
-const PR_REQUIRED_TYPES = new Set(['fix', 'review']);
+import { buildSpecWorkflowPayload, START_WORKFLOW_CLAIM_TYPE } from './claim-request';
 
 type RouteContext = {
   params: Promise<{ repoId: string }>;
@@ -47,9 +36,9 @@ export async function POST(req: Request, { params }: RouteContext) {
 
   const { claim_type, description, pr_number } = (body ?? {}) as Record<string, unknown>;
 
-  if (typeof claim_type !== 'string' || !ALLOWED_DASHBOARD_TYPES.has(claim_type)) {
+  if (typeof claim_type !== 'string' || claim_type !== START_WORKFLOW_CLAIM_TYPE) {
     return NextResponse.json(
-      { error: `claim_type must be one of: ${[...ALLOWED_DASHBOARD_TYPES].join(', ')}` },
+      { error: 'Start workflow only supports claim_type "spec". Other claim types are pipeline steps.' },
       { status: 400 },
     );
   }
@@ -58,51 +47,23 @@ export async function POST(req: Request, { params }: RouteContext) {
     return NextResponse.json({ error: 'description must be a string' }, { status: 400 });
   }
 
-  const mappedType = CLAIM_TYPE_MAP[claim_type];
-
-  // PR number validation
-  let prNumber: number | undefined;
-  if (PR_REQUIRED_TYPES.has(claim_type)) {
-    if (typeof pr_number !== 'number' || !Number.isInteger(pr_number) || pr_number < 1) {
-      return NextResponse.json(
-        { error: `pr_number is required for "${claim_type}" and must be a positive integer` },
-        { status: 400 },
-      );
-    }
-    prNumber = pr_number;
-  } else if (pr_number !== undefined && pr_number !== null) {
-    // Optional — validate if provided
-    if (typeof pr_number !== 'number' || !Number.isInteger(pr_number) || pr_number < 1) {
-      return NextResponse.json({ error: 'pr_number must be a positive integer' }, { status: 400 });
-    }
-    prNumber = pr_number;
+  if (pr_number !== undefined && pr_number !== null) {
+    return NextResponse.json(
+      { error: 'pr_number is not accepted when starting a spec workflow' },
+      { status: 400 },
+    );
   }
 
-  const finalDescription = typeof description === 'string' && description.trim().length > 0
-    ? description.trim()
-    : prNumber
-      ? `${mappedType} on PR #${prNumber}`
-      : `${mappedType}`;
-
-  // Build payload with auto_chain flag
-  const payload: Record<string, unknown> = {};
-  if (claim_type === 'feature') {
-    payload.auto_chain = true;
-  } else if (claim_type === 'spec') {
-    payload.auto_chain = false;
-  }
+  const specWorkflow = buildSpecWorkflowPayload(description as string | undefined | null);
 
   const claim = await createClaim({
     repoId,
-    claimType: mappedType,
-    description: finalDescription,
-    prNumber: prNumber ?? null,
-    payload,
+    ...specWorkflow,
   });
 
   if (!claim) {
     return NextResponse.json({ error: 'Repo not found' }, { status: 404 });
   }
 
-  return NextResponse.json({ ...claim, claim_type: mappedType }, { status: 201 });
+  return NextResponse.json({ ...claim, claim_type: START_WORKFLOW_CLAIM_TYPE }, { status: 201 });
 }

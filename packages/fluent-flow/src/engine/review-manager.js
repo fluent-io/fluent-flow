@@ -3,11 +3,11 @@ import { db, schema } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 
 const { reviewRetries } = schema;
-import { resolveConfig, resolveOrgId } from '../config/loader.js';
+import { resolveConfig, resolveOrgId, installationCtxForRepo } from '../config/loader.js';
 import { addLabel, getReviews, dismissReview } from '../providers/github/rest.js';
 import { enablePullRequestAutoMerge, getPRNodeId } from '../providers/github/graphql.js';
 import { recordPause, getActivePause } from './pause-manager.js';
-import { notifyReviewFailure, formatRichMessage } from '../notifications/dispatcher.js';
+import { notifyReviewFailure, formatRichMessage, dispatch } from '../notifications/dispatcher.js';
 import { createClaim, completeClaim, getActiveClaim } from '../agents/claim-manager.js';
 import { onClaimDispatched, onClaimResolved } from './check-run.js';
 import { getProvider } from '../providers/index.js';
@@ -88,13 +88,39 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', head
       },
     });
     if (newClaim) {
-      const installationId = newClaim.installation_id ?? config.installation_id;
+      const installCtx = await installationCtxForRepo(owner, repo);
+      const installationId = installCtx?.installation_id;
       if (installationId && headSha) {
         const providerClient = getProvider({ installation_id: installationId });
         onClaimDispatched(providerClient, { ...newClaim, head_sha: headSha, installation_id: installationId })
           .catch((err) => logger.warn({ msg: 'onClaimDispatched failed', error: err.message }));
       } else {
         logger.warn({ msg: 'Skipping onClaimDispatched — missing installation_id or headSha', repo: repoKey, prNumber, claimId: newClaim.id });
+      }
+
+      // If the claim was pre-assigned to a runner session, push the work
+      // via long-poll so the runner picks it up on next poll.
+      // TODO: in multi-agent setups, derive agentId from the session's
+      // agent_sessions.agent_id instead of config.
+      if (newClaim.session_id) {
+        try {
+          const agentId = config.default_agent ?? config.agent_id;
+          if (agentId) {
+            await dispatch({
+              agentId,
+              event: 'review',
+              payload: {
+                orgId,
+                repo: repoKey,
+                prNumber,
+                session_id: newClaim.session_id,
+              },
+            });
+            logger.info({ msg: 'Pushed pre-assigned claim to runner via long-poll', sessionId: newClaim.session_id, claimId: newClaim.id });
+          }
+        } catch (err) {
+          logger.warn({ msg: 'Failed to push claim to runner via long-poll', error: err.message, claimId: newClaim.id });
+        }
       }
     }
     logger.info({ msg: 'Review claim created', repo: repoKey, prNumber, attempt });
