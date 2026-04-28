@@ -100,13 +100,11 @@ export async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 6
 }
 
 /**
- * POST /api/runner/poll — long-poll for work.
- */
-/**
  * Resolve GitHub App installation token for a repo.
  * Returns the token string or undefined if resolution fails.
  */
 async function resolveGitHubToken(fullRepo) {
+  if (!fullRepo?.includes('/')) return undefined;
   try {
     const [owner, repoName] = fullRepo.split('/');
     const ctx = await installationCtxForRepo(owner, repoName);
@@ -122,6 +120,9 @@ async function resolveGitHubToken(fullRepo) {
   return undefined;
 }
 
+/**
+ * POST /api/runner/poll — long-poll for work.
+ */
 export async function handlePoll(req, res, opts = {}) {
   const parsed = PollSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
@@ -154,7 +155,13 @@ export async function handlePoll(req, res, opts = {}) {
     }
 
     if (hasPending(sessionId)) {
-      respond({ work: dequeue(sessionId) });
+      await touchSession(org_id, agent_id, sessionId);
+      const work = dequeue(sessionId);
+      if (work?.repo && !work.githubToken) {
+        const githubToken = await resolveGitHubToken(work.repo);
+        if (githubToken) work.githubToken = githubToken;
+      }
+      respond({ work });
       return;
     }
 
@@ -191,7 +198,12 @@ export async function handlePoll(req, res, opts = {}) {
     while (!closed && !sent) {
       if (hasPending(sessionId)) {
         await touchSession(org_id, agent_id, sessionId);
-        respond({ work: dequeue(sessionId) });
+        const work = dequeue(sessionId);
+        if (work?.repo && !work.githubToken) {
+          const githubToken = await resolveGitHubToken(work.repo);
+          if (githubToken) work.githubToken = githubToken;
+        }
+        respond({ work });
         return;
       }
       const loopClaim = await claimPendingWork(org_id, agent_id, sessionId);
@@ -199,7 +211,18 @@ export async function handlePoll(req, res, opts = {}) {
         await touchSession(org_id, agent_id, sessionId);
         const lp = typeof loopClaim.payload === 'string' ? JSON.parse(loopClaim.payload) : loopClaim.payload;
         const githubToken = await resolveGitHubToken(loopClaim.repo);
-        respond({ work: { repo: loopClaim.repo, pr_number: loopClaim.pr_number, attempt: loopClaim.attempt, claim_id: loopClaim.id, claim_type: loopClaim.claim_type, agentType, ...(githubToken ? { githubToken } : {}), ...lp } });
+        respond({
+          work: {
+            repo: loopClaim.repo,
+            pr_number: loopClaim.pr_number,
+            attempt: loopClaim.attempt,
+            claim_id: loopClaim.id,
+            claim_type: loopClaim.claim_type,
+            agentType,
+            ...(githubToken ? { githubToken } : {}),
+            ...lp,
+          },
+        });
         return;
       }
       if (Date.now() - start >= pollTimeoutMs) {
