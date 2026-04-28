@@ -75,7 +75,7 @@ function deepMerge(base, override) {
  * @param {string} repo
  * @returns {Promise<{ installation_id: number }|undefined>}
  */
-async function installationCtxForRepo(owner, repo) {
+export async function installationCtxForRepo(owner, repo) {
   try {
     const rows = await db
       .select({ externalId: schema.providerInstallations.externalInstallationId })

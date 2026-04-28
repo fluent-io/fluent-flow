@@ -9,6 +9,7 @@ import { db } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 import logger from '../logger.js';
 import { getInstallationToken } from '../providers/github/token-cache.js';
+import { installationCtxForRepo } from '../config/loader.js';
 
 const router = Router();
 
@@ -144,16 +145,17 @@ export async function handlePoll(req, res, opts = {}) {
         ? JSON.parse(pendingClaim.payload)
         : pendingClaim.payload;
 
-      // Resolve GitHub App installation token for the repo's org so the runner
+      // Resolve GitHub App installation token for the repo so the runner
       // posts reviews as the GitHub App bot, not a personal account.
+      // Uses the EXTERNAL installation id (GitHub's numeric id) because
+      // getInstallationToken() calls /app/installations/:id/access_tokens.
       let githubToken;
       try {
-        const [owner] = pendingClaim.repo.split('/');
-        const repoRow = await db.execute(sql`SELECT installation_id FROM repos WHERE org_id = ${org_id} AND repo_full_name = ${pendingClaim.repo} LIMIT 1`);
-        const installationId = repoRow.rows?.[0]?.installation_id;
-        if (installationId) {
-          githubToken = await getInstallationToken(installationId);
-          logger.debug({ msg: 'Resolved GitHub App token for runner', installationId });
+        const [owner, repoName] = pendingClaim.repo.split('/');
+        const ctx = await installationCtxForRepo(owner, repoName);
+        if (ctx?.installation_id) {
+          githubToken = await getInstallationToken(ctx.installation_id);
+          logger.info({ msg: 'Resolved GitHub App token for runner', installationId: ctx.installation_id });
         }
       } catch (err) {
         logger.warn({ msg: 'Could not resolve GitHub App token, runner will fall back to GITHUB_TOKEN', error: err.message });
