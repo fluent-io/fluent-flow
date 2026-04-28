@@ -149,7 +149,7 @@ export async function handlePoll(req, res, opts = {}) {
       let githubToken;
       try {
         const [owner] = pendingClaim.repo.split('/');
-        const repoRow = await db.execute(sql`SELECT installation_id FROM repos WHERE org_id = ${org_id} AND name = ${pendingClaim.repo.split('/')[1]} LIMIT 1`);
+        const repoRow = await db.execute(sql`SELECT installation_id FROM repos WHERE org_id = ${org_id} AND repo_full_name = ${pendingClaim.repo} LIMIT 1`);
         const installationId = repoRow.rows?.[0]?.installation_id;
         if (installationId) {
           githubToken = await getInstallationToken(installationId);

@@ -75,8 +75,12 @@ export interface PipelineDetailClaim {
   session_meta: Record<string, unknown> | null;
 }
 
-export async function getPipelineDetail(orgIds: string[], repo: string, prNumber: number | null): Promise<PipelineDetailClaim[]> {
+export async function getPipelineDetail(orgIds: string[], repo: string, prNumber: number | null, filter: 'active' | 'archived' | 'all' = 'active'): Promise<PipelineDetailClaim[]> {
   const isSuper = orgIds.length === 0;
+  const archivedFilter =
+    filter === 'active' ? 'AND c.archived_at IS NULL'
+    : filter === 'archived' ? 'AND c.archived_at IS NOT NULL'
+    : '';
 
   const sql = `
     SELECT
@@ -86,6 +90,7 @@ export async function getPipelineDetail(orgIds: string[], repo: string, prNumber
     FROM agent_claims c
     LEFT JOIN agent_sessions s ON c.session_id = s.id
     WHERE ${isSuper ? '' : 'c.org_id = ANY($1) AND '}c.repo = $${isSuper ? 1 : 2} AND c.pr_number ${prNumber != null ? `= $${isSuper ? 2 : 3}` : 'IS NULL'}
+      ${archivedFilter}
       AND c.attempt = (
         SELECT MAX(c2.attempt)
         FROM agent_claims c2

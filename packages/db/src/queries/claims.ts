@@ -21,7 +21,7 @@ export async function dismissClaim(id: number): Promise<void> {
   await query(
     `UPDATE agent_claims
      SET status = 'cancelled', archived_at = NOW(), completed_at = NOW()
-     WHERE id = $1`,
+     WHERE id = $1 AND status IN ('pending', 'claimed')`,
     [id],
   );
 }
