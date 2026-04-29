@@ -31,7 +31,7 @@ describe('expireClaimsTick', () => {
 
     expect(logger.error).toHaveBeenCalledWith(
       expect.objectContaining({
-        msg: expect.stringContaining('startClaimExpiryWorker'),
+        msg: expect.stringContaining('expireClaimsTick'),
         error: 'db down',
       }),
     );

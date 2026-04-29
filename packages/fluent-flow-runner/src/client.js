@@ -29,7 +29,10 @@ export function createClient({ serverUrl, token, fetch: fetchFn = globalThis.fet
       });
     } catch (err) {
       const reason = err?.message ? `: ${err.message}` : '';
-      throw new Error(`${label} request failed after ${timeoutMs}ms${reason}`);
+      const message = controller.signal.aborted
+        ? `${label} request failed after ${timeoutMs}ms${reason}`
+        : `${label} request failed${reason}`;
+      throw new Error(message, { cause: err });
     } finally {
       clearTimeout(timeout);
     }

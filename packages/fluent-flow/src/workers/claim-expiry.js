@@ -7,14 +7,18 @@ export async function expireClaimsTick() {
   try {
     return await expireClaims();
   } catch (err) {
-    logger.error({ msg: 'startClaimExpiryWorker: error', error: err.message });
+    logger.error({ msg: 'expireClaimsTick: error', error: err.message });
   }
 }
 
 export async function startClaimExpiryWorker() {
   logger.info({ msg: 'startClaimExpiryWorker: started', intervalMs: SLEEP_MS });
   while (true) {
-    await expireClaimsTick();
-    await new Promise((resolve) => setTimeout(resolve, SLEEP_MS));
+    try {
+      await expireClaimsTick();
+      await new Promise((resolve) => setTimeout(resolve, SLEEP_MS));
+    } catch (err) {
+      logger.error({ msg: 'startClaimExpiryWorker: unhandled error', error: err.message });
+    }
   }
 }
