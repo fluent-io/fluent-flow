@@ -16,8 +16,9 @@ export function createClient({ serverUrl, token, fetch: fetchFn = globalThis.fet
   };
 
   async function post(path, body, label) {
+    const timeoutMs = 35_000;
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 35_000);
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
     let res;
     try {
       res = await fetchFn(`${base}${path}`, {
@@ -26,6 +27,9 @@ export function createClient({ serverUrl, token, fetch: fetchFn = globalThis.fet
         body: JSON.stringify(body),
         signal: controller.signal,
       });
+    } catch (err) {
+      const reason = err?.message ? `: ${err.message}` : '';
+      throw new Error(`${label} request failed after ${timeoutMs}ms${reason}`);
     } finally {
       clearTimeout(timeout);
     }
