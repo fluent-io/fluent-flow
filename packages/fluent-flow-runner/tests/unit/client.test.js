@@ -116,8 +116,8 @@ describe('client', () => {
 
   describe('timeout / network errors', () => {
     it('throws with label and timeout duration on abort (timeout)', async () => {
-      // Mock fetch to hang until aborted by the AbortController signal
-      fetchMock.mockImplementationOnce((url, opts) =>
+      // Mock fetch to hang until aborted by the internal AbortController signal
+      fetchMock.mockImplementationOnce((_url, opts) =>
         new Promise((_, reject) => {
           opts.signal.addEventListener('abort', () => {
             reject(new DOMException('The operation was aborted', 'AbortError'));
@@ -125,10 +125,17 @@ describe('client', () => {
         })
       );
       vi.useFakeTimers();
-      const registerPromise = client.register({ hostname: 'dev' });
+      const p = client.register({ hostname: 'dev' });
+      // Prevent unhandled rejection while advancing timers
+      p.catch(() => {});
       // Advance past the 35_000ms timeout so the AbortController fires
       await vi.advanceTimersByTimeAsync(40_000);
-      await expect(registerPromise).rejects.toThrow(/Register request failed after 35000ms/);
+      try {
+        await p;
+        expect.unreachable('should have thrown');
+      } catch (e) {
+        expect(e.message).toMatch(/Register request failed after 35000ms/);
+      }
       vi.useRealTimers();
     });
 
@@ -136,11 +143,11 @@ describe('client', () => {
       const connErr = new TypeError('fetch failed');
       connErr.cause = new Error('ECONNREFUSED');
       fetchMock.mockRejectedValueOnce(connErr);
-      await expect(client.register({ hostname: 'dev' }))
-        .rejects.toThrow(/Register request failed/);
       try {
         await client.register({ hostname: 'dev' });
+        expect.unreachable('should have thrown');
       } catch (e) {
+        expect(e.message).toMatch(/Register request failed/);
         expect(e.message).not.toMatch(/after \d+ms/);
       }
     });
