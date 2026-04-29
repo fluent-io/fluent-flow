@@ -19,6 +19,7 @@ export async function startClaimExpiryWorker() {
       await new Promise((resolve) => setTimeout(resolve, SLEEP_MS));
     } catch (err) {
       logger.error({ msg: 'startClaimExpiryWorker: unhandled error', error: err.message });
+      await new Promise((resolve) => setTimeout(resolve, SLEEP_MS));
     }
   }
 }

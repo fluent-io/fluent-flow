@@ -114,6 +114,38 @@ describe('client', () => {
     });
   });
 
+  describe('timeout / network errors', () => {
+    it('throws with label and timeout duration on abort (timeout)', async () => {
+      // Mock fetch to hang until aborted by the AbortController signal
+      fetchMock.mockImplementationOnce((url, opts) =>
+        new Promise((_, reject) => {
+          opts.signal.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted', 'AbortError'));
+          });
+        })
+      );
+      vi.useFakeTimers();
+      const registerPromise = client.register({ hostname: 'dev' });
+      // Advance past the 35_000ms timeout so the AbortController fires
+      await vi.advanceTimersByTimeAsync(40_000);
+      await expect(registerPromise).rejects.toThrow(/Register request failed after 35000ms/);
+      vi.useRealTimers();
+    });
+
+    it('throws without timeout duration on non-timeout fetch error', async () => {
+      const connErr = new TypeError('fetch failed');
+      connErr.cause = new Error('ECONNREFUSED');
+      fetchMock.mockRejectedValueOnce(connErr);
+      await expect(client.register({ hostname: 'dev' }))
+        .rejects.toThrow(/Register request failed/);
+      try {
+        await client.register({ hostname: 'dev' });
+      } catch (e) {
+        expect(e.message).not.toMatch(/after \d+ms/);
+      }
+    });
+  });
+
   describe('URL normalization', () => {
     it('strips trailing slash from serverUrl', async () => {
       const c = createClient({ serverUrl: 'https://flow.example.com/', token: 't', fetch: fetchMock });
