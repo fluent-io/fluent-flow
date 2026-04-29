@@ -48,10 +48,12 @@ Sessions are ephemeral runner instances with TTL.
 ### claim-manager.js
 Claims track work assignments per review attempt.
 - `createClaim({ orgId, repo, prNumber, attempt, agentId, payload, claimType })` — resolves session, marks busy
-- `completeClaim(orgId, repo, prNumber, attempt)` — frees session to online
-- `failClaim(orgId, repo, prNumber, attempt)` — frees session to online
-- `expireClaims()` — marks expired claims, sets sessions offline
+- `completeClaim(orgId, repo, prNumber, attempt)` — frees session to online, sets `completedAt`
+- `failClaim(orgId, repo, prNumber, attempt)` — frees session to online, sets `completedAt`
+- `expireClaims()` — marks expired claims, sets sessions offline, sets `completedAt`
 - `getActiveClaim(orgId, repo, prNumber)` — latest pending/claimed claim
+
+**`archivedAt` semantics:** Only set on explicit dismissal/cancellation (e.g. admin archive). Normal completion (`completed`/`failed`) and expiry use `completedAt` + `status` instead, so terminal claims remain visible in the default pipeline view (which filters `archived_at IS NULL`).
 
 ## Claim Lifecycle
 

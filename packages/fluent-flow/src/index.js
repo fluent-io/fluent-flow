@@ -6,6 +6,7 @@ import { validateEnv } from './config/env.js';
 import { bootstrapSelfHosted } from './agents/org-manager.js';
 import { startOutboundWorker } from './workers/outbound.js';
 import { startSessionExpiryWorker } from './workers/session-expiry.js';
+import { startClaimExpiryWorker } from './workers/claim-expiry.js';
 import logger from './logger.js';
 import { createApp } from './app.js';
 
@@ -59,6 +60,9 @@ async function start() {
       );
       startSessionExpiryWorker().catch((err) =>
         logger.error({ msg: 'Session expiry worker crashed', error: err.message })
+      );
+      startClaimExpiryWorker().catch((err) =>
+        logger.error({ msg: 'Claim expiry worker crashed', error: err.message })
       );
     });
   } catch (err) {
