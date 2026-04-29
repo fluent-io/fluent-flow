@@ -100,6 +100,27 @@ export async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 6
 }
 
 /**
+ * Resolve GitHub App installation token for a repo.
+ * Returns the token string or undefined if resolution fails.
+ */
+async function resolveGitHubToken(fullRepo) {
+  if (!fullRepo?.includes('/')) return undefined;
+  try {
+    const [owner, repoName] = fullRepo.split('/');
+    const ctx = await installationCtxForRepo(owner, repoName);
+    if (ctx?.installation_id) {
+      const token = await getInstallationToken(ctx.installation_id);
+      logger.info({ msg: 'Resolved GitHub App token for runner', repo: fullRepo, installationId: ctx.installation_id });
+      return token;
+    }
+    logger.info({ msg: 'No installation context for repo', repo: fullRepo });
+  } catch (err) {
+    logger.warn({ msg: 'Could not resolve GitHub App token, runner will fall back to GITHUB_TOKEN', repo: fullRepo, error: err.message });
+  }
+  return undefined;
+}
+
+/**
  * POST /api/runner/poll — long-poll for work.
  */
 export async function handlePoll(req, res, opts = {}) {
@@ -134,7 +155,13 @@ export async function handlePoll(req, res, opts = {}) {
     }
 
     if (hasPending(sessionId)) {
-      respond({ work: dequeue(sessionId) });
+      await touchSession(org_id, agent_id, sessionId);
+      const work = dequeue(sessionId);
+      if (work?.repo && !work.githubToken) {
+        const githubToken = await resolveGitHubToken(work.repo);
+        if (githubToken) work.githubToken = githubToken;
+      }
+      respond({ work });
       return;
     }
 
@@ -145,21 +172,7 @@ export async function handlePoll(req, res, opts = {}) {
         ? JSON.parse(pendingClaim.payload)
         : pendingClaim.payload;
 
-      // Resolve GitHub App installation token for the repo so the runner
-      // posts reviews as the GitHub App bot, not a personal account.
-      // Uses the EXTERNAL installation id (GitHub's numeric id) because
-      // getInstallationToken() calls /app/installations/:id/access_tokens.
-      let githubToken;
-      try {
-        const [owner, repoName] = pendingClaim.repo.split('/');
-        const ctx = await installationCtxForRepo(owner, repoName);
-        if (ctx?.installation_id) {
-          githubToken = await getInstallationToken(ctx.installation_id);
-          logger.info({ msg: 'Resolved GitHub App token for runner', installationId: ctx.installation_id });
-        }
-      } catch (err) {
-        logger.warn({ msg: 'Could not resolve GitHub App token, runner will fall back to GITHUB_TOKEN', error: err.message });
-      }
+      const githubToken = await resolveGitHubToken(pendingClaim.repo);
 
       respond({
         work: {
@@ -185,14 +198,31 @@ export async function handlePoll(req, res, opts = {}) {
     while (!closed && !sent) {
       if (hasPending(sessionId)) {
         await touchSession(org_id, agent_id, sessionId);
-        respond({ work: dequeue(sessionId) });
+        const work = dequeue(sessionId);
+        if (work?.repo && !work.githubToken) {
+          const githubToken = await resolveGitHubToken(work.repo);
+          if (githubToken) work.githubToken = githubToken;
+        }
+        respond({ work });
         return;
       }
       const loopClaim = await claimPendingWork(org_id, agent_id, sessionId);
       if (loopClaim) {
         await touchSession(org_id, agent_id, sessionId);
         const lp = typeof loopClaim.payload === 'string' ? JSON.parse(loopClaim.payload) : loopClaim.payload;
-        respond({ work: { repo: loopClaim.repo, pr_number: loopClaim.pr_number, attempt: loopClaim.attempt, claim_id: loopClaim.id, claim_type: loopClaim.claim_type, agentType, ...lp } });
+        const githubToken = await resolveGitHubToken(loopClaim.repo);
+        respond({
+          work: {
+            repo: loopClaim.repo,
+            pr_number: loopClaim.pr_number,
+            attempt: loopClaim.attempt,
+            claim_id: loopClaim.id,
+            claim_type: loopClaim.claim_type,
+            agentType,
+            ...(githubToken ? { githubToken } : {}),
+            ...lp,
+          },
+        });
         return;
       }
       if (Date.now() - start >= pollTimeoutMs) {
