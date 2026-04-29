@@ -121,7 +121,7 @@ async function finalizeClaim(orgId, repo, prNumber, attempt, finalStatus) {
   // path (claim completion/failure) stays a single round-trip.
   const [row] = await db
     .update(agentClaims)
-    .set({ status: finalStatus, completedAt: sql`NOW()`, archivedAt: sql`NOW()` })
+    .set({ status: finalStatus, completedAt: sql`NOW()` })
     .where(
       and(
         eq(agentClaims.orgId, orgId),
@@ -161,7 +161,7 @@ export async function failClaim(orgId, repo, prNumber, attempt) {
 export async function expireClaims() {
   const claims = await db
     .update(agentClaims)
-    .set({ status: 'expired', completedAt: sql`NOW()`, archivedAt: sql`NOW()` })
+    .set({ status: 'expired', completedAt: sql`NOW()` })
     .where(and(eq(agentClaims.status, 'claimed'), lt(agentClaims.expiresAt, sql`NOW()`)))
     .returning();
   for (const claim of claims) {
