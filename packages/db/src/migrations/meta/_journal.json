@@ -50,6 +50,13 @@
       "when": 1777420800000,
       "tag": "0006_agent_claims_archived_at",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1777507200000,
+      "tag": "0007_agent_claims_backfill_archived_at",
+      "breakpoints": true
     }
   ]
 }
