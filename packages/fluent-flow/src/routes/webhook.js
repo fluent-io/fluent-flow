@@ -207,11 +207,12 @@ async function handlePullRequest(owner, repo, payload, config) {
  * Handle pull_request_review events.
  */
 async function handlePullRequestReview(owner, repo, payload, config) {
-  const { action, review, pull_request: pr } = payload;
+  const { action, review, pull_request: pr, installation } = payload;
   if (action !== 'submitted') return;
 
   const prNumber = pr.number;
   const issueNumber = extractLinkedIssue(pr.body);
+  const reviewCtx = installation?.id ? { installation_id: installation.id } : undefined;
 
   // Parse machine-readable result from review body
   const resultMatch = review.body?.match(/<!--\s*reviewer-result:\s*({.*?})\s*-->/s);
@@ -230,6 +231,7 @@ async function handlePullRequestReview(owner, repo, payload, config) {
         reviewSha: pr.head.sha,
         agentId,
         headBranch: pr.head.ref,
+        ctx: reviewCtx,
       });
     } catch (err) {
       logger.error({ msg: 'Failed to handle automated review result', error: err.message, prNumber });
@@ -267,6 +269,7 @@ async function handleIssues(owner, repo, payload, config) {
         context: 'Labeled needs-human',
         actor: payload.sender?.login,
         agentId,
+        ctx,
       });
     }
   } else if (action === 'unlabeled' && label?.name === 'needs-human') {
@@ -280,6 +283,7 @@ async function handleIssues(owner, repo, payload, config) {
         issueNumber,
         resumedBy: payload.sender?.login,
         agentId,
+        ctx,
       });
     }
   }
@@ -294,7 +298,7 @@ async function handleIssueComment(owner, repo, payload, config) {
 
   const issueNumber = issue.number;
   const body = comment.body;
-  const ctx = installation?.id ? { installation_id: installation.id } : {};
+  const ctx = installation?.id ? { installation_id: installation.id } : undefined;
 
   // Check for /resume command
   const { isResume, toState, instructions } = parseResumeCommand(body);
@@ -309,6 +313,7 @@ async function handleIssueComment(owner, repo, payload, config) {
         instructions,
         resumedBy: comment.user?.login,
         agentId,
+        ctx,
       });
     } catch (err) {
       logger.warn({ msg: 'Resume command failed', error: err.message, issueNumber });
@@ -332,6 +337,7 @@ async function handleIssueComment(owner, repo, payload, config) {
         context: pauseData.context,
         actor: comment.user?.login,
         agentId,
+        ctx,
       });
     } catch (err) {
       logger.error({ msg: 'Agent pause failed', error: err.message, issueNumber });

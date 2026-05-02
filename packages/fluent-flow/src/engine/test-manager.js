@@ -62,8 +62,9 @@ export async function handleTestFailure({
 
   // Find linked PR
   let pr = null;
+  let testCtx;
   try {
-    const testCtx = ctx ?? await installationCtxForRepo(owner, repo);
+    testCtx = ctx ?? await installationCtxForRepo(owner, repo);
     const prs = await getPRsForCommit(owner, repo, sha, testCtx);
     if (prs && prs.length > 0) pr = prs[0];
   } catch (err) {

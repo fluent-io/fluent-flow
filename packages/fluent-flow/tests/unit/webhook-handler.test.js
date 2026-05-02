@@ -227,7 +227,7 @@ describe('handleIssueComment — agent routing', () => {
       issue: { number: 42 },
     }, buildConfig());
 
-    expect(resolveAgentForIssue).toHaveBeenCalledWith(TEST_OWNER, TEST_REPO, 42, expect.any(Object), {});
+    expect(resolveAgentForIssue).toHaveBeenCalledWith(TEST_OWNER, TEST_REPO, 42, expect.any(Object), undefined);
     expect(processResume).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: 'resolved-agent' }),
     );
@@ -249,7 +249,7 @@ describe('handleIssueComment — agent routing', () => {
       issue: { number: 42 },
     }, buildConfig());
 
-    expect(resolveAgentForIssue).toHaveBeenCalledWith(TEST_OWNER, TEST_REPO, 42, expect.any(Object), {});
+    expect(resolveAgentForIssue).toHaveBeenCalledWith(TEST_OWNER, TEST_REPO, 42, expect.any(Object), undefined);
     expect(recordPause).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: 'resolved-agent' }),
     );

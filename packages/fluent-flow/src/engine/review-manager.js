@@ -37,7 +37,7 @@ import logger from '../logger.js';
  * @param {Array} [opts.priorIssues=[]]
  * @returns {Promise<void>}
  */
-export async function dispatchReview({ owner, repo, prNumber, ref = 'main', headSha, attempt = 1, priorIssues = [], issueNumber }) {
+export async function dispatchReview({ owner, repo, prNumber, ref = 'main', headSha, attempt = 1, priorIssues = [], issueNumber, ctx }) {
   const repoKey = `${owner}/${repo}`;
   const config = await resolveConfig(owner, repo);
 
@@ -56,7 +56,7 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', head
 
   // Resolve installation context for authenticated GitHub API calls.
   // Moved here (before stale-review dismiss) so getReviews/dismissReview/use it.
-  const installCtx = await installationCtxForRepo(owner, repo);
+  const installCtx = ctx ?? await installationCtxForRepo(owner, repo);
 
   // Dismiss prior Fluent Flow reviews before dispatching new one so the
   // single-review invariant `handleReviewResult` depends on holds.
@@ -151,7 +151,7 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', head
  * @param {string} [opts.reviewSha] - Commit SHA the review was for
  * @returns {Promise<{ action: 'pass'|'fail'|'escalate' }>}
  */
-export async function handleReviewResult({ owner, repo, prNumber, issueNumber, result, reviewSha, agentId, headBranch }) {
+export async function handleReviewResult({ owner, repo, prNumber, issueNumber, result, reviewSha, agentId, headBranch, ctx }) {
   const repoKey = `${owner}/${repo}`;
   const config = await resolveConfig(owner, repo);
   const maxRetries = config.reviewer?.max_retries ?? 3;
@@ -161,7 +161,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   if (status === 'PASS') {
     // Enable auto-merge via GraphQL
     try {
-      const passCtx = await installationCtxForRepo(owner, repo);
+      const passCtx = ctx ?? await installationCtxForRepo(owner, repo);
       const prNodeId = await getPRNodeId(owner, repo, prNumber, passCtx);
       if (prNodeId) {
         await enablePullRequestAutoMerge(prNodeId, 'SQUASH', passCtx);
@@ -283,7 +283,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
     // Add needs-human label to trigger pause
     try {
       if (issueNumber) {
-        const escalationCtx = await installationCtxForRepo(owner, repo);
+        const escalationCtx = ctx ?? await installationCtxForRepo(owner, repo);
         await addLabel(owner, repo, issueNumber, 'needs-human', escalationCtx);
       }
     } catch (err) {
@@ -299,6 +299,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
           issueNumber,
           prNumber,
           reason: 'review-escalation',
+          ctx,
           context: `Automated review failed ${newRetryCount} times. Blocking issues:\n${blocking.map((b) => `- ${b.file}:${b.line} — ${b.issue}`).join('\n')}`,
           actor: 'fluent-flow',
           agentId: notifyAgent,
