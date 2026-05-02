@@ -202,6 +202,7 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
       sha: checkRun.head_sha,
       issueNumber,
       config,
+      ctx,
     });
   }
 

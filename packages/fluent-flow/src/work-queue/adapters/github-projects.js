@@ -51,13 +51,14 @@ export class GitHubProjectsAdapter extends WorkQueueAdapter {
     title,
     description,
     testFailures,
+    ctx: passedCtx,
   }) {
     const projectNodeId = this.projectNodeId;
     if (!projectNodeId) {
       throw new Error('GitHubProjectsAdapter: project_node_id is required');
     }
 
-    const ctx = await installationCtxForRepo(owner, repo);
+    const ctx = passedCtx ?? await installationCtxForRepo(owner, repo);
     if (!ctx) {
       throw new Error(`No installation context found for ${owner}/${repo} — cannot access GitHub Projects`);
     }
@@ -78,13 +79,13 @@ export class GitHubProjectsAdapter extends WorkQueueAdapter {
   /**
    * Update a work item state by finding and moving the project item.
    */
-  async updateWorkItemState({ owner, repo, issueNumber, fromState, toState }) {
+  async updateWorkItemState({ owner, repo, issueNumber, fromState, toState, ctx: passedCtx }) {
     const projectNodeId = this.projectNodeId;
     if (!projectNodeId) {
       throw new Error('GitHubProjectsAdapter: project_node_id is required');
     }
 
-    const ctx = await installationCtxForRepo(owner, repo);
+    const ctx = passedCtx ?? await installationCtxForRepo(owner, repo);
     if (!ctx) {
       logger.warn({ msg: 'No installation context found for project item state update', owner, repo, issueNumber });
       return;

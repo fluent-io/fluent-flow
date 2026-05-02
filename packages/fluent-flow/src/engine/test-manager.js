@@ -91,7 +91,8 @@ export async function handleTestFailure({
       prNumber: pr.number,
       title: `Tests failed in ${checkName}`,
       description: `${testFailures.failed} test(s) failed, ${testFailures.passed} passed.`,
-      testFailures
+      testFailures,
+      ctx: testCtx,
     });
 
     logger.info({ msg: 'Created test failure work item', repo: repoKey, issueNumber, itemId: workItem.id });
@@ -130,7 +131,7 @@ export async function handleTestFailure({
  * Called from check-run-handler when a test check run succeeds.
  * Adapter failures are non-fatal.
  */
-export async function handleTestSuccess({ owner, repo, sha, issueNumber, config }) {
+export async function handleTestSuccess({ owner, repo, sha, issueNumber, config, ctx }) {
   const repoKey = `${owner}/${repo}`;
 
   if (!issueNumber) {
@@ -150,12 +151,15 @@ export async function handleTestSuccess({ owner, repo, sha, issueNumber, config 
     const failureState = adapterOpts.failure_state ?? adapterOpts.failureState ?? 'Test Failures';
     const resolvedState = adapterOpts.resolved_state ?? adapterOpts.resolvedState ?? 'Done';
 
+    const adapterCtx = ctx ?? await installationCtxForRepo(owner, repo);
+
     await adapter.updateWorkItemState({
       owner,
       repo,
       issueNumber,
       fromState: failureState,
-      toState: resolvedState
+      toState: resolvedState,
+      ctx: adapterCtx,
     });
 
     // Audit only after successful update

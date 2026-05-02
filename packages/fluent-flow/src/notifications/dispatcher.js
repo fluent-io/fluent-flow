@@ -44,7 +44,7 @@ export function resolveAgentId({ prBody, config }) {
  * @param {object} config
  * @returns {Promise<string|null>}
  */
-export async function resolveAgentForIssue(owner, repo, issueNumber, config) {
+export async function resolveAgentForIssue(owner, repo, issueNumber, config, ctx) {
   const repoKey = `${owner}/${repo}`;
 
   // 1. Check active pause — cheapest (DB query), most common case
@@ -54,7 +54,7 @@ export async function resolveAgentForIssue(owner, repo, issueNumber, config) {
   }
 
   // 2. Check linked PR body marker
-  const agentCtx = await installationCtxForRepo(owner, repo);
+  const agentCtx = ctx ?? await installationCtxForRepo(owner, repo);
   const linkedPrNumber = agentCtx ? await getLinkedPR(owner, repo, issueNumber, agentCtx) : null;
   if (linkedPrNumber) {
     try {

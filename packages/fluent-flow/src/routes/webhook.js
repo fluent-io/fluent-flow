@@ -250,14 +250,15 @@ async function handlePullRequestReview(owner, repo, payload, config) {
  * Handle issues events (label changes).
  */
 async function handleIssues(owner, repo, payload, config) {
-  const { action, issue, label } = payload;
+  const { action, issue, label, installation } = payload;
   const issueNumber = issue.number;
+  const ctx = installation?.id ? { installation_id: installation.id } : undefined;
 
   if (action === 'labeled' && label?.name === 'needs-human') {
     // Pause the issue
     const currentState = await getCurrentState(`${owner}/${repo}`, issueNumber);
     if (currentState !== 'Awaiting Human') {
-      const agentId = await resolveAgentForIssue(owner, repo, issueNumber, config);
+      const agentId = await resolveAgentForIssue(owner, repo, issueNumber, config, ctx);
       await recordPause({
         owner,
         repo,
@@ -299,7 +300,7 @@ async function handleIssueComment(owner, repo, payload, config) {
   const { isResume, toState, instructions } = parseResumeCommand(body);
   if (isResume) {
     try {
-      const agentId = await resolveAgentForIssue(owner, repo, issueNumber, config);
+      const agentId = await resolveAgentForIssue(owner, repo, issueNumber, config, ctx);
       await processResume({
         owner,
         repo,
@@ -321,7 +322,7 @@ async function handleIssueComment(owner, repo, payload, config) {
     try {
       // Find linked PR if any
       const linkedPR = await getLinkedPR(owner, repo, issueNumber, ctx);
-      const agentId = await resolveAgentForIssue(owner, repo, issueNumber, config);
+      const agentId = await resolveAgentForIssue(owner, repo, issueNumber, config, ctx);
       await recordPause({
         owner,
         repo,
