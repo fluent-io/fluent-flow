@@ -87,8 +87,7 @@ export class GitHubProjectsAdapter extends WorkQueueAdapter {
 
     const ctx = passedCtx ?? await installationCtxForRepo(owner, repo);
     if (!ctx) {
-      logger.warn({ msg: 'No installation context found for project item state update', owner, repo, issueNumber });
-      return;
+      return { success: false, reason: 'no_installation_context' };
     }
 
     const itemNodeId = await findProjectItem(projectNodeId, owner, repo, issueNumber, ctx);

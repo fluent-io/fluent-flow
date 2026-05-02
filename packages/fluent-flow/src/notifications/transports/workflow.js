@@ -34,8 +34,7 @@ export async function send(agentConfig, payload) {
   try {
     const workflowCtx = await installationCtxForRepo(owner, repo);
     if (!workflowCtx) {
-      logger.error({ msg: 'Workflow transport: no installation context for repo', agentId: payload.agentId, owner, repo });
-      return;
+      throw new Error(`Cannot resolve installation context for ${owner}/${repo} — is the GitHub App installed?`);
     }
     await dispatchWorkflow(owner, repo, workflow, ref, {
       agent_id: payload.agentId,

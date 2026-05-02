@@ -154,7 +154,7 @@ export async function handleTestSuccess({ owner, repo, sha, issueNumber, config,
 
     const adapterCtx = ctx ?? await installationCtxForRepo(owner, repo);
 
-    await adapter.updateWorkItemState({
+    const result = await adapter.updateWorkItemState({
       owner,
       repo,
       issueNumber,
@@ -162,6 +162,12 @@ export async function handleTestSuccess({ owner, repo, sha, issueNumber, config,
       toState: resolvedState,
       ctx: adapterCtx,
     });
+
+    // Only audit resolution when the adapter confirms success
+    if (result && !result.success) {
+      logger.warn({ msg: 'Work item state update reported failure', reason: result.reason, repo: repoKey, issueNumber });
+      return;
+    }
 
     // Audit only after successful update
     audit('test_failure_resolved', { repo: repoKey, data: { issueNumber } });

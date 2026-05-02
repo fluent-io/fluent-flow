@@ -127,7 +127,12 @@ export async function dispatch({ agentId, event, payload }) {
     }),
   };
 
-  await transport.send(agentConfig, fullPayload);
+  try {
+    await transport.send(agentConfig, fullPayload);
+  } catch (err) {
+    logger.error({ msg: 'Transport failed to send notification', agentId, event, error: err.message });
+    return;
+  }
   audit('agent_woken', { data: { agentId, event } });
 }
 

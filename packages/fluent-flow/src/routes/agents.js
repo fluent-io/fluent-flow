@@ -95,7 +95,7 @@ async function validateRepos(repos) {
     const notInstalled = invalid.filter((r) => r.reason === 'app_not_installed').map((r) => r.repo);
     const notFound = invalid.filter((r) => r.reason === 'repo_not_found').map((r) => r.repo);
     const parts = [];
-    if (notInstalled.length) parts.push(`GitHub App not installed on: ${notInstalled.join(', ')}`);
+    if (notInstalled.length) parts.push(`Cannot verify GitHub App installation for: ${notInstalled.join(', ')}`);
     if (notFound.length) parts.push(`Repos not found on GitHub: ${notFound.join(', ')}`);
     return parts.join('; ');
   }

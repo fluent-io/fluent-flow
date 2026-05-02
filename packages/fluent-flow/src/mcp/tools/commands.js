@@ -121,7 +121,7 @@ export function registerCommandTools(server) {
         const mcpCtx = await installationCtxForRepo(owner, repo);
         if (!mcpCtx) {
           return {
-            content: [{ type: 'text', text: JSON.stringify({ ok: false, error: `No installation context found for ${owner}/${repo}. Is the repo installed?`, code: 'NO_INSTALLATION' }) }],
+            content: [{ type: 'text', text: JSON.stringify({ ok: false, error: `Could not resolve installation context for ${owner}/${repo} — is the GitHub App installed?`, code: 'INSTALLATION_CONTEXT_NOT_FOUND' }) }],
             isError: true,
           };
         }
