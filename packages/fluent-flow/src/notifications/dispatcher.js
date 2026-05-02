@@ -9,6 +9,7 @@ import { getActivePause } from '../engine/pause-manager.js';
 import { getLinkedPR, getPR } from '../providers/github/rest.js';
 import { getAgent } from '../agents/agent-manager.js';
 import { getActiveClaim } from '../agents/claim-manager.js';
+import { installationCtxForRepo } from '../config/loader.js';
 import logger from '../logger.js';
 
 /**
@@ -53,10 +54,11 @@ export async function resolveAgentForIssue(owner, repo, issueNumber, config) {
   }
 
   // 2. Check linked PR body marker
-  const linkedPrNumber = await getLinkedPR(owner, repo, issueNumber);
+  const agentCtx = await installationCtxForRepo(owner, repo);
+  const linkedPrNumber = agentCtx ? await getLinkedPR(owner, repo, issueNumber, agentCtx) : null;
   if (linkedPrNumber) {
     try {
-      const pr = await getPR(owner, repo, linkedPrNumber);
+      const pr = await getPR(owner, repo, linkedPrNumber, agentCtx);
       const fromBody = resolveAgentId({ prBody: pr?.body, config });
       if (fromBody) return fromBody;
     } catch (err) {

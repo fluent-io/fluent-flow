@@ -4,6 +4,7 @@ import { createAgent, getAgent, listAgents, updateAgent, deleteAgent } from '../
 import { createToken, listTokens, revokeToken } from '../agents/token-manager.js';
 import { getActiveSessions } from '../agents/session-manager.js';
 import { repoExists } from '../providers/github/rest.js';
+import { installationCtxForRepo } from '../config/loader.js';
 import logger from '../logger.js';
 
 const router = Router();
@@ -83,7 +84,8 @@ async function validateRepos(repos) {
   const invalid = [];
   for (const repo of repos) {
     const [owner, name] = repo.split('/');
-    if (!await repoExists(owner, name)) invalid.push(repo);
+    const agentCtx = await installationCtxForRepo(owner, name);
+    if (!agentCtx || !await repoExists(owner, name, agentCtx)) invalid.push(repo);
   }
   if (invalid.length) {
     return `Repos not found on GitHub: ${invalid.join(', ')}`;

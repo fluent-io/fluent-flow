@@ -1,4 +1,4 @@
-import { resolveConfig } from '../config/loader.js';
+import { resolveConfig, installationCtxForRepo } from '../config/loader.js';
 import { getAdapter } from '../work-queue/index.js';
 import { getPRsForCommit } from '../providers/github/rest.js';
 import logger from '../logger.js';
@@ -62,7 +62,8 @@ export async function handleTestFailure({
   // Find linked PR
   let pr = null;
   try {
-    const prs = await getPRsForCommit(owner, repo, sha);
+    const testCtx = await installationCtxForRepo(owner, repo);
+    const prs = await getPRsForCommit(owner, repo, sha, testCtx);
     if (prs && prs.length > 0) pr = prs[0];
   } catch (err) {
     logger.warn({ msg: 'Failed to find linked PR for test failure', repo: repoKey, error: err.message });

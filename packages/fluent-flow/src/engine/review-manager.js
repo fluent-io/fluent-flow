@@ -54,16 +54,20 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', head
     }
   }
 
+  // Resolve installation context for authenticated GitHub API calls.
+  // Moved here (before stale-review dismiss) so getReviews/dismissReview/use it.
+  const installCtx = await installationCtxForRepo(owner, repo);
+
   // Dismiss prior Fluent Flow reviews before dispatching new one so the
   // single-review invariant `handleReviewResult` depends on holds.
   try {
-    const reviews = await getReviews(owner, repo, prNumber);
+    const reviews = await getReviews(owner, repo, prNumber, installCtx);
     const staleReviews = reviews.filter(
       (r) => r.state === 'CHANGES_REQUESTED' && /<!--\s*reviewer-result:/.test(r.body)
     );
     for (const review of staleReviews) {
       try {
-        await dismissReview(owner, repo, prNumber, review.id, 'Superseded by new review');
+        await dismissReview(owner, repo, prNumber, review.id, 'Superseded by new review', installCtx);
         logger.info({ msg: 'Dismissed stale review', repo: repoKey, prNumber, reviewId: review.id });
       } catch (err) {
         logger.warn({ msg: 'Failed to dismiss stale review', repo: repoKey, prNumber, reviewId: review.id, error: err.message });
@@ -88,7 +92,6 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', head
       },
     });
     if (newClaim) {
-      const installCtx = await installationCtxForRepo(owner, repo);
       const installationId = installCtx?.installation_id;
       if (installationId && headSha) {
         const providerClient = getProvider({ installation_id: installationId });
@@ -158,9 +161,10 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   if (status === 'PASS') {
     // Enable auto-merge via GraphQL
     try {
-      const prNodeId = await getPRNodeId(owner, repo, prNumber);
+      const passCtx = await installationCtxForRepo(owner, repo);
+      const prNodeId = await getPRNodeId(owner, repo, prNumber, passCtx);
       if (prNodeId) {
-        await enablePullRequestAutoMerge(prNodeId, 'SQUASH');
+        await enablePullRequestAutoMerge(prNodeId, 'SQUASH', passCtx);
         logger.info({ msg: 'Enabled auto-merge after PASS', repo: repoKey, prNumber });
       audit('review_result_pass', { repo: repoKey, data: { prNumber, attempt } });
       }
@@ -279,7 +283,8 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
     // Add needs-human label to trigger pause
     try {
       if (issueNumber) {
-        await addLabel(owner, repo, issueNumber, 'needs-human');
+        const escalationCtx = await installationCtxForRepo(owner, repo);
+        await addLabel(owner, repo, issueNumber, 'needs-human', escalationCtx);
       }
     } catch (err) {
       logger.error({ msg: 'Failed to add needs-human label on escalation', error: err.message });

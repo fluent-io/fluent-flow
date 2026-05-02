@@ -3,7 +3,7 @@ import { db, schema } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 
 const { pauses } = schema;
-import { resolveConfig } from '../config/loader.js';
+import { resolveConfig, installationCtxForRepo } from '../config/loader.js';
 import { executeTransition, getCurrentState } from './state-machine.js';
 import { postComment, addLabel, removeLabel } from '../providers/github/rest.js';
 import { notifyPause, notifyResume } from '../notifications/dispatcher.js';
@@ -125,7 +125,8 @@ export async function recordPause({ owner, repo, issueNumber, prNumber, reason, 
 
   // Add needs-human label
   try {
-    await addLabel(owner, repo, issueNumber, NEEDS_HUMAN_LABEL);
+    const labelCtx = await installationCtxForRepo(owner, repo);
+    await addLabel(owner, repo, issueNumber, NEEDS_HUMAN_LABEL, labelCtx);
   } catch (err) {
     logger.warn({ msg: 'Failed to add needs-human label', error: err.message });
   }
@@ -147,7 +148,7 @@ ${markdown}
 <!-- pause-id: ${pause.id} -->`;
 
   try {
-    await postComment(owner, repo, issueNumber, commentBody);
+    await postComment(owner, repo, issueNumber, commentBody, labelCtx);
   } catch (err) {
     logger.error({ msg: 'Failed to post pause comment', error: err.message });
   }
@@ -292,7 +293,8 @@ export async function processResume({ owner, repo, issueNumber, toState, instruc
 
   // Remove needs-human label
   try {
-    await removeLabel(owner, repo, issueNumber, NEEDS_HUMAN_LABEL);
+    const resumeCtx = await installationCtxForRepo(owner, repo);
+    await removeLabel(owner, repo, issueNumber, NEEDS_HUMAN_LABEL, resumeCtx);
   } catch (err) {
     logger.warn({ msg: 'Failed to remove needs-human label', error: err.message });
   }
@@ -305,7 +307,8 @@ export async function processResume({ owner, repo, issueNumber, toState, instruc
 
 **Target state:** \`${targetState}\`${instructionsLine}
 
-*Resumed by @${resumedBy ?? 'system'}*`
+*Resumed by @${resumedBy ?? 'system'}*`,
+      resumeCtx
     );
   } catch (err) {
     logger.error({ msg: 'Failed to post resume comment', error: err.message });

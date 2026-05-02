@@ -3,6 +3,7 @@ import {
   moveProjectItem,
   findProjectItem,
 } from '../../providers/github/graphql.js';
+import { installationCtxForRepo } from '../../config/loader.js';
 import logger from '../../logger.js';
 
 /** Default project state names — override via config.failure_state / config.resolved_state */
@@ -56,14 +57,19 @@ export class GitHubProjectsAdapter extends WorkQueueAdapter {
       throw new Error('GitHubProjectsAdapter: project_node_id is required');
     }
 
-    const itemNodeId = await findProjectItem(projectNodeId, owner, repo, issueNumber);
+    const ctx = await installationCtxForRepo(owner, repo);
+    if (!ctx) {
+      throw new Error(`No installation context found for ${owner}/${repo} — cannot access GitHub Projects`);
+    }
+
+    const itemNodeId = await findProjectItem(projectNodeId, owner, repo, issueNumber, ctx);
     if (!itemNodeId) {
       throw new Error(
         `No project item found for ${owner}/${repo}#${issueNumber} in project ${projectNodeId}`
       );
     }
 
-    await moveProjectItem(projectNodeId, itemNodeId, this.failureState);
+    await moveProjectItem(projectNodeId, itemNodeId, this.failureState, ctx);
 
     logger.info({ msg: 'Created test failure item in project', issueNumber, itemNodeId, state: this.failureState });
     return { id: itemNodeId, state: this.failureState };
@@ -78,13 +84,19 @@ export class GitHubProjectsAdapter extends WorkQueueAdapter {
       throw new Error('GitHubProjectsAdapter: project_node_id is required');
     }
 
-    const itemNodeId = await findProjectItem(projectNodeId, owner, repo, issueNumber);
+    const ctx = await installationCtxForRepo(owner, repo);
+    if (!ctx) {
+      logger.warn({ msg: 'No installation context found for project item state update', owner, repo, issueNumber });
+      return;
+    }
+
+    const itemNodeId = await findProjectItem(projectNodeId, owner, repo, issueNumber, ctx);
     if (!itemNodeId) {
       logger.warn({ msg: 'No project item found to update state', issueNumber, fromState, toState });
       return;
     }
 
-    await moveProjectItem(projectNodeId, itemNodeId, toState);
+    await moveProjectItem(projectNodeId, itemNodeId, toState, ctx);
     logger.info({ msg: 'Updated work item state', issueNumber, fromState, toState });
   }
 

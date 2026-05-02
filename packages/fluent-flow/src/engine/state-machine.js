@@ -3,7 +3,7 @@ import { db, schema } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 
 const { stateTransitions, projectItems } = schema;
-import { resolveConfig } from '../config/loader.js';
+import { resolveConfig, installationCtxForRepo } from '../config/loader.js';
 import { moveProjectItem, findProjectItem } from '../providers/github/graphql.js';
 import { postComment, getIssue } from '../providers/github/rest.js';
 import logger from '../logger.js';
@@ -142,6 +142,11 @@ async function updateProjectCard(repo, issueNumber, toState, projectId) {
 
   try {
     const [owner, repoName] = repo.split('/');
+    const ctx = await installationCtxForRepo(owner, repoName);
+    if (!ctx) {
+      logger.warn({ msg: 'Cannot update project card — no installation context', repo, issueNumber, projectId });
+      return;
+    }
     let itemNodeId = null;
 
     const [cached] = await db
@@ -159,7 +164,7 @@ async function updateProjectCard(repo, issueNumber, toState, projectId) {
     if (cached) {
       itemNodeId = cached.itemNodeId;
     } else {
-      itemNodeId = await findProjectItem(projectId, owner, repoName, issueNumber);
+      itemNodeId = await findProjectItem(projectId, owner, repoName, issueNumber, ctx);
       if (itemNodeId) {
         await db
           .insert(projectItems)
@@ -176,7 +181,7 @@ async function updateProjectCard(repo, issueNumber, toState, projectId) {
       return;
     }
 
-    await moveProjectItem(projectId, itemNodeId, toState);
+    await moveProjectItem(projectId, itemNodeId, toState, ctx);
 
     await db
       .update(projectItems)
@@ -296,9 +301,13 @@ export async function attemptTransitionToDone({ owner, repo, issueNumber, actor,
   if (!context.merged_pr) {
     // Revert: post a comment and move back
     const fromState = await getCurrentState(repoKey, issueNumber);
-    await postComment(owner, repo, issueNumber,
-      `⚠️ **Transition to Done blocked**: This issue cannot be moved to Done without a merged pull request.\n\nPlease merge a linked PR first, then the issue will automatically transition to Done.`
-    );
+    const doneCtx = await installationCtxForRepo(owner, repo);
+    if (doneCtx) {
+      await postComment(owner, repo, issueNumber,
+        `⚠️ **Transition to Done blocked**: This issue cannot be moved to Done without a merged pull request.\n\nPlease merge a linked PR first, then the issue will automatically transition to Done.`,
+        doneCtx
+      );
+    }
 
     // Move the project card back to the current state (all projects)
     const config = await resolveConfig(owner, repo);

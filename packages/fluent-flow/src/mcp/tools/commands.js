@@ -8,7 +8,7 @@ import { dispatchReview } from '../../engine/review-manager.js';
 import { recordPause, processResume } from '../../engine/pause-manager.js';
 import { audit } from '../../db/client.js';
 import { getFileExists, createFile } from '../../providers/github/rest.js';
-import { invalidateConfig } from '../../config/loader.js';
+import { invalidateConfig, installationCtxForRepo } from '../../config/loader.js';
 
 /**
  * Register all command tools on the MCP server.
@@ -118,7 +118,15 @@ export function registerCommandTools(server) {
     async ({ owner, repo, default_agent, agent_id, project_id }) => {
       audit('mcp_tool_call', { repo: `${owner}/${repo}`, actor: agent_id, data: { tool: 'onboard_repo' } });
       try {
-        if (await getFileExists(owner, repo, '.github/fluent-flow.yml')) {
+        const mcpCtx = await installationCtxForRepo(owner, repo);
+        if (!mcpCtx) {
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ ok: false, error: `No installation context found for ${owner}/${repo}. Is the repo installed?`, code: 'NO_INSTALLATION' }) }],
+            isError: true,
+          };
+        }
+
+        if (await getFileExists(owner, repo, '.github/fluent-flow.yml', mcpCtx)) {
           return {
             content: [{ type: 'text', text: JSON.stringify({ ok: false, error: `${owner}/${repo} config already exists`, code: 'ALREADY_ONBOARDED' }) }],
             isError: true,
@@ -129,7 +137,7 @@ export function registerCommandTools(server) {
         if (project_id) configObj.project_id = project_id;
         const configYaml = yaml.dump(configObj, { lineWidth: -1 });
 
-        await createFile(owner, repo, '.github/fluent-flow.yml', configYaml, 'chore: onboard to Fluent Flow');
+        await createFile(owner, repo, '.github/fluent-flow.yml', configYaml, 'chore: onboard to Fluent Flow', mcpCtx);
         await invalidateConfig(owner, repo);
 
         console.log({ msg: 'Repo onboarded to Fluent Flow', owner, repo, default_agent });
