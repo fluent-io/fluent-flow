@@ -11,13 +11,13 @@ const HEADERS_BASE = {
 
 /**
  * Resolve an auth token for the given queue row.
- * Uses installation token if available, falls back to PAT.
+ * Requires installation_id — throws if missing.
  */
 async function resolveToken(row) {
   if (row.installation_id) {
     return getInstallationToken(row.installation_id);
   }
-  return process.env.GITHUB_TOKEN ?? '';
+  throw new Error('GitHub API call requires installation_id — queue row has no installation_id');
 }
 
 /**

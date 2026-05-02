@@ -1,7 +1,6 @@
 /**
  * GitHub GraphQL API client — primarily for GitHub Projects v2 operations.
- * Prefers installation-token auth when the caller passes ctx.installation_id;
- * falls back to GITHUB_TOKEN PAT only when no installation context is provided.
+ * Requires installation-token auth — no PAT fallback.
  */
 import logger from '../../logger.js';
 import { getInstallationToken } from './token-cache.js';
@@ -16,7 +15,7 @@ async function resolveToken(ctx) {
   if (ctx?.installation_id) {
     return getInstallationToken(ctx.installation_id);
   }
-  return process.env.GITHUB_TOKEN ?? '';
+  throw new Error('GitHub API call requires installation_id — pass ctx with { installation_id }');
 }
 
 /**

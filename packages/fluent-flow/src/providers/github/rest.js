@@ -1,6 +1,6 @@
 /**
  * GitHub REST API client using fetch (Node 18+ built-in).
- * Supports both PAT auth (legacy) and installation-token auth (App).
+ * Requires installation-token auth (GitHub App) — no PAT fallback.
  */
 import logger from '../../logger.js';
 import { getInstallationToken } from './token-cache.js';
@@ -9,7 +9,7 @@ const BASE_URL = 'https://api.github.com';
 
 /**
  * Resolve the auth token for a request.
- * Prefers installation token when installation_id is provided; falls back to GITHUB_TOKEN PAT.
+ * Requires installation_id in ctx — throws if missing.
  * @param {{ installation_id?: number }} [ctx]
  * @returns {Promise<string>}
  */
@@ -17,7 +17,7 @@ async function resolveToken(ctx) {
   if (ctx?.installation_id) {
     return getInstallationToken(ctx.installation_id);
   }
-  return process.env.GITHUB_TOKEN ?? '';
+  throw new Error('GitHub API call requires installation_id — pass ctx with { installation_id }');
 }
 
 /**
@@ -28,7 +28,10 @@ async function resolveToken(ctx) {
  * @returns {Promise<object>} Parsed JSON response
  */
 async function githubRequest(path, options = {}, token) {
-  const authToken = token ?? process.env.GITHUB_TOKEN ?? '';
+  if (!token) {
+    throw new Error('GitHub API call requires auth token — no token provided');
+  }
+  const authToken = token;
   const url = path.startsWith('https://') ? path : `${BASE_URL}${path}`;
   const response = await fetch(url, {
     ...options,
