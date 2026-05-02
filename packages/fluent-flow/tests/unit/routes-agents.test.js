@@ -36,6 +36,9 @@ vi.mock('../../src/db/client.js', () => ({
 vi.mock('../../src/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
+vi.mock('../../src/config/loader.js', () => ({
+  installationCtxForRepo: vi.fn().mockResolvedValue({ installation_id: 42 }),
+}));
 
 const { handleCreateAgent, handleGetAgent, handleListAgents, handleUpdateAgent, handleDeleteAgent, handleCreateToken } = await import('../../src/routes/agents.js');
 
@@ -142,7 +145,7 @@ describe('agent routes', () => {
       mockCreateAgent.mockResolvedValueOnce({ id: 'a1', org_id: 'acme' });
       const res = fakeRes();
       await handleCreateAgent(adminReq({ id: 'a1', agent_type: 'claude-code', transport: 'long_poll', repos: ['fluent-io/fluent-flow'] }), res);
-      expect(mockRepoExists).toHaveBeenCalledWith('fluent-io', 'fluent-flow');
+      expect(mockRepoExists).toHaveBeenCalledWith('fluent-io', 'fluent-flow', expect.objectContaining({ installation_id: 42 }));
       expect(res.status).toHaveBeenCalledWith(201);
     });
 
