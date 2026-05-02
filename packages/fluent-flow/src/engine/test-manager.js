@@ -164,7 +164,7 @@ export async function handleTestSuccess({ owner, repo, sha, issueNumber, config,
     });
 
     // Only audit resolution when the adapter confirms success
-    if (result && !result.success) {
+    if (!result || !result.success) {
       logger.warn({ msg: 'Work item state update reported failure', reason: result.reason, repo: repoKey, issueNumber });
       return;
     }

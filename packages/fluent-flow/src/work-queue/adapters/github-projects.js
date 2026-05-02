@@ -93,7 +93,7 @@ export class GitHubProjectsAdapter extends WorkQueueAdapter {
     const itemNodeId = await findProjectItem(projectNodeId, owner, repo, issueNumber, ctx);
     if (!itemNodeId) {
       logger.warn({ msg: 'No project item found to update state', issueNumber, fromState, toState });
-      return;
+      return { success: false, reason: 'no_project_item' };
     }
 
     await moveProjectItem(projectNodeId, itemNodeId, toState, ctx);
