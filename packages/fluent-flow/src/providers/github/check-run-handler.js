@@ -94,6 +94,7 @@ async function handleCheckRunFailure(owner, repoName, checkRun, config, ctx) {
       testFailures,
       issueNumber,
       config,
+      ctx,
     });
     return;
   }

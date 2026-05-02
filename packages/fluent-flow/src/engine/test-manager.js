@@ -40,7 +40,8 @@ export async function handleTestFailure({
   checkName,
   testFailures,
   issueNumber,
-  config
+  config,
+  ctx,
 }) {
   // Input validation
   if (!owner || !repo) throw new Error('handleTestFailure: owner and repo are required');
@@ -62,7 +63,7 @@ export async function handleTestFailure({
   // Find linked PR
   let pr = null;
   try {
-    const testCtx = await installationCtxForRepo(owner, repo);
+    const testCtx = ctx ?? await installationCtxForRepo(owner, repo);
     const prs = await getPRsForCommit(owner, repo, sha, testCtx);
     if (prs && prs.length > 0) pr = prs[0];
   } catch (err) {

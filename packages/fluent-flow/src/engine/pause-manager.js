@@ -124,8 +124,9 @@ export async function recordPause({ owner, repo, issueNumber, prNumber, reason, 
   }
 
   // Add needs-human label
+  let labelCtx;
   try {
-    const labelCtx = await installationCtxForRepo(owner, repo);
+    labelCtx = await installationCtxForRepo(owner, repo);
     await addLabel(owner, repo, issueNumber, NEEDS_HUMAN_LABEL, labelCtx);
   } catch (err) {
     logger.warn({ msg: 'Failed to add needs-human label', error: err.message });
@@ -292,8 +293,9 @@ export async function processResume({ owner, repo, issueNumber, toState, instruc
   }
 
   // Remove needs-human label
+  let resumeCtx;
   try {
-    const resumeCtx = await installationCtxForRepo(owner, repo);
+    resumeCtx = await installationCtxForRepo(owner, repo);
     await removeLabel(owner, repo, issueNumber, NEEDS_HUMAN_LABEL, resumeCtx);
   } catch (err) {
     logger.warn({ msg: 'Failed to remove needs-human label', error: err.message });

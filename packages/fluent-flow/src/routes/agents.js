@@ -85,10 +85,19 @@ async function validateRepos(repos) {
   for (const repo of repos) {
     const [owner, name] = repo.split('/');
     const agentCtx = await installationCtxForRepo(owner, name);
-    if (!agentCtx || !await repoExists(owner, name, agentCtx)) invalid.push(repo);
+    if (!agentCtx) {
+      invalid.push({ repo, reason: 'app_not_installed' });
+    } else if (!await repoExists(owner, name, agentCtx)) {
+      invalid.push({ repo, reason: 'repo_not_found' });
+    }
   }
   if (invalid.length) {
-    return `Repos not found on GitHub: ${invalid.join(', ')}`;
+    const notInstalled = invalid.filter((r) => r.reason === 'app_not_installed').map((r) => r.repo);
+    const notFound = invalid.filter((r) => r.reason === 'repo_not_found').map((r) => r.repo);
+    const parts = [];
+    if (notInstalled.length) parts.push(`GitHub App not installed on: ${notInstalled.join(', ')}`);
+    if (notFound.length) parts.push(`Repos not found on GitHub: ${notFound.join(', ')}`);
+    return parts.join('; ');
   }
   return null;
 }
