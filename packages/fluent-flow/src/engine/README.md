@@ -2,6 +2,10 @@
 
 The deterministic orchestration core. LLM agents never decide what step comes next — this code does.
 
+## Auth Context
+
+All GitHub API calls require an **installation context** (`ctx`) with `installation_id`. This is resolved via `installationCtxForRepo(owner, repo)` from the config loader. Every engine function that makes GitHub API calls resolves this context at the top of the function and passes it through. There is no PAT fallback — if `installationCtxForRepo` returns `undefined`, the operation is skipped or throws.
+
 ## Modules
 
 ### state-machine.js

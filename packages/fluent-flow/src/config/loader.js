@@ -67,9 +67,8 @@ function deepMerge(base, override) {
  * expects GitHub's external installation id — so we join and return that.
  *
  * Returns undefined when the repo isn't materialized (e.g. install webhook
- * never arrived), which makes `getRepoFileContents` fall back to the legacy
- * GITHUB_TOKEN PAT — acceptable for dev environments and for unknown-repo
- * probes; in prod under the App this case means the repo isn't onboarded.
+ * never arrived). Callers must handle the undefined case — they should throw
+ * or gracefully skip the operation rather than falling back to a PAT.
  *
  * @param {string} owner
  * @param {string} repo

@@ -1,4 +1,4 @@
-import { resolveConfig } from '../config/loader.js';
+import { resolveConfig, installationCtxForRepo } from '../config/loader.js';
 import { getAdapter } from '../work-queue/index.js';
 import { getPRsForCommit } from '../providers/github/rest.js';
 import logger from '../logger.js';
@@ -40,7 +40,8 @@ export async function handleTestFailure({
   checkName,
   testFailures,
   issueNumber,
-  config
+  config,
+  ctx,
 }) {
   // Input validation
   if (!owner || !repo) throw new Error('handleTestFailure: owner and repo are required');
@@ -61,8 +62,10 @@ export async function handleTestFailure({
 
   // Find linked PR
   let pr = null;
+  let testCtx;
   try {
-    const prs = await getPRsForCommit(owner, repo, sha);
+    testCtx = ctx ?? await installationCtxForRepo(owner, repo);
+    const prs = await getPRsForCommit(owner, repo, sha, testCtx);
     if (prs && prs.length > 0) pr = prs[0];
   } catch (err) {
     logger.warn({ msg: 'Failed to find linked PR for test failure', repo: repoKey, error: err.message });
@@ -89,7 +92,8 @@ export async function handleTestFailure({
       prNumber: pr.number,
       title: `Tests failed in ${checkName}`,
       description: `${testFailures.failed} test(s) failed, ${testFailures.passed} passed.`,
-      testFailures
+      testFailures,
+      ctx: testCtx,
     });
 
     logger.info({ msg: 'Created test failure work item', repo: repoKey, issueNumber, itemId: workItem.id });
@@ -128,7 +132,7 @@ export async function handleTestFailure({
  * Called from check-run-handler when a test check run succeeds.
  * Adapter failures are non-fatal.
  */
-export async function handleTestSuccess({ owner, repo, sha, issueNumber, config }) {
+export async function handleTestSuccess({ owner, repo, sha, issueNumber, config, ctx }) {
   const repoKey = `${owner}/${repo}`;
 
   if (!issueNumber) {
@@ -148,13 +152,22 @@ export async function handleTestSuccess({ owner, repo, sha, issueNumber, config 
     const failureState = adapterOpts.failure_state ?? adapterOpts.failureState ?? 'Test Failures';
     const resolvedState = adapterOpts.resolved_state ?? adapterOpts.resolvedState ?? 'Done';
 
-    await adapter.updateWorkItemState({
+    const adapterCtx = ctx ?? await installationCtxForRepo(owner, repo);
+
+    const result = await adapter.updateWorkItemState({
       owner,
       repo,
       issueNumber,
       fromState: failureState,
-      toState: resolvedState
+      toState: resolvedState,
+      ctx: adapterCtx,
     });
+
+    // Only audit resolution when the adapter confirms success
+    if (!result || !result.success) {
+      logger.warn({ msg: 'Work item state update reported failure', reason: result.reason, repo: repoKey, issueNumber });
+      return;
+    }
 
     // Audit only after successful update
     audit('test_failure_resolved', { repo: repoKey, data: { issueNumber } });

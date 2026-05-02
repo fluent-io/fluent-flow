@@ -142,7 +142,7 @@ describe('dispatchReview (runner-claim based)', () => {
       priorIssues: [],
     });
 
-    expect(mockDismissReview).toHaveBeenCalledWith('fluent-io', 'fluent-flow', 42, 99, 'Superseded by new review');
+    expect(mockDismissReview).toHaveBeenCalledWith('fluent-io', 'fluent-flow', 42, 99, 'Superseded by new review', expect.objectContaining({ installation_id: 99 }));
     expect(mockCreateClaim).toHaveBeenCalledTimes(1);
   });
 

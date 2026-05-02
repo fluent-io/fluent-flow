@@ -4,6 +4,7 @@ import { createAgent, getAgent, listAgents, updateAgent, deleteAgent } from '../
 import { createToken, listTokens, revokeToken } from '../agents/token-manager.js';
 import { getActiveSessions } from '../agents/session-manager.js';
 import { repoExists } from '../providers/github/rest.js';
+import { installationCtxForRepo } from '../config/loader.js';
 import logger from '../logger.js';
 
 const router = Router();
@@ -83,10 +84,20 @@ async function validateRepos(repos) {
   const invalid = [];
   for (const repo of repos) {
     const [owner, name] = repo.split('/');
-    if (!await repoExists(owner, name)) invalid.push(repo);
+    const agentCtx = await installationCtxForRepo(owner, name);
+    if (!agentCtx) {
+      invalid.push({ repo, reason: 'app_not_installed' });
+    } else if (!await repoExists(owner, name, agentCtx)) {
+      invalid.push({ repo, reason: 'repo_not_found' });
+    }
   }
   if (invalid.length) {
-    return `Repos not found on GitHub: ${invalid.join(', ')}`;
+    const notInstalled = invalid.filter((r) => r.reason === 'app_not_installed').map((r) => r.repo);
+    const notFound = invalid.filter((r) => r.reason === 'repo_not_found').map((r) => r.repo);
+    const parts = [];
+    if (notInstalled.length) parts.push(`Cannot verify GitHub App installation for: ${notInstalled.join(', ')}`);
+    if (notFound.length) parts.push(`Repos not found on GitHub: ${notFound.join(', ')}`);
+    return parts.join('; ');
   }
   return null;
 }

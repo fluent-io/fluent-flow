@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { makeTransitionRecord, makePauseRecord } from '../helpers/mocks.js';
 
 vi.mock('../../src/db/client.js', () => ({ query: vi.fn(), audit: vi.fn() }));
-vi.mock('../../src/config/loader.js', () => ({ resolveConfig: vi.fn(), invalidateConfig: vi.fn(), resolveOrgId: vi.fn().mockResolvedValue('self-hosted') }));
+vi.mock('../../src/config/loader.js', () => ({ resolveConfig: vi.fn(), invalidateConfig: vi.fn(), resolveOrgId: vi.fn().mockResolvedValue('self-hosted'), installationCtxForRepo: vi.fn().mockResolvedValue({ installation_id: 42 }) }));
 vi.mock('../../src/engine/state-machine.js', () => ({ executeTransition: vi.fn(), getCurrentState: vi.fn() }));
 vi.mock('../../src/engine/review-manager.js', () => ({ dispatchReview: vi.fn() }));
 vi.mock('../../src/engine/pause-manager.js', () => ({ recordPause: vi.fn(), processResume: vi.fn() }));
@@ -75,7 +75,7 @@ describe('onboard_repo tool', () => {
     });
 
     expect(getFileExists).toHaveBeenCalledTimes(1);
-    expect(getFileExists).toHaveBeenCalledWith('test-org', 'test-repo', '.github/fluent-flow.yml');
+    expect(getFileExists).toHaveBeenCalledWith('test-org', 'test-repo', '.github/fluent-flow.yml', expect.objectContaining({ installation_id: 42 }));
   });
 
   it('creates only the config file on success (no workflow file, no API-key reminder)', async () => {
@@ -95,13 +95,13 @@ describe('onboard_repo tool', () => {
 
     // Creates fluent-flow.yml with valid YAML.
     expect(createFile).toHaveBeenCalledTimes(1);
-    expect(createFile).toHaveBeenCalledWith(
-      'test-org',
-      'test-repo',
-      '.github/fluent-flow.yml',
-      expect.stringContaining('default_agent: my-agent'),
-      'chore: onboard to Fluent Flow',
-    );
+    const createFileCall = createFile.mock.calls[0];
+    expect(createFileCall[0]).toBe('test-org');
+    expect(createFileCall[1]).toBe('test-repo');
+    expect(createFileCall[2]).toBe('.github/fluent-flow.yml');
+    expect(createFileCall[3]).toContain('default_agent: my-agent');
+    expect(createFileCall[4]).toBe('chore: onboard to Fluent Flow');
+    expect(createFileCall[5]).toEqual(expect.objectContaining({ installation_id: 42 }));
 
     // Cache invalidated so next resolveConfig picks up the new file.
     expect(invalidateConfig).toHaveBeenCalledWith('test-org', 'test-repo');

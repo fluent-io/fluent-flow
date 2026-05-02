@@ -130,4 +130,24 @@ describe('drainOnce', () => {
     const [url] = global.fetch.mock.calls[0];
     expect(url).toContain('/repos/acme/demo/pulls/5/reviews');
   });
+
+  it('marks failed when installation_id is missing', async () => {
+    claimNext.mockResolvedValue({
+      ...baseRow,
+      installation_id: undefined,
+    });
+    global.fetch = vi.fn();
+
+    await drainOnce();
+
+    expect(markFailed).toHaveBeenCalledWith(
+      baseRow.id,
+      expect.objectContaining({
+        rateLimited: false,
+        error: expect.stringContaining('installation_id'),
+      })
+    );
+    expect(markSucceeded).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
 });

@@ -3,6 +3,7 @@ import {
   moveProjectItem,
   findProjectItem,
 } from '../../providers/github/graphql.js';
+import { installationCtxForRepo } from '../../config/loader.js';
 import logger from '../../logger.js';
 
 /** Default project state names — override via config.failure_state / config.resolved_state */
@@ -50,20 +51,26 @@ export class GitHubProjectsAdapter extends WorkQueueAdapter {
     title,
     description,
     testFailures,
+    ctx: passedCtx,
   }) {
     const projectNodeId = this.projectNodeId;
     if (!projectNodeId) {
       throw new Error('GitHubProjectsAdapter: project_node_id is required');
     }
 
-    const itemNodeId = await findProjectItem(projectNodeId, owner, repo, issueNumber);
+    const ctx = passedCtx ?? await installationCtxForRepo(owner, repo);
+    if (!ctx) {
+      throw new Error(`No installation context found for ${owner}/${repo} — cannot access GitHub Projects`);
+    }
+
+    const itemNodeId = await findProjectItem(projectNodeId, owner, repo, issueNumber, ctx);
     if (!itemNodeId) {
       throw new Error(
         `No project item found for ${owner}/${repo}#${issueNumber} in project ${projectNodeId}`
       );
     }
 
-    await moveProjectItem(projectNodeId, itemNodeId, this.failureState);
+    await moveProjectItem(projectNodeId, itemNodeId, this.failureState, ctx);
 
     logger.info({ msg: 'Created test failure item in project', issueNumber, itemNodeId, state: this.failureState });
     return { id: itemNodeId, state: this.failureState };
@@ -72,19 +79,24 @@ export class GitHubProjectsAdapter extends WorkQueueAdapter {
   /**
    * Update a work item state by finding and moving the project item.
    */
-  async updateWorkItemState({ owner, repo, issueNumber, fromState, toState }) {
+  async updateWorkItemState({ owner, repo, issueNumber, fromState, toState, ctx: passedCtx }) {
     const projectNodeId = this.projectNodeId;
     if (!projectNodeId) {
       throw new Error('GitHubProjectsAdapter: project_node_id is required');
     }
 
-    const itemNodeId = await findProjectItem(projectNodeId, owner, repo, issueNumber);
-    if (!itemNodeId) {
-      logger.warn({ msg: 'No project item found to update state', issueNumber, fromState, toState });
-      return;
+    const ctx = passedCtx ?? await installationCtxForRepo(owner, repo);
+    if (!ctx) {
+      return { success: false, reason: 'no_installation_context' };
     }
 
-    await moveProjectItem(projectNodeId, itemNodeId, toState);
+    const itemNodeId = await findProjectItem(projectNodeId, owner, repo, issueNumber, ctx);
+    if (!itemNodeId) {
+      logger.warn({ msg: 'No project item found to update state', issueNumber, fromState, toState });
+      return { success: false, reason: 'no_project_item' };
+    }
+
+    await moveProjectItem(projectNodeId, itemNodeId, toState, ctx);
     logger.info({ msg: 'Updated work item state', issueNumber, fromState, toState });
   }
 

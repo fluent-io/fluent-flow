@@ -207,11 +207,12 @@ async function handlePullRequest(owner, repo, payload, config) {
  * Handle pull_request_review events.
  */
 async function handlePullRequestReview(owner, repo, payload, config) {
-  const { action, review, pull_request: pr } = payload;
+  const { action, review, pull_request: pr, installation } = payload;
   if (action !== 'submitted') return;
 
   const prNumber = pr.number;
   const issueNumber = extractLinkedIssue(pr.body);
+  const reviewCtx = installation?.id ? { installation_id: installation.id } : undefined;
 
   // Parse machine-readable result from review body
   const resultMatch = review.body?.match(/<!--\s*reviewer-result:\s*({.*?})\s*-->/s);
@@ -230,6 +231,7 @@ async function handlePullRequestReview(owner, repo, payload, config) {
         reviewSha: pr.head.sha,
         agentId,
         headBranch: pr.head.ref,
+        ctx: reviewCtx,
       });
     } catch (err) {
       logger.error({ msg: 'Failed to handle automated review result', error: err.message, prNumber });
@@ -250,14 +252,15 @@ async function handlePullRequestReview(owner, repo, payload, config) {
  * Handle issues events (label changes).
  */
 async function handleIssues(owner, repo, payload, config) {
-  const { action, issue, label } = payload;
+  const { action, issue, label, installation } = payload;
   const issueNumber = issue.number;
+  const ctx = installation?.id ? { installation_id: installation.id } : undefined;
 
   if (action === 'labeled' && label?.name === 'needs-human') {
     // Pause the issue
     const currentState = await getCurrentState(`${owner}/${repo}`, issueNumber);
     if (currentState !== 'Awaiting Human') {
-      const agentId = await resolveAgentForIssue(owner, repo, issueNumber, config);
+      const agentId = await resolveAgentForIssue(owner, repo, issueNumber, config, ctx);
       await recordPause({
         owner,
         repo,
@@ -266,6 +269,7 @@ async function handleIssues(owner, repo, payload, config) {
         context: 'Labeled needs-human',
         actor: payload.sender?.login,
         agentId,
+        ctx,
       });
     }
   } else if (action === 'unlabeled' && label?.name === 'needs-human') {
@@ -279,6 +283,7 @@ async function handleIssues(owner, repo, payload, config) {
         issueNumber,
         resumedBy: payload.sender?.login,
         agentId,
+        ctx,
       });
     }
   }
@@ -293,13 +298,13 @@ async function handleIssueComment(owner, repo, payload, config) {
 
   const issueNumber = issue.number;
   const body = comment.body;
-  const ctx = installation?.id ? { installation_id: installation.id } : {};
+  const ctx = installation?.id ? { installation_id: installation.id } : undefined;
 
   // Check for /resume command
   const { isResume, toState, instructions } = parseResumeCommand(body);
   if (isResume) {
     try {
-      const agentId = await resolveAgentForIssue(owner, repo, issueNumber, config);
+      const agentId = await resolveAgentForIssue(owner, repo, issueNumber, config, ctx);
       await processResume({
         owner,
         repo,
@@ -308,6 +313,7 @@ async function handleIssueComment(owner, repo, payload, config) {
         instructions,
         resumedBy: comment.user?.login,
         agentId,
+        ctx,
       });
     } catch (err) {
       logger.warn({ msg: 'Resume command failed', error: err.message, issueNumber });
@@ -321,7 +327,7 @@ async function handleIssueComment(owner, repo, payload, config) {
     try {
       // Find linked PR if any
       const linkedPR = await getLinkedPR(owner, repo, issueNumber, ctx);
-      const agentId = await resolveAgentForIssue(owner, repo, issueNumber, config);
+      const agentId = await resolveAgentForIssue(owner, repo, issueNumber, config, ctx);
       await recordPause({
         owner,
         repo,
@@ -331,6 +337,7 @@ async function handleIssueComment(owner, repo, payload, config) {
         context: pauseData.context,
         actor: comment.user?.login,
         agentId,
+        ctx,
       });
     } catch (err) {
       logger.error({ msg: 'Agent pause failed', error: err.message, issueNumber });

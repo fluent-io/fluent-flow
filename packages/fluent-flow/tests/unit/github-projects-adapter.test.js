@@ -6,8 +6,13 @@ vi.mock('../../src/providers/github/graphql.js', () => ({
   findProjectItem: vi.fn(),
   getProjectItemStatus: vi.fn(),
 }));
+vi.mock('../../src/config/loader.js', () => ({
+  installationCtxForRepo: vi.fn().mockResolvedValue({ installation_id: 42 }),
+}));
 
 const { moveProjectItem, findProjectItem } = await import('../../src/providers/github/graphql.js');
+
+const mockCtx = { installation_id: 42 };
 
 describe('GitHubProjectsAdapter', () => {
   let adapter;
@@ -32,8 +37,8 @@ describe('GitHubProjectsAdapter', () => {
         testFailures: { passed: 5, failed: 2, failures: [] },
       });
 
-      expect(findProjectItem).toHaveBeenCalledWith('PVT_123', 'test-org', 'test-repo', 42);
-      expect(moveProjectItem).toHaveBeenCalledWith('PVT_123', 'item_node_123', 'Test Failures');
+      expect(findProjectItem).toHaveBeenCalledWith('PVT_123', 'test-org', 'test-repo', 42, mockCtx);
+      expect(moveProjectItem).toHaveBeenCalledWith('PVT_123', 'item_node_123', 'Test Failures', mockCtx);
       expect(result).toEqual({ id: 'item_node_123', state: 'Test Failures' });
     });
 
@@ -73,7 +78,7 @@ describe('GitHubProjectsAdapter', () => {
         title: 'fail', description: '', testFailures: { passed: 0, failed: 1, failures: [] },
       });
 
-      expect(moveProjectItem).toHaveBeenCalledWith('PVT_123', 'item_node_789', 'Blocked');
+      expect(moveProjectItem).toHaveBeenCalledWith('PVT_123', 'item_node_789', 'Blocked', mockCtx);
       expect(result.state).toBe('Blocked');
     });
   });
@@ -91,8 +96,8 @@ describe('GitHubProjectsAdapter', () => {
         toState: 'Done',
       });
 
-      expect(findProjectItem).toHaveBeenCalledWith('PVT_123', 'test-org', 'test-repo', 42);
-      expect(moveProjectItem).toHaveBeenCalledWith('PVT_123', 'item_node_456', 'Done');
+      expect(findProjectItem).toHaveBeenCalledWith('PVT_123', 'test-org', 'test-repo', 42, mockCtx);
+      expect(moveProjectItem).toHaveBeenCalledWith('PVT_123', 'item_node_456', 'Done', mockCtx);
     });
 
     it('warns and returns if item not found (no throw)', async () => {

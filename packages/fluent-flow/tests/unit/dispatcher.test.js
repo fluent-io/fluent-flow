@@ -6,6 +6,9 @@ vi.mock('../../src/logger.js', async () => {
 });
 vi.mock('../../src/engine/pause-manager.js', () => ({ getActivePause: vi.fn() }));
 vi.mock('../../src/providers/github/rest.js', () => ({ getLinkedPR: vi.fn(), getPR: vi.fn() }));
+vi.mock('../../src/config/loader.js', () => ({
+  installationCtxForRepo: vi.fn().mockResolvedValue({ installation_id: 99 }),
+}));
 
 // Mock agents registry
 vi.mock('../../src/config/agents.js', () => ({

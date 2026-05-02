@@ -2,6 +2,7 @@
  * Workflow dispatch transport — triggers a GitHub Actions workflow.
  */
 import { dispatchWorkflow } from '../../providers/github/rest.js';
+import { installationCtxForRepo } from '../../config/loader.js';
 import logger from '../../logger.js';
 
 /**
@@ -31,12 +32,16 @@ export async function send(agentConfig, payload) {
   }
 
   try {
+    const workflowCtx = await installationCtxForRepo(owner, repo);
+    if (!workflowCtx) {
+      throw new Error(`Cannot resolve installation context for ${owner}/${repo} — is the GitHub App installed?`);
+    }
     await dispatchWorkflow(owner, repo, workflow, ref, {
       agent_id: payload.agentId,
       event: payload.event,
       message: payload.message,
       payload: JSON.stringify(payload),
-    });
+    }, workflowCtx);
     logger.info({ msg: 'Agent notified via workflow_dispatch', agentId: payload.agentId, workflow });
   } catch (err) {
     logger.error({ msg: 'Workflow transport error', agentId: payload.agentId, error: err.message });

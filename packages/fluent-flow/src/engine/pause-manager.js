@@ -3,7 +3,7 @@ import { db, schema } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 
 const { pauses } = schema;
-import { resolveConfig } from '../config/loader.js';
+import { resolveConfig, installationCtxForRepo } from '../config/loader.js';
 import { executeTransition, getCurrentState } from './state-machine.js';
 import { postComment, addLabel, removeLabel } from '../providers/github/rest.js';
 import { notifyPause, notifyResume } from '../notifications/dispatcher.js';
@@ -83,7 +83,7 @@ function buildPauseChecklist(reason, context) {
  * @param {string} [opts.actor] - Who triggered the pause
  * @returns {Promise<object>} The created pause record
  */
-export async function recordPause({ owner, repo, issueNumber, prNumber, reason, context, actor, agentId }) {
+export async function recordPause({ owner, repo, issueNumber, prNumber, reason, context, actor, agentId, ctx }) {
   const repoKey = `${owner}/${repo}`;
   const config = await resolveConfig(owner, repo);
   const resolvedAgent = agentId ?? config.default_agent ?? config.agent_id ?? null;
@@ -124,8 +124,10 @@ export async function recordPause({ owner, repo, issueNumber, prNumber, reason, 
   }
 
   // Add needs-human label
+  let labelCtx;
   try {
-    await addLabel(owner, repo, issueNumber, NEEDS_HUMAN_LABEL);
+    labelCtx = ctx ?? await installationCtxForRepo(owner, repo);
+    await addLabel(owner, repo, issueNumber, NEEDS_HUMAN_LABEL, labelCtx);
   } catch (err) {
     logger.warn({ msg: 'Failed to add needs-human label', error: err.message });
   }
@@ -147,7 +149,7 @@ ${markdown}
 <!-- pause-id: ${pause.id} -->`;
 
   try {
-    await postComment(owner, repo, issueNumber, commentBody);
+    await postComment(owner, repo, issueNumber, commentBody, labelCtx);
   } catch (err) {
     logger.error({ msg: 'Failed to post pause comment', error: err.message });
   }
@@ -248,7 +250,7 @@ export async function getActivePause(repoKey, issueNumber) {
  * @param {string} [opts.resumedBy] - Who triggered the resume
  * @returns {Promise<{ pause: object, targetState: string }>}
  */
-export async function processResume({ owner, repo, issueNumber, toState, instructions, resumedBy, agentId }) {
+export async function processResume({ owner, repo, issueNumber, toState, instructions, resumedBy, agentId, ctx }) {
   const repoKey = `${owner}/${repo}`;
   const config = await resolveConfig(owner, repo);
   const resolvedAgent = agentId ?? config.default_agent ?? config.agent_id ?? null;
@@ -291,8 +293,10 @@ export async function processResume({ owner, repo, issueNumber, toState, instruc
   }
 
   // Remove needs-human label
+  let resumeCtx;
   try {
-    await removeLabel(owner, repo, issueNumber, NEEDS_HUMAN_LABEL);
+    resumeCtx = ctx ?? await installationCtxForRepo(owner, repo);
+    await removeLabel(owner, repo, issueNumber, NEEDS_HUMAN_LABEL, resumeCtx);
   } catch (err) {
     logger.warn({ msg: 'Failed to remove needs-human label', error: err.message });
   }
@@ -305,7 +309,8 @@ export async function processResume({ owner, repo, issueNumber, toState, instruc
 
 **Target state:** \`${targetState}\`${instructionsLine}
 
-*Resumed by @${resumedBy ?? 'system'}*`
+*Resumed by @${resumedBy ?? 'system'}*`,
+      resumeCtx
     );
   } catch (err) {
     logger.error({ msg: 'Failed to post resume comment', error: err.message });
