@@ -115,7 +115,7 @@ async function resolveGitHubToken(fullRepo) {
     }
     logger.info({ msg: 'No installation context for repo', repo: fullRepo });
   } catch (err) {
-    logger.warn({ msg: 'Could not resolve GitHub App token, runner will fall back to GITHUB_TOKEN', repo: fullRepo, error: err.message });
+    logger.warn({ msg: 'Could not resolve GitHub App token for runner', repo: fullRepo, error: err.message });
   }
   return undefined;
 }
