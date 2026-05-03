@@ -151,15 +151,15 @@ async function backfillReposShellRows() {
   let created = 0;
   for (const row of rows) {
     try {
-      await db.insert(repos).values({
+      const result = await db.insert(repos).values({
         id: row.repo_full_name,
         orgId: row.org_id,
         repoExternalId: row.repo_external_id,
         repoFullName: row.repo_full_name,
         provider: 'github',
         installationId: row.installation_id,
-      }).onConflictDoNothing();
-      created++;
+      }).onConflictDoNothing().returning();
+      if (result.length > 0) created++;
     } catch (err) {
       // Safe to continue: per-row iteration — one failure shouldn't block
       // materialization of the rest.

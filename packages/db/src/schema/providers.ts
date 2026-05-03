@@ -13,6 +13,7 @@ export const providerInstallations = pgTable('provider_installations', {
   events: jsonb('events').notNull().default([]),
   installedAt: timestamp('installed_at', { withTimezone: true }).notNull().defaultNow(),
   suspendedAt: timestamp('suspended_at', { withTimezone: true }),
+  repositorySelection: text('repository_selection'), // 'all' or 'selected', nullable for backwards compat
 }, (t) => ({
   providerCheck: check('provider_installations_provider_check', sql`${t.provider} = 'github'`),
   providerExternalKey: uniqueIndex('provider_installations_provider_external_installation_id_key')
