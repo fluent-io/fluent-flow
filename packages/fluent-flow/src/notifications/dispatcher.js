@@ -62,6 +62,9 @@ export async function resolveAgentForIssue(owner, repo, issueNumber, config, ctx
       const fromBody = resolveAgentId({ prBody: pr?.body, config });
       if (fromBody) return fromBody;
     } catch (err) {
+      // Safe to continue: PR body lookup failure — fall through to config
+      // default agent resolution. The agent will still be resolved, just
+      // without PR-body marker specificity.
       logger.warn({ msg: 'Failed to resolve agent from linked PR', error: err.message, repo: repoKey, issueNumber });
     }
   }
@@ -110,6 +113,8 @@ export async function dispatch({ agentId, event, payload }) {
       const claim = await getActiveClaim(payload.orgId ?? 'self-hosted', payload.repo, payload.prNumber);
       sessionId = claim?.session_id ?? null;
     } catch (err) {
+      // Safe to continue: claim lookup for long-poll is best-effort — if
+      // it fails, the notification is still sent but without a session_id.
       logger.warn({ msg: 'Failed to resolve session for long-poll', error: err.message });
     }
   }
@@ -130,6 +135,10 @@ export async function dispatch({ agentId, event, payload }) {
   try {
     await transport.send(agentConfig, fullPayload);
   } catch (err) {
+    // Safe to continue: transport send failure — the notification is lost
+    // but the core operation (review dispatch, pause, resume) has already
+    // been recorded. The agent can be manually notified or will pick up
+    // the work on next poll.
     logger.error({ msg: 'Transport failed to send notification', agentId, event, error: err.message });
     return;
   }

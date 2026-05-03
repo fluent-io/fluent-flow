@@ -15,17 +15,23 @@ export async function upsertInstallation({
   account_type,
   permissions,
   events,
+  repository_selection,
 }) {
+  const values = {
+    orgId: org_id,
+    externalInstallationId: external_installation_id,
+    accountLogin: account_login,
+    accountType: account_type,
+    permissions,
+    events,
+  };
+  if (repository_selection !== undefined) {
+    values.repositorySelection = repository_selection;
+  }
+
   const [row] = await db
     .insert(providerInstallations)
-    .values({
-      orgId: org_id,
-      externalInstallationId: external_installation_id,
-      accountLogin: account_login,
-      accountType: account_type,
-      permissions,
-      events,
-    })
+    .values(values)
     .onConflictDoUpdate({
       target: [providerInstallations.provider, providerInstallations.externalInstallationId],
       set: {
@@ -35,6 +41,7 @@ export async function upsertInstallation({
         permissions: sql`EXCLUDED.permissions`,
         events: sql`EXCLUDED.events`,
         suspendedAt: null,
+        ...(repository_selection !== undefined && { repositorySelection: sql`EXCLUDED.repository_selection` }),
       },
     })
     .returning();

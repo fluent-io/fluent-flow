@@ -18,13 +18,13 @@
  */
 
 import 'dotenv/config';
-import { eq, isNull } from 'drizzle-orm';
+import { eq, isNull, sql } from 'drizzle-orm';
 import { db, schema, closePool } from '@fluent-flow/db';
 import { getInstallationToken } from '../src/providers/github/token-cache.js';
 import { addRepoToInstallation } from '../src/db/provider-installations.js';
 import logger from '../src/logger.js';
 
-const { providerInstallations } = schema;
+const { providerInstallations, providerInstallationRepos, repos } = schema;
 
 function parseArgs(argv) {
   const args = { installationId: null, allActive: false };
@@ -120,6 +120,57 @@ async function backfillOne(internalId) {
   return processed;
 }
 
+/**
+ * Backfill `repos` shell rows for any `provider_installation_repos` entries
+ * that don't have a corresponding `repos` row. This can happen when the
+ * backfill script was run before the repos materialization code was added
+ * to handleInstallationCreated, or when repos were added via the GitHub
+ * API without triggering the full lifecycle.
+ *
+ * @returns {Promise<number>} Count of repos shell rows created.
+ */
+async function backfillReposShellRows() {
+  // Find PIR rows where no matching repos row exists
+  const orphanPirs = await db.execute(sql`
+    SELECT pir.repo_full_name, pir.installation_id, pir.repo_external_id, pi.org_id
+    FROM provider_installation_repos pir
+    JOIN provider_installations pi ON pi.id = pir.installation_id
+    LEFT JOIN repos r ON r.id = pir.repo_full_name
+    WHERE pir.removed_at IS NULL
+      AND r.id IS NULL
+  `);
+
+  const rows = orphanPirs.rows ?? orphanPirs;
+  if (rows.length === 0) {
+    logger.info({ msg: 'backfill: no orphan PIR rows found — all repos materialized' });
+    return 0;
+  }
+
+  logger.info({ msg: 'backfill: found orphan PIR rows', count: rows.length });
+
+  let created = 0;
+  for (const row of rows) {
+    try {
+      await db.insert(repos).values({
+        id: row.repo_full_name,
+        orgId: row.org_id,
+        repoExternalId: row.repo_external_id,
+        repoFullName: row.repo_full_name,
+        provider: 'github',
+        installationId: row.installation_id,
+      }).onConflictDoNothing();
+      created++;
+    } catch (err) {
+      // Safe to continue: per-row iteration — one failure shouldn't block
+      // materialization of the rest.
+      logger.error({ msg: 'backfill: failed to create repos shell row', repo: row.repo_full_name, error: err.message });
+    }
+  }
+
+  logger.info({ msg: 'backfill: repos shell rows created', created, totalOrphans: rows.length });
+  return created;
+}
+
 async function main() {
   const args = parseArgs(process.argv);
 
@@ -137,7 +188,13 @@ async function main() {
   for (const t of targets) {
     total += await backfillOne(t.id);
   }
-  logger.info({ msg: 'backfill: complete', installsProcessed: targets.length, reposLinked: total });
+  logger.info({ msg: 'backfill: PIR complete', installsProcessed: targets.length, reposLinked: total });
+
+  // Phase 2: Materialize repos shell rows for any PIR rows that don't have
+  // a corresponding repos row yet.
+  await backfillReposShellRows();
+
+  logger.info({ msg: 'backfill: complete' });
 }
 
 main()

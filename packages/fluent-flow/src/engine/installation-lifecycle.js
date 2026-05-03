@@ -10,6 +10,7 @@ import {
   softDeleteAllReposForInstallation,
 } from '../db/provider-installations.js';
 import { parkForInstallation, unparkForInstallation } from '../db/outbound-queue.js';
+import { getInstallationToken } from '../providers/github/token-cache.js';
 import logger from '../logger.js';
 
 const { orgs, agentClaims, repos } = schema;
@@ -62,6 +63,41 @@ async function ensureRepo({ orgId, installationId, repoExternalId, repoFullName 
 }
 
 /**
+ * Fetch ALL repos visible to an installation via GitHub's paginated API.
+ * Used for repository_selection: 'all' installs where the webhook payload
+ * may be incomplete.
+ *
+ * @param {string} token - Installation access token
+ * @returns {Promise<Array<{ id: number, full_name: string }>>}
+ */
+async function fetchAllInstallationRepos(token) {
+  const all = [];
+  let page = 1;
+  const perPage = 100;
+  while (true) {
+    const res = await fetch(
+      `https://api.github.com/installation/repositories?per_page=${perPage}&page=${page}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      },
+    );
+    if (!res.ok) {
+      throw new Error(`GET /installation/repositories failed: ${res.status} ${await res.text().catch(() => '')}`);
+    }
+    const body = await res.json();
+    const repos = body.repositories ?? [];
+    all.push(...repos.map((r) => ({ id: r.id, full_name: r.full_name })));
+    if (repos.length < perPage) break;
+    page++;
+  }
+  return all;
+}
+
+/**
  * Handle GitHub App installation.created event.
  * Ensures the org row exists, upserts the installation, links the installing
  * user (payload.sender) to the org as admin, and materializes a `repos` row
@@ -95,6 +131,7 @@ export async function handleInstallationCreated(payload) {
     account_type: accountType,
     permissions: permissions ?? {},
     events: events ?? [],
+    repository_selection: installation.repository_selection ?? undefined,
   });
 
   // Link the installer so they have dashboard access to the newly-installed
@@ -111,8 +148,9 @@ export async function handleInstallationCreated(payload) {
       await linkUserToOrg(user.id, accountLogin, 'admin');
       logger.info({ msg: 'handleInstallationCreated: linked sender', userId: user.id, login: sender.login, orgId: accountLogin });
     } catch (err) {
-      // Don't fail the whole webhook if linking fails — the install itself
-      // succeeded and the user can recover via a later sign-in path.
+      // Safe to continue: the install itself succeeded and the user can
+      // recover via a later sign-in path. This is a best-effort convenience
+      // link, not a prerequisite for the installation.
       logger.error({ msg: 'handleInstallationCreated: failed to link sender', error: err.message, login: sender.login, orgId: accountLogin });
     }
   }
@@ -142,7 +180,57 @@ export async function handleInstallationCreated(payload) {
       });
       reposEnsured++;
     } catch (err) {
+      // Safe to continue: per-repo iteration — missing repos can be
+      // reconciled via `installation_repositories.added` redeliveries.
+      // If ALL repos fail, the installation is still valid but will have
+      // no linked repos until reconciled.
       logger.error({ msg: 'handleInstallationCreated: failed to ensure repo', error: err.message, repo: r.full_name });
+    }
+  }
+
+  // API backfill for repository_selection: 'all' installs.
+  // When the user grants access to ALL repos, the payload.repositories array
+  // is capped by GitHub. We need to call the paginated API to get the rest.
+  const repositorySelection = installation.repository_selection;
+  if (repositorySelection === 'all') {
+    try {
+      const token = await getInstallationToken(externalId);
+      const payloadRepoIds = new Set(payloadRepos.map((r) => r?.id).filter(Boolean));
+      const apiRepos = await fetchAllInstallationRepos(token);
+      const newRepos = apiRepos.filter((r) => !payloadRepoIds.has(r.id));
+
+      let apiEnsured = 0;
+      for (const r of newRepos) {
+        try {
+          await addRepoToInstallation(row.id, {
+            repo_external_id: r.id,
+            repo_full_name: r.full_name,
+          });
+          await ensureRepo({
+            orgId: accountLogin,
+            installationId: row.id,
+            repoExternalId: r.id,
+            repoFullName: r.full_name,
+          });
+          apiEnsured++;
+        } catch (err) {
+          // Safe to continue: per-repo iteration — missing repos can be
+          // reconciled via later API sync or redelivery.
+          logger.error({ msg: 'handleInstallationCreated: failed to ensure API repo', error: err.message, repo: r.full_name });
+        }
+      }
+      logger.info({
+        msg: 'handleInstallationCreated: API backfill for all-repo install',
+        externalId,
+        apiReposTotal: apiRepos.length,
+        apiReposNew: newRepos.length,
+        apiEnsured,
+      });
+    } catch (err) {
+      // Safe to continue: API backfill failure — repos already in the payload
+      // are materialized. The remaining repos can be reconciled via later
+      // installation_repositories events or a manual backfill script.
+      logger.error({ msg: 'handleInstallationCreated: API backfill failed for all-repo install', error: err.message, externalId });
     }
   }
 
@@ -150,6 +238,7 @@ export async function handleInstallationCreated(payload) {
     msg: 'handleInstallationCreated',
     externalId,
     accountLogin,
+    repositorySelection,
     reposInPayload: payloadRepos.length,
     reposEnsured,
   });
@@ -292,6 +381,9 @@ export async function handleInstallationRepositoriesAdded(payload) {
       });
       processed++;
     } catch (err) {
+      // Safe to continue: per-repo iteration — remaining repos still get
+      // processed. Failed repos can be reconciled via redelivery of the
+      // installation_repositories.added event.
       logger.error({
         msg: 'handleInstallationRepositoriesAdded: failed to process repo',
         error: err.message,

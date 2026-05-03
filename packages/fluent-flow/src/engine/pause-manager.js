@@ -119,6 +119,9 @@ export async function recordPause({ owner, repo, issueNumber, prNumber, reason, 
         skipProjectUpdate: false,
       });
     } catch (err) {
+      // Safe to continue: transition to Awaiting Human is best-effort —
+      // the pause is already recorded. If the transition fails, the issue
+      // stays in its current state but is still paused.
       logger.warn({ msg: 'Could not transition to Awaiting Human during pause', error: err.message, repo: repoKey, issueNumber });
     }
   }
@@ -129,6 +132,9 @@ export async function recordPause({ owner, repo, issueNumber, prNumber, reason, 
     labelCtx = ctx ?? await installationCtxForRepo(owner, repo);
     await addLabel(owner, repo, issueNumber, NEEDS_HUMAN_LABEL, labelCtx);
   } catch (err) {
+    // Safe to continue: adding a label is a side-effect — the pause is
+    // already recorded. If the label fails, the pause still functions
+    // correctly (agent will still be notified).
     logger.warn({ msg: 'Failed to add needs-human label', error: err.message });
   }
 
@@ -151,6 +157,8 @@ ${markdown}
   try {
     await postComment(owner, repo, issueNumber, commentBody, labelCtx);
   } catch (err) {
+    // Safe to continue: posting the checklist comment is informational —
+    // the pause is already recorded and the agent will still be notified.
     logger.error({ msg: 'Failed to post pause comment', error: err.message });
   }
 
@@ -288,8 +296,10 @@ export async function processResume({ owner, repo, issueNumber, toState, instruc
       metadata: { pauseId: pause.id, instructions },
     });
   } catch (err) {
+    // Safe to continue: transition failure on resume should not block the
+    // resume itself — the pause is already resolved in the DB and the
+    // agent will still be woken.
     logger.error({ msg: 'Failed to transition on resume', error: err.message, targetState });
-    // Don't block resume even if transition fails
   }
 
   // Remove needs-human label
@@ -298,6 +308,9 @@ export async function processResume({ owner, repo, issueNumber, toState, instruc
     resumeCtx = ctx ?? await installationCtxForRepo(owner, repo);
     await removeLabel(owner, repo, issueNumber, NEEDS_HUMAN_LABEL, resumeCtx);
   } catch (err) {
+    // Safe to continue: label removal is best-effort — the resume is
+    // already recorded. If it fails, the label stays but the issue is
+    // functionally resumed.
     logger.warn({ msg: 'Failed to remove needs-human label', error: err.message });
   }
 
@@ -313,6 +326,8 @@ export async function processResume({ owner, repo, issueNumber, toState, instruc
       resumeCtx
     );
   } catch (err) {
+    // Safe to continue: posting the resume comment is informational —
+    // the resume is already processed and the agent is notified.
     logger.error({ msg: 'Failed to post resume comment', error: err.message });
   }
 

@@ -78,6 +78,9 @@ async function handleCheckRunFailure(owner, repoName, checkRun, config, ctx) {
     const prs = await getPRsForCommit(owner, repoName, checkRun.head_sha, ctx);
     if (prs && prs.length > 0) pr = prs[0];
   } catch (err) {
+    // Safe to continue: PR lookup failure means we can't determine
+    // which PR this CI failure belongs to — log and proceed without
+    // a linked PR. The agent notification will be less specific.
     logger.warn({ msg: 'Failed to fetch linked PRs for CI failure', repo: `${owner}/${repoName}`, sha: checkRun.head_sha, error: err.message });
   }
 
@@ -150,6 +153,9 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
         return;
       }
     } catch (err) {
+      // Safe to continue: check-runs query failure means we can't determine
+      // if all CI passed — return early, the review will be dispatched on a
+      // future check_run.completed event.
       logger.error({ msg: 'Failed to query check runs for fallback', repo: repoKey, error: err.message });
       return;
     }
@@ -160,6 +166,9 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
     const prs = await getPRsForCommit(owner, repoName, checkRun.head_sha, ctx);
     if (prs && prs.length > 0) pr = prs[0];
   } catch (err) {
+    // Safe to continue: PR lookup failure means we can't determine which
+    // PR to review — return early, the review will dispatch when a future
+    // check_run event provides a linkable PR.
     logger.warn({ msg: 'Failed to find linked PR for review dispatch', repo: repoKey, sha: checkRun.head_sha, error: err.message });
     return;
   }
@@ -227,6 +236,9 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
       .limit(1);
     hasReviewFixClaim = rows.length > 0;
   } catch (err) {
+    // Safe to continue: checking for review_fix claims is best-effort —
+    // if it fails, we skip the test_verify path and fall through to
+    // a regular review dispatch.
     logger.warn({ msg: 'Failed to check for review_fix claims', error: err.message });
   }
 
@@ -246,6 +258,8 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
       // If createClaim fails above, we fall through to dispatchReview directly.
       return;
     } catch (err) {
+      // Safe to continue: test_verify creation failure falls back to
+      // dispatching a regular review — no work is lost.
       logger.error({ msg: 'Failed to create test_verify claim, falling back to review', error: err.message });
     }
   }
@@ -258,6 +272,9 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
     });
     logger.info({ msg: 'Review dispatched after CI pass', repo: repoKey, prNumber: pr.number, attempt, trigger: triggerCheck ?? 'all-checks' });
   } catch (err) {
+    // Safe to continue: review dispatch failure after CI pass — the
+    // review can be manually triggered or will be re-attempted on the
+    // next push/check_run event.
     logger.error({ msg: 'Failed to dispatch review after CI pass', repo: repoKey, prNumber: pr.number, error: err.message });
   }
 }

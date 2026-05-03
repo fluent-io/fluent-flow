@@ -40,6 +40,9 @@ export async function bootstrapSelfHosted() {
     logger.info({ msg: 'Bootstrapped self-hosted org', orgId: SELF_HOSTED_ORG_ID });
     return org;
   } catch (err) {
+    // Safe to continue: unique_violation (23505) means another concurrent
+    // request already inserted this org — idempotent bootstrap. Re-read and
+    // return the existing row. Any other error propagates.
     if (err?.code === '23505') {
       const org = await getOrg(SELF_HOSTED_ORG_ID);
       if (org) return org;

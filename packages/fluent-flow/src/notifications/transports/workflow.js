@@ -44,6 +44,8 @@ export async function send(agentConfig, payload) {
     }, workflowCtx);
     logger.info({ msg: 'Agent notified via workflow_dispatch', agentId: payload.agentId, workflow });
   } catch (err) {
+    // Safe to continue: workflow dispatch is a notification — failure means
+    // the agent won't be woken automatically but can pick up work via polling.
     logger.error({ msg: 'Workflow transport error', agentId: payload.agentId, error: err.message });
   }
 }

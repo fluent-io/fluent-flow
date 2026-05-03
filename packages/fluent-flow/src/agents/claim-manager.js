@@ -169,6 +169,9 @@ export async function expireClaims() {
       const agentId = await getSessionAgentId(claim.sessionId);
       await freeSession(claim.orgId, claim.sessionId, agentId, 'offline');
     } catch (err) {
+      // Safe to continue: per-claim iteration during expiry sweep — one
+      // stale session shouldn't block expiry of other claims. The session
+      // will time out naturally if this cleanup path fails.
       logger.warn({
         msg: 'Failed to free session on claim expiration',
         error: err.message,
