@@ -24,6 +24,9 @@ router.post('/webhooks/github-app', appWebhookSignatureMiddleware, async (req, r
   try {
     await routeAppWebhookEvent(event, payload);
   } catch (err) {
+    // Safe to continue: we already responded 200 to GitHub — webhook
+    // processing errors are logged and monitored but don't affect the
+    // HTTP response. GitHub will retry delivery if we returned 5xx.
     logger.error({ msg: 'App webhook processing error', event, error: err.message, stack: err.stack });
   }
 });

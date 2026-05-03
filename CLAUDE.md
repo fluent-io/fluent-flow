@@ -28,6 +28,7 @@ Read [packages/fluent-flow/README.md](packages/fluent-flow/README.md) for archit
 - Fire-and-forget audit: `audit('event_type', { repo, actor, data })`
 - Tests: Vitest, mocks in `tests/helpers/mocks.js`, run with `npm test`
 - Do not, under any circumstance, include any indication that code was co-authored by Claude Code.
+- Fail fast: never swallow errors. Every catch block must either rethrow or explicitly annotate why it's safe to continue. Silent catch-and-log is a bug. If something can fail, it should fail loudly so it gets fixed.
 
 ## Security
 

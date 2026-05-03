@@ -68,6 +68,8 @@ export async function handleTestFailure({
     const prs = await getPRsForCommit(owner, repo, sha, testCtx);
     if (prs && prs.length > 0) pr = prs[0];
   } catch (err) {
+    // Safe to continue: PR lookup failure means we can't determine which PR
+    // this test failure belongs to — nothing actionable without that context.
     logger.warn({ msg: 'Failed to find linked PR for test failure', repo: repoKey, error: err.message });
     return;
   }
@@ -121,9 +123,11 @@ export async function handleTestFailure({
       })
       .returning();
   } catch (err) {
+    // Safe to continue: adapter failures (missing project item, GitHub API
+    // errors) should not fail the webhook — the test failure is recorded
+    // and can be manually triaged.
     logger.error({ msg: 'Failed to create test failure work item', repo: repoKey, error: err.message });
     audit('test_failure_work_item_failed', { repo: repoKey, data: { issueNumber, error: err.message } });
-    // Non-fatal: return without throwing so webhook processing continues
   }
 }
 
@@ -173,7 +177,8 @@ export async function handleTestSuccess({ owner, repo, sha, issueNumber, config,
     audit('test_failure_resolved', { repo: repoKey, data: { issueNumber } });
     logger.info({ msg: 'Updated test failure item to resolved', repo: repoKey, issueNumber, resolvedState });
   } catch (err) {
+    // Safe to continue: adapter failures on resolution should not fail the
+    // webhook — the tests are passing, which is the important part.
     logger.warn({ msg: 'Failed to update test failure item state', error: err.message });
-    // Non-fatal: return without throwing
   }
 }

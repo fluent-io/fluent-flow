@@ -108,6 +108,9 @@ export async function resolveSession(orgId, agentId, repo, prNumber) {
       if (check) return check.id;
     }
   } catch (err) {
+    // Safe to continue: undefined_relation (42P01) means the
+    // agent_claims table hasn't been migrated yet — skip PR affinity
+    // and fall through to any-available-session resolution.
     if (err?.code !== '42P01') throw err;
   }
 
@@ -163,6 +166,9 @@ export async function findAvailableSession(orgId, repo, prNumber) {
       if (check) return { agentId: check.agent_id, sessionId: check.id };
     }
   } catch (err) {
+    // Safe to continue: undefined_relation (42P01) means the
+    // agent_claims table hasn't been migrated yet — skip PR affinity
+    // and fall through to any-available-session resolution.
     if (err?.code === '42P01') {
       logger.warn({ msg: 'agent_claims table not yet initialized — skipping PR affinity' });
     } else {

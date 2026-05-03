@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('../../src/logger.js', async () => {
   const { createMockLogger } = await import('../helpers/mock-logger.js');
@@ -56,6 +56,11 @@ vi.mock('../../src/db/provider-installations.js', () => ({
 vi.mock('../../src/db/outbound-queue.js', () => ({
   parkForInstallation: vi.fn(),
   unparkForInstallation: vi.fn(),
+}));
+
+const mockGetInstallationToken = vi.fn();
+vi.mock('../../src/providers/github/token-cache.js', () => ({
+  getInstallationToken: (...args) => mockGetInstallationToken(...args),
 }));
 
 const {
@@ -281,5 +286,161 @@ describe('handleInstallationDeleted', () => {
 
     expect(mockSoftDeleteInstallation).not.toHaveBeenCalled();
     expect(mockSoftDeleteAllReposForInstallation).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleInstallationCreated — API backfill for repository_selection: all', () => {
+  let fetchSpy;
+
+  beforeEach(() => {
+    mockUpsertUser.mockReset();
+    mockLinkUserToOrg.mockReset();
+    mockUpsertInstallation.mockClear();
+    mockUpsertInstallation.mockResolvedValue({ id: 42 });
+    mockAddRepoToInstallation.mockReset();
+    mockRepoInserts.length = 0;
+    mockGetInstallationToken.mockReset();
+    mockGetInstallationToken.mockResolvedValue('fake-installation-token');
+  });
+
+  afterEach(() => {
+    if (fetchSpy) fetchSpy.mockRestore();
+    fetchSpy = null;
+  });
+
+  it('calls GitHub API to backfill repos not in payload when repository_selection is all', async () => {
+    // Payload has 1 repo, but the API returns 3 (2 additional)
+    const payload = buildPayload({
+      installation: {
+        id: 12345,
+        account: { login: 'acme', type: 'Organization' },
+        permissions: { contents: 'read' },
+        events: ['push'],
+        repository_selection: 'all',
+      },
+      repositories: [
+        { id: 1001, full_name: 'acme/payload-repo' },
+      ],
+    });
+
+    // First page returns 3 repos, second page returns empty (pagination end)
+    fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          repositories: [
+            { id: 1001, full_name: 'acme/payload-repo' },
+            { id: 2001, full_name: 'acme/api-extra-1' },
+            { id: 2002, full_name: 'acme/api-extra-2' },
+          ],
+        }),
+      });
+
+    await handleInstallationCreated(payload);
+
+    // Token was fetched for the API call
+    expect(mockGetInstallationToken).toHaveBeenCalledWith(12345);
+
+    // fetch was called for pagination
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining('/installation/repositories?per_page=100&page=1'),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer fake-installation-token',
+        }),
+      }),
+    );
+
+    // addRepoToInstallation called for ALL 3 repos (1 payload + 2 API)
+    expect(mockAddRepoToInstallation).toHaveBeenCalledTimes(3);
+    expect(mockAddRepoToInstallation).toHaveBeenCalledWith(42, {
+      repo_external_id: 1001,
+      repo_full_name: 'acme/payload-repo',
+    });
+    expect(mockAddRepoToInstallation).toHaveBeenCalledWith(42, {
+      repo_external_id: 2001,
+      repo_full_name: 'acme/api-extra-1',
+    });
+    expect(mockAddRepoToInstallation).toHaveBeenCalledWith(42, {
+      repo_external_id: 2002,
+      repo_full_name: 'acme/api-extra-2',
+    });
+
+    // ensureRepo (via mockRepoInserts) called for all 3 repos
+    expect(mockRepoInserts).toHaveLength(3);
+  });
+
+  it('handles paginated API responses (multiple pages)', async () => {
+    const payload = buildPayload({
+      installation: {
+        id: 12345,
+        account: { login: 'acme', type: 'Organization' },
+        permissions: { contents: 'read' },
+        events: ['push'],
+        repository_selection: 'all',
+      },
+      repositories: [],
+    });
+
+    // Page 1: 100 repos (full page → triggers page 2)
+    const page1Repos = Array.from({ length: 100 }, (_, i) => ({
+      id: 3000 + i,
+      full_name: `acme/repo-${i}`,
+    }));
+    // Page 2: 3 repos (less than perPage → stops pagination)
+    const page2Repos = [
+      { id: 4001, full_name: 'acme/repo-100' },
+      { id: 4002, full_name: 'acme/repo-101' },
+      { id: 4003, full_name: 'acme/repo-102' },
+    ];
+
+    fetchSpy = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ repositories: page1Repos }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ repositories: page2Repos }),
+      });
+
+    await handleInstallationCreated(payload);
+
+    // fetch called twice (page 1 and page 2)
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).toHaveBeenNthCalledWith(1,
+      expect.stringContaining('page=1'),
+      expect.any(Object),
+    );
+    expect(fetchSpy).toHaveBeenNthCalledWith(2,
+      expect.stringContaining('page=2'),
+      expect.any(Object),
+    );
+
+    // addRepoToInstallation called for all 103 repos
+    expect(mockAddRepoToInstallation).toHaveBeenCalledTimes(103);
+  });
+
+  it('does not call API when repository_selection is not all', async () => {
+    const payload = buildPayload({
+      installation: {
+        id: 12345,
+        account: { login: 'acme', type: 'Organization' },
+        permissions: { contents: 'read' },
+        events: ['push'],
+        repository_selection: 'selected',
+      },
+      repositories: [{ id: 1001, full_name: 'acme/a' }],
+    });
+
+    fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    await handleInstallationCreated(payload);
+
+    expect(mockGetInstallationToken).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    // Only the payload repo
+    expect(mockAddRepoToInstallation).toHaveBeenCalledTimes(1);
   });
 });

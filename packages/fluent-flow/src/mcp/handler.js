@@ -22,6 +22,8 @@ export async function mcpHandler(req, res) {
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
   } catch (err) {
+    // Safe to continue: returns 500 to client — the error IS surfaced
+    // to the caller via the HTTP response, not silently swallowed.
     logger.error({ msg: 'MCP handler error', error: err.message });
     if (!res.headersSent) {
       res.status(500).json({ error: 'MCP server error' });

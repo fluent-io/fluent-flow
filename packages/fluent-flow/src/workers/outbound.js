@@ -133,6 +133,8 @@ export async function startOutboundWorker() {
         await new Promise((resolve) => setTimeout(resolve, SLEEP_MS));
       }
     } catch (err) {
+      // Safe to continue: worker loop error — sleep and retry. Worker
+      // loops must never die — they are the background heart of the system.
       logger.error({ msg: 'startOutboundWorker: unhandled error', error: err.message });
       await new Promise((resolve) => setTimeout(resolve, SLEEP_MS));
     }

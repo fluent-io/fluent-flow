@@ -83,6 +83,8 @@ async function buildConfigSnapshot(repo) {
       text: `\`\`\`json\n${JSON.stringify(snippet, null, 2)}\n\`\`\``,
     };
   } catch (err) {
+    // Safe to continue: config snapshot is cosmetic — if it fails,
+    // the check run resolution still proceeds without it.
     logger.warn({ msg: 'buildConfigSnapshot failed', repo, error: err.message });
     return undefined;
   }

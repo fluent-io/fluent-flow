@@ -89,6 +89,9 @@ export async function installationCtxForRepo(owner, repo) {
     if (!externalId) return undefined;
     return { installation_id: Number(externalId) };
   } catch (err) {
+    // Safe to continue: installation context resolution failure — return
+    // undefined so callers can gracefully skip the operation rather than
+    // falling back to a PAT.
     logger.error({ msg: 'Failed to resolve installation ctx for repo', owner, repo, error: err.message });
     return undefined;
   }
@@ -110,6 +113,9 @@ async function fetchRepoConfig(owner, repo) {
     const parsed = yaml.load(decoded);
     return validateRepoConfig(parsed);
   } catch (err) {
+    // Safe to continue: 404 means no config file in repo (normal for
+    // unonboarded repos). Other errors are logged but return null so
+    // the caller falls back to defaults.
     if (err.status === 404 || err.message?.includes('404')) {
       logger.info({ msg: 'No fluent-flow.yml in repo', owner, repo });
       return null;
@@ -135,6 +141,8 @@ async function getDbCache(repoKey) {
       .limit(1);
     if (rows.length > 0) return rows[0].config;
   } catch (err) {
+    // Safe to continue: DB cache read failure — fall through to GitHub
+    // API fetch. The cache is a performance optimization, not a dependency.
     logger.error({ msg: 'Failed to read config cache from DB', error: err.message });
   }
   return null;
@@ -156,6 +164,9 @@ async function setDbCache(repoKey, config) {
         set: { config, fetchedAt: sql`NOW()`, expiresAt: ttl },
       });
   } catch (err) {
+    // Safe to continue: DB cache write failure — the config is still
+    // returned and cached in memory. The next request will re-fetch from
+    // GitHub since the DB cache is missing.
     logger.error({ msg: 'Failed to write config cache to DB', error: err.message });
   }
 }
@@ -239,6 +250,9 @@ export async function invalidateConfig(owner, repo) {
   try {
     await db.delete(schema.configCache).where(eq(schema.configCache.repo, repoKey));
   } catch (err) {
+    // Safe to continue: DB invalidation failure — the stale cache entry
+    // will persist until it expires (CONFIG_CACHE_TTL_MS). The memory
+    // cache is already cleared above so the current process is consistent.
     logger.error({ msg: 'Failed to invalidate config cache', error: err.message });
   }
 }

@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { eq, isNull, and } from 'drizzle-orm';
+import { db, schema } from '@fluent-flow/db';
 import { handleCheckRun } from '../providers/github/check-run-handler.js';
 import { audit } from '../db/client.js';
 import { resolveConfig, invalidateConfig } from '../config/loader.js';
@@ -24,6 +26,7 @@ function parseAgentPauseComment(body) {
   try {
     return JSON.parse(match[1]);
   } catch {
+    // Safe to continue: malformed agent-pause JSON — treat as if no marker.
     return null;
   }
 }
@@ -61,11 +64,58 @@ export async function routeWebhookEvent(event, payload) {
 
   const [owner, repoName] = repo.full_name.split('/');
 
+  // Lazy onboarding: ensure a `repos` shell row exists for this repo.
+  // If no repos row exists, look up the installation by matching the owner
+  // to an active provider_installations row and create the shell row.
+  // This makes the system self-healing — any repo event auto-creates the row.
+  try {
+    const { repos, providerInstallations: installations } = schema;
+    const repoId = `${owner}/${repoName}`;
+    const [existing] = await db
+      .select({ id: repos.id })
+      .from(repos)
+      .where(eq(repos.id, repoId))
+      .limit(1);
+
+    if (!existing) {
+      const [install] = await db
+        .select({ id: installations.id, orgId: installations.orgId })
+        .from(installations)
+        .where(
+          and(
+            eq(installations.orgId, owner),
+            isNull(installations.suspendedAt),
+          ),
+        )
+        .limit(1);
+
+      if (install) {
+        await db.insert(repos).values({
+          id: repoId,
+          orgId: install.orgId,
+          repoExternalId: repo.id ?? null,
+          repoFullName: repo.full_name,
+          provider: 'github',
+          installationId: install.id,
+        }).onConflictDoNothing();
+        logger.info({ msg: 'Lazy onboarding: created repos shell row', repo: repo.full_name, installationId: install.id });
+      }
+    }
+  } catch (err) {
+    // Safe to continue: lazy onboarding failure — if this fails, the
+    // config resolution below will still work if the repo is already
+    // onboarded, or will gracefully skip if not.
+    logger.warn({ msg: 'Lazy onboarding failed', repo: repo.full_name, error: err.message });
+  }
+
   // Check if this repo has Fluent Flow config
   let config;
   try {
     config = await resolveConfig(owner, repoName);
   } catch (err) {
+    // Safe to continue: resolveConfig failure means the repo has no config
+    // (or isn't onboarded) — ignore the webhook. This is the normal path
+    // for repos that don't use Fluent Flow.
     logger.info({ msg: 'No Fluent Flow config for repo, ignoring', repo: repo.full_name, event });
     return;
   }
@@ -131,6 +181,8 @@ async function handlePullRequest(owner, repo, payload, config) {
             metadata: { pr_number: prNumber },
           });
         } catch (err) {
+          // Safe to continue: state transition failure for In Review —
+          // the PR is still open and the transition can be retried manually.
           logger.warn({ msg: 'Could not transition to In Review', error: err.message, issueNumber });
         }
       }
@@ -145,6 +197,8 @@ async function handlePullRequest(owner, repo, payload, config) {
         await resetRetries(repoKey, prNumber);
         audit('retries_cleared', { repo: repoKey, data: { prNumber, trigger: 'pr_closed' } });
       } catch (err) {
+        // Safe to continue: retry cleanup failure — the retries will be
+        // cleaned up by the expiry worker if this path fails.
         logger.warn({ msg: 'Failed to clear retries on PR close', error: err.message, prNumber });
       }
 
@@ -163,6 +217,8 @@ async function handlePullRequest(owner, repo, payload, config) {
             metadata: { pr_number: prNumber },
           });
         } catch (err) {
+          // Safe to continue: transition to Done failure — the merge is
+          // already complete and the transition can be retried manually.
           logger.warn({ msg: 'Could not transition to Done on merge', error: err.message, issueNumber });
         }
 
@@ -190,6 +246,9 @@ async function handlePullRequest(owner, repo, payload, config) {
             actor: pr.user?.login,
           });
         } catch (err) {
+          // Safe to continue: transition back to In Progress failure —
+          // the PR was closed without merge and the issue state can be
+          // corrected manually.
           logger.warn({ msg: 'Could not transition back to In Progress', error: err.message, issueNumber });
         }
       }
@@ -316,6 +375,8 @@ async function handleIssueComment(owner, repo, payload, config) {
         ctx,
       });
     } catch (err) {
+      // Safe to continue: resume command failure — the error is logged
+      // and the user can retry. The comment is already received by GitHub.
       logger.warn({ msg: 'Resume command failed', error: err.message, issueNumber });
     }
     return;
@@ -340,6 +401,8 @@ async function handleIssueComment(owner, repo, payload, config) {
         ctx,
       });
     } catch (err) {
+      // Safe to continue: agent pause recording failure — the pause can
+      // be manually created via the API if needed.
       logger.error({ msg: 'Agent pause failed', error: err.message, issueNumber });
     }
   }

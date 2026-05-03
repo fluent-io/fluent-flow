@@ -34,6 +34,8 @@ export async function send(agentConfig, payload) {
       logger.info({ msg: 'Agent notified via webhook', agentId: payload.agentId, url });
     }
   } catch (err) {
+    // Safe to continue: webhook transport is a notification — failure means
+    // the agent won't be woken automatically but can pick up work via polling.
     logger.error({ msg: 'Webhook transport error', agentId: payload.agentId, error: err.message });
   }
 }

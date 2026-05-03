@@ -21,6 +21,8 @@ async function shutdown(signal) {
     await closePool();
     logger.info({ msg: 'Database pool closed' });
   } catch (err) {
+    // Safe to continue: we're shutting down anyway — pool close failure
+    // is not actionable. The process is exiting regardless.
     logger.error({ msg: 'Error closing pool', error: err.message });
   }
   process.exit(0);

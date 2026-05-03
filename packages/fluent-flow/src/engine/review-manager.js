@@ -70,10 +70,15 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', head
         await dismissReview(owner, repo, prNumber, review.id, 'Superseded by new review', installCtx);
         logger.info({ msg: 'Dismissed stale review', repo: repoKey, prNumber, reviewId: review.id });
       } catch (err) {
+        // Safe to continue: per-review dismiss — a failed dismiss on one
+        // stale review shouldn't block dismissing the rest.
         logger.warn({ msg: 'Failed to dismiss stale review', repo: repoKey, prNumber, reviewId: review.id, error: err.message });
       }
     }
   } catch (err) {
+    // Safe to continue: stale review fetch/dismiss is best-effort cleanup
+    // before the real work (claim creation). If it fails, the review
+    // invariant may be temporarily violated but the claim still gets created.
     logger.warn({ msg: 'Failed to fetch reviews for dismiss', repo: repoKey, prNumber, error: err.message });
   }
 
@@ -122,6 +127,8 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', head
             logger.info({ msg: 'Pushed pre-assigned claim to runner via long-poll', sessionId: newClaim.session_id, claimId: newClaim.id });
           }
         } catch (err) {
+          // Safe to continue: long-poll push is best-effort. If it fails,
+          // the runner will pick up the claim on its next poll cycle.
           logger.warn({ msg: 'Failed to push claim to runner via long-poll', error: err.message, claimId: newClaim.id });
         }
       }
@@ -169,6 +176,9 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
       audit('review_result_pass', { repo: repoKey, data: { prNumber, attempt } });
       }
     } catch (err) {
+      // Safe to continue: auto-merge is a convenience — if it fails
+      // (e.g. branch protection misconfigured), the review still passed
+      // and the PR can be merged manually.
       logger.error({ msg: 'Failed to enable auto-merge', repo: repoKey, prNumber, error: err.message });
     }
 
@@ -189,6 +199,9 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
           .catch((err) => logger.warn({ msg: 'onClaimResolved failed', error: err.message }));
       }
     } catch (err) {
+      // Safe to continue: claim completion on pass is bookkeeping — if it
+      // fails, the claim will be cleaned up by the expiry worker. The review
+      // result has already been processed.
       logger.error({ msg: 'Failed to complete claim on pass', error: err.message, repo: repoKey, prNumber });
     }
 
@@ -252,6 +265,9 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
         .catch((err) => logger.warn({ msg: 'onClaimDispatched failed', error: err.message }));
     }
   } catch (err) {
+    // Safe to continue: claim creation on failure is best-effort — if it
+    // fails, the agent won't auto-retry, but the failure is already recorded
+    // in the review retries table. A human can manually trigger a retry.
     logger.warn({ msg: 'Failed to create claim on review failure', error: err.message });
   }
 
@@ -287,6 +303,9 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
         await addLabel(owner, repo, issueNumber, 'needs-human', escalationCtx);
       }
     } catch (err) {
+      // Safe to continue: adding a label is best-effort — if it fails,
+      // the escalation is still recorded in the DB and the pause will
+      // still be created below.
       logger.error({ msg: 'Failed to add needs-human label on escalation', error: err.message });
     }
 
@@ -305,6 +324,9 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
           agentId: notifyAgent,
         });
       } catch (err) {
+        // Safe to continue: recording the pause is best-effort — the
+        // escalation is already logged and the label may already be added.
+        // A human can manually pause if needed.
         logger.error({ msg: 'Failed to record escalation pause', error: err.message });
       }
     }

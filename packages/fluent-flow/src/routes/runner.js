@@ -136,7 +136,10 @@ export async function handlePoll(req, res, opts = {}) {
   try {
     const agentRows = await db.execute(sql`SELECT agent_type FROM agents WHERE org_id = ${org_id} AND id = ${agent_id}`);
     if (agentRows.rows?.[0]?.agent_type) agentType = agentRows.rows[0].agent_type;
-  } catch {}
+  } catch {
+    // Safe to continue: agent_type lookup failure — fall back to
+    // the default 'claude-code'. Non-critical metadata.
+  }
 
   let sent = false;
   const respond = (data) => {
@@ -277,6 +280,9 @@ export async function handleClaimResult(req, res) {
           });
           logger.info({ msg: 'Auto-created review_fix claim after FAIL review', repo, prNumber: pr_number, attempt: attempt + 1 });
         } catch (err) {
+          // Safe to continue: review_fix claim creation failure — the
+          // original review result is already recorded. The agent can
+          // manually pick up the work via polling.
           logger.error({ msg: 'Failed to create review_fix claim', error: err.message });
         }
       }
@@ -294,6 +300,9 @@ export async function handleClaimResult(req, res) {
           });
           logger.info({ msg: 'Auto-created build claim after spec completion', repo, prNumber: pr_number, attempt: attempt + 1 });
         } catch (err) {
+          // Safe to continue: build claim creation failure — the spec
+          // completion is already recorded. The build can be manually
+          // triggered via the API.
           logger.error({ msg: 'Failed to create follow-on build claim', error: err.message });
         }
       }
@@ -309,6 +318,9 @@ export async function handleClaimResult(req, res) {
           await dispatchReview({ owner, repo: repoName, prNumber: pr_number, ref: headBranch, attempt: attempt + 1 });
           logger.info({ msg: 'Triggered re-review after test_verify completion', repo, prNumber: pr_number, ref: headBranch });
         } catch (err) {
+          // Safe to continue: re-review dispatch failure — the test_verify
+          // completion is already recorded. A manual review can be
+          // triggered via the API.
           logger.error({ msg: 'Failed to trigger re-review after test_verify', error: err.message });
         }
       }

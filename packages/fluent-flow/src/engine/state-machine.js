@@ -190,6 +190,10 @@ async function updateProjectCard(repo, issueNumber, toState, projectId) {
         and(eq(projectItems.projectId, projectId), eq(projectItems.itemNodeId, itemNodeId)),
       );
   } catch (err) {
+    // Safe to continue: project card update failure should not fail the
+    // state transition — the transition is already recorded in the DB.
+    // The project card can be manually corrected or will sync on the
+    // next transition.
     logger.error({ msg: 'Failed to update project card', repo, issueNumber, toState, error: err.message });
   }
 }
