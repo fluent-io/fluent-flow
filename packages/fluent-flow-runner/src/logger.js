@@ -11,6 +11,7 @@ export function createLogger(verbose = false) {
 
   return {
     info: (msg, data) => write('info', msg, data),
+    warn: (msg, data) => write('warn', msg, data),
     error: (msg, data) => write('error', msg, data),
     debug: (msg, data) => { if (verbose) write('debug', msg, data); },
   };
