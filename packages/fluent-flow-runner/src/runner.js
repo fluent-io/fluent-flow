@@ -287,6 +287,19 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
             maxFailures,
             nextRetryMs: backoff,
           });
+          // Re-register on session expiry (410) instead of retrying stale session
+          if (err.message && err.message.startsWith('Poll failed: 410')) {
+            log.info('Session expired, re-registering...');
+            try {
+              const session = await client.register(sessionMeta);
+              sessionId = session.session_id;
+              log.info('Re-registered', { sessionId, status: session.status });
+              consecutiveFailures = 0;
+              continue; // Resume polling immediately without backoff delay
+            } catch (regErr) {
+              log.error('Re-registration failed', { error: regErr.message });
+            }
+          }
           if (consecutiveFailures >= maxFailures) {
             log.error('Max consecutive poll failures reached, stopping runner', {
               consecutiveFailures,
