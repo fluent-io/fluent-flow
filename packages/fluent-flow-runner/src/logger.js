@@ -1,7 +1,7 @@
 /**
  * Minimal structured JSON logger for the runner.
  * @param {boolean} verbose — enable debug-level output
- * @returns {{ info, error, debug }}
+ * @returns {{ info, warn, error, debug }}
  */
 export function createLogger(verbose = false) {
   function write(level, msg, data = {}) {

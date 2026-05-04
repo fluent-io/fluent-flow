@@ -627,6 +627,105 @@ describe('runner', () => {
     });
   });
 
+  describe('410 session expiry re-registration', () => {
+    it('re-registers and resumes polling on 410', async () => {
+      vi.useFakeTimers();
+
+      let pollCallCount = 0;
+      let registeredSessionIds = [];
+
+      const client = makeClient({
+        poll: vi.fn().mockImplementation(async (sid) => {
+          pollCallCount++;
+          if (pollCallCount === 1) {
+            throw new Error('Poll failed: 410 — session expired');
+          }
+          return null; // subsequent polls return no work
+        }),
+        register: vi.fn().mockImplementation(async (meta) => {
+          const sessionId = registeredSessionIds.length + 100; // new session IDs
+          registeredSessionIds.push(sessionId);
+          return { ok: true, session_id: sessionId, status: 'online' };
+        }),
+      });
+
+      const log = makeLogger();
+      const runner = createRunner({
+        client,
+        log,
+        resolveCommand: vi.fn(),
+        maxPollFailures: 3,
+      });
+
+      const startPromise = runner.start();
+      // Advance through initial registration + first poll (410) + re-register + second poll
+      await vi.advanceTimersByTimeAsync(5000);
+      runner.shutdown();
+      await vi.advanceTimersByTimeAsync(1000);
+      await startPromise;
+
+      vi.useRealTimers();
+
+      // register should have been called twice: initial + re-register after 410
+      expect(client.register).toHaveBeenCalledTimes(2);
+
+      // poll should have been called with the new session ID after re-registration
+      expect(client.poll).toHaveBeenCalledWith(100); // first registration session
+      expect(client.poll).toHaveBeenCalledWith(101); // re-registered session
+
+      // consecutiveFailures should have been reset, so circuit breaker should NOT have tripped
+      expect(log.error).not.toHaveBeenCalledWith(
+        'Max consecutive poll failures reached, stopping runner',
+        expect.anything(),
+      );
+    });
+
+    it('continues backoff when re-registration fails', async () => {
+      vi.useFakeTimers();
+
+      let pollCallCount = 0;
+      let regCallCount = 0;
+
+      const client = makeClient({
+        poll: vi.fn().mockImplementation(async () => {
+          pollCallCount++;
+          throw new Error('Poll failed: 410 — session expired');
+        }),
+        register: vi.fn().mockImplementation(async () => {
+          regCallCount++;
+          if (regCallCount === 1) return { ok: true, session_id: 1, status: 'online' }; // initial registration
+          throw new Error('Re-registration failed'); // re-register fails
+        }),
+      });
+
+      const log = makeLogger();
+      const runner = createRunner({
+        client,
+        log,
+        resolveCommand: vi.fn(),
+        maxPollFailures: 5,
+      });
+
+      const startPromise = runner.start();
+      await vi.advanceTimersByTimeAsync(60000);
+      await startPromise;
+
+      vi.useRealTimers();
+
+      // Should have logged the re-registration failure
+      expect(log.error).toHaveBeenCalledWith(
+        'Re-registration failed',
+        expect.objectContaining({ error: 'Re-registration failed' }),
+      );
+
+      // Should have eventually hit the circuit breaker since re-reg kept failing
+      expect(log.error).toHaveBeenCalledWith(
+        'Max consecutive poll failures reached, stopping runner',
+        expect.anything(),
+      );
+    });
+  });
+
   describe('worktree integration', () => {
     it('creates worktree and runs agent in worktree cwd', async () => {
       const mockCleanup = vi.fn().mockResolvedValue();
