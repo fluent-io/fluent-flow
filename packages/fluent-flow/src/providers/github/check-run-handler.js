@@ -4,7 +4,7 @@ import { dispatchReview, claimDispatch } from '../../engine/review-manager.js';
 import { handleTestFailure, handleTestSuccess } from '../../engine/test-manager.js';
 import { getActivePause } from '../../engine/pause-manager.js';
 import { parseCheckAnnotations } from '../../engine/test-parser.js';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { db, schema } from '@fluent-flow/db';
 import { audit } from '../../db/client.js';
 import { createClaim } from '../../agents/claim-manager.js';
@@ -218,6 +218,7 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
   // Check if a review_fix claim was recently completed for this PR — if so, create test_verify
   let hasReviewFixClaim = false;
   let resolvedOrgId = null;
+  let nextTestVerifyAttempt = 1;
   try {
     resolvedOrgId = await resolveOrgId(owner, repoName);
     const { agentClaims } = schema;
@@ -235,6 +236,24 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
       )
       .limit(1);
     hasReviewFixClaim = rows.length > 0;
+
+    if (hasReviewFixClaim) {
+      // Compute next attempt for test_verify on this PR. Hardcoding 1 means
+      // the second review_fix → test_verify cycle would silently no-op via
+      // ON CONFLICT (the unique index keys on (org, repo, pr, type, attempt)).
+      const [maxRow] = await db
+        .select({ max: sql`COALESCE(MAX(${agentClaims.attempt}), 0)` })
+        .from(agentClaims)
+        .where(
+          and(
+            eq(agentClaims.orgId, resolvedOrgId),
+            eq(agentClaims.repo, repoKey),
+            eq(agentClaims.prNumber, pr.number),
+            eq(agentClaims.claimType, 'test_verify'),
+          ),
+        );
+      nextTestVerifyAttempt = Number(maxRow?.max ?? 0) + 1;
+    }
   } catch (err) {
     // Safe to continue: checking for review_fix claims is best-effort —
     // if it fails, we skip the test_verify path and fall through to
@@ -248,7 +267,7 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
         orgId: resolvedOrgId,
         repo: repoKey,
         prNumber: pr.number,
-        attempt: 1, // Attempts are per claim type — test_verify starts at 1
+        attempt: nextTestVerifyAttempt,
         claimType: 'test_verify',
         payload: { branch: pr.head?.ref },
       });
