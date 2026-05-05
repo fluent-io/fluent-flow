@@ -9,6 +9,7 @@ import { enablePullRequestAutoMerge, getPRNodeId } from '../providers/github/gra
 import { recordPause, getActivePause } from './pause-manager.js';
 import { notifyReviewFailure, formatRichMessage, dispatch } from '../notifications/dispatcher.js';
 import { createClaim, completeClaim, getActiveClaim } from '../agents/claim-manager.js';
+import { resolveSession } from '../agents/session-manager.js';
 import { onClaimDispatched, onClaimResolved } from './check-run.js';
 import { getProvider } from '../providers/index.js';
 import logger from '../logger.js';
@@ -35,7 +36,7 @@ import logger from '../logger.js';
  *   known at call-site (e.g. the manual dispatch API route).
  * @param {number} [opts.attempt=1]
  * @param {Array} [opts.priorIssues=[]]
- * @returns {Promise<void>}
+ * @returns {Promise<{claimed: boolean, claimId?: number, reason?: string}>}
  */
 export async function dispatchReview({ owner, repo, prNumber, ref = 'main', headSha, attempt = 1, priorIssues = [], issueNumber, ctx }) {
   const repoKey = `${owner}/${repo}`;
@@ -43,14 +44,14 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', head
 
   if (!config.reviewer?.enabled) {
     logger.info({ msg: 'Reviewer disabled for repo', repo: repoKey });
-    return;
+    return { claimed: false, reason: 'reviewer_disabled' };
   }
 
   if (issueNumber) {
     const activePause = await getActivePause(repoKey, issueNumber);
     if (activePause) {
       logger.info({ msg: 'Skipping review dispatch — issue is paused', repo: repoKey, prNumber, issueNumber, pauseId: activePause.id });
-      return;
+      return { claimed: false, reason: 'paused' };
     }
   }
 
@@ -95,46 +96,45 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', head
         onFailure: config.reviewer?.on_failure,
         branch: ref,
       },
+      headSha,
     });
-    if (newClaim) {
-      const installationId = installCtx?.installation_id;
-      if (installationId && headSha) {
-        const providerClient = getProvider({ installation_id: installationId });
-        onClaimDispatched(providerClient, { ...newClaim, head_sha: headSha, installation_id: installationId })
-          .catch((err) => logger.warn({ msg: 'onClaimDispatched failed', error: err.message }));
-      } else {
-        logger.warn({ msg: 'Skipping onClaimDispatched — missing installation_id or headSha', repo: repoKey, prNumber, claimId: newClaim.id });
-      }
+    if (!newClaim) {
+      logger.info({ msg: 'Review claim skipped — claim already exists', repo: repoKey, prNumber, attempt });
+      return { claimed: false, reason: 'conflict' };
+    }
 
-      // If the claim was pre-assigned to a runner session, push the work
-      // via long-poll so the runner picks it up on next poll.
-      // TODO: in multi-agent setups, derive agentId from the session's
-      // agent_sessions.agent_id instead of config.
-      if (newClaim.session_id) {
-        try {
-          const agentId = config.default_agent ?? config.agent_id;
-          if (agentId) {
-            await dispatch({
-              agentId,
-              event: 'review',
-              payload: {
-                orgId,
-                repo: repoKey,
-                prNumber,
-                session_id: newClaim.session_id,
-              },
-            });
-            logger.info({ msg: 'Pushed pre-assigned claim to runner via long-poll', sessionId: newClaim.session_id, claimId: newClaim.id });
-          }
-        } catch (err) {
-          // Safe to continue: long-poll push is best-effort. If it fails,
-          // the runner will pick up the claim on its next poll cycle.
-          logger.warn({ msg: 'Failed to push claim to runner via long-poll', error: err.message, claimId: newClaim.id });
+    const installationId = installCtx?.installation_id;
+    if (installationId && headSha) {
+      const providerClient = getProvider({ installation_id: installationId });
+      onClaimDispatched(providerClient, { ...newClaim, head_sha: headSha, installation_id: installationId })
+        .catch((err) => logger.warn({ msg: 'onClaimDispatched failed', error: err.message }));
+    } else {
+      logger.warn({ msg: 'Skipping onClaimDispatched — missing installation_id or headSha', repo: repoKey, prNumber, claimId: newClaim.id });
+    }
+
+    // Try to notify an online runner via long-poll (hint only).
+    // If this push is lost, the runner still picks up the pending claim
+    // on its next poll via claimPendingWork().
+    try {
+      const agentId = config.default_agent ?? config.agent_id;
+      if (agentId) {
+        const sessionId = await resolveSession(orgId, agentId, repoKey, prNumber);
+        if (sessionId) {
+          await dispatch({
+            agentId,
+            event: 'review',
+            payload: { orgId, repo: repoKey, prNumber, session_id: sessionId },
+          });
+          logger.info({ msg: 'Pushed notification hint to runner', sessionId, claimId: newClaim.id });
         }
       }
+    } catch (err) {
+      logger.warn({ msg: 'Failed to push notification hint', error: err.message, claimId: newClaim.id });
     }
+
     logger.info({ msg: 'Review claim created', repo: repoKey, prNumber, attempt });
     audit('review_dispatched', { repo: repoKey, data: { prNumber, attempt } });
+    return { claimed: true, claimId: newClaim.id };
   } catch (err) {
     logger.error({ msg: 'Failed to create review claim', repo: repoKey, prNumber, error: err.message });
     throw err;
@@ -257,6 +257,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
         onFailure: config.reviewer?.on_failure,
         branch: headBranch,
       },
+      headSha: reviewSha,
     });
     // Emit check-run dispatched (fire-and-forget)
     if (newClaim) {

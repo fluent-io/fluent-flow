@@ -47,10 +47,11 @@ Sessions are ephemeral runner instances with TTL.
 
 ### claim-manager.js
 Claims track work assignments per review attempt.
-- `createClaim({ orgId, repo, prNumber, attempt, agentId, payload, claimType })` — resolves session, marks busy
+- `createClaim({ orgId, repo, prNumber, attempt, agentId, payload, claimType, headSha })` — always creates as `pending` with `session_id = NULL`. No session pre-assignment — runners claim via `claimPendingWork()`.
+- `claimPendingWork(orgId, agentId, sessionId)` — atomically transitions a `pending` claim to `claimed`, assigns the session, sets TTL
 - `completeClaim(orgId, repo, prNumber, attempt)` — frees session to online, sets `completedAt`
 - `failClaim(orgId, repo, prNumber, attempt)` — frees session to online, sets `completedAt`
-- `expireClaims()` — marks expired claims, sets sessions offline, sets `completedAt`
+- `expireClaims()` — marks expired claims, sets sessions offline, sets `completedAt`. Re-dispatch is handled by the expiry worker (see below).
 - `getActiveClaim(orgId, repo, prNumber)` — latest pending/claimed claim
 
 **`archivedAt` semantics:** Only set on explicit dismissal/cancellation (e.g. admin archive). Normal completion (`completed`/`failed`) and expiry use `completedAt` + `status` instead, so terminal claims remain visible in the default pipeline view (which filters `archived_at IS NULL`).
@@ -58,24 +59,31 @@ Claims track work assignments per review attempt.
 ## Claim Lifecycle
 
 ```
-Review fails → createClaim (pending or claimed)
+Review fails → createClaim (always pending, no session)
                     │
-          ┌─────────┴─────────┐
-          ▼                   ▼
-     No session          Session found
-     (pending)           (claimed, session → busy, 15min TTL)
-          │                   │
-          │        ┌──────────┴──────────┐
-          │        ▼                     ▼
-          │   Agent fixes code      Claim expires
-          │   Review passes         (session → offline)
-          │        │
-          │        ▼
-          │   completeClaim
-          │   (session → online)
-          │
-          └── Re-assigned when session becomes available
+                    ▼
+           Runner polls → claimPendingWork()
+           (atomic pending → claimed, session → busy, 15min TTL)
+                    │
+           ┌────────┴────────────┐
+           ▼                     ▼
+      Agent fixes code      Claim expires
+      Review passes          (session → offline)
+           │                     │
+           ▼                     ▼
+      completeClaim        Re-dispatch: createClaim
+      (session → online)   at attempt + 1 (cap at 10)
+                               │
+                               ▼
+                          Runner picks up on next poll
 ```
+
+**Key guarantees:**
+- Claims are always created as `pending` — no pre-assignment to sessions
+- `claimPendingWork()` is the only way a claim moves to `claimed` — atomic CAS
+- Long-poll push is a notification hint only — if lost, runners pick up via `claimPendingWork()` on next poll
+- Expired claims are automatically re-dispatched at `attempt + 1` (capped at 10) by the expiry worker
+- `head_sha` is stored on claims so check-runs can be created on re-dispatch
 
 ## Multi-tenancy
 

@@ -23,15 +23,17 @@ Two paths into the same engine:
 **Reactive** — GitHub events trigger claims automatically:
 ```
 Push → CI completes → check_run.completed webhook → server
-  → creates a review claim → runner picks it up → harness posts review
-  → on failure, creates a fix claim → runner pushes a fix → loop continues
+  → creates a pending review claim → runner claims via poll → harness posts review
+  → on failure, creates a pending fix claim → runner claims it → pushes a fix → loop continues
+  → on claim expiry, auto-re-dispatches at attempt + 1 (cap at 10)
 ```
 
 **Proactive** — you start work from the dashboard:
 ```
 Pick a repo → choose type (Feature / Fix / Review / Spec) → describe the task
-  → server creates a claim (spec / build / review / fix / test)
-  → runner picks it up → harness does the work → result flows back
+  → server creates a pending claim (spec / build / review / fix / test)
+  → runner claims it via poll → harness does the work → result flows back
+  → on claim expiry, auto-re-dispatches at attempt + 1 (cap at 10)
 ```
 Feature claims auto-chain spec → build. Spec claims produce a plan for the user to create a PR. Fix and Review require an existing PR number.
 

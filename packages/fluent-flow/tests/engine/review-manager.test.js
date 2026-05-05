@@ -6,6 +6,11 @@ vi.mock('../../src/logger.js', async () => {
 });
 vi.mock('../../src/db/client.js', () => ({ audit: vi.fn() }));
 
+const mockResolveSession = vi.fn().mockResolvedValue(null);
+vi.mock('../../src/agents/session-manager.js', () => ({
+  resolveSession: (...a) => mockResolveSession(...a),
+}));
+
 // review-manager only touches db.update/insert for reviewRetries — stub them
 // to no-op so dispatchReview can run without a real connection.
 vi.mock('@fluent-flow/db', () => ({
@@ -92,6 +97,7 @@ beforeEach(() => {
   mockGetProvider.mockClear();
   mockResolveConfig.mockResolvedValue({ reviewer: { enabled: true, max_retries: 3 } });
   mockDispatch.mockClear();
+  mockResolveSession.mockReset().mockResolvedValue(null);
 });
 
 describe('dispatchReview (runner-claim based)', () => {
@@ -194,9 +200,10 @@ describe('dispatchReview (runner-claim based)', () => {
     expect(mockOnClaimDispatched).not.toHaveBeenCalled();
   });
 
-  it('pushes pre-assigned claim to runner via long-poll dispatch', async () => {
-    mockCreateClaim.mockResolvedValueOnce({ id: 1, claim_type: 'review', session_id: 42 });
+  it('pushes notification hint to runner via long-poll when session is resolved', async () => {
+    mockCreateClaim.mockResolvedValueOnce({ id: 1, claim_type: 'review' });
     mockResolveConfig.mockResolvedValueOnce({ reviewer: { enabled: true, max_retries: 3 }, default_agent: 'cc-1' });
+    mockResolveSession.mockResolvedValueOnce(42);
 
     await dispatchReview({
       owner: 'fluent-io',
@@ -214,9 +221,10 @@ describe('dispatchReview (runner-claim based)', () => {
     });
   });
 
-  it('does not dispatch via long-poll when claim has no session_id', async () => {
+  it('does not dispatch via long-poll when no session is resolved', async () => {
     mockCreateClaim.mockResolvedValueOnce({ id: 1, claim_type: 'review' });
     mockResolveConfig.mockResolvedValueOnce({ reviewer: { enabled: true, max_retries: 3 }, default_agent: 'cc-1' });
+    // mockResolveSession returns null by default
 
     await dispatchReview({
       owner: 'fluent-io',
