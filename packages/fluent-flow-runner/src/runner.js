@@ -22,6 +22,9 @@ const BASE_BACKOFF_MS = 2000;
 /** Maximum backoff delay (ms). */
 const MAX_BACKOFF_MS = 60000;
 
+/** Maximum total time (ms) spent in consecutive backoff before forced exit. */
+const MAX_BACKOFF_TOTAL_MS = 10 * 60 * 1000; // 10 minutes
+
 /**
  * Create a runner instance.
  *
@@ -266,11 +269,13 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
       log.info('Session registered', { sessionId, status: session.status });
 
       let consecutiveFailures = 0;
+      let backoffStart = null;
 
       while (running) {
         try {
           const work = await client.poll(sessionId);
-          consecutiveFailures = 0; // reset on success
+          consecutiveFailures = 0;
+          backoffStart = null; // reset on success
           if (work) {
             await handleWork(work);
           } else {
@@ -280,7 +285,19 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
         } catch (err) {
           if (!running) break;
           consecutiveFailures++;
+          if (!backoffStart) backoffStart = Date.now();
           const backoff = Math.min(BASE_BACKOFF_MS * 2 ** (consecutiveFailures - 1), MAX_BACKOFF_MS);
+
+          // Watchdog: if total backoff time exceeds threshold, force exit
+          if (Date.now() - backoffStart >= MAX_BACKOFF_TOTAL_MS) {
+            log.error('Watchdog: total backoff exceeded threshold, forcing exit', {
+              totalBackoffMs: Date.now() - backoffStart,
+              thresholdMs: MAX_BACKOFF_TOTAL_MS,
+              consecutiveFailures,
+            });
+            process.exit(1); // Let the orchestrator restart us
+          }
+
           log.error('Poll error', {
             error: err.message,
             consecutiveFailures,
@@ -295,6 +312,7 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
               sessionId = session.session_id;
               log.info('Re-registered', { sessionId, status: session.status });
               consecutiveFailures = 0;
+              backoffStart = null; // reset watchdog window after successful re-registration
               continue; // Resume polling immediately without backoff delay
             } catch (regErr) {
               log.error('Re-registration failed', { error: regErr.message });

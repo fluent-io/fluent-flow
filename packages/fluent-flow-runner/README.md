@@ -236,8 +236,9 @@ On shutdown (`Ctrl+C`), the runner reports any active claim as failed before exi
 ### Resilience
 
 - **Exponential backoff** — on poll failures, retries with increasing delay (2s → 4s → 8s → ... up to 60s)
+- **Watchdog timer** — if total time spent in consecutive backoff exceeds 10 minutes, the runner force-exits (`process.exit(1)`). This lets the container orchestrator (Docker, systemd) restart it.
 - **Max failure limit** — after 30 consecutive poll failures, the runner stops (prevents infinite retry loops against a down server)
-- **Stale session detection** — if the session expires or goes offline, the server returns 410 and the runner should re-register
+- **Stale session detection** — if the session expires or goes offline, the server returns 410 and the runner re-registers
 
 Built-in agent types (`claude-code`, `codex`, `aider`) spawn with `shell: false` — the prompt is passed as a discrete argument with no injection risk. Custom commands (`--command`) use `shell: true` with shell-character escaping.
 
@@ -361,8 +362,8 @@ Each attempt cleans up the partial clone directory before trying the next.
 | `Permission denied` on work dirs | Old container ran as root, new one as `node` | `sudo chown -R 1000:1000 ~/fluent-flow-runner/work/` |
 | `Host key verification failed` | Missing GitHub host keys in `known_hosts` | `ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts` before building |
 | SSH authenticates but `Repository not found` | SSH key is for a GitHub account without org access | Add `GITHUB_TOKEN` for an account with access, or use a different SSH key |
-| Claims stuck in `claimed` status | Runner session expired but claim wasn't released | Reset orphaned claims: `UPDATE agent_claims SET status='pending', claimed_at=NULL, session_id=NULL WHERE status='claimed' AND session_id IN (SELECT id FROM agent_sessions WHERE status='offline' OR expires_at < NOW());` |
-| Runner registered but not picking up claims | Claims already claimed by dead session | Same fix as above — orphaned claim reset |
+| Claims stuck in `claimed` status | Pre-fix: session was pre-assigned at creation | Post-fix: claims are always `pending` — runners claim atomically. Expired claims auto-re-dispatch at `attempt + 1` |
+| Runner registered but not picking up claims | Pre-fix: claims pre-assigned to dead sessions | Post-fix: `claimPendingWork()` picks up any `pending` claim regardless of session history |
 
 ### Rebuilding After Changes
 

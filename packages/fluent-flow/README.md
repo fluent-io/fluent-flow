@@ -4,11 +4,12 @@ Config-driven GitHub workflow orchestrator. A deterministic state machine manage
 
 ## The Review Loop
 
-When a PR is pushed or updated, Fluent Flow runs an automated code review. If the review passes, the PR is auto-merged. If it fails, the server creates a **claim** — a work assignment containing the review feedback — and notifies the responsible agent. The agent pushes a fix, which triggers a re-review. This loop repeats up to a configurable retry limit before escalating to a human.
+When a PR is pushed or updated, Fluent Flow runs an automated code review. If the review passes, the PR is auto-merged. If it fails, the server creates a **claim** — a work assignment containing the review feedback — always in `pending` state. An online runner claims it via `claimPendingWork()`, pushes a fix, which triggers a re-review. This loop repeats up to a configurable retry limit before escalating to a human. If a claim expires before a runner claims it, the server automatically re-dispatches at `attempt + 1` (capped at 10).
 
 ```
 PR pushed → review → PASS → auto-merge
-                   → FAIL → claim created → agent notified → agent pushes fix → re-review → ...
+                   → FAIL → claim created (pending) → runner claims → pushes fix → re-review → ...
+                   → claim expires → auto-re-dispatch at attempt + 1
                    → max retries exceeded → escalate to human
 ```
 
@@ -16,7 +17,7 @@ PR pushed → review → PASS → auto-merge
 
 ### Claims
 
-A claim is a unit of work assigned to an agent. When a review fails, the server creates a claim with the review feedback and PR details. Claims are tracked per review attempt and have a TTL — if the assigned agent doesn't respond, the claim expires and can be reassigned.
+A claim is a unit of work for an agent. When a review fails, the server creates a claim with the review feedback and PR details. Claims are always created as `pending` — runners claim them via `claimPendingWork()` (atomic `pending → claimed` transition). Claims are tracked per review attempt and have a TTL. Expired claims are automatically re-dispatched at `attempt + 1` (capped at 10) so no PR stays orphaned.
 
 ### Agents
 

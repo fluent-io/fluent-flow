@@ -20,7 +20,7 @@ transports/
    - Issue-facing handlers use `resolveAgentForIssue(owner, repo, issueNumber, config)` — checks active pause `agent_id` → linked PR body marker → config default
    - Resolution priority: PR body marker > `config.default_agent` > `config.agent_id` (legacy)
 
-2. **Agent config** is looked up from the DB agent registry first, then falls back to `config/agents.yml` (deprecated) via `getAgentConfig(agentId)`. For `long_poll` agents, the dispatcher resolves `session_id` from the active claim so the transport can route to the correct runner.
+2. **Agent config** is looked up from the DB agent registry first, then falls back to `config/agents.yml` (deprecated) via `getAgentConfig(agentId)`. For `long_poll` agents, the notification is a hint push — runners always fall through to `claimPendingWork()` on next poll if the push was lost.
 
 3. **Transport** is selected based on the agent's `transport` field and called with a standardized payload.
 

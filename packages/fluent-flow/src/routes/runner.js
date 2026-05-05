@@ -262,6 +262,10 @@ export async function handleClaimResult(req, res) {
 
       const claim = await completeClaim(org_id, repo, pr_number, attempt);
       if (!claim) {
+        // Claim may already be completed via webhook (pull_request_review) — treat as success
+        if (existingClaim?.status === 'completed' || existingClaim?.status === 'failed') {
+          return res.json({ ok: true, claim_id: existingClaim.id, status: existingClaim.status, note: 'already_resolved' });
+        }
         return res.status(404).json({ error: 'Claim not found or already resolved' });
       }
 
@@ -330,6 +334,10 @@ export async function handleClaimResult(req, res) {
       // Failed claim — no chaining
       const claim = await failClaim(org_id, repo, pr_number, attempt);
       if (!claim) {
+        const existingClaim = await getClaimByAttempt(org_id, repo, pr_number, attempt);
+        if (existingClaim?.status === 'completed' || existingClaim?.status === 'failed') {
+          return res.json({ ok: true, claim_id: existingClaim.id, status: existingClaim.status, note: 'already_resolved' });
+        }
         return res.status(404).json({ error: 'Claim not found or already resolved' });
       }
       audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status: 'failed' } });

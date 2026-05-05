@@ -1,7 +1,7 @@
 import { and, desc, eq, getTableColumns, inArray, lt, sql } from 'drizzle-orm';
 import { db, schema } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
-import { resolveSession, setSessionStatus, findAvailableSession } from './session-manager.js';
+import { setSessionStatus } from './session-manager.js';
 import logger from '../logger.js';
 
 const { agentClaims, agentSessions } = schema;
@@ -53,37 +53,35 @@ async function freeSession(orgId, sessionId, agentId, targetStatus = 'online') {
 }
 
 /**
- * Create a claim for a review attempt. Resolves a session and assigns if available.
+ * Create a claim for a review attempt. Always creates as `pending` —
+ * runners claim via `claimPendingWork()`. The long-poll push (in
+ * review-manager.js / dispatcher.js) is a notification hint only;
+ * if lost, the runner picks it up on next poll.
+ *
+ * @param {object} opts
+ * @param {string} opts.orgId
+ * @param {string} opts.repo
+ * @param {number|null} opts.prNumber
+ * @param {number} opts.attempt
+ * @param {string|null} [opts.agentId] — kept for API compat but no longer used for pre-assignment
+ * @param {object} opts.payload
+ * @param {string} [opts.claimType='review_fix']
+ * @param {number} [opts.ttlMs] — kept for API compat but unused (pending claims have no expiry)
+ * @param {string|null} [opts.headSha] — stored for re-dispatch check-run creation
  */
-export async function createClaim({ orgId, repo, prNumber, attempt, agentId, payload, claimType = 'review_fix', ttlMs = DEFAULT_CLAIM_TTL_MS }) {
-  let sessionId = null;
-  let resolvedAgentId = agentId;
-
-  if (agentId) {
-    sessionId = await resolveSession(orgId, agentId, repo, prNumber);
-  } else {
-    const available = await findAvailableSession(orgId, repo, prNumber);
-    if (available) {
-      sessionId = available.sessionId;
-      resolvedAgentId = available.agentId;
-    }
-  }
-
-  const status = sessionId ? 'claimed' : 'pending';
-  const claimedAt = sessionId ? new Date() : null;
-  const expiresAt = sessionId ? new Date(Date.now() + ttlMs) : null;
-
+export async function createClaim({ orgId, repo, prNumber, attempt, agentId, payload, claimType = 'review_fix', ttlMs = DEFAULT_CLAIM_TTL_MS, headSha = null }) {
   const insertValues = {
     orgId,
     repo,
     prNumber,
     attempt,
-    sessionId,
+    sessionId: null,
     claimType,
-    status,
+    status: 'pending',
     payload,
-    claimedAt,
-    expiresAt,
+    claimedAt: null,
+    expiresAt: null,
+    headSha,
   };
 
   // Insert only — never overwrite an existing claim.
@@ -104,15 +102,11 @@ export async function createClaim({ orgId, repo, prNumber, attempt, agentId, pay
     return null;
   }
 
-  if (sessionId && resolvedAgentId) {
-    await setSessionStatus(orgId, resolvedAgentId, sessionId, 'busy');
-  }
-
   audit('claim_created', {
     repo,
-    data: { claimId: claim.id, prNumber, attempt, sessionId, status, claimType },
+    data: { claimId: claim.id, prNumber, attempt, status: 'pending', claimType },
   });
-  logger.info({ msg: 'Claim created', orgId, repo, prNumber, attempt, sessionId, status, claimType });
+  logger.info({ msg: 'Claim created', orgId, repo, prNumber, attempt, status: 'pending', claimType });
   return toSnakeClaim(claim);
 }
 
