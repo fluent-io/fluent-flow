@@ -261,9 +261,12 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
     });
     // Emit check-run dispatched (fire-and-forget)
     if (newClaim) {
-      const providerClient = getProvider({ installation_id: newClaim.installation_id });
-      onClaimDispatched(providerClient, { ...newClaim, head_sha: reviewSha })
-        .catch((err) => logger.warn({ msg: 'onClaimDispatched failed', error: err.message }));
+      const failCtx = ctx ?? await installationCtxForRepo(owner, repo);
+      if (failCtx?.installation_id) {
+        const providerClient = getProvider({ installation_id: failCtx.installation_id });
+        onClaimDispatched(providerClient, { ...newClaim, head_sha: reviewSha, installation_id: failCtx.installation_id })
+          .catch((err) => logger.warn({ msg: 'onClaimDispatched failed', error: err.message }));
+      }
     }
   } catch (err) {
     // Safe to continue: claim creation on failure is best-effort — if it
