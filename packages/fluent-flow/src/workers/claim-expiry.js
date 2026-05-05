@@ -54,6 +54,10 @@ export async function expireClaimsTick() {
           });
         }
       } catch (err) {
+        // Safe to continue: one failed re-dispatch must not abort the rest of
+        // the batch. The claim remains expired in the DB; the next expiry tick
+        // will not pick it up again (it's already marked expired), but the
+        // on-demand re-dispatch path will still retry it if needed.
         logger.error({
           msg: 'Error re-dispatching expired claim',
           error: err.message,

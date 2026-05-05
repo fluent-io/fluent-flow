@@ -312,6 +312,7 @@ export function createRunner({ client, log, resolveCommand, cwd, meta, maxPollFa
               sessionId = session.session_id;
               log.info('Re-registered', { sessionId, status: session.status });
               consecutiveFailures = 0;
+              backoffStart = null; // reset watchdog window after successful re-registration
               continue; // Resume polling immediately without backoff delay
             } catch (regErr) {
               log.error('Re-registration failed', { error: regErr.message });
