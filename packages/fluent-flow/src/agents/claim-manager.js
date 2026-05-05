@@ -89,7 +89,7 @@ export async function createClaim({ orgId, repo, prNumber, attempt, agentId, pay
   // each claim is immutable once created.
   const conflictTarget = prNumber == null
     ? { target: 'agent_claims_org_repo_attempt_no_pr_key' }
-    : { target: [agentClaims.orgId, agentClaims.repo, agentClaims.prNumber, agentClaims.attempt] };
+    : { target: [agentClaims.orgId, agentClaims.repo, agentClaims.prNumber, agentClaims.claimType, agentClaims.attempt] };
 
   const [claim] = await db
     .insert(agentClaims)

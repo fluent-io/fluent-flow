@@ -244,19 +244,22 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
 
   if (hasReviewFixClaim) {
     try {
-      await createClaim({
+      const testVerifyClaim = await createClaim({
         orgId: resolvedOrgId,
         repo: repoKey,
         prNumber: pr.number,
-        attempt: attempt + 1,
+        attempt: 1, // Attempts are per claim type — test_verify starts at 1
         claimType: 'test_verify',
         payload: { branch: pr.head?.ref },
       });
-      logger.info({ msg: 'Created test_verify claim after review_fix + CI pass', repo: repoKey, prNumber: pr.number });
-      // Early return: test_verify agent will verify fixes, then runner route's
-      // completion handler will trigger dispatchReview() via auto-chaining.
-      // If createClaim fails above, we fall through to dispatchReview directly.
-      return;
+      if (testVerifyClaim) {
+        logger.info({ msg: 'Created test_verify claim after review_fix + CI pass', repo: repoKey, prNumber: pr.number });
+        // Early return: test_verify agent will verify fixes, then runner route's
+        // completion handler will trigger dispatchReview() via auto-chaining.
+        return;
+      }
+      // createClaim returned null (duplicate) — fall through to dispatchReview
+      logger.info({ msg: 'test_verify claim already exists, falling back to review dispatch', repo: repoKey, prNumber: pr.number });
     } catch (err) {
       // Safe to continue: test_verify creation failure falls back to
       // dispatching a regular review — no work is lost.
