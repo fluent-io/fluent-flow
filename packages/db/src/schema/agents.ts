@@ -84,7 +84,7 @@ export const agentClaims = pgTable('agent_claims', {
   headSha: text('head_sha'),
 }, (t) => ({
   uniqAttempt: uniqueIndex('agent_claims_org_id_repo_pr_number_attempt_key')
-    .on(t.orgId, t.repo, t.prNumber, t.attempt),
+    .on(t.orgId, t.repo, t.prNumber, t.claimType, t.attempt),
   activeIdx: index('idx_agent_claims_active')
     .on(t.orgId, t.repo, t.prNumber)
     .where(sql`${t.status} = ANY (ARRAY['pending', 'claimed'])`),

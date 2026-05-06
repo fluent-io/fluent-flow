@@ -192,7 +192,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
       const resolvedOrgId = await resolveOrgId(owner, repo);
       const activeClaim = await getActiveClaim(resolvedOrgId, repoKey, prNumber);
       if (activeClaim) {
-        await completeClaim(resolvedOrgId, repoKey, prNumber, activeClaim.attempt);
+        await completeClaim(resolvedOrgId, repoKey, prNumber, activeClaim.attempt, activeClaim.claim_type);
         // Emit check-run resolved (fire-and-forget)
         const providerClient = getProvider({ installation_id: activeClaim.installation_id });
         onClaimResolved(providerClient, activeClaim, { conclusion: 'success' })
@@ -242,8 +242,9 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   try {
     const failOrgId = await resolveOrgId(owner, repo);
     // Use attempt + 1 to avoid upserting the original review claim.
-    // The unique constraint is (org_id, repo, pr_number, attempt), so
-    // reusing the same attempt would overwrite the completed review.
+    // The unique constraint is (org_id, repo, pr_number, claim_type, attempt), so
+    // reusing the same attempt with a different claim_type would not conflict,
+    // but we increment anyway to keep the review_fix attempt separate from the review.
     const newClaim = await createClaim({
       orgId: failOrgId,
       repo: repoKey,
