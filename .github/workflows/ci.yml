@@ -26,5 +26,8 @@ jobs:
           rm -f package-lock.json
           npm install
 
+      - name: Check migration journal consistency
+        run: bash scripts/check-migrations.sh
+
       - name: Run all tests (turbo fans out to every workspace; `test` depends on `^build`)
         run: npm test

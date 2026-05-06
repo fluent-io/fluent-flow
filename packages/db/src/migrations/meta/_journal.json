@@ -57,6 +57,20 @@
       "when": 1777507200000,
       "tag": "0007_agent_claims_backfill_archived_at",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1777680000000,
+      "tag": "0008_provider_installations_repository_selection",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1777766400000,
+      "tag": "0009_agent_claims_unique_include_claim_type",
+      "breakpoints": true
     }
   ]
 }
