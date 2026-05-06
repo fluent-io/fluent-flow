@@ -256,11 +256,11 @@ export async function handleClaimResult(req, res) {
     const { status, repo, pr_number, attempt } = parsed.data;
 
     if (status === 'completed') {
-      // Look up claim_type before completing (for chaining)
+      // Look up claim_type before completing (for chaining and to narrow completion)
       const existingClaim = await getClaimByAttempt(org_id, repo, pr_number, attempt);
       const claimType = existingClaim?.claim_type ?? 'review_fix';
 
-      const claim = await completeClaim(org_id, repo, pr_number, attempt);
+      const claim = await completeClaim(org_id, repo, pr_number, attempt, claimType);
       if (!claim) {
         // Claim may already be completed via webhook (pull_request_review) — treat as success
         if (existingClaim?.status === 'completed' || existingClaim?.status === 'failed') {

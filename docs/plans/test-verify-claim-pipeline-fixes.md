@@ -44,13 +44,7 @@ uniqAttempt: uniqueIndex('agent_claims_org_id_repo_pr_number_attempt_key')
   .on(t.orgId, t.repo, t.prNumber, t.claimType, t.attempt),
 ```
 
-Also update the NULL-PR partial unique index to include `claimType`:
-```ts
-// In migration only — the schema definition for this is in migration 0005, 
-// not in the Drizzle schema (it's a partial index created via raw SQL).
-```
-
-**Note:** The Drizzle schema defines both indexes. The partial NULL-PR index `agent_claims_org_repo_attempt_no_pr_key` also needs `claim_type` added. However, this partial index was created via raw SQL in migration 0005 and is NOT in the Drizzle schema — so the schema definition in `agents.ts` only has the main `uniqAttempt` index. The partial index needs a separate migration.
+**Note:** The Drizzle schema defines only the main `uniqAttempt` index (non-partial). The partial NULL-PR index `agent_claims_org_repo_attempt_no_pr_key` is created via raw SQL in migration 0005 and is NOT in the Drizzle schema. Both indexes need `claim_type` added — the main index via Drizzle schema, and the partial index via a new migration.
 
 ### 2. Migration: Rebuild the unique constraints
 **New file:** `packages/db/src/migrations/0009_agent_claims_unique_include_claim_type.sql`
@@ -59,11 +53,12 @@ Also update the NULL-PR partial unique index to include `claimType`:
 -- Drop and recreate the main unique index to include claim_type.
 -- This allows different claim types (review_fix, test_verify, review, etc.)
 -- to coexist at the same attempt number for the same PR.
+-- Non-partial: covers all rows (including NULL pr_number) so the constraint
+-- is enforced uniformly, matching the Drizzle schema definition.
 DROP INDEX IF EXISTS agent_claims_org_id_repo_pr_number_attempt_key;
 
 CREATE UNIQUE INDEX agent_claims_org_id_repo_pr_number_attempt_key
-  ON agent_claims (org_id, repo, pr_number, claim_type, attempt)
-  WHERE pr_number IS NOT NULL;
+  ON agent_claims (org_id, repo, pr_number, claim_type, attempt);
 
 -- Drop and recreate the partial unique index for NULL pr_number to include claim_type.
 DROP INDEX IF EXISTS agent_claims_org_repo_attempt_no_pr_key;

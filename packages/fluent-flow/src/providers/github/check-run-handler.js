@@ -263,22 +263,45 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
 
   if (hasReviewFixClaim) {
     try {
-      const testVerifyClaim = await createClaim({
-        orgId: resolvedOrgId,
-        repo: repoKey,
-        prNumber: pr.number,
-        attempt: nextTestVerifyAttempt,
-        claimType: 'test_verify',
-        payload: { branch: pr.head?.ref },
-      });
-      if (testVerifyClaim) {
-        logger.info({ msg: 'Created test_verify claim after review_fix + CI pass', repo: repoKey, prNumber: pr.number });
-        // Early return: test_verify agent will verify fixes, then runner route's
-        // completion handler will trigger dispatchReview() via auto-chaining.
-        return;
+      // Idempotency: skip if a test_verify claim already exists for this head_sha.
+      // This prevents duplicate claims on webhook redelivery or matrix job completion.
+      const { agentClaims: ac } = schema;
+      const [existing] = await db
+        .select({ id: ac.id })
+        .from(ac)
+        .where(
+          and(
+            eq(ac.orgId, resolvedOrgId),
+            eq(ac.repo, repoKey),
+            eq(ac.prNumber, pr.number),
+            eq(ac.claimType, 'test_verify'),
+            eq(ac.headSha, checkRun.head_sha),
+          ),
+        )
+        .limit(1);
+
+      if (existing) {
+        logger.info({ msg: 'test_verify claim already exists for this head_sha, skipping', repo: repoKey, prNumber: pr.number, sha: checkRun.head_sha });
+        // Fall through to dispatchReview below
+      } else {
+        const testVerifyClaim = await createClaim({
+          orgId: resolvedOrgId,
+          repo: repoKey,
+          prNumber: pr.number,
+          attempt: nextTestVerifyAttempt,
+          claimType: 'test_verify',
+          payload: { branch: pr.head?.ref },
+          headSha: checkRun.head_sha,
+        });
+        if (testVerifyClaim) {
+          logger.info({ msg: 'Created test_verify claim after review_fix + CI pass', repo: repoKey, prNumber: pr.number });
+          // Early return: test_verify agent will verify fixes, then runner route's
+          // completion handler will trigger dispatchReview() via auto-chaining.
+          return;
+        }
+        // createClaim returned null (duplicate attempt) — fall through to dispatchReview
+        logger.info({ msg: 'test_verify claim already exists, falling back to review dispatch', repo: repoKey, prNumber: pr.number });
       }
-      // createClaim returned null (duplicate) — fall through to dispatchReview
-      logger.info({ msg: 'test_verify claim already exists, falling back to review dispatch', repo: repoKey, prNumber: pr.number });
     } catch (err) {
       // Safe to continue: test_verify creation failure falls back to
       // dispatching a regular review — no work is lost.

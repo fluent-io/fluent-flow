@@ -85,7 +85,7 @@ export async function createClaim({ orgId, repo, prNumber, attempt, agentId, pay
   };
 
   // Insert only — never overwrite an existing claim.
-  // The unique constraint (org_id, repo, pr_number, attempt) ensures
+  // The unique constraint (org_id, repo, pr_number, claim_type, attempt) ensures
   // each claim is immutable once created.
   const conflictTarget = prNumber == null
     ? { target: 'agent_claims_org_repo_attempt_no_pr_key' }
@@ -110,21 +110,26 @@ export async function createClaim({ orgId, repo, prNumber, attempt, agentId, pay
   return toSnakeClaim(claim);
 }
 
-async function finalizeClaim(orgId, repo, prNumber, attempt, finalStatus) {
+async function finalizeClaim(orgId, repo, prNumber, attempt, finalStatus, claimType = null) {
   // Fold the session-agent lookup into the UPDATE's RETURNING so the hot
   // path (claim completion/failure) stays a single round-trip.
+  // claimType is optional: when provided, it narrows the update to a specific
+  // claim type so that the per-type unique constraint (org_id, repo, pr_number,
+  // claim_type, attempt) doesn't cause ambiguity.
+  const conditions = [
+    eq(agentClaims.orgId, orgId),
+    eq(agentClaims.repo, repo),
+    prNumber != null ? eq(agentClaims.prNumber, prNumber) : sql`${agentClaims.prNumber} IS NULL`,
+    eq(agentClaims.attempt, attempt),
+    inArray(agentClaims.status, ['claimed', 'pending']),
+  ];
+  if (claimType) {
+    conditions.push(eq(agentClaims.claimType, claimType));
+  }
   const [row] = await db
     .update(agentClaims)
     .set({ status: finalStatus, completedAt: sql`NOW()` })
-    .where(
-      and(
-        eq(agentClaims.orgId, orgId),
-        eq(agentClaims.repo, repo),
-        prNumber != null ? eq(agentClaims.prNumber, prNumber) : sql`${agentClaims.prNumber} IS NULL`,
-        eq(agentClaims.attempt, attempt),
-        inArray(agentClaims.status, ['claimed', 'pending']),
-      ),
-    )
+    .where(and(...conditions))
     .returning({
       ...getTableColumns(agentClaims),
       sessionAgentId: sql`(SELECT ${agentSessions.agentId} FROM ${agentSessions} WHERE ${agentSessions.id} = ${agentClaims.sessionId})`.as('session_agent_id'),
@@ -137,16 +142,18 @@ async function finalizeClaim(orgId, repo, prNumber, attempt, finalStatus) {
 
 /**
  * Mark a claim as completed. Frees the session.
+ * @param {string|null} [claimType] — narrow to a specific claim type to avoid ambiguity
  */
-export async function completeClaim(orgId, repo, prNumber, attempt) {
-  return finalizeClaim(orgId, repo, prNumber, attempt, 'completed');
+export async function completeClaim(orgId, repo, prNumber, attempt, claimType = null) {
+  return finalizeClaim(orgId, repo, prNumber, attempt, 'completed', claimType);
 }
 
 /**
  * Mark a claim as failed. Frees the session.
+ * @param {string|null} [claimType] — narrow to a specific claim type to avoid ambiguity
  */
-export async function failClaim(orgId, repo, prNumber, attempt) {
-  return finalizeClaim(orgId, repo, prNumber, attempt, 'failed');
+export async function failClaim(orgId, repo, prNumber, attempt, claimType = null) {
+  return finalizeClaim(orgId, repo, prNumber, attempt, 'failed', claimType);
 }
 
 /**
@@ -197,15 +204,19 @@ export async function getActiveClaim(orgId, repo, prNumber) {
 }
 
 /**
- * Get a specific claim by org, repo, PR, and attempt.
+ * Get a specific claim by org, repo, PR, attempt, and optionally claim type.
+ * @param {string|null} [claimType] — narrow to a specific claim type to avoid ambiguity
  */
-export async function getClaimByAttempt(orgId, repo, prNumber, attempt) {
+export async function getClaimByAttempt(orgId, repo, prNumber, attempt, claimType = null) {
   const conditions = [
     eq(agentClaims.orgId, orgId),
     eq(agentClaims.repo, repo),
     prNumber != null ? eq(agentClaims.prNumber, prNumber) : sql`${agentClaims.prNumber} IS NULL`,
     eq(agentClaims.attempt, attempt),
   ];
+  if (claimType) {
+    conditions.push(eq(agentClaims.claimType, claimType));
+  }
   const [row] = await db
     .select()
     .from(agentClaims)
