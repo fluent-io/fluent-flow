@@ -35,7 +35,7 @@ export async function dismissStaleClaims(orgIds: string[], olderThanMs = 86_400_
   const sql = `
     UPDATE agent_claims
     SET status = 'cancelled', archived_at = NOW(), completed_at = NOW()
-    WHERE status IN ('pending', 'claimed')
+    WHERE status IN ('pending', 'claimed', 'expired')
       AND created_at < NOW() - ($1 || ' milliseconds')::interval
       ${isSuper ? '' : 'AND org_id = ANY($2)'}
   `;

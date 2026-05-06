@@ -50,7 +50,7 @@ describe('dismissStaleClaims', () => {
     const count = await dismissStaleClaims(['fluent-io']);
     expect(count).toBe(3);
     const sql = mockQuery.mock.calls[0][0] as string;
-    expect(sql).toContain("status IN ('pending', 'claimed')");
+    expect(sql).toContain("status IN ('pending', 'claimed', 'expired')");
     expect(sql).toContain("org_id = ANY($2)");
     // Default 86400000ms
     expect(mockQuery.mock.calls[0][1][0]).toBe('86400000');
@@ -68,6 +68,16 @@ describe('dismissStaleClaims', () => {
     mockQuery.mockResolvedValueOnce({ rowCount: 1 });
     await dismissStaleClaims(['fluent-io'], 3600_000);
     expect(mockQuery.mock.calls[0][1][0]).toBe('3600000');
+  });
+
+  it('dismisses expired claims alongside pending and claimed', async () => {
+    mockQuery.mockResolvedValueOnce({ rowCount: 4 });
+    const count = await dismissStaleClaims(['fluent-io']);
+    expect(count).toBe(4);
+    const sql = mockQuery.mock.calls[0][0] as string;
+    expect(sql).toContain("'expired'");
+    expect(sql).toContain("'pending'");
+    expect(sql).toContain("'claimed'");
   });
 });
 
