@@ -8,6 +8,10 @@
 -- Drizzle's `target: [columns]` form emits no predicate. NULL pr_number rows
 -- are still uniqueness-isolated by the no-pr partial index below (NULLs are
 -- distinct in btree unique indexes by default).
+-- Use ALTER TABLE DROP CONSTRAINT because the original index was created as
+-- a UNIQUE CONSTRAINT (not a plain unique index). DROP INDEX fails with
+-- "cannot drop index because constraint requires it" in that case.
+ALTER TABLE agent_claims DROP CONSTRAINT IF EXISTS agent_claims_org_id_repo_pr_number_attempt_key;
 DROP INDEX IF EXISTS agent_claims_org_id_repo_pr_number_attempt_key;
 
 CREATE UNIQUE INDEX agent_claims_org_id_repo_pr_number_attempt_key
