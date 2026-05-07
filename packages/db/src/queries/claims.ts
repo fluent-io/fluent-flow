@@ -27,15 +27,15 @@ export async function dismissClaim(id: number): Promise<void> {
 }
 
 /**
- * Dismiss stale claims (pending or claimed) older than a threshold.
- * Defaults to 24 hours if olderThanMs not provided.
+ * Dismiss stale claims (pending, claimed, or expired) older than a threshold.
+ * Cancels and archives matching claims. Defaults to 24 hours if olderThanMs not provided.
  */
 export async function dismissStaleClaims(orgIds: string[], olderThanMs = 86_400_000): Promise<number> {
   const isSuper = orgIds.length === 0;
   const sql = `
     UPDATE agent_claims
     SET status = 'cancelled', archived_at = NOW(), completed_at = NOW()
-    WHERE status IN ('pending', 'claimed')
+    WHERE status IN ('pending', 'claimed', 'expired')
       AND created_at < NOW() - ($1 || ' milliseconds')::interval
       ${isSuper ? '' : 'AND org_id = ANY($2)'}
   `;

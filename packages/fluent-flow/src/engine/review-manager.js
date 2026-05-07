@@ -205,6 +205,61 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
       logger.error({ msg: 'Failed to complete claim on pass', error: err.message, repo: repoKey, prNumber });
     }
 
+    // Dispatch advisory fix even on PASS — auto-merge still fires, but the
+    // fixer can push non-blocking improvements in parallel with the merge
+    // window. The fixer agent decides what's worth fixing.
+    if (advisory && advisory.length > 0) {
+      try {
+        const passOrgId = await resolveOrgId(owner, repo);
+        const passCtx = ctx ?? await installationCtxForRepo(owner, repo);
+
+        // The review claim was at `attempt`, so review_fix uses attempt + 1
+        // to avoid the unique constraint on (org_id, repo, pr_number, claim_type, attempt).
+        const fixClaim = await createClaim({
+          orgId: passOrgId,
+          repo: repoKey,
+          prNumber,
+          attempt: attempt + 1,
+          claimType: 'review_fix',
+          payload: {
+            message: `Advisory issues from PASS review (attempt ${attempt})`,
+            issues: advisory.map((a) => ({ ...a, severity: 'advisory' })),
+            onFailure: config.reviewer?.on_failure,
+            branch: headBranch,
+          },
+          headSha: reviewSha,
+        });
+
+        if (fixClaim) {
+          if (passCtx?.installation_id && reviewSha) {
+            const providerClient = getProvider({ installation_id: passCtx.installation_id });
+            onClaimDispatched(providerClient, { ...fixClaim, head_sha: reviewSha, installation_id: passCtx.installation_id })
+              .catch((err) => logger.warn({ msg: 'onClaimDispatched failed for advisory fix', error: err.message }));
+          }
+
+          // Notify agent to pick up the advisory fix
+          const notifyAgent = agentId ?? config.default_agent ?? config.agent_id;
+          if (notifyAgent) {
+            await dispatch({
+              agentId: notifyAgent,
+              event: 'review_fix',
+              payload: {
+                message: `PASS with ${advisory.length} advisory issue(s) — review and fix if worthwhile`,
+                repo: repoKey,
+                prNumber,
+              },
+            });
+          }
+
+          logger.info({ msg: 'Advisory fix claim created on PASS', repo: repoKey, prNumber, advisoryCount: advisory.length });
+        }
+      } catch (err) {
+        // Safe to continue: advisory fix is non-blocking. If claim creation
+        // fails, the PR still passes review and auto-merges.
+        logger.warn({ msg: 'Failed to create advisory fix claim on PASS', error: err.message, repo: repoKey, prNumber });
+      }
+    }
+
     return { action: 'pass' };
   }
 
@@ -263,7 +318,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
     // Emit check-run dispatched (fire-and-forget)
     if (newClaim) {
       const failCtx = ctx ?? await installationCtxForRepo(owner, repo);
-      if (failCtx?.installation_id) {
+      if (failCtx?.installation_id && reviewSha) {
         const providerClient = getProvider({ installation_id: failCtx.installation_id });
         onClaimDispatched(providerClient, { ...newClaim, head_sha: reviewSha, installation_id: failCtx.installation_id })
           .catch((err) => logger.warn({ msg: 'onClaimDispatched failed', error: err.message }));
