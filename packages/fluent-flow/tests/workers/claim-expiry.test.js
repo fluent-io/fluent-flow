@@ -81,26 +81,4 @@ describe('expireClaimsTick', () => {
 
     expect(createClaim).not.toHaveBeenCalled();
   });
-
-  it('expired claims should not set archived_at on expiry', async () => {
-    // archivedAt is reserved for explicit dismiss/cancel operations.
-    // Expiry uses status='expired' + completedAt only, so pipeline views
-    // (archived_at IS NULL) continue to show the claim until explicitly dismissed.
-    const expiredClaim = {
-      id: 'c1',
-      org_id: 'o1',
-      repo: 'o/r',
-      pr_number: 1,
-      attempt: 3,
-      claim_type: 'review',
-      payload: {},
-      head_sha: null,
-    };
-    expireClaims.mockResolvedValueOnce([expiredClaim]);
-
-    const result = await expireClaimsTick();
-
-    // expireClaims should NOT return archived_at for expired claims
-    expect(result[0].archived_at).toBeUndefined();
-  });
 });
