@@ -45,11 +45,13 @@ vi.mock('../../src/config/loader.js', () => ({
 const mockDispatchWorkflow = vi.fn();
 const mockGetReviews = vi.fn().mockResolvedValue([]);
 const mockDismissReview = vi.fn();
+const mockPostComment = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../src/providers/github/rest.js', () => ({
   dispatchWorkflow: (...a) => mockDispatchWorkflow(...a),
   addLabel: vi.fn(),
   getReviews: (...a) => mockGetReviews(...a),
   dismissReview: (...a) => mockDismissReview(...a),
+  postComment: (...a) => mockPostComment(...a),
 }));
 vi.mock('../../src/providers/github/graphql.js', () => ({
   enablePullRequestAutoMerge: vi.fn(),
@@ -98,6 +100,7 @@ beforeEach(() => {
   mockResolveConfig.mockResolvedValue({ reviewer: { enabled: true, max_retries: 3 } });
   mockDispatch.mockClear();
   mockResolveSession.mockReset().mockResolvedValue(null);
+  mockPostComment.mockClear();
 });
 
 describe('dispatchReview (runner-claim based)', () => {
@@ -268,6 +271,45 @@ describe('dispatchReview (runner-claim based)', () => {
       })
     ).rejects.toThrow('DB connection lost');
   });
+
+  it('posts a review status comment after creating a claim', async () => {
+    await dispatchReview({
+      owner: 'fluent-io',
+      repo: 'fluent-flow',
+      prNumber: 42,
+      ref: 'main',
+      headSha: 'abc123',
+      attempt: 1,
+      priorIssues: [],
+    });
+
+    expect(mockPostComment).toHaveBeenCalledTimes(1);
+    expect(mockPostComment).toHaveBeenCalledWith(
+      'fluent-io',
+      'fluent-flow',
+      42,
+      '🔄 **Fluent Flow** is reviewing this PR...',
+      expect.objectContaining({ installation_id: 99 })
+    );
+  });
+
+  it('does not block on postComment failure', async () => {
+    mockPostComment.mockRejectedValueOnce(new Error('API rate limit'));
+
+    const result = await dispatchReview({
+      owner: 'fluent-io',
+      repo: 'fluent-flow',
+      prNumber: 42,
+      ref: 'main',
+      headSha: 'abc123',
+      attempt: 1,
+      priorIssues: [],
+    });
+
+    // Claim was still created despite comment failure
+    expect(result.claimed).toBe(true);
+    expect(mockCreateClaim).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('handleReviewResult', () => {
@@ -304,5 +346,55 @@ describe('handleReviewResult', () => {
 
     expect(result.action).toBe('pass');
     expect(mockCreateClaim).not.toHaveBeenCalled();
+  });
+
+  it('posts a fix status comment on FAIL when claim is created', async () => {
+    await handleReviewResult({
+      owner: 'fluent-io',
+      repo: 'fluent-flow',
+      prNumber: 42,
+      issueNumber: 10,
+      result: { status: 'FAIL', blocking: [{ file: 'a.ts', line: 1, issue: 'bug' }], advisory: [], attempt: 1 },
+      reviewSha: 'abc123',
+      agentId: 'cc-1',
+      headBranch: 'main',
+    });
+
+    expect(mockPostComment).toHaveBeenCalledTimes(1);
+    expect(mockPostComment).toHaveBeenCalledWith(
+      'fluent-io',
+      'fluent-flow',
+      42,
+      '🔧 **Fluent Flow** is fixing review feedback (attempt 2)...',
+      expect.objectContaining({ installation_id: 99 })
+    );
+  });
+
+  it('posts an advisory status comment on PASS with advisory issues', async () => {
+    mockCreateClaim.mockResolvedValueOnce({ id: 2, claim_type: 'review_fix' });
+
+    await handleReviewResult({
+      owner: 'fluent-io',
+      repo: 'fluent-flow',
+      prNumber: 42,
+      issueNumber: 10,
+      result: {
+        status: 'PASS',
+        blocking: [],
+        advisory: [{ file: 'a.ts', line: 1, issue: 'style nit' }],
+        attempt: 1,
+      },
+      reviewSha: 'abc123',
+      headBranch: 'main',
+    });
+
+    expect(mockPostComment).toHaveBeenCalledTimes(1);
+    expect(mockPostComment).toHaveBeenCalledWith(
+      'fluent-io',
+      'fluent-flow',
+      42,
+      '🔧 **Fluent Flow** is reviewing advisory items...',
+      expect.objectContaining({ installation_id: 99 })
+    );
   });
 });
