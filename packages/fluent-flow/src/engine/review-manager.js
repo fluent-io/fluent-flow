@@ -132,12 +132,12 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', head
       logger.warn({ msg: 'Failed to push notification hint', error: err.message, claimId: newClaim.id });
     }
 
-    // Post status comment on the PR
-    try {
-      await postComment(owner, repo, prNumber, '🔄 **Fluent Flow** is reviewing this PR...', installCtx);
-    } catch (commentErr) {
-      logger.warn({ msg: 'Failed to post review status comment', repo: repoKey, prNumber, error: commentErr.message });
-    }
+    // Post status comment on the PR (fire-and-forget — non-blocking)
+    postComment(owner, repo, prNumber, '🔄 **Fluent Flow** is reviewing this PR...', installCtx)
+      .catch((commentErr) => {
+        // Safe to continue: status comment is informational and must not block claim creation.
+        logger.warn({ msg: 'Failed to post review status comment', repo: repoKey, prNumber, error: commentErr.message });
+      });
 
     logger.info({ msg: 'Review claim created', repo: repoKey, prNumber, attempt });
     audit('review_dispatched', { repo: repoKey, data: { prNumber, attempt } });
@@ -260,12 +260,12 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
 
           logger.info({ msg: 'Advisory fix claim created on PASS', repo: repoKey, prNumber, advisoryCount: advisory.length });
 
-          // Post status comment on the PR
-          try {
-            await postComment(owner, repo, prNumber, '🔧 **Fluent Flow** is reviewing advisory items...', passCtx);
-          } catch (commentErr) {
-            logger.warn({ msg: 'Failed to post advisory fix status comment', repo: repoKey, prNumber, error: commentErr.message });
-          }
+          // Post status comment on the PR (fire-and-forget — non-blocking)
+          postComment(owner, repo, prNumber, '🔧 **Fluent Flow** is reviewing advisory items...', passCtx)
+            .catch((commentErr) => {
+              // Safe to continue: advisory status comment is informational and must not block claim creation.
+              logger.warn({ msg: 'Failed to post advisory fix status comment', repo: repoKey, prNumber, error: commentErr.message });
+            });
         }
       } catch (err) {
         // Safe to continue: advisory fix is non-blocking. If claim creation
@@ -338,12 +338,13 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
           .catch((err) => logger.warn({ msg: 'onClaimDispatched failed', error: err.message }));
       }
 
-      // Post status comment on the PR
-      try {
-        const commentCtx = failCtx ?? await installationCtxForRepo(owner, repo);
-        await postComment(owner, repo, prNumber, `🔧 **Fluent Flow** is fixing review feedback (attempt ${attempt + 1})...`, commentCtx);
-      } catch (commentErr) {
-        logger.warn({ msg: 'Failed to post fix status comment', repo: repoKey, prNumber, error: commentErr.message });
+      // Post status comment on the PR (fire-and-forget — non-blocking)
+      if (failCtx) {
+        postComment(owner, repo, prNumber, `🔧 **Fluent Flow** is fixing review feedback (attempt ${attempt + 1})...`, failCtx)
+          .catch((commentErr) => {
+            // Safe to continue: fix status comment is informational and must not block claim creation.
+            logger.warn({ msg: 'Failed to post fix status comment', repo: repoKey, prNumber, error: commentErr.message });
+          });
       }
     }
   } catch (err) {
