@@ -79,6 +79,7 @@ vi.mock('@fluent-flow/db', () => ({
       status: 'status',
       headSha: 'head_sha',
       attempt: 'attempt',
+      completedAt: 'completed_at',
     },
   },
 }));

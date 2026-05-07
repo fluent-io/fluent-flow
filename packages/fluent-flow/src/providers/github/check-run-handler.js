@@ -4,7 +4,7 @@ import { dispatchReview, claimDispatch } from '../../engine/review-manager.js';
 import { handleTestFailure, handleTestSuccess } from '../../engine/test-manager.js';
 import { getActivePause } from '../../engine/pause-manager.js';
 import { parseCheckAnnotations } from '../../engine/test-parser.js';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, gt, sql } from 'drizzle-orm';
 import { db, schema } from '@fluent-flow/db';
 import { audit } from '../../db/client.js';
 import { createClaim } from '../../agents/claim-manager.js';
@@ -222,6 +222,11 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
   try {
     resolvedOrgId = await resolveOrgId(owner, repoName);
     const { agentClaims } = schema;
+    // Use recency window instead of SHA match: a review_fix claim is created
+    // with the SHA that failed review (commit A), but CI success fires on the
+    // new SHA after fixes (commit B). SHA comparison will never match.
+    // Instead, check for any completed review_fix claim within the last 2 hours.
+    const recencyCutoff = new Date(Date.now() - 2 * 60 * 60 * 1000);
     const rows = await db
       .select({ one: agentClaims.id })
       .from(agentClaims)
@@ -232,7 +237,7 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
           eq(agentClaims.prNumber, pr.number),
           eq(agentClaims.claimType, 'review_fix'),
           eq(agentClaims.status, 'completed'),
-          eq(agentClaims.headSha, checkRun.head_sha),
+          gt(agentClaims.completedAt, recencyCutoff),
         ),
       )
       .limit(1);

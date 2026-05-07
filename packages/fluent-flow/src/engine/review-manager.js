@@ -231,7 +231,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
         });
 
         if (fixClaim) {
-          if (passCtx?.installation_id) {
+          if (passCtx?.installation_id && reviewSha) {
             const providerClient = getProvider({ installation_id: passCtx.installation_id });
             onClaimDispatched(providerClient, { ...fixClaim, head_sha: reviewSha, installation_id: passCtx.installation_id })
               .catch((err) => logger.warn({ msg: 'onClaimDispatched failed for advisory fix', error: err.message }));
@@ -318,7 +318,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
     // Emit check-run dispatched (fire-and-forget)
     if (newClaim) {
       const failCtx = ctx ?? await installationCtxForRepo(owner, repo);
-      if (failCtx?.installation_id) {
+      if (failCtx?.installation_id && reviewSha) {
         const providerClient = getProvider({ installation_id: failCtx.installation_id });
         onClaimDispatched(providerClient, { ...newClaim, head_sha: reviewSha, installation_id: failCtx.installation_id })
           .catch((err) => logger.warn({ msg: 'onClaimDispatched failed', error: err.message }));

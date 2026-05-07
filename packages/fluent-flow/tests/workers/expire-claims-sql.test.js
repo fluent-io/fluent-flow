@@ -21,13 +21,11 @@ vi.mock('../../src/agents/session-manager.js', () => ({
 const captured = { setArgs: [], tableName: null };
 
 // Build chainable mock inside the async factory
-vi.mock('@fluent-flow/db', async () => {
-  const agentClaims = { _symbol: 'agentClaims' };
-  const agentSessions = {
-    _symbol: 'agentSessions',
-    agentId: 'agent_id',
-    id: 'id',
-  };
+vi.mock('@fluent-flow/db', async (importOriginal) => {
+  // Import the real schema so Drizzle column references (agentClaims.status,
+  // agentClaims.expiresAt) are actual pg-column objects, not placeholders.
+  const real = await importOriginal();
+  const { agentClaims } = real.schema;
 
   // Chain: db.update(table).set(args).where(cond).returning()
   const returning = vi.fn().mockResolvedValue([]);
@@ -43,7 +41,7 @@ vi.mock('@fluent-flow/db', async () => {
 
   return {
     db: { update, set, where, returning },
-    schema: { agentClaims, agentSessions },
+    schema: real.schema,
   };
 });
 
