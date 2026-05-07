@@ -232,6 +232,7 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
           eq(agentClaims.prNumber, pr.number),
           eq(agentClaims.claimType, 'review_fix'),
           eq(agentClaims.status, 'completed'),
+          eq(agentClaims.headSha, checkRun.head_sha),
         ),
       )
       .limit(1);
@@ -290,7 +291,7 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
           prNumber: pr.number,
           attempt: nextTestVerifyAttempt,
           claimType: 'test_verify',
-          payload: { branch: pr.head?.ref },
+          payload: { branch: pr.head?.ref, issueNumber },
           headSha: checkRun.head_sha,
         });
         if (testVerifyClaim) {

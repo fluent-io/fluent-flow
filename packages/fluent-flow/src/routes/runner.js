@@ -319,8 +319,10 @@ export async function handleClaimResult(req, res) {
           // test_verify claim stores the PR head branch in payload.branch (see check-run-handler);
           // fall back to 'main' only if it's missing for some reason.
           const headBranch = claim.payload?.branch ?? 'main';
-          await dispatchReview({ owner, repo: repoName, prNumber: pr_number, ref: headBranch, attempt: attempt + 1 });
-          logger.info({ msg: 'Triggered re-review after test_verify completion', repo, prNumber: pr_number, ref: headBranch });
+          const headSha = claim.head_sha;
+          const issueNumber = claim.payload?.issueNumber;
+          await dispatchReview({ owner, repo: repoName, prNumber: pr_number, ref: headBranch, headSha, attempt: attempt + 1, issueNumber });
+          logger.info({ msg: 'Triggered re-review after test_verify completion', repo, prNumber: pr_number, ref: headBranch, headSha });
         } catch (err) {
           // Safe to continue: re-review dispatch failure — the test_verify
           // completion is already recorded. A manual review can be
