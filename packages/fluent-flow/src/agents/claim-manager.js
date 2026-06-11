@@ -67,7 +67,13 @@ async function freeSession(orgId, sessionId, agentId, targetStatus = 'online') {
  * @param {object} opts.payload
  * @param {string} [opts.claimType='review_fix']
  * @param {number} [opts.ttlMs] — kept for API compat but unused (pending claims have no expiry)
- * @param {string|null} [opts.headSha] — stored for re-dispatch check-run creation
+ * @param {string|null} [opts.headSha=null] — PR head commit SHA the claim is
+ *   for. Required (whenever the parent claim/event had a SHA available) for
+ *   GitHub check-run creation on re-dispatch — both the initial dispatch and
+ *   the post-expiry re-dispatch path use `head_sha` to call `onClaimDispatched`
+ *   so the new claim surfaces in the PR's Checks UI. Auto-chain create paths
+ *   (review → review_fix, spec → build) must forward `claim.head_sha` from
+ *   the parent claim; never insert a NULL `head_sha` when the parent has one.
  */
 export async function createClaim({ orgId, repo, prNumber, attempt, agentId, payload, claimType = 'review_fix', ttlMs = DEFAULT_CLAIM_TTL_MS, headSha = null }) {
   const insertValues = {

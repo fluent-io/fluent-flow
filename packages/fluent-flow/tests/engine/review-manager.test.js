@@ -333,6 +333,22 @@ describe('handleReviewResult', () => {
     expect(call.prNumber).toBe(42);
   });
 
+  it('forwards reviewSha as headSha on the review_fix claim created on FAIL', async () => {
+    await handleReviewResult({
+      owner: 'fluent-io',
+      repo: 'fluent-flow',
+      prNumber: 42,
+      issueNumber: 10,
+      result: { status: 'FAIL', blocking: [{ file: 'a.ts', line: 1, issue: 'bug' }], advisory: [], attempt: 1 },
+      reviewSha: 'deadbeef',
+      agentId: 'cc-1',
+      headBranch: 'main',
+    });
+
+    expect(mockCreateClaim).toHaveBeenCalledTimes(1);
+    expect(mockCreateClaim.mock.calls[0][0].headSha).toBe('deadbeef');
+  });
+
   it('does not create a claim on PASS', async () => {
     const result = await handleReviewResult({
       owner: 'fluent-io',
