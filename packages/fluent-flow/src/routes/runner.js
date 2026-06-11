@@ -281,6 +281,7 @@ export async function handleClaimResult(req, res) {
             attempt: attempt + 1,
             claimType: 'review_fix',
             payload: { source_claim_id: claim.id, branch: claim.payload?.branch },
+            headSha: claim.head_sha,
           });
           logger.info({ msg: 'Auto-created review_fix claim after FAIL review', repo, prNumber: pr_number, attempt: attempt + 1 });
         } catch (err) {
@@ -301,6 +302,7 @@ export async function handleClaimResult(req, res) {
             attempt: attempt + 1,
             claimType: 'build',
             payload: { source_claim_id: claim.id },
+            headSha: claim.head_sha,
           });
           logger.info({ msg: 'Auto-created build claim after spec completion', repo, prNumber: pr_number, attempt: attempt + 1 });
         } catch (err) {
