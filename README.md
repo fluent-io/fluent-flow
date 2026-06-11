@@ -1,6 +1,6 @@
 # Fluent Flow
 
-Agent orchestration for development workflows. Fluent Flow receives GitHub events and dashboard actions, dispatches coding agents to do the work, and closes the loop — from review to implementation to verification.
+Loop engineering platform for autonomous development workflows. Fluent Flow lets developers define autonomous development loops — systems that observe, plan, act, verify, and iterate — without the developer manually prompting each step.
 
 **Bring your own subscription.** Fluent Flow never holds your API keys — your runner invokes the model locally with whatever credentials it already has.
 
@@ -92,8 +92,8 @@ docker compose up -d --build
 ## Documentation
 
 - [Roadmap](ROADMAP.md) — shipped, in-flight, known gaps
-- [Design specs](docs/specs/) — architecture and design decisions
-- [Implementation plans](docs/plans/) — step-by-step build plans
+- [Design specs](docs/specs/) — architecture and design decisions, including [Loop Engine v2](docs/specs/2026-06-10-loop-engineering-product-architecture.md)
+- [Implementation plans](docs/plans/) — step-by-step build plans, including the [Loop Engine v2 phased plan](docs/plans/2026-06-10-loop-engine-v2-phased-plan.md)
 - Per-package: [fluent-flow](packages/fluent-flow/README.md) · [runner](packages/fluent-flow-runner/README.md) · [dashboard](packages/dashboard/README.md) · [db](packages/db/README.md)
 
 ## License

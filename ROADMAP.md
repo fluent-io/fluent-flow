@@ -98,6 +98,25 @@ Each entry: the gap, the impact, and the rough shape of the fix.
 
 - **Consolidate webhook routers.** `webhook.js` exists only to host `routeWebhookEvent` + legacy 410 stubs; `github-app-webhook.js` forwards to it. Merge into one module now that PAT-era paths are fully retired.
 
+## Loop Engine (v2 — in design)
+
+**Spec:** `docs/specs/2026-06-10-loop-engineering-product-architecture.md`
+
+The loop engineering paradigm (Boris Cherny, Peter Steinberger, Addy Osmani, June 2026) formalizes the shift from manual prompt orchestration to designing autonomous loops. Fluent Flow is already an orchestration system — this spec evolves it to a full loop engineering platform.
+
+Key changes:
+- **Loop engine** — new module for loop lifecycle (definition, scheduling, execution, memory, verification, budget enforcement, reporting)
+- **Loop contract** — every loop defined by TRIGGER → SCOPE → ACTION → BUDGET → STOP → REPORT
+- **Sub-agent orchestration** — server loops dispatch multiple isolated claims per tick; runners provide per-claim worktree isolation while executing each claim
+- **Skills system** — named recipes (prompt + tool policy + verification) composable into loop actions
+- **Loop designer UI** — creation wizard, templates, real-time monitoring, history
+- **Server as loop orchestrator** — backend owns loop definitions, scheduling, dispatch, verification, budgets, stop conditions, and reporting
+- **Runner remains single-purpose executor** — poll → claim → prepare isolated worktree → spawn one harness task → report result; no loop state or sub-agent orchestration in the runner
+- **Anchor files** — VISION.md, CLAUDE.md, PROMPT.md, SPEC.md, PROGRESS.md as persistent loop memory
+- **Guardrails** — max iterations, no-progress detection, token/dollar budgets, verification gates
+
+Backward compatible — existing claims without `loop_instance_id` treated as standalone. No breaking changes.
+
 ## Longer-horizon work
 
 Held in `docs/plans/` and `packages/fluent-flow/docs/plans/`:
