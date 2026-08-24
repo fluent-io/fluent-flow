@@ -10,6 +10,14 @@ vi.mock('../../src/worktree.js', () => ({
   prepareWorktree: (...args) => mockPrepareWorktree(...args),
 }));
 
+vi.mock('../../src/health.js', () => ({
+  // Inline implementations (not mockResolvedValue) so vi.resetAllMocks in
+  // per-describe beforeEach hooks restores these healthy defaults.
+  checkRunnerHealth: vi.fn(async () => ({ healthy: true, harness: { ok: true, detail: 'mock' }, gh: { ok: true, detail: 'mock' } })),
+  sendAlert: vi.fn(async () => ({ sent: false, configured: false })),
+}));
+
+import { sendAlert } from '../../src/health.js';
 import { createRunner } from '../../src/runner.js';
 
 function makeClient(overrides = {}) {

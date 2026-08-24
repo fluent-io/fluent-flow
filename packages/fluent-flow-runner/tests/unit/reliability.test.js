@@ -10,6 +10,14 @@ vi.mock('../../src/worktree.js', () => ({
   prepareWorktree: (...args) => mockPrepareWorktree(...args),
 }));
 
+vi.mock('../../src/health.js', () => ({
+  // Inline implementations (not mockResolvedValue) so vi.resetAllMocks in
+  // per-describe beforeEach hooks restores these healthy defaults.
+  checkRunnerHealth: vi.fn(async () => ({ healthy: true, harness: { ok: true, detail: 'mock' }, gh: { ok: true, detail: 'mock' } })),
+  sendAlert: vi.fn(async () => ({ sent: false, configured: false })),
+}));
+
+import { checkRunnerHealth, sendAlert } from '../../src/health.js';
 import { createRunner } from '../../src/runner.js';
 import { createClient } from '../../src/client.js';
 
@@ -315,5 +323,53 @@ describe('shutdown', () => {
       expect.objectContaining({ status: 'failed', failure_kind: 'transient', claim_id: 42 }),
     );
     expect(client.reportClaim).toHaveBeenCalledTimes(2);
+  }, 10000);
+});
+
+describe('cannot-run detection', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(checkRunnerHealth).mockResolvedValue({ healthy: true, harness: { ok: true, detail: 'mock' }, gh: { ok: true, detail: 'mock' } });
+  });
+
+  it('fails the claim and alerts when the harness reports an error result despite exit 0', async () => {
+    // The exact production failure: claude exits 0 with
+    // {"type":"result","is_error":true,"result":"Not logged in · Please run /login"}
+    const handlers = {};
+    const proc = {
+      on: vi.fn((event, cb) => { (handlers[event] ??= []).push(cb); }),
+      stdout: { on: vi.fn((event, cb) => { if (event === 'data') setTimeout(() => cb(Buffer.from(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login' }))), 5); }) },
+      stderr: { on: vi.fn() },
+      kill: vi.fn(),
+      pid: 777,
+    };
+    setTimeout(() => (handlers.close ?? []).forEach((cb) => cb(0)), 10);
+
+    const client = makeClient();
+    await runOneWork(client, { settleMs: 250 }, WORK, () => proc);
+
+    const payload = client.reportClaim.mock.calls[0][0];
+    expect(payload.status).toBe('failed');
+    expect(payload.failure_kind).toBeUndefined(); // terminal — auth won't fix itself
+    expect(sendAlert).toHaveBeenCalledWith('harness-error-result', expect.objectContaining({
+      repo: 'org/repo',
+      detail: expect.stringContaining('Not logged in'),
+    }));
+  });
+
+  it('does not register or claim until the startup health check passes', async () => {
+    vi.mocked(checkRunnerHealth)
+      .mockResolvedValueOnce({ healthy: false, harness: { ok: false, detail: 'claude reported an error result: Not logged in' }, gh: { ok: true, detail: '' } })
+      .mockResolvedValueOnce({ healthy: true, harness: { ok: true, detail: 'ok' }, gh: { ok: true, detail: '' } });
+
+    const client = makeClient();
+    const runner = makeRunner(client, { healthRetryMs: 10 });
+    const startPromise = runner.start();
+    await new Promise((r) => setTimeout(r, 80));
+
+    expect(client.register).toHaveBeenCalledTimes(1); // only after recovery
+    expect(sendAlert).toHaveBeenCalledWith('startup-health-check-failed', expect.anything());
+    runner.shutdown();
+    await startPromise;
   }, 10000);
 });

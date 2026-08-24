@@ -2,6 +2,7 @@ import { spawn, execFile as execFileCb } from 'node:child_process';
 import { hostname, platform } from 'node:os';
 import { prepareWorktree } from './worktree.js';
 import { resolvePrompt } from './prompts.js';
+import { checkRunnerHealth, sendAlert } from './health.js';
 
 /**
  * Build an isolated environment for shell commands.
@@ -47,6 +48,21 @@ function numFromEnv(name, dflt) {
 }
 
 /**
+ * claude-code exits 0 even when the run errored pre-flight (e.g.
+ * "Not logged in · Please run /login") — only the JSON result envelope tells
+ * the truth. Returns the envelope when stdout is one, else null.
+ */
+export function parseHarnessResult(stdout) {
+  try {
+    const j = JSON.parse(stdout);
+    if (j?.type === 'result') return j;
+  } catch {
+    // Not a claude JSON envelope — plain agent stdout.
+  }
+  return null;
+}
+
+/**
  * Create a runner instance.
  *
  * @param {object} opts
@@ -71,16 +87,21 @@ export function createRunner({
   heartbeatIntervalMs,
   agentTimeoutMs,
   killEscalationMs,
+  healthRetryMs = 30_000,
+  healthIntervalMs,
 }) {
   let running = false;
   let sessionId = null;
   let activeWork = null;
   let activeProcess = null;
   let shutdownPromise = null;
+  let runnerHealthy = true;
+  let healthTimer = null;
   const maxFailures = maxPollFailures ?? DEFAULT_MAX_POLL_FAILURES;
   const heartbeatMs = heartbeatIntervalMs ?? numFromEnv('FLUENT_FLOW_HEARTBEAT_MS', DEFAULT_HEARTBEAT_MS);
   const agentTimeout = agentTimeoutMs ?? numFromEnv('FLUENT_FLOW_AGENT_TIMEOUT_MS', DEFAULT_AGENT_TIMEOUT_MS);
   const killEscalateMs = killEscalationMs ?? DEFAULT_KILL_ESCALATION_MS;
+  const healthCheckIntervalMs = healthIntervalMs ?? numFromEnv('FLUENT_FLOW_HEALTH_INTERVAL_MS', 300_000);
 
   const sessionMeta = meta ?? {
     hostname: hostname(),
@@ -391,9 +412,25 @@ export function createRunner({
         }
       }
 
-      const status = exitCode === 0 ? 'completed' : 'failed';
+    // claude-code exits 0 even when the run errored pre-flight — a claim that
+    // "completed" without the harness ever running is a silent no-op.
+    let harnessError = null;
+    if (exitCode === 0) {
+      const envelope = parseHarnessResult(agentOutput);
+      if (envelope?.is_error) {
+        harnessError = String(envelope.result ?? 'harness reported an error result').slice(0, 300);
+      }
+    }
+    const status = harnessError ? 'failed' : (exitCode === 0 ? 'completed' : 'failed');
       const failureKind = timedOut ? 'transient' : undefined; // non-zero exits stay terminal
-      log.info('Agent finished', { repo, prNumber, attempt, exitCode, status, timedOut: !!timedOut });
+      log.info('Agent finished', { repo, prNumber, attempt, exitCode, status, timedOut: !!timedOut, harnessError: harnessError ?? undefined });
+
+    if (harnessError) {
+      // Terminal: harness auth/config will not fix itself on a re-dispatch —
+      // alert so an operator notices instead of burning retry attempts.
+      log.error('Harness reported an error result despite exit 0 — failing the claim', { repo, prNumber, attempt, detail: harnessError });
+      await sendAlert('harness-error-result', { repo, prNumber, attempt, detail: harnessError });
+    }
 
       // Parse review verdict from agent output for chaining
       let verdict;
@@ -474,6 +511,7 @@ export function createRunner({
     log.info('Shutting down...');
     running = false;
     stopHeartbeat();
+    clearInterval(healthTimer);
     if (activeProcess) {
       const proc = activeProcess;
       activeProcess = null;
@@ -499,6 +537,41 @@ export function createRunner({
     async start() {
       running = true;
 
+      // Health gate: never register — and so never claim — while the harness
+      // cannot run. An unhealthy runner consuming claims completes them as
+      // silent no-ops (the exact production failure: claude "Not logged in",
+      // exit 0, claim completed, review never posted).
+      let health = await checkRunnerHealth();
+      if (!health.healthy) {
+        log.error('Runner unhealthy — not claiming work', { harness: health.harness, gh: health.gh });
+        await sendAlert('startup-health-check-failed', health);
+        while (running && !(health = await checkRunnerHealth()).healthy) {
+          await new Promise((r) => setTimeout(r, healthRetryMs));
+        }
+        if (!running) { log.info('Runner stopped before becoming healthy'); return; }
+        log.info('Runner recovered — claiming work', { harness: health.harness });
+        await sendAlert('recovered', { harness: health.harness });
+      }
+
+      // Periodic re-check while polling: flip to not-claiming (and alert once
+      // per state change) if the harness breaks mid-run. Env:
+      // FLUENT_FLOW_HEALTH_INTERVAL_MS (default 5 min, 0 disables).
+      if (healthCheckIntervalMs > 0) {
+        healthTimer = setInterval(async () => {
+          const h = await checkRunnerHealth();
+          if (!h.healthy && runnerHealthy) {
+            runnerHealthy = false;
+            log.error('Runner became unhealthy — pausing claim pickup', { harness: h.harness });
+            await sendAlert('health-check-failed', h);
+          } else if (h.healthy && !runnerHealthy) {
+            runnerHealthy = true;
+            log.info('Runner healthy again — resuming claim pickup', { harness: h.harness });
+            await sendAlert('recovered', { harness: h.harness });
+          }
+        }, healthCheckIntervalMs);
+        if (healthTimer.unref) healthTimer.unref();
+      }
+
       await ensureGhAuth();
 
       log.info('Registering session...');
@@ -510,6 +583,12 @@ export function createRunner({
       let backoffStart = null;
 
       while (running) {
+        if (!runnerHealthy) {
+          // Unhealthy: skip claiming entirely — the session expires and the
+          // server marks this runner offline instead of routing work to it.
+          await new Promise((r) => setTimeout(r, 5000));
+          continue;
+        }
         try {
           const work = await client.poll(sessionId);
           consecutiveFailures = 0;
