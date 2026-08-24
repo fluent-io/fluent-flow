@@ -294,10 +294,30 @@ export async function handleClaimResult(req, res) {
       }
       const claimType = claim.claim_type ?? 'review_fix';
 
-      audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status, claimType } });
+      // Verdict fallback: review agents that post via `gh api` put the marker
+      // in the GitHub review body, not stdout. Fetch the latest review and
+      // parse it before treating this result as verdict-less — otherwise the
+      // review→review_fix chain and auto-merge silently never fire.
+      let verdict = parsed.data.verdict;
+      if (claimType === 'review' && !verdict && pr_number != null) {
+        try {
+          const [owner, repoName] = repo.split('/');
+          const { fetchLatestReviewVerdict } = await import('../engine/review-manager.js');
+          verdict = await fetchLatestReviewVerdict({ owner, repo: repoName, prNumber: pr_number });
+          if (verdict) {
+            logger.info({ msg: 'Review verdict resolved from GitHub review body', repo, prNumber: pr_number, verdict });
+          }
+        } catch (err) {
+          // Safe to continue: the posted review is already on the PR; the
+          // auto-chain simply doesn't fire for this attempt.
+          logger.warn({ msg: 'Verdict fallback failed', repo, prNumber: pr_number, error: err.message });
+        }
+      }
+
+      audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status, claimType, verdict: verdict ?? null } });
 
       // Auto-chain: review FAIL → review_fix
-      if (claimType === 'review' && parsed.data.verdict === 'fail') {
+      if (claimType === 'review' && verdict === 'fail') {
         try {
           await createClaim({
             orgId: org_id,

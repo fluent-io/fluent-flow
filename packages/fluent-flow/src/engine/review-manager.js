@@ -38,6 +38,42 @@ import logger from '../logger.js';
  * @param {Array} [opts.priorIssues=[]]
  * @returns {Promise<{claimed: boolean, claimId?: number, reason?: string}>}
  */
+/** Machine-readable verdict marker — same shape the webhook parser reads. */
+const REVIEWER_RESULT_RE = /<!--\s*reviewer-result:\s*({.*?})\s*-->/s;
+
+/**
+ * Parse a PASS/FAIL verdict from a review body containing the
+ * `<!-- reviewer-result: {...} -->` marker.
+ * @returns {'pass'|'fail'|undefined}
+ */
+export function parseVerdictFromReviewBody(body) {
+  const m = (body ?? '').match(REVIEWER_RESULT_RE);
+  if (!m) return undefined;
+  try {
+    const parsed = JSON.parse(m[1]);
+    if (parsed?.status === 'FAIL') return 'fail';
+    if (parsed?.status === 'PASS') return 'pass';
+    return undefined;
+  } catch {
+    // Safe to continue: malformed marker JSON — treat as no verdict rather
+    // than guessing a direction for the auto-chain.
+    return undefined;
+  }
+}
+
+/**
+ * Verdict fallback for review agents that post via `gh api` (codex, aider):
+ * the marker lands in the GitHub review body, not the runner's stdout. Fetch
+ * the latest review and parse the marker from there.
+ * @returns {Promise<'pass'|'fail'|undefined>}
+ */
+export async function fetchLatestReviewVerdict({ owner, repo, prNumber, ctx }) {
+  const installCtx = ctx ?? await installationCtxForRepo(owner, repo);
+  const reviews = await getReviews(owner, repo, prNumber, installCtx);
+  const latest = Array.isArray(reviews) ? reviews[reviews.length - 1] : null;
+  return latest?.body ? parseVerdictFromReviewBody(latest.body) : undefined;
+}
+
 export async function dispatchReview({ owner, repo, prNumber, ref = 'main', headSha, attempt = 1, priorIssues = [], issueNumber, ctx }) {
   const repoKey = `${owner}/${repo}`;
   const config = await resolveConfig(owner, repo);
