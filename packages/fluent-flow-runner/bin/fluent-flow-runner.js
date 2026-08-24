@@ -37,9 +37,26 @@ async function main() {
     cwd: opts.cwd,
   });
 
-  const shutdown = () => runner.shutdown();
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+  // Signal hardening: the first signal runs the full shutdown (kill active
+  // agent, report the active claim as a transient failure) and only exits the
+  // process once it completes — docker stop's SIGKILL at 10s would otherwise
+  // cut the report short. A second signal bails out immediately.
+  let shuttingDown = false;
+  const handleSignal = () => {
+    if (shuttingDown) {
+      process.exit(1);
+    }
+    shuttingDown = true;
+    runner
+      .shutdown()
+      .catch(() => {})
+      .finally(() => process.exit(0));
+    // Absolute cap: never outlive docker's 10s stop grace.
+    const cap = setTimeout(() => process.exit(1), 9000);
+    cap.unref();
+  };
+  process.on('SIGTERM', handleSignal);
+  process.on('SIGINT', handleSignal);
 
   try {
     await runner.start();
