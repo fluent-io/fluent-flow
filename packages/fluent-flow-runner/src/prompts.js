@@ -130,7 +130,7 @@ const TEMPLATES = {
     return parts.join('\n');
   },
 
-  review_fix({ repo, prNumber, message }) {
+  review_fix({ repo, prNumber, message, branch }) {
     const parts = [
       `You are a fix agent for ${repo} (PR #${prNumber}).`,
       '',
@@ -145,11 +145,29 @@ const TEMPLATES = {
       '1. Fix each issue identified in the review.',
       '2. Add tests that verify the fixes.',
       '3. Ensure all existing and new tests pass.',
+      '4. Commit your changes with a descriptive message.',
+    );
+    if (branch) {
+      // The runner executes in a `git worktree` checked out at a detached
+      // HEAD of the PR branch — a plain `git push` fails there. Without an
+      // explicit push the fix never lands and the re-review loops on the
+      // same SHA.
+      parts.push(
+        `5. Push your commits to the PR branch. You are on a DETACHED HEAD checkout — a plain \`git push\` will fail. Push explicitly:`,
+        '   ```',
+        `   git push origin HEAD:${branch}`,
+        '   ```',
+      );
+    } else {
+      parts.push('5. Push your commits to the PR branch (git push origin HEAD:<pr-branch>).');
+    }
+    parts.push(
       '',
       'Rules:',
       '- Address every blocking issue',
       '- Write tests first (TDD)',
       '- Do not modify unrelated code',
+      '- The task is only complete when your commits are pushed',
     );
     return parts.join('\n');
   },
