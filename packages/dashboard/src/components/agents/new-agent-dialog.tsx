@@ -260,7 +260,7 @@ function SetupInstructions() {
           <div className="rounded bg-muted p-2">
             <p className="text-xs text-muted-foreground">
               Pass env vars when running the command, e.g.:{' '}
-              <code className="rounded bg-background px-1 py-0.5 text-[11px]">GITHUB_TOKEN=ghp_… ANTHROPIC_API_KEY=sk-ant-… npx fluent-flow-runner …</code>
+              <code className="rounded bg-background px-1 py-0.5 text-[11px]">GITHUB_TOKEN=ghp_… ANTHROPIC_API_KEY=sk-ant-… npx @fluent-flow/runner@latest …</code>
             </p>
           </div>
         </div>

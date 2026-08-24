@@ -1,6 +1,14 @@
 {
-  "name": "fluent-flow-runner",
+  "name": "@fluent-flow/runner",
   "version": "0.1.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fluent-io/fluent-flow.git",
+    "directory": "packages/fluent-flow-runner"
+  },
   "description": "Lightweight CLI runner for Fluent Flow — connects agents to the review pipeline",
   "type": "module",
   "bin": {

@@ -80,7 +80,7 @@ Copy `.env.example` → `.env.local` in each package. Dashboard needs `NEXT_PUBL
 Local runner (workspace-linked, no publish yet):
 
 ```bash
-npx fluent-flow-runner --server http://127.0.0.1:3847 --token ff_<token>
+npx @fluent-flow/runner --server http://127.0.0.1:3847 --token ff_<token>
 ```
 
 Docker:
