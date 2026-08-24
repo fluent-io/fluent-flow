@@ -62,6 +62,16 @@ export function createClient({ serverUrl, token, fetch: fetchFn = globalThis.fet
     },
 
     /**
+     * Heartbeat while a claim executes — extends the session TTL and the
+     * claim's expiry on the server so long agent runs aren't re-dispatched
+     * mid-flight.
+     * @param {number} sessionId
+     * @param {number} claimId
+     * @returns {Promise<{ ok: boolean }>}
+     */
+    heartbeat: (sessionId, claimId) => post('/api/runner/heartbeat', { session_id: sessionId, claim_id: claimId }, 'Heartbeat'),
+
+    /**
      * Report a claim result back to the server.
      * @param {object} claim — { status, repo, pr_number, attempt }
      * @returns {Promise<{ ok, claim_id, status }>}
