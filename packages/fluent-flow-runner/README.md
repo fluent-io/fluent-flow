@@ -8,7 +8,7 @@ For typical users, don't use the Admin API below — it requires the server's `M
 
 1. Sign in to the dashboard and install the Fluent Flow GitHub App on your org.
 2. Click **+ New agent** on the Agents page. Name the agent, pick a harness.
-3. Copy the displayed `npx fluent-flow-runner …` command (token pre-filled) and run it on the machine where your AI CLI lives.
+3. Copy the displayed `npx @fluent-flow/runner@latest …` command (token pre-filled) and run it on the machine where your AI CLI lives.
 4. Modal auto-confirms when the runner connects.
 
 The rest of this README covers the **ops/CI path** — registering agents directly against the server without going through the dashboard. Use this when provisioning from CI, from scripts, or when acting as the server admin.
@@ -148,10 +148,16 @@ Response includes a `token` field (`ff_...`). Save it — it is only shown once.
 ### 3. Install
 
 ```bash
-npm install -g fluent-flow-runner
+npx @fluent-flow/runner@latest --server <url> --token ff_<token>
 ```
 
-Or from the repo:
+Or globally:
+
+```bash
+npm install -g @fluent-flow/runner
+```
+
+Or from the repo (workspace-linked, pre-publish):
 
 ```bash
 cd packages/fluent-flow-runner

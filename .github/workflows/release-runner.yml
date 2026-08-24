@@ -1,0 +1,33 @@
+name: Release runner
+
+# Publishes @fluent-flow/runner to npm when a runner-v* release is published.
+# Requires the NPM_TOKEN secret (scope: publish for the fluent-flow org).
+# Cut a release with: gh release create runner-v0.1.0 --title "runner v0.1.0"
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    if: startsWith(github.event.release.tag_name, 'runner-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      - name: Install runner workspace dependencies
+        run: npm ci --workspace packages/fluent-flow-runner --include-workspace-root
+
+      - name: Publish
+        run: npm publish --workspace packages/fluent-flow-runner
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Verify the dashboard command resolves
+        run: npm view "@fluent-flow/runner@$(node -p "require('./packages/fluent-flow-runner/package.json').version")" version
