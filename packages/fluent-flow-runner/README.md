@@ -266,26 +266,19 @@ The runner runs as a **separate docker-compose project** on the same Docker host
 
 ### Dockerfile
 
-```dockerfile
-FROM node:24-bookworm
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends git ca-certificates curl openssh-client \
-  && rm -rf /var/lib/apt/lists/*
-RUN npm install -g @anthropic-ai/claude-code
+The runner image lives at [`Dockerfile`](./Dockerfile) and the deployment
+compose at [`docker-compose.yml`](./docker-compose.yml). Notable, reliability-critical choices:
 
-WORKDIR /app
-COPY package.json package-lock.json turbo.json ./
-COPY packages/fluent-flow-runner/package.json packages/fluent-flow-runner/package.json
-RUN npm ci --workspace packages/fluent-flow-runner --include-workspace-root
-COPY packages/fluent-flow-runner packages/fluent-flow-runner
-
-# Work dir owned by node (uid 1000)
-RUN mkdir -p /work && chown node:node /work
-
-WORKDIR /work
-USER node
-ENTRYPOINT ["node", "/app/packages/fluent-flow-runner/bin/fluent-flow-runner.js"]
-```
+- **`gh` CLI is installed** — the review agent prompt depends on it
+  (`gh pr diff`, `gh api .../reviews`). Images without `gh` produce reviews
+  that are never posted: silent no-op pipelines.
+- **`init: true` in compose** — the harness CLIs spawn grandchildren
+  (git/gh/ripgrep); Node as PID 1 does not reap them. Without an init,
+  long-lived runner containers accumulate zombie processes.
+- **Writable `~/.claude` and `~/.config/gh`** (named volumes) — claude-code
+  persists session state under `~/.claude`, and the runner re-runs
+  `gh auth login --with-token` per claim, writing `~/.config/gh`. Mounting the
+  host home read-only breaks both.
 
 **Key decisions:**
 - Runs as `USER node` (uid 1000) to match host user for volume permissions. The `node:24-bookworm` image already has uid 1000 as the `node` user.

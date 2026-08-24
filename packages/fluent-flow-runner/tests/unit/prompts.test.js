@@ -81,3 +81,24 @@ describe('prompts', () => {
     });
   });
 });
+
+describe('review_fix push instructions', () => {
+  it('includes an explicit detached-HEAD push command when branch is known', () => {
+    const prompt = resolvePrompt({
+      claimType: 'review_fix',
+      work: { repo: 'o/r', prNumber: 5, message: 'fix it', branch: 'fix/thing' },
+    });
+    expect(prompt).toContain('git push origin HEAD:fix/thing');
+    expect(prompt).toContain('DETACHED HEAD');
+    expect(prompt).toContain('pushed');
+  });
+
+  it('falls back to a generic push hint without a branch', () => {
+    const prompt = resolvePrompt({
+      claimType: 'review_fix',
+      work: { repo: 'o/r', prNumber: 5, message: 'fix it' },
+    });
+    expect(prompt).toContain('git push origin HEAD:<pr-branch>');
+    expect(prompt).not.toContain('DETACHED HEAD checkout — a plain');
+  });
+});

@@ -1,0 +1,45 @@
+# Runner compose — separate project from the server, joined to its network.
+# Put GITHUB_TOKEN (or mount an SSH key) and FLUENT_FLOW_RUNNER_TOKEN in .env.
+#
+#   docker network create fluent-flow_fluent-flow-net   # if the server isn't up yet
+#   docker compose up -d --build
+#
+# NOTE the two reliability-critical bits:
+# - init: true — PID 1 reaps the harness's orphaned grandchildren. Without it,
+#   long-lived runner containers accumulate zombies.
+# - ~/.claude and ~/.config/gh are mounted READ-WRITE (named volumes): the
+#   harness writes session state to ~/.claude and `gh auth login` (re-run per
+#   claim with the GitHub App installation token) writes ~/.config/gh. A
+#   read-only home breaks both.
+services:
+  runner:
+    build:
+      context: ..
+      dockerfile: packages/fluent-flow-runner/Dockerfile
+    container_name: fluent-flow-runner
+    init: true
+    env_file: .env
+    environment:
+      # Server URL default matches the compose-network service name; override
+      # for a remote server (e.g. https://flow.fluenthive.io).
+      FLUENT_FLOW_SERVER: ${FLUENT_FLOW_SERVER:-http://fluent-flow:3847}
+    command: ["--server", "${FLUENT_FLOW_SERVER:-http://fluent-flow:3847}", "--token", "${FLUENT_FLOW_RUNNER_TOKEN:-}"]
+    volumes:
+      - ./work:/work
+      - claude-home:/home/node/.claude
+      - gh-config:/home/node/.config/gh
+      # Optional SSH auth for git cloning (mount read-only + ssh-agent socket):
+      # - ~/.ssh/known_hosts:/home/node/.ssh/known_hosts:ro
+      # - $SSH_AUTH_SOCK:/ssh-agent
+    networks:
+      - fluent-flow-net
+    restart: unless-stopped
+
+volumes:
+  claude-home:
+  gh-config:
+
+networks:
+  fluent-flow-net:
+    external: true
+    name: fluent-flow_fluent-flow-net
