@@ -35,6 +35,9 @@ export async function touchSession(orgId, agentId, sessionId, ttlMs = DEFAULT_SE
         eq(agentSessions.orgId, orgId),
         eq(agentSessions.agentId, agentId),
         ne(agentSessions.status, 'offline'),
+        // A heartbeat on an already-expired session must not revive a dead
+        // row — the runner gets a 410 and re-registers instead.
+        gt(agentSessions.expiresAt, sql`NOW()`),
       ),
     );
   return (result.rowCount ?? 0) > 0;

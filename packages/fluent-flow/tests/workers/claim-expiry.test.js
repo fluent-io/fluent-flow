@@ -7,17 +7,17 @@ vi.mock('../../src/logger.js', async () => {
 
 vi.mock('../../src/agents/claim-manager.js', () => ({
   expireClaims: vi.fn(),
-  createClaim: vi.fn(),
+  redispatchClaim: vi.fn(),
 }));
 
 import logger from '../../src/logger.js';
-import { expireClaims, createClaim } from '../../src/agents/claim-manager.js';
+import { expireClaims, redispatchClaim } from '../../src/agents/claim-manager.js';
 import { expireClaimsTick } from '../../src/workers/claim-expiry.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
   expireClaims.mockResolvedValue([]);
-  createClaim.mockResolvedValue({ id: 99, org_id: 'o1', repo: 'r/r', pr_number: 1, attempt: 2, claim_type: 'review' });
+  redispatchClaim.mockResolvedValue({ id: 99, attempt: 4 });
 });
 
 describe('expireClaimsTick', () => {
@@ -41,44 +41,39 @@ describe('expireClaimsTick', () => {
 
   it('propagates the rows returned by expireClaims for observability', async () => {
     expireClaims.mockResolvedValueOnce([
-      { id: 'c1', org_id: 'o1', agent_id: 'a1', repo: 'o/r', pr_number: 1, attempt: 1, claim_type: 'review', payload: {}, head_sha: null },
-      { id: 'c2', org_id: 'o1', agent_id: 'a2', repo: 'o/r', pr_number: 2, attempt: 1, claim_type: 'review_fix', payload: {}, head_sha: null },
+      { id: 'c1', org_id: 'o1', repo: 'o/r', pr_number: 1, attempt: 1, claim_type: 'review', payload: {}, head_sha: null },
     ]);
 
     const result = await expireClaimsTick();
 
     expect(result).toEqual([
-      { id: 'c1', org_id: 'o1', agent_id: 'a1', repo: 'o/r', pr_number: 1, attempt: 1, claim_type: 'review', payload: {}, head_sha: null },
-      { id: 'c2', org_id: 'o1', agent_id: 'a2', repo: 'o/r', pr_number: 2, attempt: 1, claim_type: 'review_fix', payload: {}, head_sha: null },
+      { id: 'c1', org_id: 'o1', repo: 'o/r', pr_number: 1, attempt: 1, claim_type: 'review', payload: {}, head_sha: null },
     ]);
   });
 
-  it('re-dispatches expired claims at attempt + 1', async () => {
+  it('re-dispatches each expired claim via the shared redispatchClaim helper', async () => {
     expireClaims.mockResolvedValueOnce([
       { id: 'c1', org_id: 'o1', repo: 'o/r', pr_number: 1, attempt: 3, claim_type: 'review', payload: { branch: 'fix/x' }, head_sha: 'abc123' },
     ]);
 
     await expireClaimsTick();
 
-    expect(createClaim).toHaveBeenCalledTimes(1);
-    expect(createClaim).toHaveBeenCalledWith({
-      orgId: 'o1',
-      repo: 'o/r',
-      prNumber: 1,
-      attempt: 4,
-      claimType: 'review',
-      payload: { branch: 'fix/x' },
-      headSha: 'abc123',
-    });
+    expect(redispatchClaim).toHaveBeenCalledTimes(1);
+    expect(redispatchClaim).toHaveBeenCalledWith(
+      { id: 'c1', org_id: 'o1', repo: 'o/r', pr_number: 1, attempt: 3, claim_type: 'review', payload: { branch: 'fix/x' }, head_sha: 'abc123' },
+    );
   });
 
-  it('skips re-dispatch when max retry attempts (10) exceeded', async () => {
+  it('logs a warning when redispatchClaim declines (conflict or max attempts)', async () => {
     expireClaims.mockResolvedValueOnce([
       { id: 'c1', org_id: 'o1', repo: 'o/r', pr_number: 1, attempt: 10, claim_type: 'review', payload: {}, head_sha: null },
     ]);
+    redispatchClaim.mockResolvedValueOnce(null);
 
     await expireClaimsTick();
 
-    expect(createClaim).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ msg: expect.stringContaining('Failed to re-dispatch expired claim') }),
+    );
   });
 });
