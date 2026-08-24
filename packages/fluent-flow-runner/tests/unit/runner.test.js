@@ -10,6 +10,14 @@ vi.mock('../../src/worktree.js', () => ({
   prepareWorktree: (...args) => mockPrepareWorktree(...args),
 }));
 
+vi.mock('../../src/health.js', () => ({
+  // Inline implementations (not mockResolvedValue) so vi.resetAllMocks in
+  // per-describe beforeEach hooks restores these healthy defaults.
+  checkRunnerHealth: vi.fn(async () => ({ healthy: true, harness: { ok: true, detail: 'mock' }, gh: { ok: true, detail: 'mock' } })),
+  sendAlert: vi.fn(async () => ({ sent: false, configured: false })),
+}));
+
+import { sendAlert } from '../../src/health.js';
 import { createRunner } from '../../src/runner.js';
 
 function makeClient(overrides = {}) {
@@ -27,16 +35,17 @@ function makeLogger() {
 
 /** Helper: create a fake child process that exits with given code */
 function fakeProcess(exitCode = 0) {
+  // Real ChildProcess listeners are additive — store arrays, not one handler.
   const handlers = {};
   const proc = {
-    on: vi.fn((event, cb) => { handlers[event] = cb; }),
+    on: vi.fn((event, cb) => { (handlers[event] ??= []).push(cb); }),
     stdout: { on: vi.fn() },
     stderr: { on: vi.fn() },
     kill: vi.fn(),
     pid: 1234,
   };
   // Auto-emit 'close' on next tick
-  setTimeout(() => handlers.close?.(exitCode), 10);
+  setTimeout(() => (handlers.close ?? []).forEach((cb) => cb(exitCode)), 10);
   return proc;
 }
 
@@ -44,12 +53,12 @@ function fakeProcess(exitCode = 0) {
 function hangingProcess() {
   const handlers = {};
   const proc = {
-    on: vi.fn((event, cb) => { handlers[event] = cb; }),
+    on: vi.fn((event, cb) => { (handlers[event] ??= []).push(cb); }),
     stdout: { on: vi.fn() },
     stderr: { on: vi.fn() },
     kill: vi.fn(() => {
       // Simulate SIGTERM → close
-      setTimeout(() => handlers.close?.(143), 10);
+      setTimeout(() => (handlers.close ?? []).forEach((cb) => cb(143)), 10);
     }),
     pid: 5678,
   };
@@ -409,7 +418,7 @@ describe('runner', () => {
       // Build a process where kill throws but close still fires
       const handlers = {};
       const proc = {
-        on: vi.fn((event, cb) => { handlers[event] = cb; }),
+        on: vi.fn((event, cb) => { (handlers[event] ??= []).push(cb); }),
         stdout: { on: vi.fn() },
         stderr: { on: vi.fn() },
         kill: vi.fn(() => {
@@ -420,7 +429,7 @@ describe('runner', () => {
         pid: 9999,
       };
       // Process exits on its own after a tick (simulating already-dying)
-      setTimeout(() => handlers.close?.(1), 200);
+      setTimeout(() => (handlers.close ?? []).forEach((cb) => cb(1)), 200);
       mockSpawn.mockReturnValueOnce(proc);
 
       const log = makeLogger();
@@ -462,7 +471,7 @@ describe('runner', () => {
 
       const handlers = {};
       const proc = {
-        on: vi.fn((event, cb) => { handlers[event] = cb; }),
+        on: vi.fn((event, cb) => { (handlers[event] ??= []).push(cb); }),
         stdout: { on: vi.fn() },
         stderr: { on: vi.fn() },
         kill: vi.fn(() => {
@@ -472,7 +481,7 @@ describe('runner', () => {
         }),
         pid: 9998,
       };
-      setTimeout(() => handlers.close?.(1), 200);
+      setTimeout(() => (handlers.close ?? []).forEach((cb) => cb(1)), 200);
       mockSpawn.mockReturnValueOnce(proc);
 
       const log = makeLogger();

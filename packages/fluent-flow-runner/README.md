@@ -187,6 +187,15 @@ node packages/fluent-flow-runner/bin/fluent-flow-runner.js \
 | `--cwd` | No | Working directory for spawned agent processes |
 | `--verbose` | No | Enable debug-level JSON logging to stdout |
 
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `FLUENT_FLOW_ALERT_WEBHOOK_URL` | unset | Webhook (Slack/Discord-style) that receives **runner cannot run** alerts — failed startup health checks, harness error results (e.g. claude "Not logged in"), health-state changes. Always paired with an error-level log; delivery is best-effort. |
+| `FLUENT_FLOW_HEALTH_INTERVAL_MS` | `300000` | How often the runner re-checks that it can actually run (harness present + authenticated, `gh` usable). While unhealthy the runner **stops claiming work** — its session expires and the server marks it offline instead of routing claims it would silently no-op. `0` disables the periodic check (startup gate always runs). |
+| `FLUENT_FLOW_HEARTBEAT_MS` | `60000` | Claim heartbeat interval while an agent executes — extends the session TTL and the claim's expiry server-side so long runs aren't re-dispatched mid-flight. |
+| `FLUENT_FLOW_AGENT_TIMEOUT_MS` | `3600000` | Hard cap on a single agent execution: SIGTERM, then SIGKILL after 10s; the claim is reported as a transient failure and re-dispatched. |
+
 ## How It Works
 
 Once started, the runner is fully automatic — no user interaction needed. It runs a continuous loop until you stop it with `Ctrl+C`.
