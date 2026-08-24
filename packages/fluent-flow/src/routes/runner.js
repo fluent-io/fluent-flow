@@ -2,7 +2,17 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { validateToken } from '../agents/token-manager.js';
 import { registerSession, touchSession, setSessionStatus } from '../agents/session-manager.js';
-import { completeClaim, failClaim, getClaimByAttempt, createClaim } from '../agents/claim-manager.js';
+import {
+  completeClaim,
+  failClaim,
+  getClaimByAttempt,
+  getClaimById,
+  completeClaimById,
+  failClaimById,
+  extendClaim,
+  redispatchClaim,
+  createClaim,
+} from '../agents/claim-manager.js';
 import { dequeue, hasPending } from '../notifications/transports/long-poll.js';
 import { sql } from 'drizzle-orm';
 import { db } from '@fluent-flow/db';
@@ -23,7 +33,17 @@ const ClaimResultSchema = z.object({
   pr_number: z.number().int().positive().nullable(),
   attempt: z.number().int().positive(),
   verdict: z.enum(['pass', 'fail']).optional(), // review verdict for chaining
+  claim_id: z.number().int().positive().optional(), // unambiguous claim identity
+  failure_kind: z.enum(['transient', 'terminal']).optional(), // transient → server re-dispatches
 });
+
+const HeartbeatSchema = z.object({
+  session_id: z.number().int().positive(),
+  claim_id: z.number().int().positive().optional(),
+});
+
+/** How far a heartbeat extends a claimed claim's expiry. Env: CLAIM_TTL_MS. */
+const CLAIM_TTL_MS = Number(process.env.CLAIM_TTL_MS) || 15 * 60 * 1000;
 
 /**
  * Authenticate runner requests via agent token.
@@ -157,15 +177,11 @@ export async function handlePoll(req, res, opts = {}) {
       return res.status(410).json({ error: 'Session expired or offline — re-register' });
     }
 
+    // Long-poll hints are wake-up signals only — the dequeued payload lacks
+    // attempt/claim_type/message and cannot be reported back by the runner.
+    // Drain the hint and let claimPendingWork() hand out the real DB row.
     if (hasPending(sessionId)) {
-      await touchSession(org_id, agent_id, sessionId);
-      const work = dequeue(sessionId);
-      if (work?.repo && !work.githubToken) {
-        const githubToken = await resolveGitHubToken(work.repo);
-        if (githubToken) work.githubToken = githubToken;
-      }
-      respond({ work });
-      return;
+      dequeue(sessionId);
     }
 
     // Check for unassigned pending claims in the DB
@@ -200,14 +216,7 @@ export async function handlePoll(req, res, opts = {}) {
     const start = Date.now();
     while (!closed && !sent) {
       if (hasPending(sessionId)) {
-        await touchSession(org_id, agent_id, sessionId);
-        const work = dequeue(sessionId);
-        if (work?.repo && !work.githubToken) {
-          const githubToken = await resolveGitHubToken(work.repo);
-          if (githubToken) work.githubToken = githubToken;
-        }
-        respond({ work });
-        return;
+        dequeue(sessionId); // wake-up signal only — claim from the DB below
       }
       const loopClaim = await claimPendingWork(org_id, agent_id, sessionId);
       if (loopClaim) {
@@ -253,21 +262,37 @@ export async function handleClaimResult(req, res) {
 
   try {
     const { org_id } = req.tokenInfo;
-    const { status, repo, pr_number, attempt } = parsed.data;
+    const { status, repo, pr_number, attempt, claim_id, failure_kind } = parsed.data;
 
     if (status === 'completed') {
-      // Look up claim_type before completing (for chaining and to narrow completion)
-      const existingClaim = await getClaimByAttempt(org_id, repo, pr_number, attempt);
-      const claimType = existingClaim?.claim_type ?? 'review_fix';
-
-      const claim = await completeClaim(org_id, repo, pr_number, attempt, claimType);
+      // Resolve the claim by id when the runner sent one — the id path can
+      // never collide two claim types sharing an attempt number. Fall back
+      // to the natural key only for older runners.
+      let claim;
+      let alreadyResolved = null;
+      if (claim_id != null) {
+        claim = await completeClaimById(org_id, claim_id);
+        if (!claim) {
+          const existing = await getClaimById(org_id, claim_id);
+          if (existing?.status === 'completed' || existing?.status === 'failed') {
+            alreadyResolved = existing;
+          }
+        }
+      } else {
+        const existingClaim = await getClaimByAttempt(org_id, repo, pr_number, attempt);
+        claim = await completeClaim(org_id, repo, pr_number, attempt, existingClaim?.claim_type ?? 'review_fix');
+        if (!claim && (existingClaim?.status === 'completed' || existingClaim?.status === 'failed')) {
+          alreadyResolved = existingClaim;
+        }
+      }
       if (!claim) {
-        // Claim may already be completed via webhook (pull_request_review) — treat as success
-        if (existingClaim?.status === 'completed' || existingClaim?.status === 'failed') {
-          return res.json({ ok: true, claim_id: existingClaim.id, status: existingClaim.status, note: 'already_resolved' });
+        if (alreadyResolved) {
+          // Claim may already be completed via webhook (pull_request_review) — treat as success
+          return res.json({ ok: true, claim_id: alreadyResolved.id, status: alreadyResolved.status, note: 'already_resolved' });
         }
         return res.status(404).json({ error: 'Claim not found or already resolved' });
       }
+      const claimType = claim.claim_type ?? 'review_fix';
 
       audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status, claimType } });
 
@@ -333,16 +358,45 @@ export async function handleClaimResult(req, res) {
 
       res.json({ ok: true, claim_id: claim.id, status: claim.status });
     } else {
-      // Failed claim — no chaining
-      const claim = await failClaim(org_id, repo, pr_number, attempt);
+      // Failed claim — transient failures are re-dispatched at attempt + 1;
+      // terminal failures (default) stay final, as before.
+      let claim;
+      if (claim_id != null) {
+        claim = await failClaimById(org_id, claim_id);
+      } else {
+        // Narrow the natural-key update by claim type so a failure report
+        // can't mark BOTH claim types sharing this attempt number as failed.
+        const existing = await getClaimByAttempt(org_id, repo, pr_number, attempt);
+        claim = await failClaim(org_id, repo, pr_number, attempt, existing?.claim_type ?? null);
+      }
       if (!claim) {
-        const existingClaim = await getClaimByAttempt(org_id, repo, pr_number, attempt);
+        const existingClaim = claim_id != null
+          ? await getClaimById(org_id, claim_id)
+          : await getClaimByAttempt(org_id, repo, pr_number, attempt);
         if (existingClaim?.status === 'completed' || existingClaim?.status === 'failed') {
           return res.json({ ok: true, claim_id: existingClaim.id, status: existingClaim.status, note: 'already_resolved' });
         }
         return res.status(404).json({ error: 'Claim not found or already resolved' });
       }
-      audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status: 'failed' } });
+      audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status: 'failed', failure_kind: failure_kind ?? 'terminal' } });
+      if (failure_kind === 'transient') {
+        try {
+          const redispatched = await redispatchClaim(claim);
+          logger.info({
+            msg: 'Re-dispatched transient-failed claim',
+            repo,
+            prNumber: pr_number,
+            oldAttempt: claim.attempt,
+            newAttempt: redispatched ? claim.attempt + 1 : null,
+            claimId: redispatched?.id ?? null,
+          });
+        } catch (err) {
+          // Safe to continue: the failure is already durably recorded; a lost
+          // re-dispatch leaves the pipeline paused for manual dispatch rather
+          // than corrupting state.
+          logger.error({ msg: 'Failed to re-dispatch transient-failed claim', error: err.message, claimId: claim.id });
+        }
+      }
       res.json({ ok: true, claim_id: claim.id, status: claim.status });
     }
   } catch (err) {
@@ -351,9 +405,47 @@ export async function handleClaimResult(req, res) {
   }
 }
 
+/**
+ * POST /api/runner/heartbeat — keep a session and its active claim alive
+ * while a runner executes a long agent run. Touches the session (same
+ * semantics as the poll touch); when claim_id is present and currently
+ * claimed by this session, extends the claim's expires_at by CLAIM_TTL_MS.
+ */
+export async function handleHeartbeat(req, res) {
+  const parsed = HeartbeatSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
+
+  try {
+    const { org_id, agent_id } = req.tokenInfo;
+    const { session_id: sessionId, claim_id: claimId } = parsed.data;
+
+    const alive = await touchSession(org_id, agent_id, sessionId);
+    if (!alive) {
+      return res.status(410).json({ error: 'Session expired or offline — re-register' });
+    }
+
+    if (claimId != null) {
+      const extended = await extendClaim({ orgId: org_id, claimId, sessionId, ttlMs: CLAIM_TTL_MS });
+      if (extended) {
+        // Audit only actual claim extensions — session-only heartbeats fire
+        // every FLUENT_FLOW_HEARTBEAT_MS and would flood the audit log.
+        audit('claim_heartbeat', { data: { claimId, sessionId } });
+        return res.json({ ok: true, claim: { id: claimId } });
+      }
+      return res.json({ ok: true, claim: null });
+    }
+
+    return res.json({ ok: true });
+  } catch (err) {
+    logger.error({ msg: 'Failed to process runner heartbeat', error: err.message });
+    if (!res.headersSent) res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 router.use('/runner', authenticateRunner);
 router.post('/runner/register', handleRegister);
 router.post('/runner/poll', handlePoll);
+router.post('/runner/heartbeat', handleHeartbeat);
 router.post('/runner/claim', handleClaimResult);
 
 export default router;

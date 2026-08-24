@@ -8,6 +8,9 @@ const { agentClaims, agentSessions } = schema;
 
 const DEFAULT_CLAIM_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
+/** Cap on automatic re-dispatch attempts (expiry + transient-failure paths). */
+export const MAX_RETRY_ATTEMPTS = 10;
+
 /**
  * Normalize a Drizzle camelCase claim row to the snake_case shape the rest of
  * the app (engine hooks, route handlers, webhook payloads) reads. Consumers
@@ -154,6 +157,107 @@ export async function completeClaim(orgId, repo, prNumber, attempt, claimType = 
  */
 export async function failClaim(orgId, repo, prNumber, attempt, claimType = null) {
   return finalizeClaim(orgId, repo, prNumber, attempt, 'failed', claimType);
+}
+
+/**
+ * Extend a claimed claim's expiry — runner heartbeat support. Only applies
+ * when the claim is currently `claimed` by the given session; anything else
+ * (missing, pending, claimed by another session) returns null.
+ * @returns {Promise<{ id: number } | null>}
+ */
+export async function extendClaim({ orgId, claimId, sessionId, ttlMs = DEFAULT_CLAIM_TTL_MS }) {
+  const expiresAt = new Date(Date.now() + ttlMs);
+  const [row] = await db
+    .update(agentClaims)
+    .set({ expiresAt })
+    .where(
+      and(
+        eq(agentClaims.id, claimId),
+        eq(agentClaims.orgId, orgId),
+        eq(agentClaims.sessionId, sessionId),
+        eq(agentClaims.status, 'claimed'),
+      ),
+    )
+    .returning({ id: agentClaims.id });
+  return row ?? null;
+}
+
+/**
+ * Get a claim by id, scoped to an org. Unambiguous — unlike the natural-key
+ * lookup, two claim types sharing an attempt number can never collide.
+ */
+export async function getClaimById(orgId, claimId) {
+  const [row] = await db
+    .select()
+    .from(agentClaims)
+    .where(and(eq(agentClaims.id, claimId), eq(agentClaims.orgId, orgId)))
+    .limit(1);
+  return toSnakeClaim(row) ?? null;
+}
+
+async function finalizeClaimById(orgId, claimId, finalStatus) {
+  const [row] = await db
+    .update(agentClaims)
+    .set({ status: finalStatus, completedAt: sql`NOW()` })
+    .where(
+      and(
+        eq(agentClaims.id, claimId),
+        eq(agentClaims.orgId, orgId),
+        inArray(agentClaims.status, ['claimed', 'pending']),
+      ),
+    )
+    .returning({
+      ...getTableColumns(agentClaims),
+      sessionAgentId: sql`(SELECT ${agentSessions.agentId} FROM ${agentSessions} WHERE ${agentSessions.id} = ${agentClaims.sessionId})`.as('session_agent_id'),
+    });
+  if (!row) return null;
+  const { sessionAgentId, ...claim } = row;
+  await freeSession(orgId, claim.sessionId, sessionAgentId, 'online');
+  return toSnakeClaim(claim);
+}
+
+/**
+ * Mark a claim completed by id. The only ambiguity-free finalization —
+ * use whenever the caller knows the claim id.
+ */
+export async function completeClaimById(orgId, claimId) {
+  return finalizeClaimById(orgId, claimId, 'completed');
+}
+
+/**
+ * Mark a claim failed by id. The only ambiguity-free finalization.
+ */
+export async function failClaimById(orgId, claimId) {
+  return finalizeClaimById(orgId, claimId, 'failed');
+}
+
+/**
+ * Shared re-dispatch: create a follow-on claim at attempt + 1 for a claim
+ * that expired or failed transiently. Preserves claim_type, payload, and
+ * head_sha. Respects MAX_RETRY_ATTEMPTS. Returns the new claim, or null on
+ * cap/conflict.
+ */
+export async function redispatchClaim(claim) {
+  const newAttempt = claim.attempt + 1;
+  if (newAttempt > MAX_RETRY_ATTEMPTS) {
+    logger.warn({
+      msg: 'Claim re-dispatch skipped — max retry attempts reached',
+      repo: claim.repo,
+      prNumber: claim.pr_number,
+      attempt: claim.attempt,
+      maxAttempts: MAX_RETRY_ATTEMPTS,
+    });
+    return null;
+  }
+  return createClaim({
+    orgId: claim.org_id,
+    repo: claim.repo,
+    prNumber: claim.pr_number,
+    attempt: newAttempt,
+    claimType: claim.claim_type,
+    payload: claim.payload,
+    headSha: claim.head_sha,
+  });
 }
 
 /**
