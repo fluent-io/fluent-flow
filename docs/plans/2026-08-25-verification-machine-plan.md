@@ -310,7 +310,7 @@ export const VerifyManifestSchema = z.object({
 });
 export const VerificationResultSchema = z.object({
   phase: z.enum(['red', 'green']),
-  framework: z.enum(['vitest', 'jest', 'node', 'custom']),
+  framework: z.enum(['vitest', 'jest', 'node', 'custom', 'none']),   // 'none' = SKIPPED at detection
   outcome: z.enum(['PASS', 'FAIL', 'TAMPERED', 'SKIPPED']),
   matrix: z.object({ requirements: z.array(z.any()), suite: z.object({
     total: z.number().int(), passed: z.number().int(), failed: z.number().int(),
@@ -491,7 +491,7 @@ Use it in both the success and failure handling to short-circuit before `isTestC
 - Consumes: Task 9 worktree, Task 10 adapters/paths, `execute(cmd, cwd, timeoutMs)`, `client.heartbeat`, `resolveCommand`.
 - Produces: `runVerifyClaim({ work, log, execute, client, sessionId }) → { status, verification }`; prompt `resolvePrompt({ claimType:'verify', work })`.
 
-- [ ] **Step 1: Red-pipeline failing tests** (fake execute/adapters): detection-none → `SKIPPED`; authoring writes manifest+tests; RED proof requires `assertion-fail` × `red_reproductions` (2 consecutive runs) per requirement — pass-at-base requirement → retry authoring; suite-error → invalid red; blocking finding without requirement → `FAIL`; push step asserts `git status --porcelain` only `A` entries else claim fails; commit message includes `[skip ci]`; hashes recorded for tests + dependency_files; git stderr redacted before logging (`x-access-token:***@`); `WorktreeRefUnavailableError` ×2 → transient report, then `SKIPPED`.
+- [ ] **Step 1: Red-pipeline failing tests** (fake execute/adapters): detection-none → `SKIPPED` with `framework:'none'`; authoring writes manifest+tests; RED proof requires `assertion-fail` × `red_reproductions` (2 consecutive runs) per requirement — pass-at-base requirement → retry authoring; suite-error → invalid red; blocking finding without requirement → `FAIL`; push step asserts `git status --porcelain` shows only added/deleted entries within manifest scopes else claim fails; **reconciliation** — a manifest already on the branch from a crashed prior run: its superseded test files are deleted (no orphans); commit message includes `[skip ci]`; hashes recorded for tests + dependency_files **+ adapter-mandatory set (lockfile, package.json, framework config)**; git stderr redacted before logging (`x-access-token:***@`); `WorktreeRefUnavailableError` ×2 → transient report, then `SKIPPED`.
 - [ ] **Step 2: Implement red** (structure):
 
 ```js
@@ -517,9 +517,9 @@ async function runRed({ work, log, execute, client, sessionId }) {
 
 `complete(outcome, rest)` maps to `{ status: 'completed', verification: { outcome, ...rest } }`; infra errors return `{ status:'failed', failure_kind }` per spec §5.4 taxonomy.
 
-- [ ] **Step 3: Green-pipeline failing tests:** tamper — any hash mismatch (test or dependency file) → `TAMPERED`; manifest tests run explicitly — skip/missing = fail; newly pinned test flaking = blocking FAIL; full suite with pre-existing flake → non-blocking when `flake.blocking:false`; head lacking red artifacts → `TAMPERED`; uses ONLY `payload.red_record` (never reads `.fluent-flow/verify/` from the tree — test asserts no read path).
+- [ ] **Step 3: Green-pipeline failing tests:** tamper — any hash mismatch (test, dependency file, **or adapter-mandatory file: lockfile / package.json / framework config**) → `TAMPERED`; manifest tests run explicitly — skip/missing = fail; newly pinned test flaking = blocking FAIL; full suite with pre-existing flake → non-blocking when `flake.blocking:false`; head lacking red artifacts → `TAMPERED`; **full-suite failures in test files absent from every server-held manifest are reported as orphan warnings, not requirement failures**; uses ONLY `payload.red_record` (never reads `.fluent-flow/verify/` from the tree — test asserts no read path).
 - [ ] **Step 4: Implement green** (structure): worktree at `green_sha` (claim-scoped name) → hash check vs `red_record.test_hashes` → adapter run (manifest files) → adapter run (full suite) → flake classifier (failed-only rerun ≤ `flake.retries`) → matrix builder → outcome.
-- [ ] **Step 5: Prompt** — red template inlines: findings JSON, PR body, issue number, EARS forms, framework conventions, test dirs, `max_requirements`, the manifest contract (paths repo-relative, no commands, new file names only), and `DO NOT read any fix — author against the current (broken) state only.`
+- [ ] **Step 5: Prompt** — red template inlines: findings JSON, PR body, issue number, EARS forms, framework conventions, test dirs, `max_requirements`, the manifest contract (paths repo-relative, no commands, new file names only), `DO NOT read any fix — author against the current (broken) state only.`, **and intent-only distillation for spec.md: no verbatim finding text, no credentials/config identifiers beyond repo-relative test names (the artifact squash-merges to main)**.
 - [ ] **Step 6: runner.js branch** — `claim_type === 'verify'` → `runVerifyClaim`; unknown claim_type → `{ status:'failed', failure_kind:'terminal' }`.
 - [ ] **Step 7: Full runner suite (152+new). Commit:** `feat(runner): deterministic red/green verify pipelines`
 

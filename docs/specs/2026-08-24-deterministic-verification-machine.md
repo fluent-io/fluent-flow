@@ -1,6 +1,6 @@
 # Deterministic Verification Machine — Design Spec
 
-**Date:** 2026-08-24 · **Revised:** 2026-08-25 after cross-provider review (Claude Opus 5, GPT-5.6-Sol; 44 findings, all verified against code — zero false positives)
+**Date:** 2026-08-24 · **Revised:** 2026-08-25 after cross-provider review (Claude Opus 5: 22 findings; GPT-5.6-Sol: 22 findings; Qwen 3.8 27B: 22 findings — 66 total, all adjudicated against code; revision incorporates every verified finding)
 **Status:** Approved design, pre-implementation
 **Supersedes:** the `test_verify` claim type (deprecated; creation sites removed, historical rows and config values remain valid)
 **Builds on:** claim pipeline reliability substrate (PRs #117, #118, #119, #121 — all merged)
@@ -94,7 +94,6 @@ CI green on PR head
 **SKIPPED policy.** `verification.skip_policy` ∈ `allow_ungated` (default — preserves today's behavior: loops without a detectable framework continue and merge as they do now) | `require` (SKIPPED escalates to human) | `manual` (SKIPPED pauses). Rationale recorded: defaulting to `require` would stall every unconfigured repo's existing loop; raising the bar is an explicit per-repo opt-in.
 
 **test_verify deprecation.** No creation site produces `test_verify` anymore. The value stays in all three enums (`provider-schema.js`, `db/src/schemas/repo-config.ts`, runner `CLAIM_TYPES` removed instead — runner rejects unknown types as terminal, see §5.5) as **accepted-deprecated** so stored `repo_configs.claim_types` arrays keep validating; active `test_verify` claims drain naturally; removal lands in a later migration once none remain. The three enum copies are aligned in the same pass (`mcp/tools/tasks.js` gains `verify`, keeps `test_verify` deprecated).
-
 ## 5. Runner verify pipeline
 
 New module `packages/fluent-flow-runner/src/verify.js`. `handleWork` branches on `claim_type === 'verify'`; all other types untouched.
@@ -106,12 +105,12 @@ New module `packages/fluent-flow-runner/src/verify.js`. `handleWork` branches on
 3. **Authoring** (the only LLM step): existing harness machinery, new prompt. Input: server-inlined intent (findings, PR body, linked issue), EARS forms, framework conventions, test dirs, `max_requirements`. Output contract: test files + `spec.md` + `manifest.json` (requirements ↔ test paths ↔ dependency files ↔ framework id — **no commands**). Every blocking finding must map to ≥1 requirement (`source_finding_id` in the manifest); requirements are validated against server-inlined findings — an omitted or dropped blocking finding escalates rather than silently passing.
 4. **Install** (adapter-owned per package manager; `npm ci` / `pnpm install --frozen-lockfile` / `yarn install --immutable`).
 5. **RED proof** (deterministic): run the adapter's command over only the manifest's test files, JSON reporter. Validity per requirement: ≥1 test with assertion-failure status, **reproduced on 2 consecutive runs** (kills flaky-at-red). Suite-level errors (collection/syntax) → invalid red → authoring retry (≤ `authoring.retries`). Requirements still green-at-base after retries are dropped **with an explicit unverified-findings list** in the result; if any *blocking* finding ends up without a red-proven requirement → red outcome `FAIL` with explanation.
-6. **Commit & push.** Second worktree (`-push`) at `origin/<branch>`; copy in only manifest-listed files; assert `git status --porcelain` shows **only added** entries (anything else fails the claim — this enforces no-overwrite, resolving the base-vs-branch tree mismatch). Commit `test(verify): pin PR #<n> requirements (red) [skip ci]`. Push `git push origin HEAD:<branch>` (#119 pattern). Record sha256 of every test + dependency file, and the pushed `artifact_sha`.
+6. **Commit & push.** Second worktree (`-push`) at `origin/<branch>`; copy in only manifest-listed files; **first reconcile against any manifest already on the branch from a crashed prior run of this same chain** — test files listed in the on-branch manifest but absent from the new manifest are deleted (a re-dispatch after a partial push must not orphan previously pinned tests; orphans would fail green forever). Assert `git status --porcelain` shows only added/deleted entries within manifest scopes (anything else fails the claim). Commit `test(verify): pin PR #<n> requirements (red) [skip ci]`. Push `git push origin HEAD:<branch>` (#119 pattern). Record sha256 of every test + dependency file **plus the adapter's mandatory set — lockfile, `package.json`, framework config files** (adapter-declared, non-negotiable: a fixer-committed lockfile can carry arbitrary postinstall scripts — an RCE surface on BYOK runners), and the pushed `artifact_sha`.
 
 ### 5.2 Green phase (deterministic from the first instruction)
 
 1. Worktree at the fixed `head_sha` (name-scoped, detached).
-2. **Tamper check** against the **server-inlined red record** (never the branch copy): every recorded test + dependency file (framework config, setup files, fixtures, helpers the manifest declared) must exist with an identical sha256. Modified, deleted, or added-surrounding-mocks → outcome `TAMPERED`.
+2. **Tamper check** against the **server-inlined red record** (never the branch copy): every recorded test, dependency file (fixtures, config, helpers the manifest declared), **and adapter-mandatory file (lockfile, `package.json`, framework config)** must exist with an identical sha256. Modified, deleted, or added-surrounding-mocks → outcome `TAMPERED`. For pinned-test execution the adapter passes an explicit file list (it already does — `testCommand({ files })`), so framework `include`/`exclude` edits cannot silently skip pinned tests.
 3. **Install**, then **manifest tests explicitly** (adapter command, JSON reporter): every pinned test must pass; skips/missing count as failure; a newly pinned test that flakes is **blocking** (contradiction with "all requirements green" is resolved in favor of the requirement).
 4. **Full suite run** (regression included). Pre-existing suite flakes follow `flake.retries`/`flake.blocking` as before.
 5. **Matrix & outcome**: `PASS` iff all requirements green (blocking-flake rule above), full suite green modulo flake policy, no tamper. Reported with the full `verification` payload (§6.4).
@@ -128,11 +127,11 @@ export default {
 };
 ```
 
-Phase 1 adapters: `vitest`, `jest`, `node`. Each publishes its **classification table** — which reporter fields map to `assertion-fail` vs `suite-error` — as part of the adapter contract and its tests. `custom` (repo-config `command`, argv array + cwd, owner-authored and reviewed in-repo) is **suite-only**: no per-test parsing, no red proof — red phase yields `SKIPPED` and `skip_policy` governs. `playwright` joins in phase 2.
+Phase 1 adapters: `vitest`, `jest`, `node`. Each publishes its **classification table** — which reporter fields map to `assertion-fail` vs `suite-error` — as part of the adapter contract and its tests. `custom` (repo-config `command`, argv array + cwd, owner-authored and reviewed in-repo) is **suite-only**: no per-test parsing, no red proof — red phase yields `SKIPPED` and `skip_policy` governs; its green matrix is the **degraded shape** `{ requirements: [], suite: { total: 1, passed: 0|1, failed: 0|1, flaky: 0, skipped: 0 }, schema_version: 1 }` (suite-level outcome only). `SKIPPED`-at-detection reports `framework: 'none'`. `playwright` joins in phase 2.
 
 ### 5.4 Failure taxonomy & reliability substrate (mandatory)
 
-Verify claims adopt #117/#118 semantics from day one: heartbeat during authoring/install/suite runs; results via `claim_id`; suite runs through hardened `execute()` with per-invocation timeouts (`timeouts_min.red` / `.green`); harness `is_error` envelopes fail the claim (envelope parser lives in `fluent-flow-runner/src/runner.js`).
+Verify claims adopt #117/#118 semantics from day one: heartbeat during authoring/install/suite runs; results via `claim_id`; **install and suite runs** go through hardened `execute()` with per-invocation timeouts (`timeouts_min.red` / `.green`) — LLM authoring keeps the default agent timeout (60 min); a 15-min red budget must never kill a legitimate long authoring. Harness `is_error` envelopes fail the claim (envelope parser lives in `fluent-flow-runner/src/runner.js`).
 
 Failure kinds, per step:
 
@@ -155,7 +154,7 @@ Runners advertise `supported_claim_types` in `register` session meta (legacy def
 
 - FAIL branch: instead of creating `review_fix`, create `verify` (phase red) when the resolved config enables verification; else `review_fix` as today. Red payload inlines: structured findings (with stable finding IDs), PR body, linked issue, `red_base_sha = review.commit_id`, resolved verification config snapshot, `branch`.
 - `handleClaimResult` verify branch (all transitions idempotent, see §6.4 durability):
-  - red `PASS` → create `review_fix` (payload gains `source_claim_id` → red claim).
+  - red `PASS` → create `review_fix` (payload gains `source_claim_id` → red claim **and re-inlines the red claim's findings**, so fix iterations always carry full context, not just `{ source_claim_id, branch }`).
   - red `SKIPPED`/`FAIL`/exhausted → `review_fix` ungated + check-run note (loop must not dead-end; regression from today's always-fix behavior is unacceptable).
   - green `PASS` → `dispatchReview` (re-review, existing) — auto-merge then fires from the existing re-review PASS path.
   - green `FAIL` → `review_fix`, next cycle (fix-iteration cap governs).
@@ -179,7 +178,7 @@ Replaces the test_verify block: on CI success, follow the exact `review_fix.payl
 ```js
 verification: z.object({
   phase: z.enum(['red', 'green']),
-  framework: z.string(),                      // 'vitest' | 'jest' | 'node' | 'custom'
+  framework: z.enum(['vitest', 'jest', 'node', 'custom', 'none']),  // 'none' = SKIPPED at detection
   outcome: z.enum(['PASS', 'FAIL', 'TAMPERED', 'SKIPPED']),
   matrix: VerifyMatrixSchema.nullable(),       // null for SKIPPED
   manifest: VerifyManifestSchema.optional(),   // red phase: the canonical record
@@ -194,7 +193,7 @@ Persistence is transactional with finalize: one DB transaction completes the cla
 
 ### 6.5 review_fix prompt clause
 
-Appended when a red record exists: the verifier's test files *and declared dependency files* (fixtures, config, helpers listed in the manifest) are immutable — modification, deletion, or mocking-around them fails verification by hash; definition of done is those tests plus the existing suite passing.
+Appended when a red record exists — **red record = latest completed `verify` claim with `payload.phase = 'red'` for the PR whose `verification_results.test_hashes` is non-null** (exact lookup; never a timing-dependent branch check): the verifier's test files, declared dependency files, *and adapter-mandatory files* (lockfile, `package.json`, framework config) are immutable — modification, deletion, or mocking-around them fails verification by hash; definition of done is those tests plus the existing suite passing.
 
 ### 6.6 Enums
 
@@ -297,13 +296,15 @@ Beyond the v1 rules, on all user-visible surfaces (check-run output, PR comments
 
 - **Path safety:** manifest/test paths are repo-relative, normalized (`^[A-Za-z0-9._\-/]+$`, no leading `/`, no `..`); the runner enforces `realpath` containment inside the worktree before any copy/hash/execute — symlink escape attempts are terminal failures, surfaced generically.
 - **No LLM-authored execution:** commands are adapter-built or owner-configured argv; the manifest carries no command strings.
+- **Supply-chain pinning:** lockfile, `package.json`, and framework config are adapter-mandatory hash targets (§5.1.6) — a fixer-committed lockfile cannot inject postinstall execution; install runs against red-record-pinned bytes.
 - **Rendered-field sanitization:** length caps, control-character stripping, secret-pattern redaction, path normalization applied server-side to every string rendered from results; raw framework output stays runner-side.
+- **Committed-artifact hygiene:** `spec.md`/`manifest.json` persist onto `main` via squash merge — a durable, user-visible artifact. The authoring prompt distills to intent-level EARS sentences only: no verbatim finding text, no credentials/config identifiers beyond repo-relative test names. Residual risk documented: review findings are already public on the PR via inline comments; the delta is permanence.
 - **Git credential hygiene:** all git stdout/stderr crossing to results/comments is redacted (`x-access-token:***@`); prefer `http.extraHeader`/credential-helper over URL-embedded tokens (existing worktree.js behavior noted).
 - **Env inheritance:** verify subprocesses inherit the runner env (needed for harness auth); the adapter/command allowlist is the mitigation surface — `custom` commands are repo-reviewed content.
 
 ## 12. Phasing
 
-- **Phase 1 (this spec):** chain coordinator + transitions, red/green pipeline, adapters (vitest/jest/node + custom suite-only), server-owned red records, tamper + flake + taxonomy, check-run plumbing (real ids, exclusions), durability (transactional persist, replay sweep), capability negotiation, migration 0010, dashboard chain view + panel, config system.
+- **Phase 1 (this spec):** chain coordinator + transitions, red/green pipeline, adapters (vitest/jest/node + custom suite-only), server-owned red records, tamper + flake + taxonomy, check-run plumbing (real ids, exclusions), durability (transactional persist, replay sweep), capability negotiation, migration 0010, dashboard chain view + panel, config system. The legacy `test_verify → re-review` chain branch in `handleClaimResult` is **retained until no non-terminal `test_verify` claims remain**, then removed — in-flight claims at deploy time drain instead of dead-ending.
 - **Phase 2:** Playwright adapter + app boot; screenshot/trace evidence; Gherkin expression of EARS.
 - **Phase 3 (optional):** OpenAPI contract layer; property-based extraction; pytest/go adapters; advisory-fix verification.
 
