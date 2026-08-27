@@ -72,7 +72,7 @@ export const VerificationConfigSchema = VerificationConfigBase.default({}).refin
 );
 
 const VerificationConfigSchemaPartial = VerificationConfigBase.partial().optional().refine(
-  (v) => v === undefined || v.framework !== 'custom' || v.command !== null,
+  (v) => v === undefined || v.framework !== 'custom' || v.command != null,
   { message: 'verification.command (argv) is required when framework is custom' },
 );
 
