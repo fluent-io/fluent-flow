@@ -39,6 +39,9 @@
  *   Enqueue a Check Run creation. Returns the outbound queue row.
  *   input: { name, head_sha, status, external_id? }
  *
+ * @property {function(repo: object, input: object, ctx?: object): Promise<object>} createCheckRunSync
+ *   Create a Check Run directly through REST and return the GitHub response.
+ *
  * @property {function(repo: object, checkRunId: number, input: object, ctx?: object): Promise<object>} updateCheckRun
  *   Enqueue a Check Run update. Returns the outbound queue row.
  *   input: { status, conclusion?, started_at?, completed_at?, output? }

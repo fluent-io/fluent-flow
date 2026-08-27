@@ -24,9 +24,16 @@ vi.mock('../../src/engine/verify-transitions.js', async (importOriginal) => {
   return { ...actual, applyVerifyTransitionWithEffects: vi.fn() };
 });
 
+vi.mock('../../src/engine/check-run.js', () => ({
+  onClaimStarted: vi.fn(),
+  onClaimResolved: vi.fn(),
+  renderMatrixSummary: vi.fn(() => ({ title: 'Verification Matrix', summary: 'ok', annotations: [] })),
+}));
+
 import { handleClaimResult } from '../../src/routes/runner.js';
 import { getClaimById, completeClaimById } from '../../src/agents/claim-manager.js';
 import { applyVerifyTransitionWithEffects } from '../../src/engine/verify-transitions.js';
+import { onClaimResolved } from '../../src/engine/check-run.js';
 import { withTransaction, insertVerificationResult } from '@fluent-flow/db';
 
 function makeRes() {
@@ -54,6 +61,7 @@ const VERIFY_CLAIM = {
   status: 'pending',
   payload: { phase: 'red' },
   head_sha: 'abc123',
+  check_run_external_id: 321,
 };
 
 beforeEach(() => {
@@ -118,6 +126,11 @@ describe('handleClaimResult — verify branch', () => {
       VERIFY_CLAIM,
       verification,
       { orgId: 'o1' },
+    );
+    expect(onClaimResolved).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ check_run_external_id: 321 }),
+      expect.objectContaining({ conclusion: 'success', output: expect.objectContaining({ title: 'Verification Matrix' }) }),
     );
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
@@ -194,4 +207,3 @@ describe('handleClaimResult — verify branch', () => {
     expect(res.body.note).toBe('already_resolved');
   });
 });
-

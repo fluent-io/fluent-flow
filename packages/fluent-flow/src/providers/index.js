@@ -70,6 +70,10 @@ function buildGitHubClient(repo) {
       });
     },
 
+    async createCheckRunSync({ owner, repo: repoName }, input, ctx) {
+      return rest.createCheckRunSync(owner, repoName, input, { installation_id: installationId, ...ctx });
+    },
+
     async updateCheckRun({ owner, repo: repoName }, checkRunId, input, ctx) {
       const payload = { owner, repo: repoName, checkRunId, ...input };
       return enqueueProviderAction({

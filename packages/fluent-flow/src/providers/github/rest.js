@@ -62,6 +62,22 @@ async function githubRequest(path, options = {}, token) {
 }
 
 /**
+ * Create a check run directly via REST.
+ * @param {string} owner
+ * @param {string} repo
+ * @param {object} input
+ * @param {{ installation_id?: number }} [ctx]
+ * @returns {Promise<object>}
+ */
+export async function createCheckRunSync(owner, repo, input, ctx) {
+  const token = await resolveToken(ctx);
+  return githubRequest(`/repos/${owner}/${repo}/check-runs`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  }, token);
+}
+
+/**
  * Post a comment on an issue or PR.
  * @param {string} owner
  * @param {string} repo

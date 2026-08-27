@@ -22,6 +22,8 @@ import { audit } from '../db/client.js';
 import logger from '../logger.js';
 import { getInstallationToken } from '../providers/github/token-cache.js';
 import { installationCtxForRepo } from '../config/loader.js';
+import { onClaimStarted, onClaimResolved, renderMatrixSummary } from '../engine/check-run.js';
+import { getProvider } from '../providers/index.js';
 
 const router = Router();
 
@@ -195,6 +197,11 @@ export async function handlePoll(req, res, opts = {}) {
         : pendingClaim.payload;
 
       const githubToken = await resolveGitHubToken(pendingClaim.repo);
+      try {
+        await onClaimStarted(getProvider({ provider: 'github', installation_id: pendingClaim.installation_id }), pendingClaim);
+      } catch (err) {
+        logger.warn({ msg: 'onClaimStarted failed but claim can continue', claimId: pendingClaim.id, error: err.message });
+      }
 
       respond({
         work: {
@@ -226,6 +233,11 @@ export async function handlePoll(req, res, opts = {}) {
         await touchSession(org_id, agent_id, sessionId);
         const lp = typeof loopClaim.payload === 'string' ? JSON.parse(loopClaim.payload) : loopClaim.payload;
         const githubToken = await resolveGitHubToken(loopClaim.repo);
+        try {
+          await onClaimStarted(getProvider({ provider: 'github', installation_id: loopClaim.installation_id }), loopClaim);
+        } catch (err) {
+          logger.warn({ msg: 'onClaimStarted failed but claim can continue', claimId: loopClaim.id, error: err.message });
+        }
         respond({
           work: {
             repo: loopClaim.repo,
@@ -364,6 +376,19 @@ export async function handleClaimResult(req, res) {
           // Safe to continue: the claim is completed and the result persisted;
           // a later redelivery re-derives this same transition (spec §6.4).
           logger.error({ msg: 'Verify transition failed — redelivery re-derives', repo, claimId: claim.id, error: err.message });
+        }
+        try {
+          const conclusion = verification.outcome === 'PASS'
+            ? 'success'
+            : verification.outcome === 'SKIPPED'
+              ? 'neutral'
+              : 'failure';
+          await onClaimResolved(getProvider({ provider: 'github', installation_id: claim.installation_id }), claim, {
+            conclusion,
+            output: renderMatrixSummary(verification),
+          });
+        } catch (err) {
+          logger.warn({ msg: 'onClaimResolved failed but verify result is persisted', repo, claimId: claim.id, error: err.message });
         }
         return res.json({ ok: true, claim_id: claim.id });
       }
