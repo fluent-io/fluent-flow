@@ -14,9 +14,10 @@ function normalizeFile(file) {
 export default async function* reporter(source) {
   const rows = [];
   for await (const event of source) {
-    if (!['test:complete', 'test:pass', 'test:fail'].includes(event.type)) continue;
+    if (event.type !== 'test:complete') continue;
     const data = event.data ?? {};
     const details = data.details ?? {};
+    if (details.error?.failureType === 'subtestsFailed') continue;
     const row = {
       file: normalizeFile(data.file ?? data.name),
       name: data.name ?? '',
@@ -25,8 +26,8 @@ export default async function* reporter(source) {
     };
     if (details.skip || details.todo || data.skip || data.todo) {
       row.status = 'skip';
-    } else if (details.error || event.type === 'test:fail' || details.passed === false) {
-      row.status = details.type === 'suite' ? 'suite-error' : 'assertion-fail';
+    } else if (details.error || details.passed === false) {
+      row.status = data.file && data.name === data.file && details.error ? 'suite-error' : 'assertion-fail';
       row.message = toMessage(details);
     }
     rows.push(row);

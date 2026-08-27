@@ -304,6 +304,55 @@ describe('reporter parsing', () => {
     ]);
   });
 
+  it('emits one row per completed node:test item and drops child-failure aggregate wrappers', async () => {
+    const { default: reporter } = await import('../../src/verify-adapters/node-json-reporter.js');
+    const file = join(process.cwd(), 'tests', 'node-reporter.test.js');
+    async function* source() {
+      yield { type: 'test:pass', data: { file, name: 'pass', details: { passed: true } } };
+      yield { type: 'test:complete', data: { file, name: 'pass', details: { passed: true } } };
+      yield {
+        type: 'test:fail',
+        data: { file, name: 'assertion failure', details: { error: { message: 'expected 1 to equal 2' } } },
+      };
+      yield {
+        type: 'test:complete',
+        data: { file, name: 'assertion failure', details: { error: { message: 'expected 1 to equal 2' } } },
+      };
+      yield { type: 'test:pass', data: { file, name: 'skipped', details: { skip: 'later' } } };
+      yield { type: 'test:complete', data: { file, name: 'skipped', details: { skip: 'later' } } };
+      yield {
+        type: 'test:complete',
+        data: {
+          file,
+          name: 'suite',
+          details: { error: { failureType: 'subtestsFailed', message: 'test failed' } },
+        },
+      };
+      yield {
+        type: 'test:complete',
+        data: {
+          file,
+          name: file,
+          details: { error: { failureType: 'subtestsFailed', message: 'test failed' } },
+        },
+      };
+    }
+
+    const chunks = [];
+    for await (const chunk of reporter(source())) chunks.push(chunk);
+
+    expect(JSON.parse(chunks.join(''))).toEqual([
+      { file: 'tests/node-reporter.test.js', name: 'pass', status: 'pass', message: '' },
+      {
+        file: 'tests/node-reporter.test.js',
+        name: 'assertion failure',
+        status: 'assertion-fail',
+        message: 'expected 1 to equal 2',
+      },
+      { file: 'tests/node-reporter.test.js', name: 'skipped', status: 'skip', message: '' },
+    ]);
+  });
+
   it('parses node:test stdout from the custom reporter in an integration-style run', () => {
     const worktree = mkdtempSync(join(tmpdir(), 'ff-node-run-'));
     const root = join(worktree, 'packages', 'app');
@@ -330,13 +379,23 @@ describe('reporter parsing', () => {
     argv[destinationIndex + 1] = reportFile;
     const reporterIndex = argv.indexOf('--test-reporter');
     argv[reporterIndex + 1] = reporterPath;
-    const run = spawnSync(process.execPath, argv.slice(1), { cwd: root, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
+    const run = spawnSync(process.execPath, ['--test-isolation=none', ...argv.slice(1)], {
+      cwd: root,
+      encoding: 'utf8',
+      env: { ...process.env, NODE_OPTIONS: '' },
+    });
     expect(run.status).toBe(1);
     expect(run.stderr).not.toMatch(/ERR_MODULE_NOT_FOUND/);
     const parsed = node.parseResults(JSON.parse(readFileSync(reportFile, 'utf8')));
-    expect(parsed).toMatchObject([
-      { status: 'assertion-fail' },
-      { status: 'assertion-fail' },
+    expect(parsed).toEqual([
+      { file: 'tests/node-adapter.test.js', name: 'pass', status: 'pass', message: '' },
+      {
+        file: 'tests/node-adapter.test.js',
+        name: 'fail',
+        status: 'assertion-fail',
+        message: 'Expected values to be strictly equal:\n\n1 !== 2\n',
+      },
+      { file: 'tests/node-adapter.test.js', name: 'skip', status: 'skip', message: '' },
     ]);
   });
 });
