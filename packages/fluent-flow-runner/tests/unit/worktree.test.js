@@ -16,7 +16,7 @@ vi.mock('node:os', () => ({
   homedir: (...args) => mockHomedir(...args),
 }));
 
-const { prepareWorktree } = await import('../../src/worktree.js');
+const { prepareWorktree, WorktreeRefUnavailableError } = await import('../../src/worktree.js');
 
 describe('worktree', () => {
   let savedEnv;
@@ -40,6 +40,137 @@ describe('worktree', () => {
   });
 
   describe('prepareWorktree', () => {
+    it('fetches an explicit ref before creating a detached worktree', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      const result = await prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        ref: 'abc123def456',
+      });
+
+      expect(result.worktreePath).toContain('pr-40-claim-123');
+
+      const fetchIndex = mockExecFile.mock.calls.findIndex(c => c[1][0] === 'fetch' && c[1][1] === 'origin' && c[1][2] === 'abc123def456');
+      const worktreeCall = mockExecFile.mock.calls.find(c => c[1][0] === 'worktree' && c[1][1] === 'add');
+      expect(fetchIndex).toBeGreaterThan(-1);
+      expect(worktreeCall[1]).toEqual(['worktree', 'add', '--detach', result.worktreePath, 'abc123def456']);
+      expect(fetchIndex).toBeLessThan(mockExecFile.mock.calls.indexOf(worktreeCall));
+    });
+
+    it('appends name to claim-based worktree paths', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      const result = await prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        name: 'verify-red',
+        ref: 'abc123def456',
+      });
+
+      expect(result.worktreePath).toContain('pr-40-claim-123-verify-red');
+    });
+
+    it('retries explicit ref fetch after a plain origin fetch', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      let fetchCount = 0;
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        if (typeof opts === 'function') { opts(null, '', ''); return; }
+        if (args[0] === 'fetch' && args[1] === 'origin' && args[2] === 'abc123def456') {
+          fetchCount++;
+          if (fetchCount === 1) {
+            cb(new Error('missing ref'));
+            return;
+          }
+        }
+        cb(null, '', '');
+      });
+
+      await prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        ref: 'abc123def456',
+      });
+
+      const fetchCalls = mockExecFile.mock.calls.filter(c => c[1][0] === 'fetch');
+      expect(fetchCalls.map(c => c[1].join(' '))).toEqual([
+        'fetch origin abc123def456',
+        'fetch origin',
+        'fetch origin abc123def456',
+      ]);
+    });
+
+    it('throws when an explicit ref stays unavailable after retry', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        if (typeof opts === 'function') { opts(null, '', ''); return; }
+        if (args[0] === 'fetch') {
+          cb(new Error('missing ref'));
+          return;
+        }
+        cb(null, '', '');
+      });
+
+      await expect(
+        prepareWorktree({
+          workDir: '/work',
+          repo: 'fluent-io/fluent-flow',
+          prNumber: 40,
+          claimId: 123,
+          ref: 'abc123def456',
+        }),
+      ).rejects.toBeInstanceOf(WorktreeRefUnavailableError);
+      await expect(
+        prepareWorktree({
+          workDir: '/work',
+          repo: 'fluent-io/fluent-flow',
+          prNumber: 40,
+          claimId: 123,
+          ref: 'abc123def456',
+        }),
+      ).rejects.toThrow('abc123def456');
+    });
+
+    it('keeps attempt-based worktree names and branch checkout for back-compat', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      const result = await prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        attempt: 1,
+        branch: 'fix/something',
+      });
+
+      expect(result.worktreePath).toContain('pr-40-attempt-1');
+
+      const worktreeCall = mockExecFile.mock.calls.find(c => c[1][0] === 'worktree' && c[1][1] === 'add');
+      expect(worktreeCall[1]).toContain('origin/fix/something');
+    });
+
     it('clones repo when base clone does not exist (plain HTTPS fallback)', async () => {
       mockExistsSync.mockReturnValue(false);
       delete process.env.SSH_AUTH_SOCK;
