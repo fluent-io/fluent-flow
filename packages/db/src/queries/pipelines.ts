@@ -57,6 +57,24 @@ export async function listPipelines(orgIds: string[], filter: 'active' | 'archiv
   })) as PipelineListItem[];
 }
 
+export interface PipelineVerificationResult {
+  id: number;
+  org_id: string;
+  claim_id: number;
+  repo: string;
+  pr_number: number;
+  phase: string;
+  framework: string;
+  outcome: string;
+  matrix: unknown;
+  manifest: unknown;
+  test_hashes: unknown;
+  artifact_sha: string | null;
+  red_base_sha: string | null;
+  green_sha: string | null;
+  created_at: string;
+}
+
 export interface PipelineDetailClaim {
   id: number;
   org_id: string;
@@ -73,6 +91,7 @@ export interface PipelineDetailClaim {
   created_at: Date;
   agent_id: string | null;
   session_meta: Record<string, unknown> | null;
+  verification_result: PipelineVerificationResult | null;
 }
 
 export async function getPipelineDetail(orgIds: string[], repo: string, prNumber: number | null, filter: 'active' | 'archived' | 'all' = 'active'): Promise<PipelineDetailClaim[]> {
@@ -86,22 +105,40 @@ export async function getPipelineDetail(orgIds: string[], repo: string, prNumber
     SELECT
       c.*,
       s.agent_id,
-      s.session_meta
+      s.session_meta,
+      CASE WHEN vr.id IS NULL THEN NULL ELSE json_build_object(
+        'id', vr.id,
+        'org_id', vr.org_id,
+        'claim_id', vr.claim_id,
+        'repo', vr.repo,
+        'pr_number', vr.pr_number,
+        'phase', vr.phase,
+        'framework', vr.framework,
+        'outcome', vr.outcome,
+        'matrix', vr.matrix,
+        'manifest', vr.manifest,
+        'test_hashes', vr.test_hashes,
+        'artifact_sha', vr.artifact_sha,
+        'red_base_sha', vr.red_base_sha,
+        'green_sha', vr.green_sha,
+        'created_at', vr.created_at
+      ) END AS verification_result
     FROM agent_claims c
     LEFT JOIN agent_sessions s ON c.session_id = s.id
+    LEFT JOIN verification_results vr ON vr.claim_id = c.id
     WHERE ${isSuper ? '' : 'c.org_id = ANY($1) AND '}c.repo = $${isSuper ? 1 : 2} AND c.pr_number ${prNumber != null ? `= $${isSuper ? 2 : 3}` : 'IS NULL'}
       ${archivedFilter}
-      AND c.attempt = (
-        SELECT MAX(c2.attempt)
-        FROM agent_claims c2
-        WHERE c2.org_id = c.org_id AND c2.repo = c.repo AND c2.pr_number ${prNumber != null ? '= c.pr_number' : 'IS NULL'}
-      )
-    ORDER BY c.created_at ASC
+    ORDER BY c.attempt ASC, c.created_at ASC
   `;
 
   const params = prNumber != null
     ? (isSuper ? [repo, prNumber] : [orgIds, repo, prNumber])
     : (isSuper ? [repo] : [orgIds, repo]);
   const result = await query(sql, params);
-  return result.rows as PipelineDetailClaim[];
+  return result.rows.map((row: Record<string, unknown>) => ({
+    ...row,
+    verification_result: typeof row.verification_result === 'string'
+      ? JSON.parse(row.verification_result)
+      : row.verification_result,
+  })) as PipelineDetailClaim[];
 }

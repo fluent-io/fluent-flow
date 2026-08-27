@@ -3,20 +3,12 @@ import { getServerSession } from 'next-auth';
 import { getPipelineDetail } from '@fluent-flow/db';
 import { authOptions, getOrgScope } from '@/lib/auth';
 import { PipelineTimeline } from '@/components/pipelines/pipeline-timeline';
+import { VerificationPanel } from '@/components/pipelines/verification-panel';
 import { Badge } from '@/components/ui/badge';
 import { notFound } from 'next/navigation';
 import { DismissButton } from '@/components/pipelines/dismiss-button';
+import { derivePipelineStatus, getLatestAttemptClaims, getPipelineHeaderClaim } from '@/components/pipelines/pipeline-summary';
 
-function derivePipelineStatus(claims: { status: string }[]): { label: string; className: string } {
-  const hasCancelled = claims.every((s) => s.status === 'cancelled');
-  const hasActive = claims.some((s) => s.status === 'pending' || s.status === 'claimed');
-  const hasFailed = claims.some((s) => s.status === 'failed' || s.status === 'expired');
-
-  if (hasCancelled) return { label: 'cancelled', className: 'border-zinc-700 bg-zinc-900 text-zinc-400' };
-  if (hasActive) return { label: 'in progress', className: 'border-amber-800 bg-amber-950 text-amber-400' };
-  if (hasFailed) return { label: 'failed', className: 'border-red-800 bg-red-950 text-red-400' };
-  return { label: 'completed', className: 'border-green-800 bg-green-950 text-green-400' };
-}
 
 function formatDuration(start: Date | string, end: Date | string | null): string {
   const endTime = end ? new Date(end).getTime() : Date.now();
@@ -46,7 +38,9 @@ export default async function PipelineDetailPage({ params }: { params: Promise<{
 
   if (claims.length === 0) notFound();
 
-  const status = derivePipelineStatus(claims);
+  const latestAttemptClaims = getLatestAttemptClaims(claims);
+  const status = derivePipelineStatus(latestAttemptClaims);
+  const headerClaim = getPipelineHeaderClaim(claims) ?? claims[claims.length - 1];
   const firstClaim = claims[0];
   const lastClaim = claims[claims.length - 1];
   const totalDuration = formatDuration(firstClaim.created_at, lastClaim.completed_at);
@@ -70,8 +64,8 @@ export default async function PipelineDetailPage({ params }: { params: Promise<{
               </Badge>
             </div>
             <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
-              {firstClaim.agent_id && <div>Agent: <span className="text-primary">{firstClaim.agent_id}</span></div>}
-              <div>Attempt: {firstClaim.attempt}</div>
+              {headerClaim.agent_id && <div>Agent: <span className="text-primary">{headerClaim.agent_id}</span></div>}
+              <div>Attempt: {headerClaim.attempt}</div>
               <div>Started: {new Date(firstClaim.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
               <div>Duration: {totalDuration}</div>
             </div>
@@ -93,6 +87,8 @@ export default async function PipelineDetailPage({ params }: { params: Promise<{
           </div>
         </div>
       </div>
+
+      <VerificationPanel claims={claims} />
 
       <PipelineTimeline claims={claims} />
     </div>
