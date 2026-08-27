@@ -13,8 +13,6 @@ vi.mock('../../src/agents/session-manager.js', () => ({
   setSessionStatus: vi.fn().mockResolvedValue(undefined),
 }));
 
-const captured = { selectRan: [], insertValues: [] };
-
 vi.mock('@fluent-flow/db', async (importOriginal) => {
   const real = await importOriginal();
 
@@ -26,7 +24,6 @@ vi.mock('@fluent-flow/db', async (importOriginal) => {
   const insertReturning = vi.fn().mockResolvedValue([]);
   const onConflict = vi.fn().mockReturnValue({ returning: insertReturning });
   const values = vi.fn().mockImplementation((args) => {
-    captured.insertValues.push(args);
     return { onConflictDoNothing: onConflict };
   });
   const insert = vi.fn().mockReturnValue({ values });
@@ -37,7 +34,6 @@ vi.mock('@fluent-flow/db', async (importOriginal) => {
   const selectWhere = vi.fn().mockReturnValue({ limit });
   const selectFrom = vi.fn().mockReturnValue({ where: selectWhere });
   const select = vi.fn().mockImplementation(() => {
-    captured.selectRan.push(true);
     return { from: selectFrom };
   });
 
@@ -56,10 +52,11 @@ import {
 
 const PG_UNIQUE_VIOLATION = '23505';
 
+let captured = { selectRan: [], insertValues: [], andConditions: [] };
+
 beforeEach(() => {
   vi.clearAllMocks();
-  captured.selectRan = [];
-  captured.insertValues = [];
+  captured = { selectRan: [], insertValues: [], andConditions: [] };
 });
 
 describe('nextChainAttempt', () => {
@@ -123,9 +120,6 @@ describe('nextChainAttempt', () => {
 
     // Verify db.select was called with the correct structure
     expect(db.select).toHaveBeenCalledWith({ max: expect.anything() });
-    // The chain-wide allocation should include orgId, repo, prNumber conditions
-    // but NOT claimType - this is verified by the implementation structure
-    // where we only add conditions for orgId, repo, and prNumber
   });
 });
 
@@ -178,8 +172,6 @@ describe('countCompletedFixIterations', () => {
 
     // Verify db.select was called with the correct structure
     expect(db.select).toHaveBeenCalledWith({ count: expect.anything() });
-    // The implementation adds claimType='review_fix' and status='completed' to the conditions
-    // This is verified by the function structure which explicitly adds these conditions
   });
 });
 
