@@ -240,7 +240,7 @@ describe('handleCheckRun — green claim creation', () => {
       createdAt: new Date('2026-01-01T00:00:00Z'),
     });
 
-    mockCreateClaimWithRetry.mockImplementationOnce(async (opts, createFn) => createFn(opts));
+    mockCreateClaimWithRetry.mockImplementationOnce(async (opts, createFn) => createFn({ ...opts, attempt: 2 }));
 
     await handleCheckRun('test-org', 'test-repo', makePayload(), defaultConfig);
 
