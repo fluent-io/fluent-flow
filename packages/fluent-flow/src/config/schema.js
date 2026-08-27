@@ -51,6 +51,31 @@ const NotificationsConfigSchema = z.object({
   daily_summary_cron: z.string().default('0 12 * * *'),
 });
 
+const VerificationConfigBase = z.object({
+  enabled: z.boolean().default(true),
+  framework: z.enum(['auto', 'vitest', 'jest', 'node', 'custom']).default('auto'),
+  command: z.array(z.string().min(1)).nullable().default(null),      // argv; required for custom
+  install_command: z.array(z.string().min(1)).nullable().default(null),
+  skip_policy: z.enum(['allow_ungated', 'require', 'manual']).default('allow_ungated'),
+  flake: z.object({ retries: z.number().int().min(0).max(10).default(2),
+                    blocking: z.boolean().default(false) }).default({}),
+  authoring: z.object({ retries: z.number().int().min(0).max(5).default(2),
+                        max_requirements: z.number().int().min(1).max(100).default(25),
+                        red_reproductions: z.number().int().min(1).max(5).default(2) }).default({}),
+  timeouts_min: z.object({ red: z.number().int().min(1).default(15),
+                           green: z.number().int().min(1).default(30) }).default({}),
+});
+
+export const VerificationConfigSchema = VerificationConfigBase.default({}).refine(
+  (v) => v.framework !== 'custom' || v.command !== null,
+  { message: 'verification.command (argv) is required when framework is custom' },
+);
+
+const VerificationConfigSchemaPartial = VerificationConfigBase.partial().optional().refine(
+  (v) => v === undefined || v.framework !== 'custom' || v.command !== null,
+  { message: 'verification.command (argv) is required when framework is custom' },
+);
+
 export const DefaultsConfigSchema = z.object({
   reviewer: ReviewerConfigSchema.default({}),
   states: z.array(z.string()).default([
@@ -66,6 +91,7 @@ export const DefaultsConfigSchema = z.object({
   pause: PauseConfigSchema.default({}),
   notifications: NotificationsConfigSchema.default({}),
   work_queue: WorkQueueConfigSchema.optional(),
+  verification: VerificationConfigSchema,
 });
 
 const DeliveryConfigSchema = z.object({
@@ -83,6 +109,7 @@ export const RepoConfigSchema = z.object({
   notifications: NotificationsConfigSchema.partial().optional(),
   work_queue: WorkQueueConfigSchema.optional(),
   delivery: DeliveryConfigSchema,
+  verification: VerificationConfigSchemaPartial,
 });
 
 export const MergedConfigSchema = DefaultsConfigSchema.extend({
