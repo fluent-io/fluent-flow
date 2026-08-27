@@ -26,6 +26,7 @@ import { onClaimStarted, onClaimResolved, renderMatrixSummary } from '../engine/
 import { getProvider } from '../providers/index.js';
 
 const router = Router();
+const LEGACY_CLAIM_TYPES = ['review', 'review_fix', 'spec', 'build', 'test_verify', 'triage'];
 
 const PollSchema = z.object({
   session_id: z.number().int().positive(),
@@ -94,6 +95,26 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 export async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 60 * 1000) {
   const expiresAt = new Date(Date.now() + ttlMs);
+  let claimTypes = LEGACY_CLAIM_TYPES;
+  try {
+    const sessionRows = await db.execute(sql`
+      SELECT session_meta
+      FROM agent_sessions
+      WHERE org_id = ${orgId}
+        AND agent_id = ${agentId}
+        AND id = ${sessionId}
+      LIMIT 1
+    `);
+    const sessionMeta = sessionRows.rows?.[0]?.session_meta ?? sessionRows.rows?.[0]?.sessionMeta ?? {};
+    const supportedClaimTypes = Array.isArray(sessionMeta?.supported_claim_types)
+      ? sessionMeta.supported_claim_types.filter((type) => typeof type === 'string' && type.length > 0)
+      : null;
+    if (supportedClaimTypes?.length) {
+      claimTypes = supportedClaimTypes;
+    }
+  } catch (err) {
+    logger.warn({ msg: 'Failed to load runner capability metadata; using legacy claim types', orgId, agentId, sessionId, error: err.message });
+  }
   // UPDATE … WHERE id = (SELECT … FOR UPDATE SKIP LOCKED) — the canonical
   // atomic claim pattern. Kept as raw SQL because drizzle doesn't express
   // UPDATE-from-locked-subselect ergonomically.
@@ -110,6 +131,7 @@ export async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 6
         AND c.status = 'pending'
         AND c.session_id IS NULL
         AND (a.repos = '{}' OR c.repo = ANY(a.repos))
+        AND c.claim_type = ANY(${claimTypes})
       ORDER BY c.created_at ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED

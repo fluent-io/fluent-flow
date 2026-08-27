@@ -79,8 +79,6 @@ const DB_CLAIM = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // db.execute call order in handlePoll: (1) agent_type SELECT, (2) claimPendingWork UPDATE.
-  db.execute.mockImplementation(async () => ({ rows: [{ agent_type: 'claude-code' }] }));
 });
 
 describe('handlePoll — long-poll hints are wake-up signals only', () => {
@@ -90,6 +88,7 @@ describe('handlePoll — long-poll hints are wake-up signals only', () => {
 
     db.execute
       .mockResolvedValueOnce({ rows: [{ agent_type: 'claude-code' }] })   // agent type lookup
+      .mockResolvedValueOnce({ rows: [{ session_meta: {} }] })             // runner capability lookup
       .mockResolvedValueOnce({ rows: [DB_CLAIM] });                        // claimPendingWork
 
     const res = makeRes();
@@ -116,6 +115,7 @@ describe('handlePoll — long-poll hints are wake-up signals only', () => {
 
     db.execute
       .mockResolvedValueOnce({ rows: [{ agent_type: 'claude-code' }] })
+      .mockResolvedValueOnce({ rows: [{ session_meta: {} }] })
       .mockResolvedValueOnce({ rows: [] }); // no claimable work
 
     const res = makeRes();
