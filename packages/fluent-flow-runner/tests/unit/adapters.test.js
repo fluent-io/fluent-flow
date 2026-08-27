@@ -330,7 +330,7 @@ describe('reporter parsing', () => {
       yield { type: 'test:complete', data: { file, name: 'pass', details: { type: 'test', passed: true } } };
       yield { type: 'test:complete', data: { file, name: 'nested pass', nesting: 1, details: { type: 'test', passed: true } } };
       yield { type: 'test:complete', data: { file, name: 'passing suite', nesting: 0, details: { type: 'suite', passed: true } } };
-      yield { type: 'test:complete', data: { file, name: file, nesting: 0, details: { type: 'test', passed: true } } };
+      yield { type: 'test:complete', data: { file, name: 'tests/node-reporter.test.js', nesting: 0, details: { type: 'test', passed: true } } };
       yield {
         type: 'test:fail',
         data: { file, name: 'assertion failure', details: { type: 'test', error: { message: 'expected 1 to equal 2' } } },
@@ -341,6 +341,14 @@ describe('reporter parsing', () => {
       };
       yield { type: 'test:pass', data: { file, name: 'skipped', details: { type: 'test', skip: 'later' } } };
       yield { type: 'test:complete', data: { file, name: 'skipped', details: { type: 'test', skip: 'later' } } };
+      yield {
+        type: 'test:complete',
+        data: {
+          file,
+          name: 'hook suite',
+          details: { type: 'suite', error: { failureType: 'hookFailed', message: 'failed running after hook' }, passed: false },
+        },
+      };
       yield {
         type: 'test:complete',
         data: {
@@ -372,6 +380,12 @@ describe('reporter parsing', () => {
         message: 'expected 1 to equal 2',
       },
       { file: 'tests/node-reporter.test.js', name: 'skipped', status: 'skip', message: '' },
+      {
+        file: 'tests/node-reporter.test.js',
+        name: 'hook suite',
+        status: 'suite-error',
+        message: 'failed running after hook',
+      },
     ]);
   });
 
@@ -414,6 +428,59 @@ describe('reporter parsing', () => {
         message: 'Expected values to be strictly equal:\n\n1 !== 2\n',
       },
       { file: 'tests/node-adapter.test.js', name: 'skip', status: 'skip', message: '' },
+    ]);
+  });
+
+  it('drops all-passing file wrappers and keeps hook failures from real node:test events', () => {
+    const worktree = mkdtempSync(join(tmpdir(), 'ff-node-wrap-'));
+    const root = join(worktree, 'packages', 'app');
+    mkdirSync(root, { recursive: true });
+    writeJson(join(root, 'package.json'), { name: 'app', type: 'module' });
+
+    const passingFile = join(root, 'tests', 'all-pass.test.js');
+    mkdirSync(dirname(passingFile), { recursive: true });
+    writeFileSync(passingFile, `
+      import test, { describe } from 'node:test';
+      import assert from 'node:assert/strict';
+      test('pass', () => assert.equal(1, 1));
+      describe('passing suite', () => {
+        test('nested pass', () => assert.equal(2, 2));
+      });
+    `);
+    const passRun = spawnSync(process.execPath, node.testCommand({
+      root,
+      worktreeRoot: worktree,
+      files: ['packages/app/tests/all-pass.test.js'],
+    }).slice(1), { cwd: root, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
+    expect(passRun.status).toBe(0);
+    expect(node.parseResults(JSON.parse(passRun.stdout))).toEqual([
+      { file: 'tests/all-pass.test.js', name: 'pass', status: 'pass', message: '' },
+      { file: 'tests/all-pass.test.js', name: 'nested pass', status: 'pass', message: '' },
+    ]);
+
+    const hookFile = join(root, 'tests', 'after-hook.test.js');
+    writeFileSync(hookFile, `
+      import test, { describe, after } from 'node:test';
+      import assert from 'node:assert/strict';
+      describe('afterhook', () => {
+        test('ok', () => assert.equal(1, 1));
+        after(() => { throw new Error('after exploded'); });
+      });
+    `);
+    const hookRun = spawnSync(process.execPath, node.testCommand({
+      root,
+      worktreeRoot: worktree,
+      files: ['packages/app/tests/after-hook.test.js'],
+    }).slice(1), { cwd: root, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
+    expect(hookRun.status).toBe(1);
+    expect(node.parseResults(JSON.parse(hookRun.stdout))).toEqual([
+      { file: 'tests/after-hook.test.js', name: 'ok', status: 'pass', message: '' },
+      {
+        file: 'tests/after-hook.test.js',
+        name: 'afterhook',
+        status: 'suite-error',
+        message: expect.stringMatching(/after|hook/i),
+      },
     ]);
   });
 });
