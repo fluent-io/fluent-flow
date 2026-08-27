@@ -51,6 +51,25 @@ const HeartbeatSchema = z.object({
 /** How far a heartbeat extends a claimed claim's expiry. Env: CLAIM_TTL_MS. */
 const CLAIM_TTL_MS = Number(process.env.CLAIM_TTL_MS) || 15 * 60 * 1000;
 
+async function persistVerificationResult(claim, verification, orgId, executor) {
+  await insertVerificationResult({
+    orgId,
+    claimId: claim.id,
+    repo: claim.repo,
+    prNumber: claim.pr_number,
+    phase: verification.phase,
+    framework: verification.framework,
+    outcome: verification.outcome,
+    matrix: verification.matrix,
+    manifest: verification.manifest ?? null,
+    testHashes: verification.test_hashes ?? null,
+    artifactSha: verification.artifact_sha ?? null,
+    redBaseSha: verification.red_base_sha ?? null,
+    greenSha: verification.green_sha ?? null,
+  }, executor);
+}
+
+
 /**
  * Authenticate runner requests via agent token.
  */
@@ -302,13 +321,23 @@ export async function handleClaimResult(req, res) {
     const { status, repo, pr_number, attempt, claim_id, failure_kind, verification } = parsed.data;
 
     if (status === 'completed') {
+      let claim;
+      let alreadyResolved = null;
       // Resolve the claim by id when the runner sent one — the id path can
       // never collide two claim types sharing an attempt number. Fall back
       // to the natural key only for older runners.
-      let claim;
-      let alreadyResolved = null;
       if (claim_id != null) {
-        claim = await completeClaimById(org_id, claim_id);
+        if (verification) {
+          claim = await withTransaction(async (tx) => {
+            const completed = await completeClaimById(org_id, claim_id, tx);
+            if (completed?.claim_type === 'verify') {
+              await persistVerificationResult(completed, verification, org_id, tx);
+            }
+            return completed;
+          });
+        } else {
+          claim = await completeClaimById(org_id, claim_id);
+        }
         if (!claim) {
           const existing = await getClaimById(org_id, claim_id);
           if (existing?.status === 'completed' || existing?.status === 'failed') {
@@ -317,7 +346,17 @@ export async function handleClaimResult(req, res) {
         }
       } else {
         const existingClaim = await getClaimByAttempt(org_id, repo, pr_number, attempt);
-        claim = await completeClaim(org_id, repo, pr_number, attempt, existingClaim?.claim_type ?? 'review_fix');
+        if (verification) {
+          claim = await withTransaction(async (tx) => {
+            const completed = await completeClaim(org_id, repo, pr_number, attempt, existingClaim?.claim_type ?? 'review_fix', tx);
+            if (completed?.claim_type === 'verify') {
+              await persistVerificationResult(completed, verification, org_id, tx);
+            }
+            return completed;
+          });
+        } else {
+          claim = await completeClaim(org_id, repo, pr_number, attempt, existingClaim?.claim_type ?? 'review_fix');
+        }
         if (!claim && (existingClaim?.status === 'completed' || existingClaim?.status === 'failed')) {
           alreadyResolved = existingClaim;
         }
@@ -363,36 +402,10 @@ export async function handleClaimResult(req, res) {
 
       audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status, claimType, verdict: verdict ?? null } });
 
-      // Verify claims: persist the result transactionally with completion, then
-      // apply the transition matrix. Every effect inside is idempotent.
+      // Verify claims: result persistence happened in the same transaction as
+      // completion above, so a DB error cannot leave a completed verifier
+      // claim without the red/green record the replay sweep and dashboard use.
       if (claimType === 'verify' && verification) {
-        // Persist inside a real transaction (tx used by the insert); on persist
-        // failure the transition still runs from the in-memory result — the
-        // claim is already completed and stranding it serves nothing.
-        try {
-          await withTransaction(async (tx) => {
-            await insertVerificationResult({
-              orgId: org_id,
-              claimId: claim.id,
-              repo,
-              prNumber: pr_number,
-              phase: verification.phase,
-              framework: verification.framework,
-              outcome: verification.outcome,
-              matrix: verification.matrix,
-              manifest: verification.manifest ?? null,
-              testHashes: verification.test_hashes ?? null,
-              artifactSha: verification.artifact_sha ?? null,
-              redBaseSha: verification.red_base_sha ?? null,
-              greenSha: verification.green_sha ?? null,
-            }, tx);
-          });
-        } catch (err) {
-          // Safe to continue: the result row insert failed; the transition below
-          // uses the in-memory verification. Without a persisted row the replay
-          // sweep cannot recover this claim — logged at error for visibility.
-          logger.error({ msg: 'Verify result persist failed — applying transition from in-memory result', repo, claimId: claim.id, error: err.message });
-        }
         try {
           await applyVerifyTransitionWithEffects(claim, verification, { orgId: org_id });
         } catch (err) {

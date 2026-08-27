@@ -64,12 +64,14 @@ const VERIFY_CLAIM = {
   check_run_external_id: 321,
 };
 
+const TX = { tx: true };
+
 beforeEach(() => {
   vi.clearAllMocks();
   getClaimById.mockResolvedValue(VERIFY_CLAIM);
   completeClaimById.mockResolvedValue(VERIFY_CLAIM);
   applyVerifyTransitionWithEffects.mockResolvedValue({ action: 'create_claim' });
-  vi.mocked(withTransaction).mockImplementation(async (fn) => fn({}));
+  vi.mocked(withTransaction).mockImplementation(async (fn) => fn(TX));
 });
 
 describe('handleClaimResult — verify branch', () => {
@@ -116,8 +118,10 @@ describe('handleClaimResult — verify branch', () => {
       res,
     );
 
-    // Base flow completes by id directly; the verify branch then persists + transitions
-    expect(completeClaimById).toHaveBeenCalledWith('o1', 7);
+    // Completion and result persistence must share one transaction so a
+    // crash/error cannot leave a completed verify claim without its red record.
+    expect(withTransaction).toHaveBeenCalledTimes(1);
+    expect(completeClaimById).toHaveBeenCalledWith('o1', 7, TX);
     expect(insertVerificationResult).toHaveBeenCalledWith({
       orgId: 'o1',
       claimId: 7,
@@ -149,7 +153,7 @@ describe('handleClaimResult — verify branch', () => {
       artifactSha: '1234567890abcdef1234567890abcdef12345678',
       redBaseSha: 'abcdef1234567890abcdef1234567890abcdef12',
       greenSha: null,
-    }, expect.anything()); // second arg = tx handle from withTransaction
+    }, TX);
     expect(applyVerifyTransitionWithEffects).toHaveBeenCalledWith(
       VERIFY_CLAIM,
       verification,

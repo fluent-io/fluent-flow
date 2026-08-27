@@ -50,9 +50,9 @@ async function getSessionAgentId(sessionId) {
   return row?.agentId ?? null;
 }
 
-async function freeSession(orgId, sessionId, agentId, targetStatus = 'online') {
+async function freeSession(orgId, sessionId, agentId, targetStatus = 'online', executor = db) {
   if (!sessionId || !agentId) return;
-  await setSessionStatus(orgId, agentId, sessionId, targetStatus);
+  await setSessionStatus(orgId, agentId, sessionId, targetStatus, executor);
 }
 
 /**
@@ -113,7 +113,7 @@ export async function createClaim({ orgId, repo, prNumber, attempt, agentId, pay
   return toSnakeClaim(claim);
 }
 
-async function finalizeClaim(orgId, repo, prNumber, attempt, finalStatus, claimType = null) {
+async function finalizeClaim(orgId, repo, prNumber, attempt, finalStatus, claimType = null, executor = db) {
   // Fold the session-agent lookup into the UPDATE's RETURNING so the hot
   // path (claim completion/failure) stays a single round-trip.
   // claimType is optional: when provided, it narrows the update to a specific
@@ -129,7 +129,7 @@ async function finalizeClaim(orgId, repo, prNumber, attempt, finalStatus, claimT
   if (claimType) {
     conditions.push(eq(agentClaims.claimType, claimType));
   }
-  const [row] = await db
+  const [row] = await executor
     .update(agentClaims)
     .set({ status: finalStatus, completedAt: sql`NOW()` })
     .where(and(...conditions))
@@ -139,7 +139,7 @@ async function finalizeClaim(orgId, repo, prNumber, attempt, finalStatus, claimT
     });
   if (!row) return null;
   const { sessionAgentId, ...claim } = row;
-  await freeSession(orgId, claim.sessionId, sessionAgentId, 'online');
+  await freeSession(orgId, claim.sessionId, sessionAgentId, 'online', executor);
   return toSnakeClaim(claim);
 }
 
@@ -147,16 +147,16 @@ async function finalizeClaim(orgId, repo, prNumber, attempt, finalStatus, claimT
  * Mark a claim as completed. Frees the session.
  * @param {string|null} [claimType] — narrow to a specific claim type to avoid ambiguity
  */
-export async function completeClaim(orgId, repo, prNumber, attempt, claimType = null) {
-  return finalizeClaim(orgId, repo, prNumber, attempt, 'completed', claimType);
+export async function completeClaim(orgId, repo, prNumber, attempt, claimType = null, executor = db) {
+  return finalizeClaim(orgId, repo, prNumber, attempt, 'completed', claimType, executor);
 }
 
 /**
  * Mark a claim as failed. Frees the session.
  * @param {string|null} [claimType] — narrow to a specific claim type to avoid ambiguity
  */
-export async function failClaim(orgId, repo, prNumber, attempt, claimType = null) {
-  return finalizeClaim(orgId, repo, prNumber, attempt, 'failed', claimType);
+export async function failClaim(orgId, repo, prNumber, attempt, claimType = null, executor = db) {
+  return finalizeClaim(orgId, repo, prNumber, attempt, 'failed', claimType, executor);
 }
 
 /**
@@ -195,8 +195,8 @@ export async function getClaimById(orgId, claimId) {
   return toSnakeClaim(row) ?? null;
 }
 
-async function finalizeClaimById(orgId, claimId, finalStatus) {
-  const [row] = await db
+async function finalizeClaimById(orgId, claimId, finalStatus, executor = db) {
+  const [row] = await executor
     .update(agentClaims)
     .set({ status: finalStatus, completedAt: sql`NOW()` })
     .where(
@@ -212,7 +212,7 @@ async function finalizeClaimById(orgId, claimId, finalStatus) {
     });
   if (!row) return null;
   const { sessionAgentId, ...claim } = row;
-  await freeSession(orgId, claim.sessionId, sessionAgentId, 'online');
+  await freeSession(orgId, claim.sessionId, sessionAgentId, 'online', executor);
   return toSnakeClaim(claim);
 }
 
@@ -220,15 +220,15 @@ async function finalizeClaimById(orgId, claimId, finalStatus) {
  * Mark a claim completed by id. The only ambiguity-free finalization —
  * use whenever the caller knows the claim id.
  */
-export async function completeClaimById(orgId, claimId) {
-  return finalizeClaimById(orgId, claimId, 'completed');
+export async function completeClaimById(orgId, claimId, executor = db) {
+  return finalizeClaimById(orgId, claimId, 'completed', executor);
 }
 
 /**
  * Mark a claim failed by id. The only ambiguity-free finalization.
  */
-export async function failClaimById(orgId, claimId) {
-  return finalizeClaimById(orgId, claimId, 'failed');
+export async function failClaimById(orgId, claimId, executor = db) {
+  return finalizeClaimById(orgId, claimId, 'failed', executor);
 }
 
 /**

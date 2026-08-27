@@ -203,8 +203,8 @@ export async function findAvailableSession(orgId, repo, prNumber) {
 /**
  * Update session status.
  */
-export async function setSessionStatus(orgId, agentId, sessionId, status) {
-  await db
+export async function setSessionStatus(orgId, agentId, sessionId, status, executor = db) {
+  await executor
     .update(agentSessions)
     .set({ status })
     .where(
