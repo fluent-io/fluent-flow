@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import pg from 'pg';
-import { drizzle } from 'drizzle-orm/node-postgres';
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
+import { eq } from 'drizzle-orm';
 import { runMigrations } from '../src/migrate.js';
+import { db } from '../src/client.js';
 import * as schema from '../src/schema/index.js';
 import {
   insertVerificationResult,
@@ -12,47 +12,39 @@ import {
 const hasDatabaseUrl = !!process.env.DATABASE_URL;
 
 describe.skipIf(!hasDatabaseUrl)('verification results queries', () => {
-  let pool;
-  let db;
   let testOrgId;
   let testClaimId1;
   let testClaimId2;
 
-  beforeEach(async () => {
-    testOrgId = `test-org-${Date.now()}`;
-    pool = new pg.Pool({
-      connectionString: process.env.DATABASE_URL,
-      max: 1,
-    });
-    db = drizzle(pool, { schema });
+  beforeAll(async () => {
+    if (hasDatabaseUrl) {
+      await runMigrations();
+    }
+  });
 
-    await pool.query('BEGIN');
-
-    await pool.query('INSERT INTO orgs (id, name) VALUES ($1, $2)', [testOrgId, 'Test Org']);
-
-    const claimResult = await pool.query(
-      `INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload, head_sha)
-       VALUES ($1, 'test-repo', 123, 1, 'verify', 'completed', '{"phase":"green"}', 'abc123')
-       RETURNING id`,
-      [testOrgId]
-    );
-    testClaimId1 = claimResult.rows[0].id;
-
-    const claimResult2 = await pool.query(
-      `INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload, head_sha)
-       VALUES ($1, 'test-repo', 123, 2, 'verify', 'completed', '{"phase":"red"}', 'def456')
-       RETURNING id`,
-      [testOrgId]
-    );
-    testClaimId2 = claimResult2.rows[0].id;
+  beforeEach(() => {
+    testOrgId = `test-org-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   });
 
   afterEach(async () => {
-    await pool.query('ROLLBACK');
-    await pool.end();
+    if (!hasDatabaseUrl) return;
+
+    // Clean up in FK-safe order: verification_results → agent_claims → orgs
+    await db.delete(schema.verificationResults).where(eq(schema.verificationResults.orgId, testOrgId));
+    await db.execute(`DELETE FROM agent_claims WHERE org_id = '${testOrgId}'`);
+    await db.execute(`DELETE FROM orgs WHERE id = '${testOrgId}'`);
   });
 
   it('insert and fetch roundtrip', async () => {
+    await db.execute(`INSERT INTO orgs (id, name) VALUES ('${testOrgId}', 'Test Org')`);
+
+    const claimResult = await db.execute(
+      `INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload, head_sha)
+       VALUES ('${testOrgId}', 'test-repo', 123, 1, 'verify', 'completed', '{"phase":"green"}', 'abc123')
+       RETURNING id`
+    );
+    testClaimId1 = claimResult.rows[0].id;
+
     const row = {
       orgId: testOrgId,
       claimId: testClaimId1,
@@ -84,6 +76,15 @@ describe.skipIf(!hasDatabaseUrl)('verification results queries', () => {
   });
 
   it('onConflictDoUpdate on same claim_id replaces', async () => {
+    await db.execute(`INSERT INTO orgs (id, name) VALUES ('${testOrgId}', 'Test Org')`);
+
+    const claimResult = await db.execute(
+      `INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload, head_sha)
+       VALUES ('${testOrgId}', 'test-repo', 123, 1, 'verify', 'completed', '{"phase":"green"}', 'abc123')
+       RETURNING id`
+    );
+    testClaimId1 = claimResult.rows[0].id;
+
     const firstRow = {
       orgId: testOrgId,
       claimId: testClaimId1,
@@ -119,6 +120,15 @@ describe.skipIf(!hasDatabaseUrl)('verification results queries', () => {
   });
 
   it('cascade delete - deleting claim removes result', async () => {
+    await db.execute(`INSERT INTO orgs (id, name) VALUES ('${testOrgId}', 'Test Org')`);
+
+    const claimResult = await db.execute(
+      `INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload, head_sha)
+       VALUES ('${testOrgId}', 'test-repo', 123, 1, 'verify', 'completed', '{"phase":"green"}', 'abc123')
+       RETURNING id`
+    );
+    testClaimId1 = claimResult.rows[0].id;
+
     const row = {
       orgId: testOrgId,
       claimId: testClaimId1,
@@ -138,18 +148,19 @@ describe.skipIf(!hasDatabaseUrl)('verification results queries', () => {
     let fetched = await getVerificationResultByClaim(testOrgId, testClaimId1);
     expect(fetched).not.toBeNull();
 
-    await pool.query('DELETE FROM agent_claims WHERE id = $1', [testClaimId1]);
+    await db.execute(`DELETE FROM agent_claims WHERE id = ${testClaimId1}`);
 
     fetched = await getVerificationResultByClaim(testOrgId, testClaimId1);
     expect(fetched).toBeNull();
   });
 
   it('partial unique index - second green claim for same (org, repo, pr, head_sha) rejected', async () => {
-    const firstGreenResult = await pool.query(
+    await db.execute(`INSERT INTO orgs (id, name) VALUES ('${testOrgId}', 'Test Org')`);
+
+    const firstGreenResult = await db.execute(
       `INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload, head_sha)
-       VALUES ($1, 'test-repo', 456, 1, 'verify', 'completed', '{"phase":"green"}', 'same-sha')
-       RETURNING id`,
-      [testOrgId]
+       VALUES ('${testOrgId}', 'test-repo', 456, 1, 'verify', 'completed', '{"phase":"green"}', 'same-sha')
+       RETURNING id`
     );
 
     const firstRow = {
@@ -169,21 +180,29 @@ describe.skipIf(!hasDatabaseUrl)('verification results queries', () => {
 
     await insertVerificationResult(firstRow);
 
-    await expect(
-      pool.query(
+    let thrown = null;
+    try {
+      await db.execute(
         `INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload, head_sha)
-         VALUES ($1, 'test-repo', 456, 2, 'verify', 'completed', '{"phase":"green"}', 'same-sha')`,
-        [testOrgId]
-      )
-    ).rejects.toThrow(/duplicate key/);
+         VALUES ('${testOrgId}', 'test-repo', 456, 2, 'verify', 'completed', '{"phase":"green"}', 'same-sha')`
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    // drizzle wraps query failures as "Failed query: …" with the pg error as cause
+    expect(thrown).toBeTruthy();
+    expect(`${thrown.message} :: ${thrown.cause?.message ?? ''}`).toMatch(
+      /duplicate key|violates unique constraint/u,
+    );
   });
 
   it('partial unique index - different SHA allowed', async () => {
-    const firstGreenResult = await pool.query(
+    await db.execute(`INSERT INTO orgs (id, name) VALUES ('${testOrgId}', 'Test Org')`);
+
+    const firstGreenResult = await db.execute(
       `INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload, head_sha)
-       VALUES ($1, 'test-repo', 789, 1, 'verify', 'completed', '{"phase":"green"}', 'sha1')
-       RETURNING id`,
-      [testOrgId]
+       VALUES ('${testOrgId}', 'test-repo', 789, 1, 'verify', 'completed', '{"phase":"green"}', 'sha1')
+       RETURNING id`
     );
 
     const firstRow = {
@@ -203,11 +222,10 @@ describe.skipIf(!hasDatabaseUrl)('verification results queries', () => {
 
     await insertVerificationResult(firstRow);
 
-    const secondGreenResult = await pool.query(
+    const secondGreenResult = await db.execute(
       `INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload, head_sha)
-       VALUES ($1, 'test-repo', 789, 2, 'verify', 'completed', '{"phase":"green"}', 'sha2')
-       RETURNING id`,
-      [testOrgId]
+       VALUES ('${testOrgId}', 'test-repo', 789, 2, 'verify', 'completed', '{"phase":"green"}', 'sha2')
+       RETURNING id`
     );
 
     const secondRow = {
@@ -229,18 +247,18 @@ describe.skipIf(!hasDatabaseUrl)('verification results queries', () => {
   });
 
   it('partial unique index - non-verify claims unaffected', async () => {
-    const reviewClaimResult = await pool.query(
+    await db.execute(`INSERT INTO orgs (id, name) VALUES ('${testOrgId}', 'Test Org')`);
+
+    const reviewClaimResult = await db.execute(
       `INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload, head_sha)
-       VALUES ($1, 'test-repo', 999, 1, 'review_fix', 'completed', '{}', 'same-sha')
-       RETURNING id`,
-      [testOrgId]
+       VALUES ('${testOrgId}', 'test-repo', 999, 1, 'review_fix', 'completed', '{}', 'same-sha')
+       RETURNING id`
     );
 
-    const secondGreenResult = await pool.query(
+    const secondGreenResult = await db.execute(
       `INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload, head_sha)
-       VALUES ($1, 'test-repo', 999, 2, 'verify', 'completed', '{"phase":"green"}', 'same-sha')
-       RETURNING id`,
-      [testOrgId]
+       VALUES ('${testOrgId}', 'test-repo', 999, 2, 'verify', 'completed', '{"phase":"green"}', 'same-sha')
+       RETURNING id`
     );
 
     const greenRow = {
@@ -262,6 +280,15 @@ describe.skipIf(!hasDatabaseUrl)('verification results queries', () => {
   });
 
   it('getVerificationResultsForPR returns results ordered by createdAt desc', async () => {
+    await db.execute(`INSERT INTO orgs (id, name) VALUES ('${testOrgId}', 'Test Org')`);
+
+    const claimResult1 = await db.execute(
+      `INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload, head_sha)
+       VALUES ('${testOrgId}', 'test-repo', 123, 1, 'verify', 'completed', '{"phase":"green"}', 'abc123')
+       RETURNING id`
+    );
+    testClaimId1 = claimResult1.rows[0].id;
+
     const firstRow = {
       orgId: testOrgId,
       claimId: testClaimId1,
@@ -280,6 +307,13 @@ describe.skipIf(!hasDatabaseUrl)('verification results queries', () => {
     await insertVerificationResult(firstRow);
 
     await new Promise(resolve => setTimeout(resolve, 10));
+
+    const claimResult2 = await db.execute(
+      `INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload, head_sha)
+       VALUES ('${testOrgId}', 'test-repo', 123, 2, 'verify', 'completed', '{"phase":"red"}', 'def456')
+       RETURNING id`
+    );
+    testClaimId2 = claimResult2.rows[0].id;
 
     const secondRow = {
       orgId: testOrgId,

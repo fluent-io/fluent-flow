@@ -1,5 +1,6 @@
 import { pgTable, text, jsonb, timestamp, integer, varchar, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import { agentClaims } from './agents.js';
+import { orgs } from './orgs.js';
 
 export const pauses = pgTable('pauses', {
   id: integer('id').primaryKey().generatedByDefaultAsIdentity(),
@@ -86,7 +87,7 @@ export const testFailures = pgTable('test_failures', {
 
 export const verificationResults = pgTable('verification_results', {
   id: integer('id').primaryKey().generatedByDefaultAsIdentity(),
-  orgId: text('org_id').notNull(),
+  orgId: text('org_id').notNull().references(() => orgs.id),
   claimId: integer('claim_id').notNull().unique().references(() => agentClaims.id, { onDelete: 'cascade' }),
   repo: text('repo').notNull(),
   prNumber: integer('pr_number').notNull(),
