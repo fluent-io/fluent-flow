@@ -28,9 +28,7 @@ vi.mock('@fluent-flow/db', async (importOriginal) => {
   });
   const insert = vi.fn().mockReturnValue({ values });
 
-  const limit = vi.fn().mockImplementation(function() {
-    return this._mockResolvedValue || [];
-  });
+  const limit = vi.fn().mockResolvedValue([]);
   const selectWhere = vi.fn().mockReturnValue({ limit });
   const selectFrom = vi.fn().mockReturnValue({ where: selectWhere });
   const select = vi.fn().mockImplementation(() => {
@@ -52,12 +50,46 @@ import {
 
 const PG_UNIQUE_VIOLATION = '23505';
 
-let captured = { selectRan: [], insertValues: [], andConditions: [] };
+let captured = { selectRan: [], insertValues: [] };
 
 beforeEach(() => {
   vi.clearAllMocks();
-  captured = { selectRan: [], insertValues: [], andConditions: [] };
+  captured = { selectRan: [], insertValues: [] };
 });
+
+/**
+ * Walk a drizzle where() argument tree (SQL objects with queryChunks, arrays,
+ * Column objects) collecting column names. Drizzle conditions are circular —
+ * JSON.stringify throws — so structural walking is the only safe inspection.
+ */
+function walkQueryTree(node, visit, depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 8) return;
+  visit(node);
+  if (Array.isArray(node.queryChunks)) {
+    for (const chunk of node.queryChunks) walkQueryTree(chunk, visit, depth + 1);
+  }
+  if (Array.isArray(node)) {
+    for (const item of node) walkQueryTree(item, visit, depth + 1);
+  }
+}
+
+function collectQueryColumns(whereArgs) {
+  const names = new Set();
+  walkQueryTree(whereArgs, (n) => {
+    if (typeof n.name === 'string' && n.table && n.name) names.add(n.name);
+  });
+  return names;
+}
+
+function collectQueryValues(whereArgs) {
+  const values = new Set();
+  walkQueryTree(whereArgs, (n) => {
+    if ('value' in n && (typeof n.value === 'string' || typeof n.value === 'number')) {
+      values.add(String(n.value));
+    }
+  });
+  return values;
+}
 
 describe('nextChainAttempt', () => {
   it('returns 1 when no claims exist for the PR', async () => {
@@ -110,16 +142,19 @@ describe('nextChainAttempt', () => {
 
   it('does NOT include claimType in where-clause (chain-wide allocation)', async () => {
     const mockLimit = vi.fn().mockResolvedValue([{ max: 5 }]);
+    const whereArgs = [];
     db.select.mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({ limit: mockLimit }),
+        where: vi.fn((...args) => { whereArgs.push(...args); return { limit: mockLimit }; }),
       }),
     });
 
     await nextChainAttempt('org1', 'owner/repo', 123);
 
-    // Verify db.select was called with the correct structure
-    expect(db.select).toHaveBeenCalledWith({ max: expect.anything() });
+    // Walk the drizzle condition tree: columns carry { name, table }; eq() params carry { value }.
+    const names = collectQueryColumns(whereArgs);
+    expect(names.has('claim_type')).toBe(false);
+    expect([...names].sort()).toEqual(['org_id', 'pr_number', 'repo']);
   });
 });
 
@@ -162,16 +197,21 @@ describe('countCompletedFixIterations', () => {
 
   it('filters by claimType=review_fix AND status=completed in where-clause', async () => {
     const mockLimit = vi.fn().mockResolvedValue([{ count: 2 }]);
+    const whereArgs = [];
     db.select.mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({ limit: mockLimit }),
+        where: vi.fn((...args) => { whereArgs.push(...args); return { limit: mockLimit }; }),
       }),
     });
 
     await countCompletedFixIterations('org1', 'owner/repo', 123);
 
-    // Verify db.select was called with the correct structure
-    expect(db.select).toHaveBeenCalledWith({ count: expect.anything() });
+    const names = collectQueryColumns(whereArgs);
+    expect(names.has('claim_type')).toBe(true);
+    expect(names.has('status')).toBe(true);
+    const values = collectQueryValues(whereArgs);
+    expect(values).toContain('review_fix');
+    expect(values).toContain('completed');
   });
 });
 
@@ -298,7 +338,7 @@ describe('createClaimWithRetry', () => {
       createClaimWithRetry(
         {
           orgId: 'org1',
-          repo: 'owner/repo',
+          repo: 'org1',
           prNumber: 123,
           payload: { test: 'data' },
         },
