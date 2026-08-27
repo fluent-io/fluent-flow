@@ -26,6 +26,18 @@ export class WorktreeRefUnavailableError extends Error {
   }
 }
 
+function sanitizeWorktreeNamePart(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9._-]+$/.test(value) || value === '.' || value === '..') {
+    throw new Error(`Unsafe worktree name: ${value}`);
+  }
+  return value;
+}
+
+async function resolveFetchedRef(ref, baseDir) {
+  const { stdout } = await exec('git', ['rev-parse', '--verify', 'FETCH_HEAD^{commit}'], { cwd: baseDir });
+  return stdout.trim();
+}
+
 /**
  * Prepare a git worktree for a claim.
  * Clones the repo if not already cloned, fetches latest, creates a worktree on the PR branch.
@@ -44,11 +56,12 @@ export class WorktreeRefUnavailableError extends Error {
 export async function prepareWorktree({ workDir, repo, prNumber, attempt, branch, claimId, name, ref }) {
   const [owner, repoName] = repo.split('/');
   const baseDir = join(workDir, '.fluent-flow', 'repos', owner, repoName);
+  const safeName = name == null ? null : sanitizeWorktreeNamePart(name);
   const worktreeName = claimId != null
-    ? `pr-${prNumber}-claim-${claimId}${name ? `-${name}` : ''}`
+    ? `pr-${prNumber}-claim-${claimId}${safeName ? `-${safeName}` : ''}`
     : `pr-${prNumber}-attempt-${attempt}`;
   const worktreePath = join(baseDir, '.worktrees', worktreeName);
-  const checkoutRef = ref ?? (branch ? `origin/${branch}` : undefined);
+  let checkoutRef = ref ?? (branch ? `origin/${branch}` : undefined);
 
   // 1. Clone if base repo doesn't exist
   if (!existsSync(join(baseDir, '.git'))) {
@@ -118,10 +131,20 @@ export async function prepareWorktree({ workDir, repo, prNumber, attempt, branch
   if (ref) {
     try {
       await exec('git', ['fetch', 'origin', ref], { cwd: baseDir });
-    } catch (firstErr) {
+      checkoutRef = await resolveFetchedRef(ref, baseDir);
+    } catch (explicitErr) {
+      let plainFetchError;
       try {
         await exec('git', ['fetch', 'origin'], { cwd: baseDir });
+      } catch (err) {
+        plainFetchError = err;
+      }
+      if (plainFetchError) {
+        throw plainFetchError;
+      }
+      try {
         await exec('git', ['fetch', 'origin', ref], { cwd: baseDir });
+        checkoutRef = await resolveFetchedRef(ref, baseDir);
       } catch {
         throw new WorktreeRefUnavailableError(
           ref,
