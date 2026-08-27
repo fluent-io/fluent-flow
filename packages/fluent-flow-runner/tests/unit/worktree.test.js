@@ -118,6 +118,15 @@ describe('worktree', () => {
         return false;
       });
 
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        if (typeof opts === 'function') { opts(null, '', ''); return; }
+        if (args[0] === 'rev-parse') {
+          cb(null, `${RESOLVED_SHA}\n`, '');
+          return;
+        }
+        cb(null, '', '');
+      });
+
       const result = await prepareWorktree({
         workDir: '/work',
         repo: 'fluent-io/fluent-flow',
@@ -194,6 +203,71 @@ describe('worktree', () => {
         claimId: 123,
         ref: 'abc123def456',
       })).rejects.toThrow('permission denied');
+    });
+
+    it('rethrows transport errors from the retry explicit fetch', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      let firstExplicitFetch = true;
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        if (typeof opts === 'function') { opts(null, '', ''); return; }
+        if (args[0] === 'fetch' && args[1] === 'origin' && args[2] === 'abc123def456') {
+          if (firstExplicitFetch) {
+            firstExplicitFetch = false;
+            cb(new Error('missing ref'));
+            return;
+          }
+          cb(new Error('permission denied'));
+          return;
+        }
+        cb(null, '', '');
+      });
+
+      await expect(prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        ref: 'abc123def456',
+      })).rejects.toThrow('permission denied');
+      await expect(prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        ref: 'abc123def456',
+      })).rejects.not.toBeInstanceOf(WorktreeRefUnavailableError);
+    });
+
+    it('rejects when explicit ref fetch resolves to an empty sha', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        if (typeof opts === 'function') { opts(null, '', ''); return; }
+        if (args[0] === 'fetch' && args[1] === 'origin' && args[2] === 'abc123def456') {
+          cb(null, '', '');
+          return;
+        }
+        if (args[0] === 'rev-parse') {
+          cb(null, '\n', '');
+          return;
+        }
+        cb(null, '', '');
+      });
+
+      await expect(prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        ref: 'abc123def456',
+      })).rejects.toBeInstanceOf(WorktreeRefUnavailableError);
     });
 
     it('rejects unsafe worktree names containing slashes or dot segments', async () => {
