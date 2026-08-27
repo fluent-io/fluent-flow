@@ -4,7 +4,7 @@ import { dispatchReview, claimDispatch } from '../../engine/review-manager.js';
 import { handleTestFailure, handleTestSuccess } from '../../engine/test-manager.js';
 import { getActivePause } from '../../engine/pause-manager.js';
 import { parseCheckAnnotations } from '../../engine/test-parser.js';
-import { and, eq, gt, sql, desc } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { db, schema } from '@fluent-flow/db';
 import { audit } from '../../db/client.js';
 import { resolveOrgId } from '../../config/loader.js';
@@ -44,6 +44,27 @@ function extractLinkedIssue(body) {
 }
 
 /**
+ * Lookup the latest completed review_fix claim for a PR and extract its source_claim_id.
+ * Extracted for testability; in production this is called by createGreenClaim.
+ * @param {string} orgId
+ * @param {string} repo
+ * @param {number} prNumber
+ * @returns {Promise<number|null>}
+ */
+export async function findRedClaimIdFromLatestReviewFix(orgId, repo, prNumber) {
+  const result = await db.execute(sql`
+    SELECT id, payload->'source_claim_id' AS source_claim_id
+    FROM agent_claims
+    WHERE org_id = ${orgId} AND repo = ${repo} AND pr_number = ${prNumber}
+      AND claim_type = 'review_fix' AND status = 'completed'
+    ORDER BY completed_at DESC
+    LIMIT 1
+  `);
+  const row = (result.rows ?? result)[0];
+  return row?.source_claim_id ?? null;
+}
+
+/**
  * Create a green claim with inlined red record and config snapshot.
  * Exact linkage: latest completed review_fix → source_claim_id → red claim → verification result.
  * @param {object} opts
@@ -53,35 +74,21 @@ function extractLinkedIssue(body) {
  * @param {string} opts.headSha
  * @param {object} opts.checkRun
  * @param {object} opts.config
- * @returns {Promise<object|null>} Created claim or null (duplicate)
+ * @param {Function} [linkageResolver] - Test hook: resolves source_claim_id
+ * @returns {Promise<{status: 'created', claim: object}|{status: 'duplicate'}|null>} Outcome, or null when no green claim applies
  */
-async function createGreenClaim({ orgId, repo, prNumber, headSha, checkRun, config }) {
+async function createGreenClaim({ orgId, repo, prNumber, headSha, checkRun, config }, linkageResolver = findRedClaimIdFromLatestReviewFix) {
   const { agentClaims } = schema;
 
   // Exact linkage: latest completed review_fix → source_claim_id → red claim
-  const [fix] = await db
-    .select()
-    .from(agentClaims)
-    .where(
-      and(
-        eq(agentClaims.orgId, orgId),
-        eq(agentClaims.repo, repo),
-        eq(agentClaims.prNumber, prNumber),
-        eq(agentClaims.claimType, 'review_fix'),
-        eq(agentClaims.status, 'completed'),
-      ),
-    )
-    .orderBy(desc(agentClaims.completedAt))
-    .limit(1);
-
-  const redClaimId = fix?.payload?.source_claim_id;
+  const redClaimId = await linkageResolver(orgId, repo, prNumber);
   if (!redClaimId) return null;
 
   const redClaim = await getClaimById(orgId, redClaimId);
   if (!redClaim) return null;
 
   const redRecord = await getVerificationResultByClaim(orgId, redClaimId);
-  if (!redRecord?.test_hashes) return null;
+  if (!redRecord?.testHashes) return null;
 
   const attempt = await nextChainAttempt(orgId, repo, prNumber);
 
@@ -129,7 +136,7 @@ async function createGreenClaim({ orgId, repo, prNumber, headSha, checkRun, conf
     },
   );
 
-  return claim;
+  return claim ? { status: 'created', claim } : { status: 'duplicate' };
 }
 
 /**
@@ -328,9 +335,14 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
       config,
     });
 
-    if (greenClaim !== null) {
+    if (greenClaim?.status === 'created') {
       logger.info({ msg: 'Created green claim after review_fix + CI pass', repo: repoKey, prNumber: pr.number });
       // Early return: green claim will verify fixes, then auto-chain will trigger review
+      return;
+    }
+
+    if (greenClaim?.status === 'duplicate') {
+      logger.info({ msg: 'Skipping review dispatch — duplicate green claim', repo: repoKey, prNumber: pr.number, sha: checkRun.head_sha });
       return;
     }
 

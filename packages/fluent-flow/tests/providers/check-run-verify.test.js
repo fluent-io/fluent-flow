@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // --- Mocks ---
-vi.mock('../../../src/logger.js', async () => {
-  const { createMockLogger } = await import('../../helpers/mock-logger.js');
+vi.mock('../../src/logger.js', async () => {
+  const { createMockLogger } = await import('../helpers/mock-logger.js');
   return { default: createMockLogger() };
 });
 
 const mockResolveAgentId = vi.fn().mockReturnValue('agent-1');
 const mockDispatch = vi.fn().mockResolvedValue(undefined);
-vi.mock('../../../src/notifications/dispatcher.js', () => ({
+vi.mock('../../src/notifications/dispatcher.js', () => ({
   resolveAgentId: (...a) => mockResolveAgentId(...a),
   dispatch: (...a) => mockDispatch(...a),
 }));
@@ -16,7 +16,7 @@ vi.mock('../../../src/notifications/dispatcher.js', () => ({
 const mockGetPRsForCommit = vi.fn().mockResolvedValue([]);
 const mockGetCheckRunsForCommit = vi.fn().mockResolvedValue([]);
 const mockGetCheckRunAnnotations = vi.fn().mockResolvedValue([]);
-vi.mock('../../../src/providers/github/rest.js', () => ({
+vi.mock('../../src/providers/github/rest.js', () => ({
   getPRsForCommit: (...a) => mockGetPRsForCommit(...a),
   getCheckRunsForCommit: (...a) => mockGetCheckRunsForCommit(...a),
   getCheckRunAnnotations: (...a) => mockGetCheckRunAnnotations(...a),
@@ -24,70 +24,61 @@ vi.mock('../../../src/providers/github/rest.js', () => ({
 
 const mockDispatchReview = vi.fn().mockResolvedValue(undefined);
 const mockClaimDispatch = vi.fn().mockResolvedValue(null);
-vi.mock('../../../src/engine/review-manager.js', () => ({
+vi.mock('../../src/engine/review-manager.js', () => ({
   dispatchReview: (...a) => mockDispatchReview(...a),
   claimDispatch: (...a) => mockClaimDispatch(...a),
 }));
 
-vi.mock('../../../src/engine/test-manager.js', () => ({
+vi.mock('../../src/engine/test-manager.js', () => ({
   handleTestFailure: vi.fn().mockResolvedValue(undefined),
   handleTestSuccess: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('../../../src/engine/pause-manager.js', () => ({
+vi.mock('../../src/engine/pause-manager.js', () => ({
   getActivePause: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock('../../../src/engine/test-parser.js', () => ({
+vi.mock('../../src/engine/test-parser.js', () => ({
   parseCheckAnnotations: vi.fn().mockReturnValue([]),
 }));
 
-vi.mock('../../../src/config/loader.js', () => ({
+vi.mock('../../src/config/loader.js', () => ({
   resolveOrgId: vi.fn().mockResolvedValue('org-1'),
 }));
 
-// Mock db
-let mockDbSelect = vi.fn();
-const mockDbInsert = vi.fn();
-const mockDbUpdate = vi.fn();
-
-vi.mock('@fluent-flow/db', () => ({
-  get db() { return { select: mockDbSelect, insert: mockDbInsert, update: mockDbUpdate }; },
-  schema: {
-    agentClaims: {
-      id: 'id',
-      orgId: 'org_id',
-      repo: 'repo',
-      prNumber: 'pr_number',
-      claimType: 'claim_type',
-      status: 'status',
-      headSha: 'head_sha',
-      attempt: 'attempt',
-      completedAt: 'completed_at',
-      payload: 'payload',
-    },
-  },
-  sql: vi.fn((fn) => fn),
-}));
-
-vi.mock('../../../src/db/client.js', () => ({
-  audit: vi.fn(),
-}));
-
-// Mock claim-manager functions
 const mockCreateClaimWithRetry = vi.fn().mockResolvedValue(null);
 const mockNextChainAttempt = vi.fn().mockResolvedValue(1);
 const mockGetClaimById = vi.fn().mockResolvedValue(null);
 const mockGetVerificationResultByClaim = vi.fn().mockResolvedValue(null);
 
-vi.mock('../../../src/agents/claim-manager.js', () => ({
-  createClaimWithRetry: (...a) => mockCreateClaimWithRetry(...a),
-  nextChainAttempt: (...a) => mockNextChainAttempt(...a),
-  getClaimById: (...a) => mockGetClaimById(...a),
+let mockReviewFixRows = [];
+const mockDbExecute = vi.fn(async () => ({ rows: mockReviewFixRows }));
+
+vi.mock('@fluent-flow/db', () => ({
+  db: {
+    execute: (...a) => mockDbExecute(...a),
+    insert: vi.fn().mockReturnThis(),
+    update: vi.fn().mockReturnThis(),
+  },
+  schema: {
+    agentClaims: {},
+    verificationResults: {},
+  },
   getVerificationResultByClaim: (...a) => mockGetVerificationResultByClaim(...a),
 }));
 
-import { handleCheckRun, isFluentFlowCheckRun } from '../../../src/providers/github/check-run-handler.js';
+vi.mock('../../src/db/client.js', () => ({
+  audit: vi.fn(),
+}));
+
+// Mock claim-manager functions
+vi.mock('../../src/agents/claim-manager.js', () => ({
+  createClaimWithRetry: (...a) => mockCreateClaimWithRetry(...a),
+  nextChainAttempt: (...a) => mockNextChainAttempt(...a),
+  getClaimById: (...a) => mockGetClaimById(...a),
+}));
+
+import { handleCheckRun, isFluentFlowCheckRun } from '../../src/providers/github/check-run-handler.js';
 
 function makePayload(overrides = {}) {
   return {
@@ -113,7 +104,9 @@ const defaultConfig = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockDbSelect = vi.fn();
+  mockReviewFixRows = [];
+  mockDbExecute.mockImplementation(async () => ({ rows: mockReviewFixRows }));
+  // Reset all mocks to their default state
   mockGetPRsForCommit.mockResolvedValue([{
     number: 42,
     state: 'open',
@@ -121,32 +114,15 @@ beforeEach(() => {
     head: { ref: 'feature/x' },
   }]);
   mockClaimDispatch.mockResolvedValue({ retry_count: 0, last_issues: [] });
+  mockGetClaimById.mockResolvedValue(null);
+  mockGetVerificationResultByClaim.mockResolvedValue(null);
+  mockCreateClaimWithRetry.mockResolvedValue(null);
+  mockNextChainAttempt.mockResolvedValue(1);
 });
 
 describe('handleCheckRun — green claim creation', () => {
   it('creates green claim with inlined red record + config snapshot when review_fix has source_claim_id linkage', async () => {
-    const mockQuery = {
-      from: vi.fn().mockReturnThis(),
-      where: vi.fn().mockReturnThis(),
-      orderBy: vi.fn().mockReturnThis(),
-      limit: vi.fn().mockResolvedValue([{
-        id: 1,
-        orgId: 'org-1',
-        repo: 'test-org/test-repo',
-        prNumber: 42,
-        claimType: 'review_fix',
-        status: 'completed',
-        completedAt: new Date('2026-01-01T00:00:00Z'),
-        payload: { source_claim_id: 5 },
-      }]),
-    };
-    
-    const mockOrderBy = {
-      desc: vi.fn().mockReturnValue(mockQuery),
-    };
-    
-    mockQuery.orderBy = vi.fn().mockReturnValue(mockOrderBy);
-    mockDbSelect.mockReturnValue(mockQuery);
+    mockReviewFixRows = [{ id: 1, source_claim_id: 5 }];
 
     mockGetClaimById.mockResolvedValueOnce({
       id: 5,
@@ -165,17 +141,17 @@ describe('handleCheckRun — green claim creation', () => {
 
     mockGetVerificationResultByClaim.mockResolvedValueOnce({
       id: 100,
-      org_id: 'org-1',
-      claim_id: 5,
+      orgId: 'org-1',
+      claimId: 5,
       repo: 'test-org/test-repo',
-      pr_number: 42,
+      prNumber: 42,
       phase: 'red',
       framework: 'vitest',
       outcome: 'passed',
       matrix: { requirements: { node: '>=20' } },
-      test_hashes: { 'test.js': 'hash1', 'test2.js': 'hash2' },
-      artifact_sha: 'artifact-sha-123',
-      created_at: new Date('2026-01-01T00:00:00Z'),
+      testHashes: { 'test.js': 'hash1', 'test2.js': 'hash2' },
+      artifactSha: 'artifact-sha-123',
+      createdAt: new Date('2026-01-01T00:00:00Z'),
     });
 
     mockNextChainAttempt.mockResolvedValueOnce(2);
@@ -209,32 +185,32 @@ describe('handleCheckRun — green claim creation', () => {
     await handleCheckRun('test-org', 'test-repo', makePayload(), defaultConfig);
 
     expect(mockCreateClaimWithRetry).toHaveBeenCalledTimes(1);
+    const claimInput = mockCreateClaimWithRetry.mock.calls[0][0];
+    expect(claimInput).toMatchObject({
+      claimType: 'verify',
+      headSha: 'abc123',
+      payload: {
+        phase: 'green',
+        green_sha: 'abc123',
+        red_record: {
+          phase: 'red',
+          framework: 'vitest',
+          outcome: 'passed',
+          matrix: { requirements: { node: '>=20' } },
+          test_hashes: { 'test.js': 'hash1', 'test2.js': 'hash2' },
+          artifact_sha: 'artifact-sha-123',
+        },
+        verification: {
+          framework: 'vitest',
+          test_file_patterns: ['**/*.test.js'],
+        },
+      },
+    });
     expect(mockDispatchReview).not.toHaveBeenCalled();
   });
 
   it('returns early on duplicate green claim (23505 conflict) without fall-through to review dispatch', async () => {
-    const mockQuery = {
-      from: vi.fn().mockReturnThis(),
-      where: vi.fn().mockReturnThis(),
-      orderBy: vi.fn().mockReturnThis(),
-      limit: vi.fn().mockResolvedValue([{
-        id: 1,
-        orgId: 'org-1',
-        repo: 'test-org/test-repo',
-        prNumber: 42,
-        claimType: 'review_fix',
-        status: 'completed',
-        completedAt: new Date('2026-01-01T00:00:00Z'),
-        payload: { source_claim_id: 5 },
-      }]),
-    };
-    
-    const mockOrderBy = {
-      desc: vi.fn().mockReturnValue(mockQuery),
-    };
-    
-    mockQuery.orderBy = vi.fn().mockReturnValue(mockOrderBy);
-    mockDbSelect.mockReturnValue(mockQuery);
+    mockReviewFixRows = [{ id: 1, source_claim_id: 5 }];
 
     mockGetClaimById.mockResolvedValueOnce({
       id: 5,
@@ -248,17 +224,17 @@ describe('handleCheckRun — green claim creation', () => {
 
     mockGetVerificationResultByClaim.mockResolvedValueOnce({
       id: 100,
-      org_id: 'org-1',
-      claim_id: 5,
+      orgId: 'org-1',
+      claimId: 5,
       repo: 'test-org/test-repo',
-      pr_number: 42,
+      prNumber: 42,
       phase: 'red',
       framework: 'vitest',
       outcome: 'passed',
       matrix: { requirements: {} },
-      test_hashes: {},
-      artifact_sha: 'artifact-sha-123',
-      created_at: new Date('2026-01-01T00:00:00Z'),
+      testHashes: {},
+      artifactSha: 'artifact-sha-123',
+      createdAt: new Date('2026-01-01T00:00:00Z'),
     });
 
     mockNextChainAttempt.mockResolvedValueOnce(2);
@@ -272,28 +248,7 @@ describe('handleCheckRun — green claim creation', () => {
   });
 
   it('falls through to review dispatch when review_fix lacks source_claim_id linkage', async () => {
-    const mockQuery = {
-      from: vi.fn().mockReturnThis(),
-      where: vi.fn().mockReturnThis(),
-      orderBy: vi.fn().mockReturnThis(),
-      limit: vi.fn().mockResolvedValue([{
-        id: 1,
-        orgId: 'org-1',
-        repo: 'test-org/test-repo',
-        prNumber: 42,
-        claimType: 'review_fix',
-        status: 'completed',
-        completedAt: new Date('2026-01-01T00:00:00Z'),
-        payload: {},
-      }]),
-    };
-    
-    const mockOrderBy = {
-      desc: vi.fn().mockReturnValue(mockQuery),
-    };
-    
-    mockQuery.orderBy = vi.fn().mockReturnValue(mockOrderBy);
-    mockDbSelect.mockReturnValue(mockQuery);
+    mockReviewFixRows = [{ id: 1, source_claim_id: null }];
 
     await handleCheckRun('test-org', 'test-repo', makePayload(), defaultConfig);
 
@@ -304,28 +259,7 @@ describe('handleCheckRun — green claim creation', () => {
   });
 
   it('falls through to review dispatch when red claim not found via source_claim_id', async () => {
-    const mockQuery = {
-      from: vi.fn().mockReturnThis(),
-      where: vi.fn().mockReturnThis(),
-      orderBy: vi.fn().mockReturnThis(),
-      limit: vi.fn().mockResolvedValue([{
-        id: 1,
-        orgId: 'org-1',
-        repo: 'test-org/test-repo',
-        prNumber: 42,
-        claimType: 'review_fix',
-        status: 'completed',
-        completedAt: new Date('2026-01-01T00:00:00Z'),
-        payload: { source_claim_id: 5 },
-      }]),
-    };
-    
-    const mockOrderBy = {
-      desc: vi.fn().mockReturnValue(mockQuery),
-    };
-    
-    mockQuery.orderBy = vi.fn().mockReturnValue(mockOrderBy);
-    mockDbSelect.mockReturnValue(mockQuery);
+    mockReviewFixRows = [{ id: 1, source_claim_id: 5 }];
 
     mockGetClaimById.mockResolvedValueOnce(null);
 
@@ -337,28 +271,7 @@ describe('handleCheckRun — green claim creation', () => {
   });
 
   it('falls through to review dispatch when red result has no test_hashes (nothing to verify)', async () => {
-    const mockQuery = {
-      from: vi.fn().mockReturnThis(),
-      where: vi.fn().mockReturnThis(),
-      orderBy: vi.fn().mockReturnThis(),
-      limit: vi.fn().mockResolvedValue([{
-        id: 1,
-        orgId: 'org-1',
-        repo: 'test-org/test-repo',
-        prNumber: 42,
-        claimType: 'review_fix',
-        status: 'completed',
-        completedAt: new Date('2026-01-01T00:00:00Z'),
-        payload: { source_claim_id: 5 },
-      }]),
-    };
-    
-    const mockOrderBy = {
-      desc: vi.fn().mockReturnValue(mockQuery),
-    };
-    
-    mockQuery.orderBy = vi.fn().mockReturnValue(mockOrderBy);
-    mockDbSelect.mockReturnValue(mockQuery);
+    mockReviewFixRows = [{ id: 1, source_claim_id: 5 }];
 
     mockGetClaimById.mockResolvedValueOnce({
       id: 5,
@@ -372,17 +285,17 @@ describe('handleCheckRun — green claim creation', () => {
 
     mockGetVerificationResultByClaim.mockResolvedValueOnce({
       id: 100,
-      org_id: 'org-1',
-      claim_id: 5,
+      orgId: 'org-1',
+      claimId: 5,
       repo: 'test-org/test-repo',
-      pr_number: 42,
+      prNumber: 42,
       phase: 'red',
       framework: 'vitest',
       outcome: 'passed',
       matrix: { requirements: {} },
-      test_hashes: null,
-      artifact_sha: 'artifact-sha-123',
-      created_at: new Date('2026-01-01T00:00:00Z'),
+      testHashes: null,
+      artifactSha: 'artifact-sha-123',
+      createdAt: new Date('2026-01-01T00:00:00Z'),
     });
 
     await handleCheckRun('test-org', 'test-repo', makePayload(), defaultConfig);
