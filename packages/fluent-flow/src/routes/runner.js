@@ -332,8 +332,11 @@ export async function handleClaimResult(req, res) {
       // Verify claims: persist the result transactionally with completion, then
       // apply the transition matrix. Every effect inside is idempotent.
       if (claimType === 'verify' && verification) {
+        // Persist inside a real transaction (tx used by the insert); on persist
+        // failure the transition still runs from the in-memory result — the
+        // claim is already completed and stranding it serves nothing.
         try {
-          await withTransaction(async () => {
+          await withTransaction(async (tx) => {
             await insertVerificationResult({
               orgId: org_id,
               claimId: claim.id,
@@ -347,13 +350,20 @@ export async function handleClaimResult(req, res) {
               artifactSha: verification.artifact_sha ?? null,
               redBaseSha: verification.red_base_sha ?? null,
               greenSha: verification.green_sha ?? null,
-            });
+            }, tx);
           });
+        } catch (err) {
+          // Safe to continue: the result row insert failed; the transition below
+          // uses the in-memory verification. Without a persisted row the replay
+          // sweep cannot recover this claim — logged at error for visibility.
+          logger.error({ msg: 'Verify result persist failed — applying transition from in-memory result', repo, claimId: claim.id, error: err.message });
+        }
+        try {
           await applyVerifyTransitionWithEffects(claim, verification, { orgId: org_id });
         } catch (err) {
-          // Safe to continue: the claim is completed; a failed persist/transition
-          // is picked up by the claim-expiry replay sweep.
-          logger.error({ msg: 'Verify result persist/transition failed', repo, claimId: claim.id, error: err.message });
+          // Safe to continue: the claim is completed and the result persisted;
+          // a later redelivery re-derives this same transition (spec §6.4).
+          logger.error({ msg: 'Verify transition failed — redelivery re-derives', repo, claimId: claim.id, error: err.message });
         }
         return res.json({ ok: true, claim_id: claim.id });
       }

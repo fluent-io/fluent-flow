@@ -3,11 +3,11 @@ import { sql } from 'drizzle-orm';
 import { createClaim, createClaimWithRetry, nextChainAttempt, countCompletedFixIterations } from '../agents/claim-manager.js';
 import { dispatchReview } from './review-manager.js';
 import { dispatch } from '../notifications/dispatcher.js';
-import { addLabel } from '../providers/github/rest.js';
+import { addLabel, postComment } from '../providers/github/rest.js';
 import { recordPause } from './pause-manager.js';
+import { audit } from '../db/client.js';
 import logger from '../logger.js';
 import { resolveConfig, installationCtxForRepo } from '../config/loader.js';
-import { withTransaction } from '@fluent-flow/db';
 
 export const VerifyOutcomeSchema = z.object({
   status: z.enum(['pass', 'assertion-fail', 'suite-error', 'skip']),
@@ -110,6 +110,9 @@ export async function applyVerifyTransition(claim, verification, ctx, external =
           source_claim_id: claim.id,
           immutability,
           branch: payload?.branch,
+          // Re-inline the red claim's findings so fix iterations carry full
+          // context (spec §6.1) — not just the pointer.
+          findings: payload?.findings ?? [],
         },
         headSha: head_sha,
       };
@@ -259,7 +262,6 @@ export async function applyVerifyTransitionWithEffects(claim, verification, ctx)
 
   if (decision.action === 'pause' && payload?.verification?.skip_policy === 'manual') {
     try {
-      const config = await resolveConfig(owner, repoName);
       const issueNumber = payload?.issue_number;
       if (issueNumber) {
         await recordPause({
@@ -272,11 +274,26 @@ export async function applyVerifyTransitionWithEffects(claim, verification, ctx)
           actor: 'fluent-flow',
         });
         logger.info({ msg: 'Recorded pause for manual skip policy', repo, prNumber: pr_number });
+      } else {
+        logger.warn({ msg: 'Manual skip policy without issue_number — no pause recorded', repo, prNumber: pr_number });
       }
     } catch (err) {
       logger.error({ msg: 'Failed to record pause', error: err.message });
     }
   }
+
+  // TAMPERED comments post to the PR directly (spec §6.1 names the PR comment
+  // channel) — the agent notification below is the second channel.
+  if (decision.notify?.type === 'pr_comment') {
+    try {
+      const ctx = await installationCtxForRepo(owner, repoName);
+      await postComment(owner, repoName, pr_number, decision.notify.body, ctx);
+      logger.info({ msg: 'Posted verification PR comment', repo, prNumber: pr_number });
+    } catch (err) {
+      logger.error({ msg: 'Failed to post verification PR comment', error: err.message });
+    }
+  }
+
 
   if (decision.notify) {
     try {
@@ -361,6 +378,7 @@ export async function sweepStrandedVerifyClaims(db) {
 
   for (const claim of strandedWithoutResult.rows ?? strandedWithoutResult) {
     logger.warn({ msg: 'Verify claim completed without verification result', claimId: claim.id, orgId: claim.org_id, repo: claim.repo, prNumber: claim.pr_number });
+    audit('verify_result_missing', { repo: claim.repo, actor: 'sweep', data: { claimId: claim.id, orgId: claim.org_id, prNumber: claim.pr_number } });
   }
 
   logger.info({ msg: 'Completed sweep for stranded verify claims' });

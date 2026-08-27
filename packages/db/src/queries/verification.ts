@@ -4,8 +4,8 @@ import { db, schema } from '../client.js';
 const { verificationResults } = schema;
 type VerificationResultInsert = typeof verificationResults.$inferInsert;
 
-export async function insertVerificationResult(row: VerificationResultInsert) {
-  const [inserted] = await db.insert(verificationResults)
+export async function insertVerificationResult(row: VerificationResultInsert, executor: typeof db = db) {
+  const [inserted] = await executor.insert(verificationResults)
     .values(row)
     .onConflictDoUpdate({ target: verificationResults.claimId, set: { ...row } })
     .returning();

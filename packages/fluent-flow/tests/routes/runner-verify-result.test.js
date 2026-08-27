@@ -113,7 +113,7 @@ describe('handleClaimResult — verify branch', () => {
       artifactSha: '1234567890abcdef1234567890abcdef12345678',
       redBaseSha: 'abcdef1234567890abcdef1234567890abcdef12',
       greenSha: null,
-    });
+    }, expect.anything()); // second arg = tx handle from withTransaction
     expect(applyVerifyTransitionWithEffects).toHaveBeenCalledWith(
       VERIFY_CLAIM,
       verification,
@@ -164,4 +164,34 @@ describe('handleClaimResult — verify branch', () => {
     expect(insertVerificationResult).not.toHaveBeenCalled();
     expect(res.statusCode).toBe(200);
   });
+
+  it('redelivery on an already-resolved verify claim re-derives the transition (spec §6.4)', async () => {
+    completeClaimById.mockResolvedValueOnce(null);
+    getClaimById.mockResolvedValueOnce({ ...VERIFY_CLAIM, status: 'completed' });
+    const res = makeRes();
+
+    await handleClaimResult(
+      REQ({
+        status: 'completed',
+        repo: 'o/r',
+        pr_number: 5,
+        attempt: 2,
+        claim_id: 7,
+        verification: {
+          phase: 'green', framework: 'vitest', outcome: 'PASS',
+          matrix: null,
+        },
+      }),
+      res,
+    );
+
+    expect(applyVerifyTransitionWithEffects).toHaveBeenCalledWith(
+      { ...VERIFY_CLAIM, status: 'completed' },
+      expect.objectContaining({ phase: 'green', outcome: 'PASS' }),
+      expect.objectContaining({ orgId: 'o1' }),
+    );
+    expect(res.statusCode).toBe(200);
+    expect(res.body.note).toBe('already_resolved');
+  });
 });
+

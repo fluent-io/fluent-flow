@@ -7,6 +7,7 @@ vi.mock('../../src/logger.js', async () => {
 
 vi.mock('../../src/db/client.js', () => ({
   audit: vi.fn(),
+  audit: vi.fn(),
 }));
 
 vi.mock('../../src/agents/claim-manager.js', () => ({
@@ -23,7 +24,8 @@ vi.mock('../../src/notifications/dispatcher.js', () => ({
   dispatch: vi.fn(),
 }));
 
-import { applyVerifyTransition } from '../../src/engine/verify-transitions.js';
+import { audit } from '../../src/db/client.js';
+import { sweepStrandedVerifyClaims, applyVerifyTransition, applyVerifyTransitionWithEffects } from '../../src/engine/verify-transitions.js';
 import { createClaimWithRetry, nextChainAttempt, countCompletedFixIterations } from '../../src/agents/claim-manager.js';
 import { dispatchReview } from '../../src/engine/review-manager.js';
 import { dispatch as notifyDispatch } from '../../src/notifications/dispatcher.js';
@@ -269,3 +271,32 @@ describe('verify-transitions — TAMPERED path', () => {
     expect(dispatchReview).not.toHaveBeenCalled();
   });
 });
+
+describe('sweepStrandedVerifyClaims', () => {
+  it('replays transitions for completed verify claims with a result but no successor', async () => {
+    const claimRow = { id: 42, org_id: 'o1', repo: 'owner/repo', pr_number: 5, attempt: 3, payload: { phase: 'green' }, head_sha: 'abc' };
+    const resultRow = { phase: 'green', framework: 'vitest', outcome: 'PASS', matrix: null, test_hashes: null, artifact_sha: null, red_base_sha: null, green_sha: 'def' };
+    const db = {
+      execute: vi.fn()
+        .mockResolvedValueOnce({ rows: [claimRow] })   // stranded-with-result query
+        .mockResolvedValueOnce([resultRow])            // per-claim result fetch
+        .mockResolvedValueOnce({ rows: [] }),          // stranded-without-result query
+    };
+    await sweepStrandedVerifyClaims(db);
+    // green-PASS replay's observable effect: the re-review dispatch fires
+    expect(dispatchReview).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 5 }));
+  });
+
+  it('logs + audits completed verify claims without a result row', async () => {
+    const db = {
+      execute: vi.fn()
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ id: 77, org_id: 'o1', repo: 'owner/repo', pr_number: 6, attempt: 2 }] }),
+    };
+    await sweepStrandedVerifyClaims(db);
+    expect(audit).toHaveBeenCalledWith('verify_result_missing', expect.objectContaining({
+      data: expect.objectContaining({ claimId: 77 }),
+    }));
+  });
+});
+
