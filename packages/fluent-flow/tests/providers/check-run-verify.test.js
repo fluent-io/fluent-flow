@@ -209,8 +209,11 @@ describe('handleCheckRun — green claim creation', () => {
     expect(mockDispatchReview).not.toHaveBeenCalled();
   });
 
-  it('returns early on duplicate green claim (23505 conflict) without fall-through to review dispatch', async () => {
-    mockReviewFixRows = [{ id: 1, source_claim_id: 5 }];
+  it('returns early when the green-per-sha index reports an existing green claim', async () => {
+    mockDbExecute
+      .mockResolvedValueOnce({ rows: [{ id: 1, source_claim_id: 5 }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: 99 }] });
 
     mockGetClaimById.mockResolvedValueOnce({
       id: 5,
@@ -237,13 +240,12 @@ describe('handleCheckRun — green claim creation', () => {
       createdAt: new Date('2026-01-01T00:00:00Z'),
     });
 
-    mockNextChainAttempt.mockResolvedValueOnce(2);
-
-    mockCreateClaimWithRetry.mockResolvedValueOnce(null);
+    mockCreateClaimWithRetry.mockImplementationOnce(async (opts, createFn) => createFn(opts));
 
     await handleCheckRun('test-org', 'test-repo', makePayload(), defaultConfig);
 
     expect(mockCreateClaimWithRetry).toHaveBeenCalledTimes(1);
+    expect(mockDbExecute).toHaveBeenCalledTimes(3);
     expect(mockDispatchReview).not.toHaveBeenCalled();
   });
 
@@ -312,6 +314,11 @@ describe('isFluentFlowCheckRun', () => {
     expect(isFluentFlowCheckRun({ name: 'fluent flow check', app: { slug: 'other' } })).toBe(true);
   });
 
+  it('matches check runs by Fluent Flow app slug without relying on the name prefix', () => {
+    expect(isFluentFlowCheckRun({ name: 'verify', app: { slug: 'fluent-flow' } })).toBe(true);
+    expect(isFluentFlowCheckRun({ name: 'verify', app: { slug: 'fluent-flow-ci[bot]' } })).toBe(true);
+  });
+
   it('does not match check runs without Fluent Flow name prefix', () => {
     expect(isFluentFlowCheckRun({ name: 'test', app: { slug: 'github-actions' } })).toBe(false);
     expect(isFluentFlowCheckRun({ name: 'review', app: { slug: 'github-actions' } })).toBe(false);
@@ -340,6 +347,22 @@ describe('handleCheckRun — CI self-exclusion on both paths', () => {
     expect(mockDispatchReview).not.toHaveBeenCalled();
   });
 
+  it('short-circuits on success when the app slug identifies Fluent Flow', async () => {
+    const payload = makePayload({
+      check_run: {
+        name: 'test',
+        app: { slug: 'fluent-flow' },
+        conclusion: 'success',
+      },
+    });
+
+    await handleCheckRun('test-org', 'test-repo', payload, defaultConfig);
+
+    expect(mockGetPRsForCommit).not.toHaveBeenCalled();
+    expect(mockClaimDispatch).not.toHaveBeenCalled();
+    expect(mockDispatchReview).not.toHaveBeenCalled();
+  });
+
   it('short-circuits on failure when isFluentFlowCheckRun matches', async () => {
     const payload = makePayload({
       check_run: {
@@ -350,6 +373,21 @@ describe('handleCheckRun — CI self-exclusion on both paths', () => {
 
     await handleCheckRun('test-org', 'test-repo', payload, defaultConfig);
 
+    expect(mockDispatch).not.toHaveBeenCalled();
+  });
+
+  it('short-circuits on failure when the app slug identifies Fluent Flow', async () => {
+    const payload = makePayload({
+      check_run: {
+        name: 'test',
+        app: { slug: 'fluent-flow' },
+        conclusion: 'failure',
+      },
+    });
+
+    await handleCheckRun('test-org', 'test-repo', payload, defaultConfig);
+
+    expect(mockGetPRsForCommit).not.toHaveBeenCalled();
     expect(mockDispatch).not.toHaveBeenCalled();
   });
 

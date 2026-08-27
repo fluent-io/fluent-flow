@@ -5,21 +5,24 @@ import { handleTestFailure, handleTestSuccess } from '../../engine/test-manager.
 import { getActivePause } from '../../engine/pause-manager.js';
 import { parseCheckAnnotations } from '../../engine/test-parser.js';
 import { sql } from 'drizzle-orm';
-import { db, schema } from '@fluent-flow/db';
+import { db, getVerificationResultByClaim } from '@fluent-flow/db';
 import { audit } from '../../db/client.js';
 import { resolveOrgId } from '../../config/loader.js';
-import { createClaimWithRetry, nextChainAttempt, getClaimById } from '../../agents/claim-manager.js';
-import { getVerificationResultByClaim } from '@fluent-flow/db';
+import { createClaimWithRetry, getClaimById } from '../../agents/claim-manager.js';
 import logger from '../../logger.js';
+
+const FLUENT_FLOW_APP_SLUGS = new Set(['fluent-flow', 'fluent-flow-ci[bot]']);
+const GREEN_CLAIM_DUPLICATE = Symbol('green-claim-duplicate');
 
 /**
  * Check if a check run belongs to Fluent Flow (should be excluded from dispatch).
- * Matches check runs with name starting with "Fluent Flow" — our naming pattern.
+ * Matches Fluent Flow App-owned checks by slug, or checks with names starting with "Fluent Flow".
  * @param {object} checkRun
  * @returns {boolean}
  */
 function isFluentFlowCheckRun(checkRun) {
-  return /^Fluent Flow/i.test(checkRun?.name ?? '');
+  const appSlug = checkRun?.app?.slug ?? '';
+  return FLUENT_FLOW_APP_SLUGS.has(appSlug) || /^Fluent Flow/i.test(checkRun?.name ?? '');
 }
 
 /**
@@ -78,8 +81,6 @@ export async function findRedClaimIdFromLatestReviewFix(orgId, repo, prNumber) {
  * @returns {Promise<{status: 'created', claim: object}|{status: 'duplicate'}|null>} Outcome, or null when no green claim applies
  */
 async function createGreenClaim({ orgId, repo, prNumber, headSha, checkRun, config }, linkageResolver = findRedClaimIdFromLatestReviewFix) {
-  const { agentClaims } = schema;
-
   // Exact linkage: latest completed review_fix → source_claim_id → red claim
   const redClaimId = await linkageResolver(orgId, repo, prNumber);
   if (!redClaimId) return null;
@@ -89,8 +90,6 @@ async function createGreenClaim({ orgId, repo, prNumber, headSha, checkRun, conf
 
   const redRecord = await getVerificationResultByClaim(orgId, redClaimId);
   if (!redRecord?.testHashes) return null;
-
-  const attempt = await nextChainAttempt(orgId, repo, prNumber);
 
   // Inline the full red record + config snapshot
   const payload = {
@@ -112,31 +111,35 @@ async function createGreenClaim({ orgId, repo, prNumber, headSha, checkRun, conf
       orgId,
       repo,
       prNumber,
-      attempt,
       claimType: 'verify',
       payload,
       headSha,
     },
     async (opts) => {
-      const [created] = await db
-        .insert(agentClaims)
-        .values({
-          orgId: opts.orgId,
-          repo: opts.repo,
-          prNumber: opts.prNumber,
-          attempt: opts.attempt,
-          claimType: opts.claimType,
-          status: 'pending',
-          payload: opts.payload,
-          headSha: opts.headSha,
-        })
-        .onConflictDoNothing()
-        .returning();
-      return created ?? null;
+      const insertResult = await db.execute(sql`
+        INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload, head_sha)
+        VALUES (
+          ${opts.orgId}, ${opts.repo}, ${opts.prNumber}, ${opts.attempt},
+          ${opts.claimType}, 'pending', ${JSON.stringify(opts.payload)}::jsonb, ${opts.headSha}
+        )
+        ON CONFLICT DO NOTHING
+        RETURNING *
+      `);
+      const created = (insertResult.rows ?? insertResult)[0];
+      if (created) return created;
+
+      const duplicateResult = await db.execute(sql`
+        SELECT id FROM agent_claims
+        WHERE org_id = ${opts.orgId} AND repo = ${opts.repo} AND pr_number = ${opts.prNumber}
+          AND claim_type = 'verify' AND head_sha = ${opts.headSha}
+          AND payload->>'phase' = 'green'
+        LIMIT 1
+      `);
+      return (duplicateResult.rows ?? duplicateResult)[0] ? GREEN_CLAIM_DUPLICATE : null;
     },
   );
 
-  return claim ? { status: 'created', claim } : { status: 'duplicate' };
+  return claim === GREEN_CLAIM_DUPLICATE ? { status: 'duplicate' } : { status: 'created', claim };
 }
 
 /**
