@@ -68,11 +68,14 @@ vi.mock('../../src/notifications/dispatcher.js', () => ({
   dispatch: (...a) => mockDispatch(...a),
 }));
 
-const mockCreateClaim = vi.fn();
+const mockCreateClaim = vi.fn().mockResolvedValue({ id: 1, claim_type: 'review' });
+const mockCreateClaimWithRetry = vi.fn().mockImplementation(async (opts, fn) => fn(opts));
 vi.mock('../../src/agents/claim-manager.js', () => ({
   createClaim: (...a) => mockCreateClaim(...a),
   completeClaim: vi.fn(),
   getActiveClaim: vi.fn(),
+  nextChainAttempt: vi.fn().mockResolvedValue(2),
+  createClaimWithRetry: (...a) => mockCreateClaimWithRetry(...a),
 }));
 
 const mockOnClaimDispatched = vi.fn().mockResolvedValue(undefined);
@@ -88,10 +91,8 @@ vi.mock('../../src/providers/index.js', () => ({
 import { dispatchReview, handleReviewResult } from '../../src/engine/review-manager.js';
 
 beforeEach(() => {
-  mockCreateClaim.mockReset();
-  // Real toSnakeClaim does NOT include installation_id — align mock with actual shape.
-  // installation_id must come from config.installation_id (the fallback path).
-  mockCreateClaim.mockResolvedValue({ id: 1, claim_type: 'review' });
+  mockCreateClaim.mockReset().mockResolvedValue({ id: 1, claim_type: 'review' });
+  mockCreateClaimWithRetry.mockClear().mockImplementation(async (opts, fn) => fn(opts));
   mockDispatchWorkflow.mockReset();
   mockGetReviews.mockClear();
   mockDismissReview.mockClear();
@@ -314,6 +315,8 @@ describe('dispatchReview (runner-claim based)', () => {
 
 describe('handleReviewResult', () => {
   it('creates review_fix claim at attempt+1 on FAIL, preserving the original review claim', async () => {
+    mockCreateClaim.mockResolvedValue({ id: 2, claim_type: 'review_fix' });
+
     await handleReviewResult({
       owner: 'fluent-io',
       repo: 'fluent-flow',
@@ -325,9 +328,8 @@ describe('handleReviewResult', () => {
       headBranch: 'main',
     });
 
-    expect(mockCreateClaim).toHaveBeenCalledTimes(1);
-    const call = mockCreateClaim.mock.calls[0][0];
-    expect(call.attempt).toBe(2); // attempt + 1, not 1
+    expect(mockCreateClaimWithRetry).toHaveBeenCalled();
+    const call = mockCreateClaimWithRetry.mock.calls[0][0];
     expect(call.claimType).toBe('review_fix');
     expect(call.repo).toBe('fluent-io/fluent-flow');
     expect(call.prNumber).toBe(42);
@@ -345,10 +347,12 @@ describe('handleReviewResult', () => {
     });
 
     expect(result.action).toBe('pass');
-    expect(mockCreateClaim).not.toHaveBeenCalled();
+    expect(mockCreateClaimWithRetry).not.toHaveBeenCalled();
   });
 
   it('posts a fix status comment on FAIL when claim is created', async () => {
+    mockCreateClaim.mockResolvedValue({ id: 2, claim_type: 'review_fix' });
+
     await handleReviewResult({
       owner: 'fluent-io',
       repo: 'fluent-flow',

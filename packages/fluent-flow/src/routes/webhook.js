@@ -291,6 +291,7 @@ async function handlePullRequestReview(owner, repo, payload, config) {
         agentId,
         headBranch: pr.head.ref,
         ctx: reviewCtx,
+        prBody: pr.body,
       });
     } catch (err) {
       logger.error({ msg: 'Failed to handle automated review result', error: err.message, prNumber });

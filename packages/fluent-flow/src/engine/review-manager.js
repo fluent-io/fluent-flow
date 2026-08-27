@@ -8,7 +8,7 @@ import { addLabel, getReviews, dismissReview, postComment } from '../providers/g
 import { enablePullRequestAutoMerge, getPRNodeId } from '../providers/github/graphql.js';
 import { recordPause, getActivePause } from './pause-manager.js';
 import { notifyReviewFailure, formatRichMessage, dispatch } from '../notifications/dispatcher.js';
-import { createClaim, completeClaim, getActiveClaim } from '../agents/claim-manager.js';
+import { createClaim, completeClaim, getActiveClaim, nextChainAttempt, createClaimWithRetry } from '../agents/claim-manager.js';
 import { resolveSession } from '../agents/session-manager.js';
 import { onClaimDispatched, onClaimResolved } from './check-run.js';
 import { getProvider } from '../providers/index.js';
@@ -199,9 +199,10 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', head
  * @param {number} opts.issueNumber - Associated issue number (for pause)
  * @param {object} opts.result - { status, blocking[], advisory[], attempt, summary }
  * @param {string} [opts.reviewSha] - Commit SHA the review was for
+ * @param {string} [opts.prBody] - PR body (threaded from webhook handler for verify:red intent inlining)
  * @returns {Promise<{ action: 'pass'|'fail'|'escalate' }>}
  */
-export async function handleReviewResult({ owner, repo, prNumber, issueNumber, result, reviewSha, agentId, headBranch, ctx }) {
+export async function handleReviewResult({ owner, repo, prNumber, issueNumber, result, reviewSha, agentId, headBranch, ctx, prBody }) {
   const repoKey = `${owner}/${repo}`;
   const config = await resolveConfig(owner, repo);
   const maxRetries = config.reviewer?.max_retries ?? 3;
@@ -346,25 +347,53 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   const explicitAgent = agentId;
   try {
     const failOrgId = await resolveOrgId(owner, repo);
-    // Use attempt + 1 to avoid upserting the original review claim.
-    // The unique constraint is (org_id, repo, pr_number, claim_type, attempt), so
-    // reusing the same attempt with a different claim_type would not conflict,
-    // but we increment anyway to keep the review_fix attempt separate from the review.
-    const newClaim = await createClaim({
-      orgId: failOrgId,
-      repo: repoKey,
-      prNumber,
-      attempt: attempt + 1,
-      agentId: explicitAgent,
-      claimType: 'review_fix',
-      payload: {
-        message: formatRichMessage({ repo: repoKey, prNumber, attempt, blocking, advisory }),
-        issues: allIssues,
-        onFailure: config.reviewer?.on_failure,
-        branch: headBranch,
-      },
-      headSha: reviewSha,
-    });
+    const verifyCfg = config.verification ?? { enabled: false };
+    const attemptNext = await nextChainAttempt(failOrgId, repoKey, prNumber);
+
+    let newClaim;
+    if (verifyCfg.enabled) {
+      newClaim = await createClaimWithRetry(
+        {
+          orgId: failOrgId,
+          repo: repoKey,
+          prNumber,
+          attempt: attemptNext,
+          agentId: explicitAgent,
+          claimType: 'verify',
+          payload: {
+            phase: 'red',
+            findings: blocking.map((f, i) => ({ id: f.id ?? `F${i + 1}`, message: f.message ?? String(f) })),
+            pr_body: prBody ?? null,
+            issue_number: issueNumber ?? null,
+            red_base_sha: reviewSha,
+            branch: headBranch,
+            verification: verifyCfg,
+          },
+          headSha: reviewSha,
+        },
+        createClaim,
+      );
+    } else {
+      newClaim = await createClaimWithRetry(
+        {
+          orgId: failOrgId,
+          repo: repoKey,
+          prNumber,
+          attempt: attemptNext,
+          agentId: explicitAgent,
+          claimType: 'review_fix',
+          payload: {
+            message: formatRichMessage({ repo: repoKey, prNumber, attempt, blocking, advisory }),
+            issues: allIssues,
+            onFailure: config.reviewer?.on_failure,
+            branch: headBranch,
+          },
+          headSha: reviewSha,
+        },
+        createClaim,
+      );
+    }
+
     // Emit check-run dispatched (fire-and-forget)
     if (newClaim) {
       const failCtx = ctx ?? await installationCtxForRepo(owner, repo);
@@ -376,7 +405,10 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
 
       // Post status comment on the PR (fire-and-forget — non-blocking)
       if (failCtx) {
-        postComment(owner, repo, prNumber, `🔧 **Fluent Flow** is fixing review feedback (attempt ${attempt + 1})...`, failCtx)
+        const statusMsg = verifyCfg.enabled
+          ? `🔍 **Fluent Flow** is verifying fixes for ${blocking.length} blocking issue(s)...`
+          : `🔧 **Fluent Flow** is fixing review feedback (attempt ${attemptNext})...`;
+        postComment(owner, repo, prNumber, statusMsg, failCtx)
           .catch((commentErr) => {
             // Safe to continue: fix status comment is informational and must not block claim creation.
             logger.warn({ msg: 'Failed to post fix status comment', repo: repoKey, prNumber, error: commentErr.message });
@@ -520,4 +552,3 @@ export async function resetRetries(repo, prNumber) {
     })
     .where(and(eq(reviewRetries.repo, repo), eq(reviewRetries.prNumber, prNumber)));
 }
-

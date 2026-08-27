@@ -69,12 +69,9 @@ describe('verdict fallback from GitHub review body', () => {
     );
 
     expect(fetchLatestReviewVerdict).toHaveBeenCalledWith({ owner: 'o', repo: 'r', prNumber: 5 });
-    // FAIL via the fallback must still auto-chain review_fix at attempt + 1
-    expect(createClaim).toHaveBeenCalledWith(expect.objectContaining({
-      claimType: 'review_fix',
-      attempt: 3,
-      prNumber: 5,
-    }));
+    // FAIL verdict from webhook now handles auto-chain via handleReviewResult
+    // Runner completion no longer chains - it only completes and audits
+    expect(createClaim).not.toHaveBeenCalled();
   });
 
   it('does not fetch when the runner already parsed a verdict from stdout', async () => {
@@ -83,7 +80,7 @@ describe('verdict fallback from GitHub review body', () => {
       makeRes(),
     );
     expect(fetchLatestReviewVerdict).not.toHaveBeenCalled();
-    expect(createClaim).toHaveBeenCalled();
+    expect(createClaim).not.toHaveBeenCalled();
   });
 
   it('does not fetch for non-review claim types', async () => {
@@ -105,7 +102,7 @@ describe('verdict fallback from GitHub review body', () => {
     );
 
     expect(res.statusCode).toBe(200);
-    expect(createClaim).not.toHaveBeenCalled(); // no verdict → no chain
+    expect(createClaim).not.toHaveBeenCalled();
   });
 
   it('a PASS fallback verdict does not chain review_fix', async () => {

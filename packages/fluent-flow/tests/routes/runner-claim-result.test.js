@@ -75,9 +75,8 @@ describe('handleClaimResult — claim_id path', () => {
     expect(res.body.claim_id).toBe(7);
   });
 
-  it('completed review with FAIL verdict still auto-chains review_fix at attempt+1', async () => {
+  it('completed review with FAIL verdict does NOT auto-chain review_fix (handleReviewResult is the sole coordinator)', async () => {
     completeClaimById.mockResolvedValueOnce({ ...CLAIM_ROW, status: 'completed' });
-    createClaim.mockResolvedValueOnce({ id: 8 });
     const res = makeRes();
 
     await handleClaimResult(
@@ -85,11 +84,9 @@ describe('handleClaimResult — claim_id path', () => {
       res,
     );
 
-    expect(createClaim).toHaveBeenCalledWith(expect.objectContaining({
-      claimType: 'review_fix',
-      attempt: 3,
-      prNumber: 5,
-    }));
+    expect(createClaim).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(200);
+    expect(res.body.claim_id).toBe(7);
   });
 
   it('already-resolved claim by id returns 200 already_resolved', async () => {

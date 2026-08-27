@@ -130,7 +130,7 @@ async function resolveGitHubToken(fullRepo) {
     const ctx = await installationCtxForRepo(owner, repoName);
     if (ctx?.installation_id) {
       const token = await getInstallationToken(ctx.installation_id);
-      logger.info({ msg: 'Resolved GitHub App token for runner', repo: fullRepo, installationId: ctx.installation_id });
+      logger.info({ msg: 'Resolved GitHub App token for runner', repo: fullRepo, installationId: ctx.installationId });
       return token;
     }
     logger.info({ msg: 'No installation context for repo', repo: fullRepo });
@@ -315,26 +315,6 @@ export async function handleClaimResult(req, res) {
       }
 
       audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status, claimType, verdict: verdict ?? null } });
-
-      // Auto-chain: review FAIL → review_fix
-      if (claimType === 'review' && verdict === 'fail') {
-        try {
-          await createClaim({
-            orgId: org_id,
-            repo,
-            prNumber: pr_number,
-            attempt: attempt + 1,
-            claimType: 'review_fix',
-            payload: { source_claim_id: claim.id, branch: claim.payload?.branch },
-          });
-          logger.info({ msg: 'Auto-created review_fix claim after FAIL review', repo, prNumber: pr_number, attempt: attempt + 1 });
-        } catch (err) {
-          // Safe to continue: review_fix claim creation failure — the
-          // original review result is already recorded. The agent can
-          // manually pick up the work via polling.
-          logger.error({ msg: 'Failed to create review_fix claim', error: err.message });
-        }
-      }
 
       // Auto-chain: spec → build (only if payload.auto_chain !== false)
       if (claimType === 'spec' && claim.payload?.auto_chain !== false) {
