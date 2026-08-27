@@ -348,7 +348,6 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   try {
     const failOrgId = await resolveOrgId(owner, repo);
     const verifyCfg = config.verification ?? { enabled: false };
-    const attemptNext = await nextChainAttempt(failOrgId, repoKey, prNumber);
 
     let newClaim;
     if (verifyCfg.enabled) {
@@ -357,7 +356,6 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
           orgId: failOrgId,
           repo: repoKey,
           prNumber,
-          attempt: attemptNext,
           agentId: explicitAgent,
           claimType: 'verify',
           payload: {
@@ -379,7 +377,6 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
           orgId: failOrgId,
           repo: repoKey,
           prNumber,
-          attempt: attemptNext,
           agentId: explicitAgent,
           claimType: 'review_fix',
           payload: {
@@ -407,7 +404,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
       if (failCtx) {
         const statusMsg = verifyCfg.enabled
           ? `🔍 **Fluent Flow** is verifying fixes for ${blocking.length} blocking issue(s)...`
-          : `🔧 **Fluent Flow** is fixing review feedback (attempt ${attemptNext})...`;
+          : `🔧 **Fluent Flow** is fixing review feedback (attempt ${newClaim.attempt})...`;
         postComment(owner, repo, prNumber, statusMsg, failCtx)
           .catch((commentErr) => {
             // Safe to continue: fix status comment is informational and must not block claim creation.

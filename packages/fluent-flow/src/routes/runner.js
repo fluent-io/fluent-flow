@@ -130,7 +130,7 @@ async function resolveGitHubToken(fullRepo) {
     const ctx = await installationCtxForRepo(owner, repoName);
     if (ctx?.installation_id) {
       const token = await getInstallationToken(ctx.installation_id);
-      logger.info({ msg: 'Resolved GitHub App token for runner', repo: fullRepo, installationId: ctx.installationId });
+      logger.info({ msg: 'Resolved GitHub App token for runner', repo: fullRepo, installationId: ctx.installation_id });
       return token;
     }
     logger.info({ msg: 'No installation context for repo', repo: fullRepo });
@@ -297,7 +297,7 @@ export async function handleClaimResult(req, res) {
       // Verdict fallback: review agents that post via `gh api` put the marker
       // in the GitHub review body, not stdout. Fetch the latest review and
       // parse it before treating this result as verdict-less — otherwise the
-      // review→review_fix chain and auto-merge silently never fire.
+      // chain dispatch via handleReviewResult may not fire.
       let verdict = parsed.data.verdict;
       if (claimType === 'review' && !verdict && pr_number != null) {
         try {
@@ -309,7 +309,7 @@ export async function handleClaimResult(req, res) {
           }
         } catch (err) {
           // Safe to continue: the posted review is already on the PR; the
-          // auto-chain simply doesn't fire for this attempt.
+          // chain dispatch via handleReviewResult may not fire for this attempt.
           logger.warn({ msg: 'Verdict fallback failed', repo, prNumber: pr_number, error: err.message });
         }
       }

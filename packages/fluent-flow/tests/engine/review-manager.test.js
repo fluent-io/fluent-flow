@@ -68,8 +68,12 @@ vi.mock('../../src/notifications/dispatcher.js', () => ({
   dispatch: (...a) => mockDispatch(...a),
 }));
 
-const mockCreateClaim = vi.fn().mockResolvedValue({ id: 1, claim_type: 'review' });
-const mockCreateClaimWithRetry = vi.fn().mockImplementation(async (opts, fn) => fn(opts));
+const mockCreateClaim = vi.fn().mockResolvedValue({ id: 1, claim_type: 'review', attempt: 1 });
+const mockCreateClaimWithRetry = vi.fn().mockImplementation(async (opts, fn) => {
+  const result = await fn(opts);
+  // Return result with attempt for status message generation
+  return { ...result, attempt: opts.attempt || 2 };
+});
 vi.mock('../../src/agents/claim-manager.js', () => ({
   createClaim: (...a) => mockCreateClaim(...a),
   completeClaim: vi.fn(),
@@ -91,8 +95,12 @@ vi.mock('../../src/providers/index.js', () => ({
 import { dispatchReview, handleReviewResult } from '../../src/engine/review-manager.js';
 
 beforeEach(() => {
-  mockCreateClaim.mockReset().mockResolvedValue({ id: 1, claim_type: 'review' });
-  mockCreateClaimWithRetry.mockClear().mockImplementation(async (opts, fn) => fn(opts));
+  mockCreateClaim.mockReset().mockResolvedValue({ id: 1, claim_type: 'review', attempt: 1 });
+  mockCreateClaimWithRetry.mockClear().mockImplementation(async (opts, fn) => {
+    const result = await fn(opts);
+    // Return result with attempt for status message generation
+    return { ...result, attempt: opts.attempt || 2 };
+  });
   mockDispatchWorkflow.mockReset();
   mockGetReviews.mockClear();
   mockDismissReview.mockClear();
@@ -351,7 +359,7 @@ describe('handleReviewResult', () => {
   });
 
   it('posts a fix status comment on FAIL when claim is created', async () => {
-    mockCreateClaim.mockResolvedValue({ id: 2, claim_type: 'review_fix' });
+    mockCreateClaim.mockResolvedValue({ id: 2, claim_type: 'review_fix', attempt: 2 });
 
     await handleReviewResult({
       owner: 'fluent-io',

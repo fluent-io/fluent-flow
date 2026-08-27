@@ -75,6 +75,7 @@ import { handleReviewResult } from '../../src/engine/review-manager.js';
 import { resolveConfig, resolveOrgId, installationCtxForRepo } from '../../src/config/loader.js';
 import { nextChainAttempt, createClaimWithRetry } from '../../src/agents/claim-manager.js';
 import { onClaimDispatched } from '../../src/engine/check-run.js';
+import { postComment } from '../../src/providers/github/rest.js';
 
 describe('handleReviewResult — review FAIL → verify:red chain coordinator', () => {
   const baseOpts = {
@@ -105,6 +106,7 @@ describe('handleReviewResult — review FAIL → verify:red chain coordinator', 
     nextChainAttempt.mockResolvedValue(3);
     createClaimWithRetry.mockResolvedValue({ id: 11 });
     onClaimDispatched.mockResolvedValue(undefined);
+    postComment.mockResolvedValue(undefined);
   });
 
   it('FAIL creates verify:red (not review_fix) when verification enabled, with exact red payload structure', async () => {
@@ -269,7 +271,7 @@ describe('handleReviewResult — review FAIL → verify:red chain coordinator', 
     );
   });
 
-  it('verify:red claim posts status comment on PR', async () => {
+  it('verify:red claim posts 🔍 verifying status comment on PR', async () => {
     resolveConfig.mockResolvedValue({
       reviewer: { max_retries: 3 },
       verification: { enabled: true, framework: 'auto' },
@@ -277,6 +279,12 @@ describe('handleReviewResult — review FAIL → verify:red chain coordinator', 
 
     await handleReviewResult(baseOpts);
 
-    expect(onClaimDispatched).toHaveBeenCalled();
+    expect(postComment).toHaveBeenCalledWith(
+      'o',
+      'r',
+      5,
+      '🔍 **Fluent Flow** is verifying fixes for 1 blocking issue(s)...',
+      { installation_id: 123 }
+    );
   });
 });
