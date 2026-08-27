@@ -46,7 +46,7 @@ export function createClient({ serverUrl, token, fetch: fetchFn = globalThis.fet
   return {
     /**
      * Register a session with the server.
-     * @param {object} meta — { hostname, os, cwd }
+     * @param {object} meta — { hostname, os, cwd, supported_claim_types }
      * @returns {Promise<{ ok, session_id, status }>}
      */
     register: (meta) => post('/api/runner/register', { meta }, 'Register'),

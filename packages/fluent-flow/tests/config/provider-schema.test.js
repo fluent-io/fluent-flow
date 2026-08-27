@@ -5,12 +5,12 @@ describe('RepoConfigSchema', () => {
   it('parses a valid repo config', () => {
     const result = RepoConfigSchema.parse({
       default_agent: 'getonit',
-      claim_types: ['review'],
+      claim_types: ['review', 'verify', 'test_verify'],
       review_model: 'claude-opus-4-6',
       paused: false,
     });
     expect(result.default_agent).toBe('getonit');
-    expect(result.claim_types).toEqual(['review']);
+    expect(result.claim_types).toEqual(['review', 'verify', 'test_verify']);
     expect(result.review_model).toBe('claude-opus-4-6');
     expect(result.paused).toBe(false);
   });
@@ -38,6 +38,11 @@ describe('OrgConfigSchema', () => {
   it('parses with optional fields set', () => {
     const result = OrgConfigSchema.parse({ default_review_model: 'claude-haiku-4-5-20251001' });
     expect(result.default_review_model).toBe('claude-haiku-4-5-20251001');
+  });
+
+  it('accepts verify and historical test_verify default claim types', () => {
+    const result = OrgConfigSchema.parse({ default_claim_types: ['review_fix', 'verify', 'test_verify'] });
+    expect(result.default_claim_types).toEqual(['review_fix', 'verify', 'test_verify']);
   });
 });
 

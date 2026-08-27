@@ -5,12 +5,12 @@ describe('RepoConfigSchema (TS)', () => {
   it('parses a valid repo config', () => {
     const result = RepoConfigSchema.parse({
       default_agent: 'getonit',
-      claim_types: ['review'],
+      claim_types: ['review', 'verify', 'test_verify'],
       review_model: 'claude-opus-4-6',
       paused: false,
     });
     expect(result.default_agent).toBe('getonit');
-    expect(result.claim_types).toEqual(['review']);
+    expect(result.claim_types).toEqual(['review', 'verify', 'test_verify']);
   });
 
   it('throws on unknown claim_types entry', () => {
@@ -27,6 +27,11 @@ describe('RepoConfigSchema (TS)', () => {
 describe('OrgConfigSchema (TS)', () => {
   it('parses empty object', () => {
     expect(OrgConfigSchema.parse({})).toBeDefined();
+  });
+
+  it('accepts verify and historical test_verify default claim types', () => {
+    const result = OrgConfigSchema.parse({ default_claim_types: ['review_fix', 'verify', 'test_verify'] });
+    expect(result.default_claim_types).toEqual(['review_fix', 'verify', 'test_verify']);
   });
 });
 

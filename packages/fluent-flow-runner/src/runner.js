@@ -71,7 +71,7 @@ export function parseHarnessResult(stdout) {
  * @param {object} opts.log — createLogger() instance
  * @param {Function} opts.resolveCommand — resolveCommand() from commands.js
  * @param {string} [opts.cwd] — working directory for agent commands
- * @param {object} [opts.meta] — session metadata override
+ * @param {object} [opts.meta] — session metadata override; `supported_claim_types` defaults to current CLAIM_TYPES
  * @param {number} [opts.maxPollFailures] — max consecutive poll failures before stopping
  * @param {number} [opts.heartbeatIntervalMs] — claim heartbeat interval (default env FLUENT_FLOW_HEARTBEAT_MS or 60s)
  * @param {number} [opts.agentTimeoutMs] — per-execution timeout (default env FLUENT_FLOW_AGENT_TIMEOUT_MS or 60min)
@@ -104,10 +104,14 @@ export function createRunner({
   const killEscalateMs = killEscalationMs ?? DEFAULT_KILL_ESCALATION_MS;
   const healthCheckIntervalMs = healthIntervalMs ?? numFromEnv('FLUENT_FLOW_HEALTH_INTERVAL_MS', 300_000);
 
-  const sessionMeta = meta ?? {
+  const baseSessionMeta = meta ?? {
     hostname: hostname(),
     os: platform(),
     ...(cwd && { cwd }),
+  };
+  const sessionMeta = {
+    ...baseSessionMeta,
+    supported_claim_types: Array.isArray(baseSessionMeta.supported_claim_types) ? baseSessionMeta.supported_claim_types : CLAIM_TYPES,
   };
 
   /** Resolve the server-assigned claim id from a work payload (any casing). */

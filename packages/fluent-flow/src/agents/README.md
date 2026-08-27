@@ -59,23 +59,26 @@ Claims track work assignments per review attempt.
 ## Claim Lifecycle
 
 ```
-Review fails → createClaim (always pending, no session)
-                    │
-                    ▼
-           Runner polls → claimPendingWork()
-           (atomic pending → claimed, session → busy, 15min TTL)
-                    │
-           ┌────────┴────────────┐
-           ▼                     ▼
-      Agent fixes code      Claim expires
-      Review passes          (session → offline)
-           │                     │
-           ▼                     ▼
-      completeClaim        Re-dispatch: createClaim
-      (session → online)   at attempt + 1 (cap at 10)
-                               │
-                               ▼
-                          Runner picks up on next poll
+Review fails
+     │
+     ▼
+create verify:red claim (pending, no session)
+     │
+     ▼
+Runner claims → red artifacts pinned with [skip ci]
+     │
+     ▼
+create review_fix claim → runner/agent pushes fix
+     │
+     ▼
+CI success creates verify:green claim
+     │
+     ▼
+Runner claims → pinned tests + full suite verified
+     │
+     ├── PASS → re-review → auto-merge if review passes
+     ├── FAIL/TAMPERED → stop for human review
+     └── expiry → re-dispatch at attempt + 1 (cap at 10)
 ```
 
 **Key guarantees:**

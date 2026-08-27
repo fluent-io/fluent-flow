@@ -101,7 +101,30 @@ describe('runner', () => {
       await new Promise((r) => setTimeout(r, 50));
       runner.shutdown();
       await startPromise;
-      expect(client.register).toHaveBeenCalledWith({ hostname: 'test' });
+      expect(client.register).toHaveBeenCalledWith({
+        hostname: 'test',
+        supported_claim_types: ['spec', 'build', 'review', 'review_fix', 'test_verify', 'verify'],
+      });
+    });
+
+    it('preserves explicit supported claim types when registering a constrained runner', async () => {
+      const client = makeClient();
+      const runner = createRunner({
+        client,
+        log: makeLogger(),
+        resolveCommand: vi.fn(),
+        meta: { hostname: 'test', supported_claim_types: ['review', 'review_fix'] },
+      });
+
+      const startPromise = runner.start();
+      await new Promise((r) => setTimeout(r, 50));
+      runner.shutdown();
+      await startPromise;
+
+      expect(client.register).toHaveBeenCalledWith({
+        hostname: 'test',
+        supported_claim_types: ['review', 'review_fix'],
+      });
     });
 
     it('polls after registration', async () => {

@@ -16,8 +16,8 @@ Next.js 15 (App Router), TypeScript, Tailwind CSS, shadcn/ui, NextAuth.js, @flue
 
 ### Pipeline Status
 - Pipeline list showing task pipeline progress per PR
-- Dynamic stages rendered from claim data (spec, build, review_fix, test_verify, or any future types)
-- Pipeline detail with vertical timeline showing per-stage status, duration, agent, and session
+- Dynamic stages rendered from claim data (`spec`, `build`, `review`, `review_fix`, `verify`, historical `test_verify`, or future types)
+- Pipeline detail with full claim-chain timeline, current-attempt header status, verification result panel, duration, agent, and session
 - Links to GitHub PRs
 
 ### Auth & Multi-Tenancy
@@ -64,7 +64,7 @@ The runner token is shown exactly once. If you lose it, delete the agent from th
 
 ### Agent types
 
-`agent_type` is a routing hint — which CLI tool the runner invokes when it claims work (`claude`, `aider`, `codex`, etc.). It is **not** the task role (`claim_type`: `spec`/`build`/`review_fix`/`test_verify`), which is decided per-claim by the server.
+`agent_type` is a routing hint — which CLI tool the runner invokes when it claims work (`claude`, `aider`, `codex`, etc.). It is **not** the task role (`claim_type`: `spec`/`build`/`review`/`review_fix`/`verify`; historical `test_verify`), which is decided per-claim by the server.
 
 ## API Routes
 
@@ -82,7 +82,7 @@ The runner token is shown exactly once. If you lose it, delete the agent from th
 ## Testing
 
 ```bash
-npm test        # 14 tests (API route handlers)
+npm test        # 38 tests (API route handlers and pure UI helpers)
 npm run test:watch
 ```
 

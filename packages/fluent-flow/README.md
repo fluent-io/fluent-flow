@@ -1,23 +1,32 @@
 # Fluent Flow
 
-Config-driven GitHub workflow orchestrator. A deterministic state machine manages the review-fix loop for AI coding agents — agents only read and write code, they never decide what step comes next.
+Config-driven GitHub workflow orchestrator. A deterministic state machine manages review, red/green verification, and fix claims for AI coding agents — agents only read and write code, they never decide what step comes next.
 
-## The Review Loop
+## The Verification-backed Review Loop
 
-When a PR is pushed or updated, Fluent Flow runs an automated code review. If the review passes, the PR is auto-merged. If it fails, the server creates a **claim** — a work assignment containing the review feedback — always in `pending` state. An online runner claims it via `claimPendingWork()`, pushes a fix, which triggers a re-review. This loop repeats up to a configurable retry limit before escalating to a human. If a claim expires before a runner claims it, the server automatically re-dispatches at `attempt + 1` (capped at 10).
+When a PR is pushed or updated, Fluent Flow runs an automated code review. If the review passes, the PR can auto-merge. If it fails and verification is enabled, the server first creates a **verify:red** claim: the runner distills the blocking findings into executable red tests at the reviewed commit and publishes those verifier artifacts with `[skip ci]`. Only then does Fluent Flow create a **review_fix** claim. After the fix lands and external CI succeeds, a **verify:green** claim reruns the pinned verifier tests and the full suite before the server dispatches a re-review.
 
 ```
 PR pushed → review → PASS → auto-merge
-                   → FAIL → claim created (pending) → runner claims → pushes fix → re-review → ...
+                   → FAIL → verify:red → review_fix → CI success → verify:green → re-review
+                   → verify TAMPERED / iteration cap → escalate to human
                    → claim expires → auto-re-dispatch at attempt + 1
-                   → max retries exceeded → escalate to human
 ```
 
 ## Key Concepts
 
 ### Claims
 
-A claim is a unit of work for an agent. When a review fails, the server creates a claim with the review feedback and PR details. Claims are always created as `pending` — runners claim them via `claimPendingWork()` (atomic `pending → claimed` transition). Claims are tracked per review attempt and have a TTL. Expired claims are automatically re-dispatched at `attempt + 1` (capped at 10) so no PR stays orphaned.
+A claim is a unit of work for an agent. Review claims produce a verdict. Verify claims run the deterministic red/green gate around blocking review findings. Review-fix claims change the PR code after red verifier artifacts are pinned. Claims are created as `pending` and runners claim them via `claimPendingWork()` (atomic `pending → claimed` transition). Claims are tracked per chain attempt and have a TTL. Expired claims are automatically re-dispatched at `attempt + 1` (capped at 10) so no PR stays orphaned.
+
+Claim types used by the review loop:
+
+| Claim type | Purpose |
+|------------|---------|
+| `review` | Produce the PR verdict and blocking findings. |
+| `verify` | Run deterministic verification with `payload.phase` set to `red` or `green`. |
+| `review_fix` | Change PR code after red verifier artifacts are pinned. |
+| `test_verify` | Historical verifier claim type; accepted in stored config but not created for new automated verification. |
 
 ### Agents
 
@@ -79,7 +88,7 @@ docker compose up -d --build
 ### Run Tests
 
 ```bash
-npm test              # 366 tests, runs sequentially
+npm test              # package suite, runs sequentially
 npm run test:watch    # watch mode
 ```
 
@@ -91,6 +100,30 @@ Two-layer config system:
 2. **Per-repo overrides** (`.github/fluent-flow.yml` in client repos) — `project_id`, `default_agent`, reviewer overrides
 
 Config is fetched from GitHub, cached in the database, and validated with Zod. See [config docs](config/README.md).
+
+### Verification config
+
+Verification is on by default for new review failures. The repo YAML config supports the `verification` key and can keep framework auto-detection or pin an adapter explicitly. Separately, stored repo/org config can restrict `claim_types`; include `verify` there and leave `test_verify` only for historical compatibility.
+
+```yaml
+verification:
+  enabled: true
+  framework: auto      # auto, vitest, jest, node, or custom
+  skip_policy: allow_ungated
+  flake:
+    retries: 2
+    blocking: false
+  authoring:
+    retries: 2
+    max_requirements: 25
+    red_reproductions: 2
+```
+
+`verify` is the active verification claim type. Red claims author pinned verifier artifacts at the reviewed commit; green claims rerun those pinned tests and the full suite at the fixed head. `test_verify` is retained for historical rows only.
+
+### Check-run meaning
+
+`Fluent Flow — verify` reports the verifier gate for the current chain attempt. `PASS` means pinned red tests passed on the fixed head and the full suite had no blocking failures. `FAIL` means a requirement, suite, or configured flake gate failed. `TAMPERED` means the PR changed verifier-protected test/config files after red artifacts were pinned; the chain stops for human review. `SKIPPED` means the configured framework could not be verified under the repo policy.
 
 ## Architecture
 
@@ -132,16 +165,6 @@ Known limits:
 
 ## Database
 
-7 migrations in `src/db/migrations/`:
-
-| Migration | Tables |
-|-----------|--------|
-| 001 | `transitions` — issue workflow state changes |
-| 002 | `review_state` — PR review attempts and results |
-| 003 | `pauses` — paused issues with reason and agent |
-| 004 | `config_cache` — GitHub config fetch cache |
-| 005 | `orgs`, `agents`, `agent_tokens` — agent registry and auth |
-| 006 | `agent_sessions` — ephemeral runner sessions with TTL |
-| 007 | `agent_claims` — per-attempt work assignments |
+Database migrations live in `@fluent-flow/db` and cover the baseline schema, GitHub App installation state, runner sessions, claim archival, null-PR pipelines, verification results, and persisted verification manifests.
 
 Migrations run automatically on server startup. See [DESIGN.md](DESIGN.md) for full schema.

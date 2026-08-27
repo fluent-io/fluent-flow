@@ -9,7 +9,7 @@ import { registerTaskTools } from '../../src/mcp/tools/tasks.js';
 function createMockServer() {
   const tools = new Map();
   return {
-    tool: (name, description, schema, handler) => { tools.set(name, { handler }); },
+    tool: (name, description, schema, handler) => { tools.set(name, { description, schema, handler }); },
     tools,
     call: async (name, args) => tools.get(name).handler(args),
   };
@@ -29,6 +29,12 @@ describe('trigger_task MCP tool', () => {
     expect(server.tools.has('trigger_task')).toBe(true);
   });
 
+  it('declares verify and legacy test_verify in the claim_type schema', () => {
+    const schema = server.tools.get('trigger_task').schema;
+    expect(schema.claim_type.safeParse('verify').success).toBe(true);
+    expect(schema.claim_type.safeParse('test_verify').success).toBe(true);
+  });
+
   it('creates a claim with the specified claim_type', async () => {
     const result = await server.call('trigger_task', {
       org_id: 'self-hosted',
@@ -45,6 +51,28 @@ describe('trigger_task MCP tool', () => {
         repo: 'fluent-io/fluent-flow',
         prNumber: 42,
         claimType: 'spec',
+      }),
+    );
+  });
+
+  it('creates a verify claim for the red/green verification chain', async () => {
+    const result = await server.call('trigger_task', {
+      org_id: 'self-hosted',
+      repo: 'fluent-io/fluent-flow',
+      pr_number: 42,
+      claim_type: 'verify',
+      payload: { phase: 'red' },
+    });
+
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.ok).toBe(true);
+    expect(createClaim).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: 'self-hosted',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 42,
+        claimType: 'verify',
+        payload: { phase: 'red' },
       }),
     );
   });
