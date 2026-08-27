@@ -1,0 +1,64 @@
+{
+  "id": "0010_verification_results",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.orgs": {
+      "name": "orgs",
+      "schema": "",
+      "columns": {
+        "id": { "name": "id", "type": "text", "primaryKey": true, "notNull": true },
+        "name": { "name": "name", "type": "text", "primaryKey": false, "notNull": true },
+        "settings": { "name": "settings", "type": "jsonb", "primaryKey": false, "notNull": false, "default": "'{}'::jsonb" },
+        "created_at": { "name": "created_at", "type": "timestamp with time zone", "primaryKey": false, "notNull": false, "default": "now()" }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.verification_results": {
+      "name": "verification_results",
+      "schema": "",
+      "columns": {
+        "id": { "name": "id", "type": "integer", "primaryKey": true, "notNull": true, "identity": { "type": "byDefault", "name": "verification_results_id_seq", "schema": "public", "increment": "1", "startWith": "1", "minValue": "1", "maxValue": "2147483647", "cache": "1", "cycle": false } },
+        "org_id": { "name": "org_id", "type": "text", "primaryKey": false, "notNull": true },
+        "claim_id": { "name": "claim_id", "type": "integer", "primaryKey": false, "notNull": true },
+        "repo": { "name": "repo", "type": "text", "primaryKey": false, "notNull": true },
+        "pr_number": { "name": "pr_number", "type": "integer", "primaryKey": false, "notNull": true },
+        "phase": { "name": "phase", "type": "text", "primaryKey": false, "notNull": true },
+        "framework": { "name": "framework", "type": "text", "primaryKey": false, "notNull": true },
+        "outcome": { "name": "outcome", "type": "text", "primaryKey": false, "notNull": true },
+        "matrix": { "name": "matrix", "type": "jsonb", "primaryKey": false, "notNull": false },
+        "test_hashes": { "name": "test_hashes", "type": "jsonb", "primaryKey": false, "notNull": false },
+        "artifact_sha": { "name": "artifact_sha", "type": "text", "primaryKey": false, "notNull": false },
+        "red_base_sha": { "name": "red_base_sha", "type": "text", "primaryKey": false, "notNull": false },
+        "green_sha": { "name": "green_sha", "type": "text", "primaryKey": false, "notNull": false },
+        "created_at": { "name": "created_at", "type": "timestamp with time zone", "primaryKey": false, "notNull": true, "default": "now()" }
+      },
+      "indexes": {
+        "idx_verification_results_pr": { "name": "idx_verification_results_pr", "columns": [{ "expression": "org_id", "isExpression": false, "asc": true, "nulls": "last" }, { "expression": "repo", "isExpression": false, "asc": true, "nulls": "last" }, { "expression": "pr_number", "isExpression": false, "asc": true, "nulls": "last" }], "isUnique": false, "concurrently": false, "method": "btree", "with": {} },
+        "verification_results_claim_id_key": { "name": "verification_results_claim_id_key", "columns": [{ "expression": "claim_id", "isExpression": false, "asc": true, "nulls": "last" }], "isUnique": true, "concurrently": false, "method": "btree", "with": {} }
+      },
+      "foreignKeys": {
+        "verification_results_org_id_orgs_id_fk": { "name": "verification_results_org_id_orgs_id_fk", "tableFrom": "verification_results", "tableTo": "orgs", "columnsFrom": ["org_id"], "columnsTo": ["id"], "onDelete": "no action", "onUpdate": "no action" },
+        "verification_results_claim_id_agent_claims_id_fkey": { "name": "verification_results_claim_id_agent_claims_id_fkey", "tableFrom": "verification_results", "tableTo": "agent_claims", "columnsFrom": ["claim_id"], "columnsTo": ["id"], "onDelete": "cascade", "onUpdate": "no action" }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": { "columns": {}, "schemas": {}, "tables": {} }
+}
