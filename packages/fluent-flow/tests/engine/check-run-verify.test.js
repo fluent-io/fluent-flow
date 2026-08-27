@@ -100,11 +100,36 @@ describe('Task 7 check-run plumbing', () => {
     });
     expect(output.summary).not.toMatch(/\x1b\[[0-9;]*m/);
     expect(output.summary).not.toMatch(/[\x00-\x1f]/);
-    expect(output.summary).not.toMatch(/x-access-token:[^ ]+@/);
-    expect(output.summary.length).toBeLessThanOrEqual(200);
+    expect(output.summary).toContain('x-access-token:***@');
     expect(output.annotations).toHaveLength(50);
+    expect(output.annotations[0].path).toBe('tests/req-1.test.js');
+    expect(output.annotations.every((a) => !a.path.startsWith('/') && !a.path.includes('..'))).toBe(true);
     expect(output.annotations.every((a) => a.message.length <= 200)).toBe(true);
     expect(output.annotations.every((a) => a.annotation_level === 'failure')).toBe(true);
+  });
+
+  it('renderMatrixSummary preserves suite totals and outcome notes while capping individual lines', () => {
+    const verification = {
+      outcome: 'SKIPPED',
+      matrix: {
+        requirements: [{
+          id: 'REQ-9',
+          status: 'FAIL',
+          title: `\u001b[32m${'long title '.repeat(20)}\u001b[0m`,
+          file: '/abs/path/to/tests/req-9.test.js',
+          message: `\u001b[31m${'m'.repeat(400)}\u001b[0m`,
+        }],
+        suite: { total: 1, passed: 0, failed: 1, flaky: 0, skipped: 1 },
+      },
+    };
+
+    const output = renderMatrixSummary(verification);
+
+    expect(output.summary).toContain('REQ-9');
+    expect(output.summary).toContain('Suite totals: 0 passed, 1 failed, 1 skipped, 0 flaky of 1.');
+    expect(output.summary).toContain('SKIPPED: verification was skipped.');
+    expect(output.summary).not.toContain('\u001b[');
+    expect(output.annotations).toHaveLength(0);
   });
 
 });

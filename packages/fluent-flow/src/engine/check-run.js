@@ -8,17 +8,29 @@ const { agentClaims } = schema;
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const CONTROL_RE = /[\x00-\x1f]/g;
 const TOKEN_RE = /x-access-token:[^@\s]+@/gi;
+const PATH_CONTROL_RE = /[\x00-\x1f]/g;
 
 function sanitize(text = '') {
   return String(text)
     .replace(ANSI_RE, '')
     .replace(CONTROL_RE, '')
-    .replace(TOKEN_RE, 'x-access-token:[redacted]')
+    .replace(TOKEN_RE, 'x-access-token:***@')
     .trim();
 }
 
 function truncate(text, max = 200) {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function normalizeAnnotationPath(input) {
+  if (!input) return undefined;
+  const cleaned = String(input)
+    .replace(PATH_CONTROL_RE, '')
+    .replace(/\\/g, '/')
+    .trim();
+  if (!cleaned || cleaned.startsWith('/') || cleaned.includes('..')) return undefined;
+  const normalized = cleaned.replace(/^(\.\/)+/, '');
+  return normalized || undefined;
 }
 
 /**
@@ -89,10 +101,10 @@ function buildConfigSnapshot(repo) {
 
 function formatRequirementLine(req) {
   const id = sanitize(req.id ?? 'REQ-?');
-  const title = truncate(sanitize(req.title ?? req.text ?? req.message ?? 'requirement'), 100);
+  const title = truncate(sanitize(req.title ?? req.text ?? req.message ?? 'requirement'), 120);
   const passCount = req.pass_count ?? req.passed ?? req.green ?? 0;
   const failCount = req.fail_count ?? req.failed ?? req.red ?? 0;
-  return `${id} ${title} → red ${failCount ? '✓' : '✗'} green ${passCount ? '✓' : '✗'}`;
+  return truncate(`${id} ${title} → red ${failCount ? '✓' : '✗'} green ${passCount ? '✓' : '✗'}`, 200);
 }
 
 export function renderMatrixSummary(verification = {}) {
@@ -105,8 +117,10 @@ export function renderMatrixSummary(verification = {}) {
   for (const req of requirements) {
     lines.push(formatRequirementLine(req));
     if (req.status === 'FAIL') {
+      const path = normalizeAnnotationPath(req.file ?? req.path);
+      if (!path) continue;
       annotations.push({
-        path: sanitize(req.file ?? req.path ?? 'verification'),
+        path,
         start_line: req.start_line ?? 1,
         end_line: req.end_line ?? req.start_line ?? 1,
         annotation_level: 'failure',
@@ -121,10 +135,9 @@ export function renderMatrixSummary(verification = {}) {
 
   lines.push(`Suite totals: ${suite.passed ?? 0} passed, ${suite.failed ?? 0} failed, ${suite.skipped ?? 0} skipped, ${suite.flaky ?? 0} flaky of ${suite.total ?? requirements.length}.`);
 
-  const summary = truncate(sanitize(lines.join('\n')), 200);
   return {
     title: 'Verification Matrix',
-    summary,
+    summary: sanitize(lines.join('\n')),
     annotations: annotations.slice(0, 50),
   };
 }
