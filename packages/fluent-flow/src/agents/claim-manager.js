@@ -384,24 +384,29 @@ export async function countCompletedFixIterations(orgId, repo, prNumber) {
 /**
  * Wrapper for createClaim that retries on Postgres unique violation (23505).
  * Recomputes the next attempt number after each conflict.
- * Throws after 5 failed attempts.
+ * Throws after 3 total attempts.
  *
  * @param {object} opts - Options passed to createClaim
  * @param {Function} createClaimFn - The createClaim function to call
  * @returns {Promise<object|null>}
  */
 export async function createClaimWithRetry(opts, createClaimFn) {
-  const MAX_RETRIES = 5;
+  const MAX_RETRIES = 3;
   const PG_UNIQUE_VIOLATION = '23505';
 
   for (let i = 0; i < MAX_RETRIES; i++) {
     const attempt = await nextChainAttempt(opts.orgId, opts.repo, opts.prNumber);
 
     try {
-      return await createClaimFn({ ...opts, attempt });
+      const result = await createClaimFn({ ...opts, attempt });
+      // Null return indicates conflict (onConflictDoNothing)
+      if (result === null) {
+        continue;
+      }
+      return result;
     } catch (err) {
-      if (err.code === PG_UNIQUE_VIOLATION) {
-        // Conflict detected; retry with recomputed attempt number
+      const isConflict = err.code === PG_UNIQUE_VIOLATION || err.cause?.code === PG_UNIQUE_VIOLATION;
+      if (isConflict) {
         continue;
       }
       // Non-23505 errors fail immediately
@@ -409,6 +414,18 @@ export async function createClaimWithRetry(opts, createClaimFn) {
     }
   }
 
-  // If we get here, all retries failed with unique violations
-  throw new Error('Failed to create claim after multiple unique constraint violations');
+  const finalError = new Error('Failed to create claim after multiple unique constraint violations');
+  finalError.cause = new Error('Retry budget exhausted');
+  finalError.cause.orgId = opts.orgId;
+  finalError.cause.repo = opts.repo;
+  finalError.cause.prNumber = opts.prNumber;
+
+  logger.error({
+    msg: 'Failed to create claim after multiple unique constraint violations',
+    orgId: opts.orgId,
+    repo: opts.repo,
+    prNumber: opts.prNumber,
+  });
+
+  throw finalError;
 }
