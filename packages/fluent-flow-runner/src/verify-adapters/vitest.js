@@ -1,5 +1,5 @@
 import { assertSafeRelPath } from '../verify-paths.js';
-import { detectFrameworkFor } from './shared.js';
+import { detectFrameworkFor, hasAncestorFile, isYarnBerry, resolveRepoRelativeFile } from './shared.js';
 
 function flattenVitestResults(json) {
   const suites = json?.testResults ?? json?.results ?? [];
@@ -37,16 +37,14 @@ export default {
     });
   },
   installCommand(root, pm) {
-    return pm === 'pnpm'
-      ? ['pnpm', 'install', '--frozen-lockfile']
-      : pm === 'yarn'
-        ? ['yarn', 'install', '--immutable']
-        : ['npm', 'ci'];
+    if (pm === 'pnpm') return ['pnpm', 'install', '--frozen-lockfile'];
+    if (pm === 'yarn') return isYarnBerry(root) ? ['yarn', 'install', '--immutable'] : ['yarn', 'install', '--frozen-lockfile'];
+    return hasAncestorFile(root, 'package-lock.json') ? ['npm', 'ci'] : ['npm', 'install', '--no-audit', '--no-fund'];
   },
-  testCommand({ files, root }) {
+  testCommand({ files, root, worktreeRoot }) {
     const argv = ['--run', '--reporter=json'];
     if (files && files.length) {
-      for (const file of files.map(assertSafeRelPath)) argv.push(file);
+      for (const file of files.map(assertSafeRelPath)) argv.push(resolveRepoRelativeFile({ root, worktreeRoot, file }));
     }
     return ['vitest', ...argv];
   },

@@ -1,6 +1,6 @@
 import { realpathSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 
 export function assertSafeRelPath(p) {
   if (typeof p !== 'string' || p.length === 0) {
@@ -37,15 +37,20 @@ export function containsRealPath(root, candidate) {
 export function readJsonIfExists(path) {
   try {
     return JSON.parse(readFileSync(path, 'utf8'));
-  } catch {
-    return null;
+  } catch (err) {
+    if (err?.code === 'ENOENT') return null;
+    if (err instanceof SyntaxError) {
+      throw new Error(`Invalid JSON in ${path}`);
+    }
+    throw err;
   }
 }
 
-export function walkUp(start, predicate) {
+export function walkUp(start, predicate, { stopAt } = {}) {
   let current = resolve(start);
   while (true) {
     if (predicate(current)) return current;
+    if (stopAt && current === resolve(stopAt)) return null;
     const parent = dirname(current);
     if (parent === current) return null;
     current = parent;
@@ -68,4 +73,10 @@ export function readPackageJson(dir) {
 
 export function hasAny(obj, keys) {
   return keys.some((key) => obj && Object.prototype.hasOwnProperty.call(obj, key));
+}
+
+export function isWithinRealPath(root, candidate) {
+  const rootReal = realpathSync(root);
+  const candidateReal = realpathSync(candidate);
+  return containsRealPath(rootReal, candidateReal);
 }

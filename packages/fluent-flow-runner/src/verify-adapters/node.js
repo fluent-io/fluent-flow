@@ -1,33 +1,24 @@
+import { fileURLToPath } from 'node:url';
 import { assertSafeRelPath } from '../verify-paths.js';
-import { detectFrameworkFor } from './shared.js';
+import { detectFrameworkFor, hasAncestorFile, isYarnBerry, resolveRepoRelativeFile } from './shared.js';
 
 function flattenNodeResults(json) {
+  const items = Array.isArray(json) ? json : json?.tests ?? [];
   const out = [];
-  function visit(node, file) {
-    if (!node) return;
-    const nextFile = node.name?.endsWith('.js') || node.name?.endsWith('.mjs') || node.name?.endsWith('.cjs') || node.name?.endsWith('.ts')
-      ? node.name
-      : file;
-    if (Array.isArray(node.tests) && node.tests.length) {
-      for (const child of node.tests) visit(child, nextFile);
-      if (!node.tests.length && (node.failureType || node.error)) {
-        out.push({ file: nextFile ?? '', name: node.name ?? nextFile ?? '', status: 'suite-error', message: String(node.error?.cause?.message ?? node.error?.message ?? node.details?.error?.cause?.message ?? '') });
-      }
-      return;
-    }
-    if (node.skip || node.todo) {
-      out.push({ file: nextFile ?? '', name: node.name ?? '', status: 'skip', message: '' });
-      return;
-    }
-    if (node.details?.error || node.failureType || node.error) {
-      const message = String(node.error?.cause?.message ?? node.error?.message ?? node.details?.error?.cause?.message ?? '');
-      out.push({ file: nextFile ?? '', name: node.name ?? '', status: Array.isArray(node.tests) && node.tests.length === 0 ? 'suite-error' : 'assertion-fail', message });
-      return;
-    }
-    out.push({ file: nextFile ?? '', name: node.name ?? '', status: 'pass', message: '' });
+  for (const item of items) {
+    if (!item) continue;
+    out.push({
+      file: item.file ? item.file.replaceAll('\\', '/') : '',
+      name: item.name ?? '',
+      status: item.status ?? 'pass',
+      message: item.message ?? '',
+    });
   }
-  for (const suite of json?.tests ?? []) visit(suite, suite.name);
   return out;
+}
+
+function reporterPath() {
+  return fileURLToPath(new URL('./node-json-reporter.js', import.meta.url));
 }
 
 export default {
@@ -35,22 +26,20 @@ export default {
     return detectFrameworkFor(worktreePath, {
       id: 'node',
       configFiles: [],
-      scriptPattern: /node\s+--test|--test/,
+      scriptPattern: /(^|\s)node\s+(?:--\S+\s+)*--test(?:\s|$)/,
       deps: [],
-      extraMatch: (dir, pkg) => typeof pkg?.scripts?.test === 'string' && /node\s+--test|--test/.test(pkg.scripts.test),
     });
   },
   installCommand(root, pm) {
-    return pm === 'pnpm'
-      ? ['pnpm', 'install', '--frozen-lockfile']
-      : pm === 'yarn'
-        ? ['yarn', 'install', '--immutable']
-        : ['npm', 'ci'];
+    if (pm === 'pnpm') return ['pnpm', 'install', '--frozen-lockfile'];
+    if (pm === 'yarn') return isYarnBerry(root) ? ['yarn', 'install', '--immutable'] : ['yarn', 'install', '--frozen-lockfile'];
+    return hasAncestorFile(root, 'package-lock.json') ? ['npm', 'ci'] : ['npm', 'install', '--no-audit', '--no-fund'];
   },
-  testCommand({ files, root }) {
-    const argv = ['--test', '--test-reporter=json'];
-    if (files && files.length) {
-      for (const file of files.map(assertSafeRelPath)) argv.push(file);
+  testCommand({ files, root, worktreeRoot }) {
+    const argv = ['--test', '--test-reporter', reporterPath(), '--test-reporter-destination', 'stdout'];
+    for (const file of files ?? []) {
+      const rel = resolveRepoRelativeFile({ root, worktreeRoot, file });
+      argv.push(rel);
     }
     return ['node', ...argv];
   },
