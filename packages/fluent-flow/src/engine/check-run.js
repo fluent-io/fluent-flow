@@ -28,7 +28,11 @@ function normalizeAnnotationPath(input) {
     .replace(PATH_CONTROL_RE, '')
     .replace(/\\/g, '/')
     .trim();
-  if (!cleaned || cleaned.startsWith('/') || cleaned.includes('..')) return undefined;
+  if (!cleaned) return undefined;
+  if (cleaned.startsWith('/') || /^[A-Za-z]:\//.test(cleaned)) return undefined;
+  const parts = cleaned.split('/').filter(Boolean);
+  if (parts.length === 0) return undefined;
+  if (parts.some((part) => part === '..')) return undefined;
   const normalized = cleaned.replace(/^(\.\/)+/, '');
   return normalized || undefined;
 }

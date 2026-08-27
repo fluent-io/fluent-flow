@@ -132,4 +132,23 @@ describe('Task 7 check-run plumbing', () => {
     expect(output.annotations).toHaveLength(0);
   });
 
+  it('renderMatrixSummary rejects Windows drive-letter absolute paths in annotations', () => {
+    const verification = {
+      matrix: {
+        requirements: [{
+          id: 'REQ-10',
+          status: 'FAIL',
+          title: 'Windows absolute path should not leak',
+          file: 'C:\\repo\\tests\\x.test.js',
+          message: 'fail',
+        }],
+        suite: { total: 1, passed: 0, failed: 1, flaky: 0, skipped: 0 },
+      },
+    };
+
+    const output = renderMatrixSummary(verification);
+
+    expect(output.annotations).toHaveLength(0);
+  });
+
 });
