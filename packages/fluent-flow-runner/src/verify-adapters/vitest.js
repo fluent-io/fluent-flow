@@ -1,5 +1,5 @@
 import { assertSafeRelPath } from '../verify-paths.js';
-import { detectFramework } from './index.js';
+import { detectFrameworkFor } from './shared.js';
 
 function flattenVitestResults(json) {
   const suites = json?.testResults ?? json?.results ?? [];
@@ -29,7 +29,7 @@ function flattenVitestResults(json) {
 
 export default {
   detect(worktreePath) {
-    return detectFramework(worktreePath, {
+    return detectFrameworkFor(worktreePath, {
       id: 'vitest',
       configFiles: ['vitest.config.js', 'vitest.config.mjs', 'vitest.config.cjs', 'vitest.config.ts'],
       scriptPattern: /\bvitest\b/,
@@ -44,7 +44,7 @@ export default {
         : ['npm', 'ci'];
   },
   testCommand({ files, root }) {
-    const argv = ['test', '--reporter=json', '--run'];
+    const argv = ['--run', '--reporter=json'];
     if (files && files.length) {
       for (const file of files.map(assertSafeRelPath)) argv.push(file);
     }

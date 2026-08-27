@@ -1,5 +1,5 @@
 import { assertSafeRelPath } from '../verify-paths.js';
-import { detectFramework } from './index.js';
+import { detectFrameworkFor } from './shared.js';
 
 function flattenJestResults(json) {
   const suites = json?.testResults ?? [];
@@ -28,7 +28,7 @@ function flattenJestResults(json) {
 
 export default {
   detect(worktreePath) {
-    return detectFramework(worktreePath, {
+    return detectFrameworkFor(worktreePath, {
       id: 'jest',
       configFiles: ['jest.config.js', 'jest.config.mjs', 'jest.config.cjs', 'jest.config.ts'],
       scriptPattern: /\bjest\b/,
@@ -43,7 +43,7 @@ export default {
         : ['npm', 'ci'];
   },
   testCommand({ files, root }) {
-    const argv = ['test', '--json', '--ci'];
+    const argv = ['--json', '--ci'];
     if (files && files.length) {
       for (const file of files.map(assertSafeRelPath)) argv.push(file);
     }

@@ -1,5 +1,5 @@
 import { assertSafeRelPath } from '../verify-paths.js';
-import { detectFramework } from './index.js';
+import { detectFrameworkFor } from './shared.js';
 
 function flattenNodeResults(json) {
   const out = [];
@@ -32,7 +32,7 @@ function flattenNodeResults(json) {
 
 export default {
   detect(worktreePath) {
-    return detectFramework(worktreePath, {
+    return detectFrameworkFor(worktreePath, {
       id: 'node',
       configFiles: [],
       scriptPattern: /node\s+--test|--test/,
@@ -48,7 +48,7 @@ export default {
         : ['npm', 'ci'];
   },
   testCommand({ files, root }) {
-    const argv = ['test', '--test-reporter=json'];
+    const argv = ['--test', '--test-reporter=json'];
     if (files && files.length) {
       for (const file of files.map(assertSafeRelPath)) argv.push(file);
     }

@@ -6,6 +6,9 @@ export function assertSafeRelPath(p) {
   if (typeof p !== 'string' || p.length === 0) {
     throw new Error('Path must be a non-empty repo-relative path');
   }
+  if (!/^[A-Za-z0-9._/-]+$/.test(p)) {
+    throw new Error('Path contains unsafe characters');
+  }
   if (p.includes('\\')) {
     throw new Error('Path must use POSIX separators');
   }
@@ -13,7 +16,7 @@ export function assertSafeRelPath(p) {
     throw new Error('Path must be repo-relative');
   }
   const parts = p.split('/');
-  if (parts.some((part) => part.length === 0 || part === '..')) {
+  if (parts.some((part) => part.length === 0 || part === '.' || part === '..')) {
     throw new Error('Path contains unsafe segments');
   }
   return p;

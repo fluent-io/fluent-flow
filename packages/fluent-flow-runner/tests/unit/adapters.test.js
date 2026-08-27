@@ -3,15 +3,13 @@ import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
-import vitestAdapter from '../../src/verify-adapters/vitest.js';
-import jestAdapter from '../../src/verify-adapters/jest.js';
-import nodeAdapter from '../../src/verify-adapters/node.js';
+import adapters, { detectFramework, vitest, jest, node } from '../../src/verify-adapters/index.js';
 import { assertSafeRelPath, sha256File, containsRealPath } from '../../src/verify-paths.js';
 
-const adapters = [
-  ['vitest', vitestAdapter],
-  ['jest', jestAdapter],
-  ['node', nodeAdapter],
+const adapterEntries = [
+  ['vitest', vitest],
+  ['jest', jest],
+  ['node', node],
 ];
 
 function makeRepo() {
@@ -36,6 +34,12 @@ function setupPackage(root, pkgJson, extra = {}) {
 }
 
 describe('adapter detection', () => {
+  it('exports adapters by id', () => {
+    expect(adapters.get('vitest')).toBe(vitest);
+    expect(adapters.get('jest')).toBe(jest);
+    expect(adapters.get('node')).toBe(node);
+  });
+
   it('detects vitest from config, deps, scripts, and nested walk-up roots', () => {
     const repo = makeRepo();
     setupPackage(repo, {
@@ -49,7 +53,7 @@ describe('adapter detection', () => {
     });
 
     const nested = join(repo, 'packages', 'nested', 'pkg');
-    expect(vitestAdapter.detect(nested)).toEqual({
+    expect(detectFramework(nested)).toEqual({
       id: 'vitest',
       packageManager: 'pnpm',
       root: repo,
@@ -67,7 +71,7 @@ describe('adapter detection', () => {
       'package-lock.json': '{}\n',
     });
 
-    expect(jestAdapter.detect(join(repo, 'packages', 'app'))).toEqual({
+    expect(detectFramework(join(repo, 'packages', 'app'))).toEqual({
       id: 'jest',
       packageManager: 'npm',
       root: repo,
@@ -82,7 +86,7 @@ describe('adapter detection', () => {
       packageManager: 'node',
     });
 
-    expect(nodeAdapter.detect(join(repo, 'packages', 'app'))).toEqual({
+    expect(detectFramework(join(repo, 'packages', 'app'))).toEqual({
       id: 'node',
       packageManager: 'npm',
       root: repo,
@@ -92,28 +96,27 @@ describe('adapter detection', () => {
   it('returns null for unsupported packages', () => {
     const repo = makeRepo();
     setupPackage(repo, { name: 'repo', scripts: { test: 'echo ok' } });
-    expect(vitestAdapter.detect(repo)).toBeNull();
-    expect(jestAdapter.detect(repo)).toBeNull();
-    expect(nodeAdapter.detect(repo)).toBeNull();
+    expect(detectFramework(repo)).toBeNull();
   });
 });
 
 describe('command generation', () => {
   it('produces exact install argv', () => {
-    expect(vitestAdapter.installCommand('/repo', 'pnpm')).toEqual(['pnpm', 'install', '--frozen-lockfile']);
-    expect(jestAdapter.installCommand('/repo', 'npm')).toEqual(['npm', 'ci']);
-    expect(nodeAdapter.installCommand('/repo', 'yarn')).toEqual(['yarn', 'install', '--immutable']);
+    expect(vitest.installCommand('/repo', 'pnpm')).toEqual(['pnpm', 'install', '--frozen-lockfile']);
+    expect(jest.installCommand('/repo', 'npm')).toEqual(['npm', 'ci']);
+    expect(node.installCommand('/repo', 'yarn')).toEqual(['yarn', 'install', '--immutable']);
   });
 
   it('produces exact full-suite test argv', () => {
-    expect(vitestAdapter.testCommand({ root: '/repo', files: null })).toEqual(['vitest', 'test', '--reporter=json', '--run']);
-    expect(jestAdapter.testCommand({ root: '/repo', files: null })).toEqual(['jest', 'test', '--json', '--ci']);
-    expect(nodeAdapter.testCommand({ root: '/repo', files: null })).toEqual(['node', 'test', '--test-reporter=json']);
+    expect(vitest.testCommand({ root: '/repo', files: null })).toEqual(['vitest', '--run', '--reporter=json']);
+    expect(jest.testCommand({ root: '/repo', files: null })).toEqual(['jest', '--json', '--ci']);
+    expect(node.testCommand({ root: '/repo', files: null })).toEqual(['node', '--test', '--test-reporter=json']);
   });
 
-  it.each(adapters)('%s testCommand validates explicit files', (_name, adapter) => {
-    expect(adapter.testCommand({ root: '/repo', files: ['tests/unit/a.spec.js', 'packages/b/test.cjs'] }, 'npm'))
-      .toEqual(expect.arrayContaining(['tests/unit/a.spec.js', 'packages/b/test.cjs']));
+  it.each(adapterEntries)('%s testCommand validates explicit files', (_name, adapter) => {
+    const argv = adapter.testCommand({ root: '/repo', files: ['tests/unit/a.spec.js', 'packages/b/test.cjs'] });
+    expect(argv.slice(-2)).toEqual(['tests/unit/a.spec.js', 'packages/b/test.cjs']);
+    expect(argv).not.toContain('test');
   });
 });
 
@@ -125,6 +128,13 @@ describe('path safety', () => {
     '',
     'a/../b',
     'a/../../b',
+    './x',
+    'a/./b',
+    'a b',
+    'a:b',
+    'a*b',
+    'a$b',
+    'a\nb',
   ])('rejects %s', (input) => {
     expect(() => assertSafeRelPath(input)).toThrow();
   });
