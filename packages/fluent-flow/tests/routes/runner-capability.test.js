@@ -31,7 +31,7 @@ vi.mock('../../src/notifications/transports/long-poll.js', () => ({
 }));
 
 vi.mock('../../src/config/loader.js', () => ({
-  installationCtxForRepo: vi.fn().mockResolvedValue(null),
+  installationCtxForRepo: vi.fn().mockResolvedValue({ installation_id: 99 }),
 }));
 
 vi.mock('../../src/providers/github/token-cache.js', () => ({

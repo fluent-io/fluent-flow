@@ -30,11 +30,22 @@ vi.mock('../../src/engine/check-run.js', () => ({
   renderMatrixSummary: vi.fn(() => ({ title: 'Verification Matrix', summary: 'ok', annotations: [] })),
 }));
 
+vi.mock('../../src/config/loader.js', () => ({
+  installationCtxForRepo: vi.fn(),
+}));
+
+vi.mock('../../src/providers/index.js', () => ({
+  getProvider: vi.fn((ctx) => ({ ctx })),
+}));
+
+
 import { handleClaimResult } from '../../src/routes/runner.js';
 import { getClaimById, completeClaimById } from '../../src/agents/claim-manager.js';
 import { applyVerifyTransitionWithEffects } from '../../src/engine/verify-transitions.js';
 import { onClaimResolved } from '../../src/engine/check-run.js';
 import { withTransaction, insertVerificationResult } from '@fluent-flow/db';
+import { installationCtxForRepo } from '../../src/config/loader.js';
+import { getProvider } from '../../src/providers/index.js';
 
 function makeRes() {
   return {
@@ -72,6 +83,8 @@ beforeEach(() => {
   completeClaimById.mockResolvedValue(VERIFY_CLAIM);
   applyVerifyTransitionWithEffects.mockResolvedValue({ action: 'create_claim' });
   vi.mocked(withTransaction).mockImplementation(async (fn) => fn(TX));
+  vi.mocked(installationCtxForRepo).mockResolvedValue({ installation_id: 456 });
+  vi.mocked(getProvider).mockImplementation((ctx) => ({ ctx }));
 });
 
 describe('handleClaimResult — verify branch', () => {
@@ -160,10 +173,12 @@ describe('handleClaimResult — verify branch', () => {
       { orgId: 'o1' },
     );
     expect(onClaimResolved).toHaveBeenCalledWith(
-      expect.any(Object),
+      { ctx: { provider: 'github', installation_id: 456 } },
       expect.objectContaining({ check_run_external_id: 321 }),
       expect.objectContaining({ conclusion: 'success', output: expect.objectContaining({ title: 'Verification Matrix' }) }),
     );
+    expect(installationCtxForRepo).toHaveBeenCalledWith('o', 'r');
+    expect(getProvider).toHaveBeenCalledWith({ provider: 'github', installation_id: 456 });
     expect(res.statusCode).toBe(200);
     expect(res.body.ok).toBe(true);
     expect(res.body.claim_id).toBe(7);

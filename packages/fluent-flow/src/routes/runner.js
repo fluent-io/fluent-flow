@@ -166,25 +166,45 @@ export async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 6
 }
 
 /**
- * Resolve GitHub App installation token for a repo.
- * Returns the token string or undefined if resolution fails.
+ * Resolve GitHub App installation context for a repo.
+ * Returns null if resolution fails; check-run updates are best-effort side effects.
  */
-async function resolveGitHubToken(fullRepo) {
-  if (!fullRepo?.includes('/')) return undefined;
+async function resolveGitHubContext(fullRepo) {
+  if (!fullRepo?.includes('/')) return null;
   try {
     const [owner, repoName] = fullRepo.split('/');
     const ctx = await installationCtxForRepo(owner, repoName);
-    if (ctx?.installation_id) {
-      const token = await getInstallationToken(ctx.installation_id);
-      logger.info({ msg: 'Resolved GitHub App token for runner', repo: fullRepo, installationId: ctx.installation_id });
-      return token;
-    }
+    if (ctx?.installation_id) return ctx;
     logger.info({ msg: 'No installation context for repo', repo: fullRepo });
+  } catch (err) {
+    logger.warn({ msg: 'Could not resolve GitHub App installation context for runner', repo: fullRepo, error: err.message });
+  }
+  return null;
+}
+
+/**
+ * Resolve GitHub App installation token for a repo.
+ * Returns the token string or undefined if resolution fails.
+ */
+async function resolveGitHubToken(fullRepo, ctx) {
+  const installCtx = arguments.length >= 2 ? ctx : await resolveGitHubContext(fullRepo);
+  if (!installCtx?.installation_id) return undefined;
+  try {
+    const token = await getInstallationToken(installCtx.installation_id);
+    logger.info({ msg: 'Resolved GitHub App token for runner', repo: fullRepo, installationId: installCtx.installation_id });
+    return token;
   } catch (err) {
     logger.warn({ msg: 'Could not resolve GitHub App token for runner', repo: fullRepo, error: err.message });
   }
   return undefined;
 }
+
+function getGitHubProviderForContext(ctx) {
+  return ctx?.installation_id
+    ? getProvider({ provider: 'github', installation_id: ctx.installation_id })
+    : null;
+}
+
 
 /**
  * POST /api/runner/poll — long-poll for work.
@@ -237,9 +257,11 @@ export async function handlePoll(req, res, opts = {}) {
         ? JSON.parse(pendingClaim.payload)
         : pendingClaim.payload;
 
-      const githubToken = await resolveGitHubToken(pendingClaim.repo);
+      const githubCtx = await resolveGitHubContext(pendingClaim.repo);
+      const githubToken = await resolveGitHubToken(pendingClaim.repo, githubCtx);
       try {
-        await onClaimStarted(getProvider({ provider: 'github', installation_id: pendingClaim.installation_id }), pendingClaim);
+        const providerClient = getGitHubProviderForContext(githubCtx);
+        if (providerClient) await onClaimStarted(providerClient, pendingClaim);
       } catch (err) {
         logger.warn({ msg: 'onClaimStarted failed but claim can continue', claimId: pendingClaim.id, error: err.message });
       }
@@ -273,9 +295,11 @@ export async function handlePoll(req, res, opts = {}) {
       if (loopClaim) {
         await touchSession(org_id, agent_id, sessionId);
         const lp = typeof loopClaim.payload === 'string' ? JSON.parse(loopClaim.payload) : loopClaim.payload;
-        const githubToken = await resolveGitHubToken(loopClaim.repo);
+        const githubCtx = await resolveGitHubContext(loopClaim.repo);
+        const githubToken = await resolveGitHubToken(loopClaim.repo, githubCtx);
         try {
-          await onClaimStarted(getProvider({ provider: 'github', installation_id: loopClaim.installation_id }), loopClaim);
+          const providerClient = getGitHubProviderForContext(githubCtx);
+          if (providerClient) await onClaimStarted(providerClient, loopClaim);
         } catch (err) {
           logger.warn({ msg: 'onClaimStarted failed but claim can continue', claimId: loopClaim.id, error: err.message });
         }
@@ -419,10 +443,13 @@ export async function handleClaimResult(req, res) {
             : verification.outcome === 'SKIPPED'
               ? 'neutral'
               : 'failure';
-          await onClaimResolved(getProvider({ provider: 'github', installation_id: claim.installation_id }), claim, {
-            conclusion,
-            output: renderMatrixSummary(verification),
-          });
+          const providerClient = getGitHubProviderForContext(await resolveGitHubContext(claim.repo));
+          if (providerClient) {
+            await onClaimResolved(providerClient, claim, {
+              conclusion,
+              output: renderMatrixSummary(verification),
+            });
+          }
         } catch (err) {
           logger.warn({ msg: 'onClaimResolved failed but verify result is persisted', repo, claimId: claim.id, error: err.message });
         }
