@@ -139,7 +139,7 @@ describe('worktree', () => {
       expect(result.worktreePath).toContain('pr-40-claim-123-verify-red');
     });
 
-    it('retries explicit ref fetch after a plain origin fetch', async () => {
+    it('rejects when retry explicit fetch resolves but rev-parse fails', async () => {
       mockExistsSync.mockImplementation((p) => {
         if (p.endsWith('.git')) return true;
         return false;
@@ -151,23 +151,26 @@ describe('worktree', () => {
         if (args[0] === 'fetch' && args[1] === 'origin' && args[2] === 'abc123def456') {
           if (firstExplicitFetch) {
             firstExplicitFetch = false;
-            cb(new Error('missing ref'));
+            cb(new Error('couldn\'t find remote ref abc123def456'));
             return;
           }
           cb(null, '', '');
           return;
         }
-        if (args[0] === 'rev-parse') { cb(null, `${RESOLVED_SHA}\n`, ''); return; }
+        if (args[0] === 'rev-parse') {
+          cb(new Error('rev-parse failed'));
+          return;
+        }
         cb(null, '', '');
       });
 
-      await prepareWorktree({
+      await expect(prepareWorktree({
         workDir: '/work',
         repo: 'fluent-io/fluent-flow',
         prNumber: 40,
         claimId: 123,
         ref: 'abc123def456',
-      });
+      })).rejects.toBeInstanceOf(WorktreeRefUnavailableError);
 
       const fetchCalls = mockExecFile.mock.calls.filter(c => c[1][0] === 'fetch');
       expect(fetchCalls.map(c => c[1].join(' '))).toEqual([
@@ -177,35 +180,7 @@ describe('worktree', () => {
       ]);
     });
 
-    it('rethrows fallback fetch failures instead of wrapping them as missing refs', async () => {
-      mockExistsSync.mockImplementation((p) => {
-        if (p.endsWith('.git')) return true;
-        return false;
-      });
-
-      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
-        if (typeof opts === 'function') { opts(null, '', ''); return; }
-        if (args[0] === 'fetch' && args[1] === 'origin' && args[2] === 'abc123def456') {
-          cb(new Error('missing ref'));
-          return;
-        }
-        if (args[0] === 'fetch' && args[1] === 'origin' && args.length === 2) {
-          cb(new Error('permission denied'));
-          return;
-        }
-        cb(null, '', '');
-      });
-
-      await expect(prepareWorktree({
-        workDir: '/work',
-        repo: 'fluent-io/fluent-flow',
-        prNumber: 40,
-        claimId: 123,
-        ref: 'abc123def456',
-      })).rejects.toThrow('permission denied');
-    });
-
-    it('rethrows transport errors from the retry explicit fetch', async () => {
+    it('rethrows retry explicit fetch auth errors raw', async () => {
       mockExistsSync.mockImplementation((p) => {
         if (p.endsWith('.git')) return true;
         return false;
@@ -217,10 +192,14 @@ describe('worktree', () => {
         if (args[0] === 'fetch' && args[1] === 'origin' && args[2] === 'abc123def456') {
           if (firstExplicitFetch) {
             firstExplicitFetch = false;
-            cb(new Error('missing ref'));
+            cb(new Error('couldn\'t find remote ref abc123def456'));
             return;
           }
-          cb(new Error('permission denied'));
+          cb(new Error('remote: Repository not found'));
+          return;
+        }
+        if (args[0] === 'fetch' && args[1] === 'origin' && args.length === 2) {
+          cb(null, '', '');
           return;
         }
         cb(null, '', '');
@@ -232,7 +211,74 @@ describe('worktree', () => {
         prNumber: 40,
         claimId: 123,
         ref: 'abc123def456',
-      })).rejects.toThrow('permission denied');
+      })).rejects.toThrow('Repository not found');
+      await expect(prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        ref: 'abc123def456',
+      })).rejects.not.toBeInstanceOf(WorktreeRefUnavailableError);
+    });
+
+    it('wraps missing remote ref errors from the retry explicit fetch', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      let firstExplicitFetch = true;
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        if (typeof opts === 'function') { opts(null, '', ''); return; }
+        if (args[0] === 'fetch' && args[1] === 'origin' && args[2] === 'abc123def456') {
+          if (firstExplicitFetch) {
+            firstExplicitFetch = false;
+            cb(new Error('couldn\'t find remote ref abc123def456'));
+            return;
+          }
+          cb(new Error('couldn\'t find remote ref abc123def456'));
+          return;
+        }
+        cb(null, '', '');
+      });
+
+      await expect(prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        ref: 'abc123def456',
+      })).rejects.toBeInstanceOf(WorktreeRefUnavailableError);
+    });
+
+    it('rethrows retry explicit fetch transport errors raw', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      let firstExplicitFetch = true;
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        if (typeof opts === 'function') { opts(null, '', ''); return; }
+        if (args[0] === 'fetch' && args[1] === 'origin' && args[2] === 'abc123def456') {
+          if (firstExplicitFetch) {
+            firstExplicitFetch = false;
+            cb(new Error('couldn\'t find remote ref abc123def456'));
+            return;
+          }
+          cb(new Error('missing credentials'));
+          return;
+        }
+        cb(null, '', '');
+      });
+
+      await expect(prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        ref: 'abc123def456',
+      })).rejects.toThrow('missing credentials');
       await expect(prepareWorktree({
         workDir: '/work',
         repo: 'fluent-io/fluent-flow',

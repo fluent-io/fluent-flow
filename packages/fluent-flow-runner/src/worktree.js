@@ -34,19 +34,28 @@ function sanitizeWorktreeNamePart(value) {
 }
 
 function isMissingRefError(err) {
-  const text = `${err?.message ?? ''} ${err?.stderr ?? ''} ${err?.code ?? ''}`.toLowerCase();
-  return text.includes('missing') ||
-    text.includes('not found') ||
+  const text = `${err?.message ?? ''} ${err?.stderr ?? ''}`.toLowerCase();
+  return (
+    text.includes('missing ref') ||
     text.includes('couldn\'t find remote ref') ||
     text.includes('could not find remote ref') ||
     text.includes('unknown revision') ||
     text.includes('no such ref') ||
-    text.includes('refspec');
+    text.includes('refspec') ||
+    text.includes('remote ref')
+  );
 }
 
 async function resolveFetchedRef(ref, baseDir) {
   const { stdout } = await exec('git', ['rev-parse', '--verify', 'FETCH_HEAD^{commit}'], { cwd: baseDir });
   return stdout.trim();
+}
+
+function refUnavailableError(ref, repo) {
+  return new WorktreeRefUnavailableError(
+    ref,
+    `Unable to resolve git ref "${ref}" after fetching origin for ${repo}`,
+  );
 }
 
 /**
@@ -142,33 +151,26 @@ export async function prepareWorktree({ workDir, repo, prNumber, attempt, branch
   if (ref) {
     try {
       await exec('git', ['fetch', 'origin', ref], { cwd: baseDir });
-      checkoutRef = await resolveFetchedRef(ref, baseDir);
-      if (!checkoutRef) {
-        throw new WorktreeRefUnavailableError(
-          ref,
-          `Unable to resolve git ref "${ref}" after fetching origin for ${repo}`,
-        );
-      }
     } catch (explicitErr) {
+      if (!isMissingRefError(explicitErr)) {
+        throw explicitErr;
+      }
+      await exec('git', ['fetch', 'origin'], { cwd: baseDir });
       try {
-        await exec('git', ['fetch', 'origin'], { cwd: baseDir });
         await exec('git', ['fetch', 'origin', ref], { cwd: baseDir });
-        checkoutRef = await resolveFetchedRef(ref, baseDir);
-        if (!checkoutRef) {
-          throw new WorktreeRefUnavailableError(
-            ref,
-            `Unable to resolve git ref "${ref}" after fetching origin for ${repo}`,
-          );
-        }
       } catch (retryErr) {
         if (isMissingRefError(retryErr)) {
-          throw new WorktreeRefUnavailableError(
-            ref,
-            `Unable to resolve git ref "${ref}" after fetching origin for ${repo}`,
-          );
+          throw refUnavailableError(ref, repo);
         }
         throw retryErr;
       }
+    }
+
+    try {
+      checkoutRef = await resolveFetchedRef(ref, baseDir);
+      if (!checkoutRef) throw refUnavailableError(ref, repo);
+    } catch {
+      throw refUnavailableError(ref, repo);
     }
   } else {
     await exec('git', ['fetch', 'origin'], { cwd: baseDir });
