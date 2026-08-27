@@ -328,3 +328,87 @@ export async function getClaimByAttempt(orgId, repo, prNumber, attempt, claimTyp
     .limit(1);
   return toSnakeClaim(row) ?? null;
 }
+
+/**
+ * Compute the next attempt number for a PR, across all claim types.
+ * Returns MAX(attempt) + 1 for the given org/repo/prNumber, or 1 if no claims exist.
+ *
+ * @param {string} orgId
+ * @param {string} repo
+ * @param {number|null} prNumber
+ * @returns {Promise<number>}
+ */
+export async function nextChainAttempt(orgId, repo, prNumber) {
+  const conditions = [
+    eq(agentClaims.orgId, orgId),
+    eq(agentClaims.repo, repo),
+    prNumber != null ? eq(agentClaims.prNumber, prNumber) : sql`${agentClaims.prNumber} IS NULL`,
+  ];
+
+  const [row] = await db
+    .select({ max: sql`COALESCE(MAX(${agentClaims.attempt}), 0)` })
+    .from(agentClaims)
+    .where(and(...conditions))
+    .limit(1);
+
+  const maxAttempt = Number(row?.max ?? 0);
+  return maxAttempt + 1;
+}
+
+/**
+ * Count completed review_fix claims for a PR, for fix-loop cap enforcement.
+ *
+ * @param {string} orgId
+ * @param {string} repo
+ * @param {number} prNumber
+ * @returns {Promise<number>}
+ */
+export async function countCompletedFixIterations(orgId, repo, prNumber) {
+  const conditions = [
+    eq(agentClaims.orgId, orgId),
+    eq(agentClaims.repo, repo),
+    eq(agentClaims.prNumber, prNumber),
+    eq(agentClaims.claimType, 'review_fix'),
+    eq(agentClaims.status, 'completed'),
+  ];
+
+  const [row] = await db
+    .select({ count: sql`COUNT(*)` })
+    .from(agentClaims)
+    .where(and(...conditions))
+    .limit(1);
+
+  return Number(row?.count ?? 0);
+}
+
+/**
+ * Wrapper for createClaim that retries on Postgres unique violation (23505).
+ * Recomputes the next attempt number after each conflict.
+ * Throws after 5 failed attempts.
+ *
+ * @param {object} opts - Options passed to createClaim
+ * @param {Function} createClaimFn - The createClaim function to call
+ * @returns {Promise<object|null>}
+ */
+export async function createClaimWithRetry(opts, createClaimFn) {
+  const MAX_RETRIES = 5;
+  const PG_UNIQUE_VIOLATION = '23505';
+
+  for (let i = 0; i < MAX_RETRIES; i++) {
+    const attempt = await nextChainAttempt(opts.orgId, opts.repo, opts.prNumber);
+
+    try {
+      return await createClaimFn({ ...opts, attempt });
+    } catch (err) {
+      if (err.code === PG_UNIQUE_VIOLATION) {
+        // Conflict detected; retry with recomputed attempt number
+        continue;
+      }
+      // Non-23505 errors fail immediately
+      throw err;
+    }
+  }
+
+  // If we get here, all retries failed with unique violations
+  throw new Error('Failed to create claim after multiple unique constraint violations');
+}
