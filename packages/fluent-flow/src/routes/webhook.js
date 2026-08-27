@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { eq, isNull, and, ne } from 'drizzle-orm';
+import { eq, isNull, and, ne, sql } from 'drizzle-orm';
 import { db, schema } from '@fluent-flow/db';
 import { handleCheckRun } from '../providers/github/check-run-handler.js';
 import { audit } from '../db/client.js';
@@ -274,6 +274,7 @@ async function handlePullRequest(owner, repo, payload, config) {
               eq(agentClaims.prNumber, prNumber),
               eq(agentClaims.claimType, 'verify'),
               eq(agentClaims.status, 'pending'),
+              sql`${agentClaims.payload}->>'phase' = 'green'`,
               ne(agentClaims.headSha, newHeadSha),
             ),
           );
@@ -309,14 +310,15 @@ async function handlePullRequest(owner, repo, payload, config) {
           });
         }
       } catch (err) {
-        // Safe to continue: green claim cancellation failure on synchronize
-        // — stale claims will time out naturally if this path fails.
-        logger.warn({
+        // Not safe to continue: pending green claims have no expiry before
+        // runners claim them, so failure here can run stale verification.
+        logger.error({
           msg: 'Failed to cancel pending green claims on synchronize',
           repo: repoKey,
           prNumber,
           error: err.message,
         });
+        throw err;
       }
       break;
     }

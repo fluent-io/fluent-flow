@@ -67,6 +67,28 @@ export async function findRedClaimIdFromLatestReviewFix(orgId, repo, prNumber) {
   return row?.source_claim_id ?? null;
 }
 
+function isMatchingRedClaim(claim, { orgId, repo, prNumber }) {
+  const verification = claim?.payload?.verification;
+  return claim?.org_id === orgId
+    && claim?.repo === repo
+    && claim?.pr_number === prNumber
+    && claim?.claim_type === 'verify'
+    && claim?.status === 'completed'
+    && claim?.payload?.phase === 'red'
+    && verification
+    && typeof verification === 'object';
+}
+
+function isUsableRedRecord(record, { orgId, repo, prNumber }) {
+  return record?.orgId === orgId
+    && record?.repo === repo
+    && record?.prNumber === prNumber
+    && record?.phase === 'red'
+    && Array.isArray(record?.testHashes)
+    && record.testHashes.length > 0;
+}
+
+
 /**
  * Create a green claim with inlined red record and config snapshot.
  * Exact linkage: latest completed review_fix → source_claim_id → red claim → verification result.
@@ -86,10 +108,10 @@ async function createGreenClaim({ orgId, repo, prNumber, headSha, checkRun, conf
   if (!redClaimId) return null;
 
   const redClaim = await getClaimById(orgId, redClaimId);
-  if (!redClaim) return null;
+  if (!isMatchingRedClaim(redClaim, { orgId, repo, prNumber })) return null;
 
   const redRecord = await getVerificationResultByClaim(orgId, redClaimId);
-  if (!redRecord?.testHashes) return null;
+  if (!isUsableRedRecord(redRecord, { orgId, repo, prNumber })) return null;
 
   // Inline the full red record + config snapshot
   const payload = {

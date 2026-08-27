@@ -102,6 +102,19 @@ const defaultConfig = {
   reviewer: { enabled: true, max_retries: 3, trigger_check: 'test' },
 };
 
+const VALID_TEST_HASHES = [
+  { path: 'test/verify/req-1.test.js', sha256: 'a'.repeat(64) },
+  { path: 'test/verify/req-2.test.js', sha256: 'b'.repeat(64) },
+];
+
+const VALID_MATRIX = {
+  requirements: [{ id: 'REQ-1', status: 'PASS' }],
+  suite: { total: 1, passed: 1, failed: 0, flaky: 0, skipped: 0 },
+  schema_version: 1,
+};
+
+const VALID_ARTIFACT_SHA = '1234567890abcdef1234567890abcdef12345678';
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockReviewFixRows = [];
@@ -132,6 +145,7 @@ describe('handleCheckRun — green claim creation', () => {
       claim_type: 'verify',
       status: 'completed',
       payload: {
+        phase: 'red',
         verification: {
           framework: 'vitest',
           test_file_patterns: ['**/*.test.js'],
@@ -147,10 +161,10 @@ describe('handleCheckRun — green claim creation', () => {
       prNumber: 42,
       phase: 'red',
       framework: 'vitest',
-      outcome: 'passed',
-      matrix: { requirements: { node: '>=20' } },
-      testHashes: { 'test.js': 'hash1', 'test2.js': 'hash2' },
-      artifactSha: 'artifact-sha-123',
+      outcome: 'PASS',
+      matrix: VALID_MATRIX,
+      testHashes: VALID_TEST_HASHES,
+      artifactSha: VALID_ARTIFACT_SHA,
       createdAt: new Date('2026-01-01T00:00:00Z'),
     });
 
@@ -170,10 +184,10 @@ describe('handleCheckRun — green claim creation', () => {
         red_record: {
           phase: 'red',
           framework: 'vitest',
-          outcome: 'passed',
-          matrix: { requirements: { node: '>=20' } },
-          test_hashes: { 'test.js': 'hash1', 'test2.js': 'hash2' },
-          artifact_sha: 'artifact-sha-123',
+          outcome: 'PASS',
+          matrix: VALID_MATRIX,
+          test_hashes: VALID_TEST_HASHES,
+          artifact_sha: VALID_ARTIFACT_SHA,
         },
         verification: {
           framework: 'vitest',
@@ -195,10 +209,10 @@ describe('handleCheckRun — green claim creation', () => {
         red_record: {
           phase: 'red',
           framework: 'vitest',
-          outcome: 'passed',
-          matrix: { requirements: { node: '>=20' } },
-          test_hashes: { 'test.js': 'hash1', 'test2.js': 'hash2' },
-          artifact_sha: 'artifact-sha-123',
+          outcome: 'PASS',
+          matrix: VALID_MATRIX,
+          test_hashes: VALID_TEST_HASHES,
+          artifact_sha: VALID_ARTIFACT_SHA,
         },
         verification: {
           framework: 'vitest',
@@ -222,7 +236,7 @@ describe('handleCheckRun — green claim creation', () => {
       pr_number: 42,
       claim_type: 'verify',
       status: 'completed',
-      payload: { verification: { framework: 'vitest' } },
+      payload: { phase: 'red', verification: { framework: 'vitest' } },
     });
 
     mockGetVerificationResultByClaim.mockResolvedValueOnce({
@@ -233,10 +247,10 @@ describe('handleCheckRun — green claim creation', () => {
       prNumber: 42,
       phase: 'red',
       framework: 'vitest',
-      outcome: 'passed',
-      matrix: { requirements: {} },
-      testHashes: {},
-      artifactSha: 'artifact-sha-123',
+      outcome: 'PASS',
+      matrix: VALID_MATRIX,
+      testHashes: VALID_TEST_HASHES,
+      artifactSha: VALID_ARTIFACT_SHA,
       createdAt: new Date('2026-01-01T00:00:00Z'),
     });
 
@@ -282,7 +296,7 @@ describe('handleCheckRun — green claim creation', () => {
       pr_number: 42,
       claim_type: 'verify',
       status: 'completed',
-      payload: { verification: { framework: 'vitest' } },
+      payload: { phase: 'red', verification: { framework: 'vitest' } },
     });
 
     mockGetVerificationResultByClaim.mockResolvedValueOnce({
@@ -293,15 +307,69 @@ describe('handleCheckRun — green claim creation', () => {
       prNumber: 42,
       phase: 'red',
       framework: 'vitest',
-      outcome: 'passed',
-      matrix: { requirements: {} },
+      outcome: 'PASS',
+      matrix: VALID_MATRIX,
       testHashes: null,
-      artifactSha: 'artifact-sha-123',
+      artifactSha: VALID_ARTIFACT_SHA,
       createdAt: new Date('2026-01-01T00:00:00Z'),
     });
 
     await handleCheckRun('test-org', 'test-repo', makePayload(), defaultConfig);
 
+    expect(mockCreateClaimWithRetry).not.toHaveBeenCalled();
+    expect(mockDispatchReview).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls through to review dispatch when source claim is not the matching red verify claim', async () => {
+    mockReviewFixRows = [{ id: 1, source_claim_id: 5 }];
+
+    mockGetClaimById.mockResolvedValueOnce({
+      id: 5,
+      org_id: 'org-1',
+      repo: 'test-org/test-repo',
+      pr_number: 42,
+      claim_type: 'verify',
+      status: 'completed',
+      payload: { phase: 'green', verification: { framework: 'vitest' } },
+    });
+
+    mockGetVerificationResultByClaim.mockResolvedValueOnce({
+      id: 100,
+      orgId: 'org-1',
+      claimId: 5,
+      repo: 'test-org/test-repo',
+      prNumber: 42,
+      phase: 'green',
+      framework: 'vitest',
+      outcome: 'PASS',
+      matrix: VALID_MATRIX,
+      testHashes: VALID_TEST_HASHES,
+      artifactSha: VALID_ARTIFACT_SHA,
+      createdAt: new Date('2026-01-01T00:00:00Z'),
+    });
+
+    await handleCheckRun('test-org', 'test-repo', makePayload(), defaultConfig);
+
+    expect(mockCreateClaimWithRetry).not.toHaveBeenCalled();
+    expect(mockDispatchReview).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls through to review dispatch when red claim has no verification snapshot', async () => {
+    mockReviewFixRows = [{ id: 1, source_claim_id: 5 }];
+
+    mockGetClaimById.mockResolvedValueOnce({
+      id: 5,
+      org_id: 'org-1',
+      repo: 'test-org/test-repo',
+      pr_number: 42,
+      claim_type: 'verify',
+      status: 'completed',
+      payload: { phase: 'red' },
+    });
+
+    await handleCheckRun('test-org', 'test-repo', makePayload(), defaultConfig);
+
+    expect(mockGetVerificationResultByClaim).not.toHaveBeenCalled();
     expect(mockCreateClaimWithRetry).not.toHaveBeenCalled();
     expect(mockDispatchReview).toHaveBeenCalledTimes(1);
   });
