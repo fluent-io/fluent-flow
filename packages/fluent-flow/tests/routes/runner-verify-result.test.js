@@ -76,6 +76,20 @@ describe('handleClaimResult — verify branch', () => {
   it('verify result with verification data applies transition', async () => {
     const res = makeRes();
     const verification = {
+      manifest: {
+        pr_number: 5,
+        requirements: [{
+          requirement: {
+            id: 'REQ-1',
+            form: 'when',
+            text: 'When invalid login is submitted, the request fails.',
+            source_finding_id: 'F1',
+          },
+          tests: ['test/verify/req1.test.ts'],
+          dependency_files: [],
+          framework: 'vitest',
+        }],
+      },
       phase: 'red',
       framework: 'vitest',
       outcome: 'PASS',
@@ -116,6 +130,20 @@ describe('handleClaimResult — verify branch', () => {
         requirements: [],
         suite: { total: 0, passed: 0, failed: 0, flaky: 0, skipped: 0 },
         schema_version: 1,
+      },
+      manifest: {
+        pr_number: 5,
+        requirements: [{
+          requirement: {
+            id: 'REQ-1',
+            form: 'when',
+            text: 'When invalid login is submitted, the request fails.',
+            source_finding_id: 'F1',
+          },
+          tests: ['test/verify/req1.test.ts'],
+          dependency_files: [],
+          framework: 'vitest',
+        }],
       },
       testHashes: [{ path: 'test/verify/req1.test.ts', sha256: 'abcd' }],
       artifactSha: '1234567890abcdef1234567890abcdef12345678',

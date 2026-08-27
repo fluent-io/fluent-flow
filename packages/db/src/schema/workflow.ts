@@ -95,6 +95,7 @@ export const verificationResults = pgTable('verification_results', {
   framework: text('framework').notNull(),
   outcome: text('outcome').notNull(),
   matrix: jsonb('matrix'),
+  manifest: jsonb('manifest'),
   testHashes: jsonb('test_hashes'),
   artifactSha: text('artifact_sha'),
   redBaseSha: text('red_base_sha'),

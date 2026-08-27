@@ -1,5 +1,5 @@
 import { and, eq, lt, sql } from 'drizzle-orm';
-import { db, schema } from '@fluent-flow/db';
+import { db, schema, getVerificationResultsForPR } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 
 const { reviewRetries } = schema;
@@ -13,6 +13,34 @@ import { resolveSession } from '../agents/session-manager.js';
 import { onClaimDispatched, onClaimResolved } from './check-run.js';
 import { getProvider } from '../providers/index.js';
 import logger from '../logger.js';
+
+function buildPriorRedRecordsPayload(rows) {
+  return (rows ?? [])
+    .filter((row) => row?.phase === 'red'
+      && row.manifest
+      && typeof row.manifest === 'object'
+      && Array.isArray(row.testHashes)
+      && row.testHashes.length > 0)
+    .map((row) => ({
+      claim_id: row.claimId,
+      phase: row.phase,
+      framework: row.framework,
+      outcome: row.outcome,
+      manifest: row.manifest,
+      test_hashes: row.testHashes,
+      artifact_sha: row.artifactSha ?? null,
+      red_base_sha: row.redBaseSha ?? null,
+    }));
+}
+
+async function fetchPriorRedRecordsPayload(orgId, repo, prNumber) {
+  try {
+    return buildPriorRedRecordsPayload(await getVerificationResultsForPR(orgId, repo, prNumber));
+  } catch (err) {
+    logger.warn({ msg: 'Failed to load prior red verification records', repo, prNumber, error: err.message });
+    return [];
+  }
+}
 
 /**
  * Dispatch an automated code review for a PR by creating a `review` claim.
@@ -348,6 +376,9 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   try {
     const failOrgId = await resolveOrgId(owner, repo);
     const verifyCfg = config.verification ?? { enabled: false };
+    const priorRedRecords = verifyCfg.enabled
+      ? await fetchPriorRedRecordsPayload(failOrgId, repoKey, prNumber)
+      : [];
 
     let newClaim;
     if (verifyCfg.enabled) {
@@ -366,6 +397,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
             red_base_sha: reviewSha,
             branch: headBranch,
             verification: verifyCfg,
+            prior_red_records: priorRedRecords,
           },
           headSha: reviewSha,
         },

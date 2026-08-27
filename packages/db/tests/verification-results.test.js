@@ -54,6 +54,15 @@ describe.skipIf(!hasDatabaseUrl)('verification results queries', () => {
       framework: 'vitest',
       outcome: 'PASS',
       matrix: { foo: 'bar' },
+      manifest: {
+        pr_number: 123,
+        requirements: [{
+          requirement: { id: 'REQ-1', form: 'when', text: 'When login fails.', source_finding_id: 'F1' },
+          tests: ['test/verify/login.test.js'],
+          dependency_files: [],
+          framework: 'vitest',
+        }],
+      },
       testHashes: ['hash1', 'hash2'],
       artifactSha: 'sha789',
       redBaseSha: 'abc123',
@@ -72,6 +81,7 @@ describe.skipIf(!hasDatabaseUrl)('verification results queries', () => {
     expect(fetched.id).toBe(inserted.id);
     expect(fetched.framework).toBe('vitest');
     expect(fetched.matrix).toEqual({ foo: 'bar' });
+    expect(fetched.manifest).toEqual(row.manifest);
     expect(fetched.testHashes).toEqual(['hash1', 'hash2']);
   });
 

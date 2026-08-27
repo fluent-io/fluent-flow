@@ -51,6 +51,8 @@ vi.mock('../../src/engine/pause-manager.js', () => ({
   getActivePause: vi.fn(),
 }));
 
+const mockGetVerificationResultsForPR = vi.fn();
+
 // review-manager only touches db.update/insert for reviewRetries — stub them
 // to no-op so handleReviewResult can run without a real connection.
 vi.mock('@fluent-flow/db', () => ({
@@ -68,6 +70,7 @@ vi.mock('@fluent-flow/db', () => ({
       }),
     }),
   },
+  getVerificationResultsForPR: (...a) => mockGetVerificationResultsForPR(...a),
   schema: { reviewRetries: {} },
 }));
 
@@ -107,6 +110,7 @@ describe('handleReviewResult — review FAIL → verify:red chain coordinator', 
     createClaimWithRetry.mockResolvedValue({ id: 11 });
     onClaimDispatched.mockResolvedValue(undefined);
     postComment.mockResolvedValue(undefined);
+    mockGetVerificationResultsForPR.mockResolvedValue([]);
   });
 
   it('FAIL creates verify:red (not review_fix) when verification enabled, with exact red payload structure', async () => {
@@ -140,6 +144,7 @@ describe('handleReviewResult — review FAIL → verify:red chain coordinator', 
           issue_number: 42,
           red_base_sha: 'abc123',
           branch: 'fix/x',
+          prior_red_records: [],
           verification: {
             enabled: true,
             framework: 'auto',
@@ -154,6 +159,78 @@ describe('handleReviewResult — review FAIL → verify:red chain coordinator', 
       }),
       expect.any(Function),
     );
+  });
+
+  it('FAIL verify:red inlines only server-held prior red records for cleanup', async () => {
+    resolveConfig.mockResolvedValue({
+      reviewer: { max_retries: 3 },
+      verification: { enabled: true, framework: 'auto' },
+    });
+    mockGetVerificationResultsForPR.mockResolvedValueOnce([
+      {
+        claimId: 4,
+        phase: 'red',
+        framework: 'vitest',
+        outcome: 'PASS',
+        manifest: {
+          pr_number: 5,
+          requirements: [{
+            requirement: {
+              id: 'REQ-1',
+              form: 'when',
+              text: 'When invalid login is submitted, the request fails.',
+              source_finding_id: 'F1',
+            },
+            tests: ['packages/app/tests/verify/old.red.test.js'],
+            dependency_files: [],
+            framework: 'vitest',
+          }],
+        },
+        testHashes: [{ path: 'packages/app/tests/verify/old.red.test.js', sha256: 'a'.repeat(64) }],
+        artifactSha: '1'.repeat(40),
+        redBaseSha: '0'.repeat(40),
+      },
+      {
+        claimId: 3,
+        phase: 'green',
+        manifest: { ignored: true },
+        testHashes: [{ path: 'packages/app/tests/verify/green.test.js', sha256: 'b'.repeat(64) }],
+      },
+      {
+        claimId: 2,
+        phase: 'red',
+        manifest: null,
+        testHashes: [{ path: 'packages/app/tests/verify/missing-manifest.test.js', sha256: 'c'.repeat(64) }],
+      },
+    ]);
+
+    await handleReviewResult(baseOpts);
+
+    expect(mockGetVerificationResultsForPR).toHaveBeenCalledWith('org-1', 'o/r', 5);
+    const call = createClaimWithRetry.mock.calls[0];
+    expect(call[0].payload.prior_red_records).toEqual([{
+      claim_id: 4,
+      phase: 'red',
+      framework: 'vitest',
+      outcome: 'PASS',
+      manifest: {
+        pr_number: 5,
+        requirements: [{
+          requirement: {
+            id: 'REQ-1',
+            form: 'when',
+            text: 'When invalid login is submitted, the request fails.',
+            source_finding_id: 'F1',
+          },
+          tests: ['packages/app/tests/verify/old.red.test.js'],
+          dependency_files: [],
+          framework: 'vitest',
+        }],
+      },
+      test_hashes: [{ path: 'packages/app/tests/verify/old.red.test.js', sha256: 'a'.repeat(64) }],
+      artifact_sha: '1'.repeat(40),
+      red_base_sha: '0'.repeat(40),
+    }]);
   });
 
   it('FAIL creates verify:red with stable F1..Fn ids when blocking items lack ids', async () => {

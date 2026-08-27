@@ -84,6 +84,8 @@ function isUsableRedRecord(record, { orgId, repo, prNumber }) {
     && record?.repo === repo
     && record?.prNumber === prNumber
     && record?.phase === 'red'
+    && record?.manifest
+    && typeof record.manifest === 'object'
     && Array.isArray(record?.testHashes)
     && record.testHashes.length > 0;
 }
@@ -122,6 +124,7 @@ async function createGreenClaim({ orgId, repo, prNumber, headSha, checkRun, conf
       framework: redRecord.framework,
       outcome: redRecord.outcome,
       matrix: redRecord.matrix,
+      manifest: redRecord.manifest,
       test_hashes: redRecord.testHashes,
       artifact_sha: redRecord.artifactSha,
     },

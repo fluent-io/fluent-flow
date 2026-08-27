@@ -3,7 +3,7 @@
  * `review` is the initial automated code review; `review_fix` is the
  * follow-up after that review reports issues.
  */
-export const CLAIM_TYPES = ['spec', 'build', 'review', 'review_fix', 'test_verify'];
+export const CLAIM_TYPES = ['spec', 'build', 'review', 'review_fix', 'test_verify', 'verify'];
 
 /**
  * Prompt templates by claim_type.
@@ -189,6 +189,66 @@ const TEMPLATES = {
       '- Verify tests would catch the original issue',
       '- Do not modify production code — only suggest test improvements',
       ...(message ? ['', 'Previous review issues:', message] : []),
+    ].join('\n');
+  },
+
+  verify(work) {
+    const data = work.payload && typeof work.payload === 'object'
+      ? { ...work.payload, ...work }
+      : work;
+    const prNumber = data.prNumber ?? data.pr_number;
+    const phase = data.phase ?? 'red';
+    const verification = data.verification ?? {};
+    const findings = Array.isArray(data.findings) ? data.findings : [];
+    const issueNumber = data.issueNumber ?? data.issue_number;
+    const framework = verification.framework ?? 'auto';
+    const maxRequirements = verification.authoring?.max_requirements ?? 25;
+    const frameworkHints = {
+      auto: 'Auto-detect the existing repo test framework. Prefer the nearest supported framework already present in this repo.',
+      vitest: 'Use Vitest conventions and keep files under the repo test directories for the detected package root.',
+      jest: 'Use Jest conventions and keep files under the repo test directories for the detected package root.',
+      node: 'Use node:test conventions and keep files under the repo test directories for the detected package root.',
+      custom: 'Do not invent commands. Only author manifest/spec/tests for the configured custom framework.',
+    };
+
+    return [
+      `You are the deterministic verification author for ${data.repo} (PR #${prNumber}).`,
+      '',
+      `Phase: ${phase}.`,
+      'Your only job is to author red-phase verification artifacts against the current broken tree.',
+      'DO NOT read any fix — author against the current (broken) state only.',
+      '',
+      'Inputs:',
+      `- Framework target: ${framework}`,
+      `- Framework guidance: ${frameworkHints[framework] ?? frameworkHints.auto}`,
+      `- max_requirements: ${maxRequirements}`,
+      `- PR body: ${data.pr_body ?? data.prBody ?? '(none provided)'}`,
+      `- Linked issue: ${issueNumber != null ? `issue #${issueNumber}` : '(none provided)'}`,
+      '- Findings JSON with stable IDs:',
+      JSON.stringify(findings, null, 2),
+      '',
+      'Output files:',
+      `- .fluent-flow/verify/PR-${prNumber}/red-${data.claim_id ?? data.claimId ?? 'CLAIM_ID'}/spec.md`,
+      `- .fluent-flow/verify/PR-${prNumber}/red-${data.claim_id ?? data.claimId ?? 'CLAIM_ID'}/manifest.json`,
+      '- New test files only, under the existing repo test directories for the detected package root',
+      '',
+      'EARS requirements:',
+      '- Use EARS sentence forms: ubiquitous, when, while, if, where.',
+      '- spec.md must be an intent-only distillation. Do not quote findings verbatim.',
+      '- Do not include credentials, secrets, or config identifiers beyond repo-relative test names.',
+      '',
+      'Manifest contract:',
+      '- repo-relative POSIX paths only',
+      '- no commands or shell snippets anywhere',
+      '- every requirement must map to at least one new test path',
+      '- every blocking finding must map to at least one requirement via source_finding_id',
+      '- dependency_files may include only repo-relative helper/fixture/config files actually used by the new tests',
+      '- framework must be one of vitest, jest, node, or custom',
+      '',
+      'Authoring limits:',
+      '- Create only new files for tests/spec/manifest.',
+      '- Keep tests focused on observable behavior implied by the findings.',
+      '- Prefer the repo’s existing conventions, helpers, and file naming patterns.',
     ].join('\n');
   },
 };

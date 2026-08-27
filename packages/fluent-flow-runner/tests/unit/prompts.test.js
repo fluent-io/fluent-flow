@@ -3,8 +3,8 @@ import { resolvePrompt, CLAIM_TYPES } from '../../src/prompts.js';
 
 describe('prompts', () => {
   describe('CLAIM_TYPES', () => {
-    it('includes review alongside spec, build, review_fix, test_verify', () => {
-      expect(CLAIM_TYPES).toEqual(['spec', 'build', 'review', 'review_fix', 'test_verify']);
+    it('includes verify alongside spec, build, review, review_fix, test_verify', () => {
+      expect(CLAIM_TYPES).toEqual(['spec', 'build', 'review', 'review_fix', 'test_verify', 'verify']);
     });
   });
 
@@ -41,6 +41,36 @@ describe('prompts', () => {
       const prompt = resolvePrompt({ claimType: 'test_verify', work: { ...baseWork, message: 'Previous issues: ...' } });
       expect(typeof prompt).toBe('string');
       expect(prompt).toContain('test');
+    });
+
+    it('verify template includes the red authoring contract', () => {
+      const prompt = resolvePrompt({
+        claimType: 'verify',
+        work: {
+          ...baseWork,
+          issue_number: 7,
+          pr_body: 'Fix the login bug',
+          payload: {
+            phase: 'red',
+            findings: [
+              { id: 'F-1', severity: 'high', blocking: true, title: 'Login fails', body: 'Broken flow' },
+            ],
+            verification: {
+              framework: 'auto',
+              authoring: { max_requirements: 3 },
+            },
+          },
+        },
+      });
+      expect(prompt).toContain('DO NOT read any fix — author against the current (broken) state only.');
+      expect(prompt).toContain('"id": "F-1"');
+      expect(prompt).toContain('manifest.json');
+      expect(prompt).toContain('spec.md');
+      expect(prompt).toContain('repo-relative');
+      expect(prompt).toContain('EARS');
+      expect(prompt).toContain('issue #7');
+      expect(prompt).toContain('Fix the login bug');
+      expect(prompt).toContain('max_requirements');
     });
 
     it('review template instructs the harness to post a review comment with the reviewer-result marker', () => {

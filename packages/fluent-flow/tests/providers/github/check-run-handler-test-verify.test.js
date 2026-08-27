@@ -123,6 +123,21 @@ const VALID_MATRIX = {
   schema_version: 1,
 };
 
+const VALID_MANIFEST = {
+  pr_number: 42,
+  requirements: [{
+    requirement: {
+      id: 'REQ-1',
+      form: 'when',
+      text: 'When invalid login is submitted, the request fails.',
+      source_finding_id: 'F1',
+    },
+    tests: ['test/verify/req-1.test.js'],
+    dependency_files: [],
+    framework: 'vitest',
+  }],
+};
+
 const VALID_ARTIFACT_SHA = '1234567890abcdef1234567890abcdef12345678';
 
 beforeEach(() => {
@@ -167,6 +182,7 @@ describe('handleCheckRun — green claim path (replaces test_verify)', () => {
       framework: 'vitest',
       outcome: 'PASS',
       matrix: VALID_MATRIX,
+      manifest: VALID_MANIFEST,
       testHashes: VALID_TEST_HASHES,
       artifactSha: VALID_ARTIFACT_SHA,
       createdAt: new Date('2026-01-01T00:00:00Z'),
@@ -191,6 +207,7 @@ describe('handleCheckRun — green claim path (replaces test_verify)', () => {
           framework: 'vitest',
           outcome: 'PASS',
           matrix: VALID_MATRIX,
+          manifest: VALID_MANIFEST,
           test_hashes: VALID_TEST_HASHES,
           artifact_sha: VALID_ARTIFACT_SHA,
         },
@@ -225,6 +242,7 @@ describe('handleCheckRun — green claim path (replaces test_verify)', () => {
           framework: 'vitest',
           outcome: 'PASS',
           matrix: VALID_MATRIX,
+          manifest: VALID_MANIFEST,
           test_hashes: VALID_TEST_HASHES,
           artifact_sha: VALID_ARTIFACT_SHA,
         },
@@ -264,6 +282,7 @@ describe('handleCheckRun — green claim path (replaces test_verify)', () => {
       framework: 'vitest',
       outcome: 'PASS',
       matrix: VALID_MATRIX,
+      manifest: VALID_MANIFEST,
       testHashes: VALID_TEST_HASHES,
       artifactSha: VALID_ARTIFACT_SHA,
       createdAt: new Date('2026-01-01T00:00:00Z'),

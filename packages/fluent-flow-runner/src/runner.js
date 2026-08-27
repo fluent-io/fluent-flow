@@ -1,8 +1,9 @@
 import { spawn, execFile as execFileCb } from 'node:child_process';
 import { hostname, platform } from 'node:os';
 import { prepareWorktree } from './worktree.js';
-import { resolvePrompt } from './prompts.js';
+import { CLAIM_TYPES, resolvePrompt } from './prompts.js';
 import { checkRunnerHealth, sendAlert } from './health.js';
+import { runVerifyClaim } from './verify.js';
 
 /**
  * Build an isolated environment for shell commands.
@@ -343,10 +344,41 @@ export function createRunner({
       }
 
       let cmd;
+      const claimType = work.claim_type ?? work.claimType ?? 'review_fix';
+      if (!work.claim_type && !work.claimType) {
+        log.info('No claim_type in work payload, defaulting to review_fix');
+      }
+      if (claimType === 'verify') {
+        try {
+          const verifyResult = await runVerifyClaim({
+            work,
+            log,
+            execute,
+            client,
+            sessionId,
+            cwd: cwd ?? process.cwd(),
+            resolveCommand,
+          });
+          await reportClaimWithRetry(claimPayload(work, verifyResult.status, {
+            ...(verifyResult.verification && { verification: verifyResult.verification }),
+            ...(verifyResult.failure_kind && { failure_kind: verifyResult.failure_kind }),
+          }));
+        } catch (err) {
+          log.error('Verify claim failed unexpectedly', { error: err.message, claimId });
+          await reportClaimWithRetry(claimPayload(work, 'failed', { failure_kind: 'transient' })).catch((e) => {
+            log.error('Failed to report claim', { error: e.message });
+          });
+        }
+        return;
+      }
+
       try {
-        const claimType = work.claim_type ?? work.claimType ?? 'review_fix';
-        if (!work.claim_type && !work.claimType) {
-          log.info('No claim_type in work payload, defaulting to review_fix');
+        if (!CLAIM_TYPES.includes(claimType)) {
+          log.error('Unknown claim type', { claimType, claimId, repo, prNumber });
+          await reportClaimWithRetry(claimPayload(work, 'failed', { failure_kind: 'terminal' })).catch((e) => {
+            log.error('Failed to report claim', { error: e.message });
+          });
+          return;
         }
         const prompt = resolvePrompt({ claimType, work });
         if (!work.agentType) {
@@ -434,7 +466,6 @@ export function createRunner({
 
       // Parse review verdict from agent output for chaining
       let verdict;
-      const claimType = work.claim_type ?? work.claimType;
       if (status === 'completed' && claimType === 'review' && agentOutput) {
         try {
           // Claude Code returns JSON with a "result" field containing the text

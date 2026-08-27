@@ -380,6 +380,7 @@ export async function handleClaimResult(req, res) {
               framework: verification.framework,
               outcome: verification.outcome,
               matrix: verification.matrix,
+              manifest: verification.manifest ?? null,
               testHashes: verification.test_hashes ?? null,
               artifactSha: verification.artifact_sha ?? null,
               redBaseSha: verification.red_base_sha ?? null,
