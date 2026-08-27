@@ -1,0 +1,36 @@
+{
+  "testResults": [
+    {
+      "name": "tests/a.test.js",
+      "assertionResults": [
+        {
+          "fullName": "passes",
+          "status": "passed",
+          "failureMessages": []
+        },
+        {
+          "fullName": "assertion failure",
+          "status": "failed",
+          "failureMessages": [
+            "Expected: 2"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tests/b.test.js",
+      "assertionResults": [],
+      "failureMessage": "boom"
+    },
+    {
+      "name": "tests/c.test.js",
+      "assertionResults": [
+        {
+          "fullName": "skipped",
+          "status": "pending",
+          "failureMessages": []
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "tests": [
+    {
+      "name": "tests/a.test.js",
+      "tests": [
+        {
+          "name": "passes",
+          "details": null,
+          "ok": true
+        },
+        {
+          "name": "assertion failure",
+          "details": {
+            "error": {
+              "failureType": "testCodeFailure",
+              "cause": {
+                "message": "Expected 2"
+              }
+            }
+          },
+          "ok": false
+        }
+      ]
+    },
+    {
+      "name": "tests/b.test.js",
+      "tests": [],
+      "failureType": "testCodeFailure",
+      "error": {
+        "cause": {
+          "message": "boom"
+        }
+      }
+    },
+    {
+      "name": "tests/c.test.js",
+      "tests": [
+        {
+          "name": "skipped",
+          "details": null,
+          "ok": true,
+          "skip": true
+        }
+      ]
+    }
+  ]
+}
