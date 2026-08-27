@@ -15,7 +15,9 @@ import {
 } from '../agents/claim-manager.js';
 import { dequeue, hasPending } from '../notifications/transports/long-poll.js';
 import { sql } from 'drizzle-orm';
-import { db } from '@fluent-flow/db';
+import { db, withTransaction } from '@fluent-flow/db';
+import { insertVerificationResult } from '@fluent-flow/db';
+import { applyVerifyTransitionWithEffects, VerificationResultSchema } from '../engine/verify-transitions.js';
 import { audit } from '../db/client.js';
 import logger from '../logger.js';
 import { getInstallationToken } from '../providers/github/token-cache.js';
@@ -35,6 +37,7 @@ const ClaimResultSchema = z.object({
   verdict: z.enum(['pass', 'fail']).optional(), // review verdict for chaining
   claim_id: z.number().int().positive().optional(), // unambiguous claim identity
   failure_kind: z.enum(['transient', 'terminal']).optional(), // transient → server re-dispatches
+  verification: VerificationResultSchema.optional(), // verify-claim result (phase/outcome/matrix)
 });
 
 const HeartbeatSchema = z.object({
@@ -262,7 +265,7 @@ export async function handleClaimResult(req, res) {
 
   try {
     const { org_id } = req.tokenInfo;
-    const { status, repo, pr_number, attempt, claim_id, failure_kind } = parsed.data;
+    const { status, repo, pr_number, attempt, claim_id, failure_kind, verification } = parsed.data;
 
     if (status === 'completed') {
       // Resolve the claim by id when the runner sent one — the id path can
@@ -287,7 +290,17 @@ export async function handleClaimResult(req, res) {
       }
       if (!claim) {
         if (alreadyResolved) {
-          // Claim may already be completed via webhook (pull_request_review) — treat as success
+          // Claim may already be completed via webhook (pull_request_review) — treat as success.
+          // Verify redeliveries re-derive the transition (spec §6.4) instead of returning early.
+          if (alreadyResolved.claim_type === 'verify' && verification) {
+            try {
+              await applyVerifyTransitionWithEffects(alreadyResolved, verification, { orgId: org_id });
+            } catch (err) {
+              // Safe to continue: re-derived transition failure — the first delivery's
+              // transition already ran; log for the replay sweep to pick up.
+              logger.error({ msg: 'Verify redelivery transition failed', repo, claimId: alreadyResolved.id, error: err.message });
+            }
+          }
           return res.json({ ok: true, claim_id: alreadyResolved.id, status: alreadyResolved.status, note: 'already_resolved' });
         }
         return res.status(404).json({ error: 'Claim not found or already resolved' });
@@ -315,6 +328,35 @@ export async function handleClaimResult(req, res) {
       }
 
       audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status, claimType, verdict: verdict ?? null } });
+
+      // Verify claims: persist the result transactionally with completion, then
+      // apply the transition matrix. Every effect inside is idempotent.
+      if (claimType === 'verify' && verification) {
+        try {
+          await withTransaction(async () => {
+            await insertVerificationResult({
+              orgId: org_id,
+              claimId: claim.id,
+              repo,
+              prNumber: pr_number,
+              phase: verification.phase,
+              framework: verification.framework,
+              outcome: verification.outcome,
+              matrix: verification.matrix,
+              testHashes: verification.test_hashes ?? null,
+              artifactSha: verification.artifact_sha ?? null,
+              redBaseSha: verification.red_base_sha ?? null,
+              greenSha: verification.green_sha ?? null,
+            });
+          });
+          await applyVerifyTransitionWithEffects(claim, verification, { orgId: org_id });
+        } catch (err) {
+          // Safe to continue: the claim is completed; a failed persist/transition
+          // is picked up by the claim-expiry replay sweep.
+          logger.error({ msg: 'Verify result persist/transition failed', repo, claimId: claim.id, error: err.message });
+        }
+        return res.json({ ok: true, claim_id: claim.id });
+      }
 
       // Auto-chain: spec → build (only if payload.auto_chain !== false)
       if (claimType === 'spec' && claim.payload?.auto_chain !== false) {

@@ -25,6 +25,9 @@ vi.mock('../../src/agents/claim-manager.js', () => ({
   getClaimByAttempt: vi.fn(),
   createClaim: vi.fn(),
   redispatchClaim: vi.fn(),
+  nextChainAttempt: vi.fn(),
+  countCompletedFixIterations: vi.fn(),
+  createClaimWithRetry: vi.fn(),
 }));
 
 import { touchSession } from '../../src/agents/session-manager.js';
