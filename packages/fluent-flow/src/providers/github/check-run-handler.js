@@ -4,12 +4,23 @@ import { dispatchReview, claimDispatch } from '../../engine/review-manager.js';
 import { handleTestFailure, handleTestSuccess } from '../../engine/test-manager.js';
 import { getActivePause } from '../../engine/pause-manager.js';
 import { parseCheckAnnotations } from '../../engine/test-parser.js';
-import { and, eq, gt, sql } from 'drizzle-orm';
+import { and, eq, gt, sql, desc } from 'drizzle-orm';
 import { db, schema } from '@fluent-flow/db';
 import { audit } from '../../db/client.js';
-import { createClaim } from '../../agents/claim-manager.js';
 import { resolveOrgId } from '../../config/loader.js';
+import { createClaimWithRetry, nextChainAttempt, getClaimById } from '../../agents/claim-manager.js';
+import { getVerificationResultByClaim } from '@fluent-flow/db';
 import logger from '../../logger.js';
+
+/**
+ * Check if a check run belongs to Fluent Flow (should be excluded from dispatch).
+ * Matches check runs with name starting with "Fluent Flow" — our naming pattern.
+ * @param {object} checkRun
+ * @returns {boolean}
+ */
+function isFluentFlowCheckRun(checkRun) {
+  return /^Fluent Flow/i.test(checkRun?.name ?? '');
+}
 
 /**
  * Check if a check run belongs to the review workflow (should be ignored).
@@ -33,9 +44,98 @@ function extractLinkedIssue(body) {
 }
 
 /**
+ * Create a green claim with inlined red record and config snapshot.
+ * Exact linkage: latest completed review_fix → source_claim_id → red claim → verification result.
+ * @param {object} opts
+ * @param {string} opts.orgId
+ * @param {string} opts.repo
+ * @param {number} opts.prNumber
+ * @param {string} opts.headSha
+ * @param {object} opts.checkRun
+ * @param {object} opts.config
+ * @returns {Promise<object|null>} Created claim or null (duplicate)
+ */
+async function createGreenClaim({ orgId, repo, prNumber, headSha, checkRun, config }) {
+  const { agentClaims } = schema;
+
+  // Exact linkage: latest completed review_fix → source_claim_id → red claim
+  const [fix] = await db
+    .select()
+    .from(agentClaims)
+    .where(
+      and(
+        eq(agentClaims.orgId, orgId),
+        eq(agentClaims.repo, repo),
+        eq(agentClaims.prNumber, prNumber),
+        eq(agentClaims.claimType, 'review_fix'),
+        eq(agentClaims.status, 'completed'),
+      ),
+    )
+    .orderBy(desc(agentClaims.completedAt))
+    .limit(1);
+
+  const redClaimId = fix?.payload?.source_claim_id;
+  if (!redClaimId) return null;
+
+  const redClaim = await getClaimById(orgId, redClaimId);
+  if (!redClaim) return null;
+
+  const redRecord = await getVerificationResultByClaim(orgId, redClaimId);
+  if (!redRecord?.test_hashes) return null;
+
+  const attempt = await nextChainAttempt(orgId, repo, prNumber);
+
+  // Inline the full red record + config snapshot
+  const payload = {
+    phase: 'green',
+    green_sha: headSha,
+    red_record: {
+      phase: redRecord.phase,
+      framework: redRecord.framework,
+      outcome: redRecord.outcome,
+      matrix: redRecord.matrix,
+      test_hashes: redRecord.testHashes,
+      artifact_sha: redRecord.artifactSha,
+    },
+    verification: redClaim.payload.verification,
+  };
+
+  const claim = await createClaimWithRetry(
+    {
+      orgId,
+      repo,
+      prNumber,
+      attempt,
+      claimType: 'verify',
+      payload,
+      headSha,
+    },
+    async (opts) => {
+      const [created] = await db
+        .insert(agentClaims)
+        .values({
+          orgId: opts.orgId,
+          repo: opts.repo,
+          prNumber: opts.prNumber,
+          attempt: opts.attempt,
+          claimType: opts.claimType,
+          status: 'pending',
+          payload: opts.payload,
+          headSha: opts.headSha,
+        })
+        .onConflictDoNothing()
+        .returning();
+      return created ?? null;
+    },
+  );
+
+  return claim;
+}
+
+/**
  * Handle GitHub check_run events.
  * Routes to failure notifications or success-triggered review dispatch.
- * Ignores review workflow check runs on both paths.
+ * Ignores Fluent Flow and review workflow check runs on both paths.
  * @param {string} owner
  * @param {string} repoName
  * @param {object} payload - GitHub webhook payload
@@ -44,7 +144,7 @@ function extractLinkedIssue(body) {
 export async function handleCheckRun(owner, repoName, payload, config) {
   const { action, check_run: checkRun } = payload;
   if (action !== 'completed') return;
-  if (isReviewCheckRun(checkRun)) return;
+  if (isFluentFlowCheckRun(checkRun) || isReviewCheckRun(checkRun)) return;
 
   // Resolve installation context for authenticated GitHub API calls
   const installationId = payload.installation?.id;
@@ -144,7 +244,7 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
   } else {
     try {
       const allChecks = await getCheckRunsForCommit(owner, repoName, checkRun.head_sha, ctx);
-      const ciChecks = allChecks.filter((c) => !isReviewCheckRun(c));
+      const ciChecks = allChecks.filter((c) => !isFluentFlowCheckRun(c) && !isReviewCheckRun(c));
       const allPassed = ciChecks.every(
         (c) => c.status === 'completed' && (c.conclusion === 'success' || c.conclusion === 'neutral')
       );
@@ -215,104 +315,31 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
     });
   }
 
-  // Check if a review_fix claim was recently completed for this PR — if so, create test_verify
-  let hasReviewFixClaim = false;
+  // Try green claim creation via review_fix linkage
   let resolvedOrgId = null;
-  let nextTestVerifyAttempt = 1;
   try {
     resolvedOrgId = await resolveOrgId(owner, repoName);
-    const { agentClaims } = schema;
-    // Use recency window instead of SHA match: a review_fix claim is created
-    // with the SHA that failed review (commit A), but CI success fires on the
-    // new SHA after fixes (commit B). SHA comparison will never match.
-    // Instead, check for any completed review_fix claim within the last 2 hours.
-    const recencyCutoff = new Date(Date.now() - 2 * 60 * 60 * 1000);
-    const rows = await db
-      .select({ one: agentClaims.id })
-      .from(agentClaims)
-      .where(
-        and(
-          eq(agentClaims.orgId, resolvedOrgId),
-          eq(agentClaims.repo, repoKey),
-          eq(agentClaims.prNumber, pr.number),
-          eq(agentClaims.claimType, 'review_fix'),
-          eq(agentClaims.status, 'completed'),
-          gt(agentClaims.completedAt, recencyCutoff),
-        ),
-      )
-      .limit(1);
-    hasReviewFixClaim = rows.length > 0;
+    const greenClaim = await createGreenClaim({
+      orgId: resolvedOrgId,
+      repo: repoKey,
+      prNumber: pr.number,
+      headSha: checkRun.head_sha,
+      checkRun,
+      config,
+    });
 
-    if (hasReviewFixClaim) {
-      // Compute next attempt for test_verify on this PR. Hardcoding 1 means
-      // the second review_fix → test_verify cycle would silently no-op via
-      // ON CONFLICT (the unique index keys on (org, repo, pr, type, attempt)).
-      const [maxRow] = await db
-        .select({ max: sql`COALESCE(MAX(${agentClaims.attempt}), 0)` })
-        .from(agentClaims)
-        .where(
-          and(
-            eq(agentClaims.orgId, resolvedOrgId),
-            eq(agentClaims.repo, repoKey),
-            eq(agentClaims.prNumber, pr.number),
-            eq(agentClaims.claimType, 'test_verify'),
-          ),
-        );
-      nextTestVerifyAttempt = Number(maxRow?.max ?? 0) + 1;
+    if (greenClaim !== null) {
+      logger.info({ msg: 'Created green claim after review_fix + CI pass', repo: repoKey, prNumber: pr.number });
+      // Early return: green claim will verify fixes, then auto-chain will trigger review
+      return;
     }
+
+    // If createGreenClaim returned null (no linkage or red record missing), fall through
+    logger.info({ msg: 'No green claim created (no review_fix linkage or missing red record), falling back to review dispatch', repo: repoKey, prNumber: pr.number });
   } catch (err) {
-    // Safe to continue: checking for review_fix claims is best-effort —
-    // if it fails, we skip the test_verify path and fall through to
-    // a regular review dispatch.
-    logger.warn({ msg: 'Failed to check for review_fix claims', error: err.message });
-  }
-
-  if (hasReviewFixClaim) {
-    try {
-      // Idempotency: skip if a test_verify claim already exists for this head_sha.
-      // This prevents duplicate claims on webhook redelivery or matrix job completion.
-      const { agentClaims: ac } = schema;
-      const [existing] = await db
-        .select({ id: ac.id })
-        .from(ac)
-        .where(
-          and(
-            eq(ac.orgId, resolvedOrgId),
-            eq(ac.repo, repoKey),
-            eq(ac.prNumber, pr.number),
-            eq(ac.claimType, 'test_verify'),
-            eq(ac.headSha, checkRun.head_sha),
-          ),
-        )
-        .limit(1);
-
-      if (existing) {
-        logger.info({ msg: 'test_verify claim already exists for this head_sha, skipping', repo: repoKey, prNumber: pr.number, sha: checkRun.head_sha });
-        // Fall through to dispatchReview below
-      } else {
-        const testVerifyClaim = await createClaim({
-          orgId: resolvedOrgId,
-          repo: repoKey,
-          prNumber: pr.number,
-          attempt: nextTestVerifyAttempt,
-          claimType: 'test_verify',
-          payload: { branch: pr.head?.ref, issueNumber },
-          headSha: checkRun.head_sha,
-        });
-        if (testVerifyClaim) {
-          logger.info({ msg: 'Created test_verify claim after review_fix + CI pass', repo: repoKey, prNumber: pr.number });
-          // Early return: test_verify agent will verify fixes, then runner route's
-          // completion handler will trigger dispatchReview() via auto-chaining.
-          return;
-        }
-        // createClaim returned null (duplicate attempt) — fall through to dispatchReview
-        logger.info({ msg: 'test_verify claim already exists, falling back to review dispatch', repo: repoKey, prNumber: pr.number });
-      }
-    } catch (err) {
-      // Safe to continue: test_verify creation failure falls back to
-      // dispatching a regular review — no work is lost.
-      logger.error({ msg: 'Failed to create test_verify claim, falling back to review', error: err.message });
-    }
+    // Safe to continue: green claim creation failure falls back to
+    // dispatching a regular review — no work is lost.
+    logger.error({ msg: 'Failed to create green claim, falling back to review', error: err.message });
   }
 
   try {
@@ -329,3 +356,5 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
     logger.error({ msg: 'Failed to dispatch review after CI pass', repo: repoKey, prNumber: pr.number, error: err.message });
   }
 }
+
+export { isFluentFlowCheckRun };
