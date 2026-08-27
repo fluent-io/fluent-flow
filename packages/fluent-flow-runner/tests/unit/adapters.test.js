@@ -379,11 +379,7 @@ describe('reporter parsing', () => {
     argv[destinationIndex + 1] = reportFile;
     const reporterIndex = argv.indexOf('--test-reporter');
     argv[reporterIndex + 1] = reporterPath;
-    const run = spawnSync(process.execPath, ['--test-isolation=none', ...argv.slice(1)], {
-      cwd: root,
-      encoding: 'utf8',
-      env: { ...process.env, NODE_OPTIONS: '' },
-    });
+    const run = spawnSync(process.execPath, argv.slice(1), { cwd: root, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
     expect(run.status).toBe(1);
     expect(run.stderr).not.toMatch(/ERR_MODULE_NOT_FOUND/);
     const parsed = node.parseResults(JSON.parse(readFileSync(reportFile, 'utf8')));
