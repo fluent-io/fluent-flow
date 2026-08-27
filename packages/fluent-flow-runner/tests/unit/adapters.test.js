@@ -1,9 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
 import adapters, { detectFramework, vitest, jest, node } from '../../src/verify-adapters/index.js';
 import { assertSafeRelPath, sha256File, containsRealPath } from '../../src/verify-paths.js';
 import { spawnSync } from 'node:child_process';
@@ -133,6 +132,25 @@ describe('adapter detection', () => {
       id: 'vitest',
       packageManager: 'npm',
       root: join(worktree, 'packages', 'app'),
+    });
+  });
+
+  it('does not let worktree Yarn Berry metadata override nearer npm lockfiles', () => {
+    const worktree = makeRepo();
+    writeGitDir(worktree);
+    writeFileSync(join(worktree, '.yarnrc.yml'), 'nodeLinker: node-modules\n');
+    const root = join(worktree, 'packages', 'app');
+    setupPackage(root, {
+      name: 'app',
+      scripts: { test: 'vitest run' },
+      devDependencies: { vitest: '^4.1.0' },
+    }, {
+      'package-lock.json': '{}\n',
+    });
+    expect(detectFramework(join(root, 'tests'))).toEqual({
+      id: 'vitest',
+      packageManager: 'npm',
+      root,
     });
   });
 
@@ -304,28 +322,31 @@ describe('reporter parsing', () => {
     ]);
   });
 
-  it('emits one row per completed node:test item and drops child-failure aggregate wrappers', async () => {
+  it('emits only leaf node:test rows and drops aggregate wrappers', async () => {
     const { default: reporter } = await import('../../src/verify-adapters/node-json-reporter.js');
     const file = join(process.cwd(), 'tests', 'node-reporter.test.js');
     async function* source() {
-      yield { type: 'test:pass', data: { file, name: 'pass', details: { passed: true } } };
-      yield { type: 'test:complete', data: { file, name: 'pass', details: { passed: true } } };
+      yield { type: 'test:pass', data: { file, name: 'pass', details: { type: 'test', passed: true } } };
+      yield { type: 'test:complete', data: { file, name: 'pass', details: { type: 'test', passed: true } } };
+      yield { type: 'test:complete', data: { file, name: 'nested pass', nesting: 1, details: { type: 'test', passed: true } } };
+      yield { type: 'test:complete', data: { file, name: 'passing suite', nesting: 0, details: { type: 'suite', passed: true } } };
+      yield { type: 'test:complete', data: { file, name: file, nesting: 0, details: { type: 'test', passed: true } } };
       yield {
         type: 'test:fail',
-        data: { file, name: 'assertion failure', details: { error: { message: 'expected 1 to equal 2' } } },
+        data: { file, name: 'assertion failure', details: { type: 'test', error: { message: 'expected 1 to equal 2' } } },
       };
       yield {
         type: 'test:complete',
-        data: { file, name: 'assertion failure', details: { error: { message: 'expected 1 to equal 2' } } },
+        data: { file, name: 'assertion failure', details: { type: 'test', error: { message: 'expected 1 to equal 2' } } },
       };
-      yield { type: 'test:pass', data: { file, name: 'skipped', details: { skip: 'later' } } };
-      yield { type: 'test:complete', data: { file, name: 'skipped', details: { skip: 'later' } } };
+      yield { type: 'test:pass', data: { file, name: 'skipped', details: { type: 'test', skip: 'later' } } };
+      yield { type: 'test:complete', data: { file, name: 'skipped', details: { type: 'test', skip: 'later' } } };
       yield {
         type: 'test:complete',
         data: {
           file,
-          name: 'suite',
-          details: { error: { failureType: 'subtestsFailed', message: 'test failed' } },
+          name: 'failing suite',
+          details: { type: 'suite', error: { failureType: 'subtestsFailed', message: 'test failed' } },
         },
       };
       yield {
@@ -333,7 +354,7 @@ describe('reporter parsing', () => {
         data: {
           file,
           name: file,
-          details: { error: { failureType: 'subtestsFailed', message: 'test failed' } },
+          details: { type: 'test', error: { failureType: 'subtestsFailed', message: 'test failed' } },
         },
       };
     }
@@ -343,6 +364,7 @@ describe('reporter parsing', () => {
 
     expect(JSON.parse(chunks.join(''))).toEqual([
       { file: 'tests/node-reporter.test.js', name: 'pass', status: 'pass', message: '' },
+      { file: 'tests/node-reporter.test.js', name: 'nested pass', status: 'pass', message: '' },
       {
         file: 'tests/node-reporter.test.js',
         name: 'assertion failure',
@@ -361,30 +383,30 @@ describe('reporter parsing', () => {
     const testFile = join(root, 'tests', 'node-adapter.test.js');
     mkdirSync(dirname(testFile), { recursive: true });
     writeFileSync(testFile, `
-      import test from 'node:test';
+      import test, { describe } from 'node:test';
       import assert from 'node:assert/strict';
-      test('pass', () => assert.equal(1, 1));
+      test('pass', () => {
+        console.log('USER LOG');
+        assert.equal(1, 1);
+      });
+      describe('passing suite', () => {
+        test('nested pass', () => assert.equal(2, 2));
+      });
       test('fail', () => assert.equal(1, 2));
       test('skip', { skip: true }, () => {});
     `);
-    const reporterPath = fileURLToPath(new URL('../../src/verify-adapters/node-json-reporter.js', import.meta.url));
-    const reportFile = join(worktree, 'node-report.json');
-    writeFileSync(reportFile, '');
     const argv = node.testCommand({
       root,
       worktreeRoot: worktree,
       files: ['packages/app/tests/node-adapter.test.js'],
     });
-    const destinationIndex = argv.indexOf('--test-reporter-destination');
-    argv[destinationIndex + 1] = reportFile;
-    const reporterIndex = argv.indexOf('--test-reporter');
-    argv[reporterIndex + 1] = reporterPath;
     const run = spawnSync(process.execPath, argv.slice(1), { cwd: root, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
     expect(run.status).toBe(1);
     expect(run.stderr).not.toMatch(/ERR_MODULE_NOT_FOUND/);
-    const parsed = node.parseResults(JSON.parse(readFileSync(reportFile, 'utf8')));
+    const parsed = node.parseResults(JSON.parse(run.stdout));
     expect(parsed).toEqual([
       { file: 'tests/node-adapter.test.js', name: 'pass', status: 'pass', message: '' },
+      { file: 'tests/node-adapter.test.js', name: 'nested pass', status: 'pass', message: '' },
       {
         file: 'tests/node-adapter.test.js',
         name: 'fail',

@@ -75,8 +75,3 @@ export function hasAny(obj, keys) {
   return keys.some((key) => obj && Object.prototype.hasOwnProperty.call(obj, key));
 }
 
-export function isWithinRealPath(root, candidate) {
-  const rootReal = realpathSync(root);
-  const candidateReal = realpathSync(candidate);
-  return containsRealPath(rootReal, candidateReal);
-}

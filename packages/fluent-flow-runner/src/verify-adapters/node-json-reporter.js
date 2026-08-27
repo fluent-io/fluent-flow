@@ -11,13 +11,19 @@ function normalizeFile(file) {
   return relative(process.cwd(), file).split(sep).join('/');
 }
 
+function isAggregateWrapper(data, details) {
+  if (details.type === 'suite') return true;
+  if (details.error?.failureType === 'subtestsFailed') return true;
+  return data.file && data.name === data.file && !details.error;
+}
+
 export default async function* reporter(source) {
   const rows = [];
   for await (const event of source) {
     if (event.type !== 'test:complete') continue;
     const data = event.data ?? {};
     const details = data.details ?? {};
-    if (details.error?.failureType === 'subtestsFailed') continue;
+    if (isAggregateWrapper(data, details)) continue;
     const row = {
       file: normalizeFile(data.file ?? data.name),
       name: data.name ?? '',

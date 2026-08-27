@@ -1,5 +1,4 @@
 import { fileURLToPath } from 'node:url';
-import { assertSafeRelPath } from '../verify-paths.js';
 import { detectFrameworkFor, hasAncestorFile, isYarnBerry, resolveRepoRelativeFile } from './shared.js';
 
 function flattenNodeResults(json) {

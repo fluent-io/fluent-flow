@@ -20,16 +20,7 @@ export function detectPackageManager(startDir, { stopAt } = {}) {
   const boundary = normalizeBoundary(startDir, stopAt);
   const found = walkUp(startDir, (dir) => LOCKFILES.some(([file]) => existsSync(join(dir, file))), { stopAt: boundary });
   if (!found) return 'npm';
-  const packageJson = readPackageJson(found);
-  if (packageJson?.packageManager) {
-    const [name, version = ''] = String(packageJson.packageManager).split('@');
-    if (name === 'yarn') {
-      const major = Number.parseInt(version.split('.')[0], 10);
-      if (Number.isFinite(major) && major >= 2) return 'yarn';
-    }
-  }
-  const yarnClassic = existsSync(join(boundary ?? found, '.yarnrc.yml'));
-  return yarnClassic ? 'yarn' : LOCKFILES.find(([file]) => existsSync(join(found, file)))?.[1] ?? 'npm';
+  return LOCKFILES.find(([file]) => existsSync(join(found, file)))?.[1] ?? 'npm';
 }
 
 export function hasAncestorFile(startDir, file, { stopAt } = {}) {
