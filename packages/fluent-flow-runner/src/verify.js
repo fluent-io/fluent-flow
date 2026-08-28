@@ -54,6 +54,42 @@ async function executeArgv(execute, argv, cwd, timeoutMs) {
   return execute(commandFromArgv(argv), cwd, timeoutMs);
 }
 
+function customVerificationCommand(verification) {
+  return Array.isArray(verification?.command) && verification.command.length > 0
+    ? verification.command
+    : null;
+}
+
+function configuredInstallCommand(verification) {
+  return Array.isArray(verification?.install_command) && verification.install_command.length > 0
+    ? verification.install_command
+    : null;
+}
+
+function installCommandFor(adapter, detected, verification) {
+  return configuredInstallCommand(verification) ?? adapter.installCommand(detected.root, detected.packageManager);
+}
+
+function resolveFramework(worktreePath, { verification, requestedFramework, detectFramework, adapters }) {
+  const framework = requestedFramework ?? verification?.framework ?? 'auto';
+  if (framework === 'custom') {
+    if (!customVerificationCommand(verification)) return null;
+    return { id: 'custom', packageManager: 'custom', root: worktreePath };
+  }
+  if (!framework || framework === 'auto' || framework === 'none') {
+    return detectFramework(worktreePath);
+  }
+
+  const adapter = adapters.get(framework);
+  if (!adapter) return null;
+  if (typeof adapter.detect === 'function') {
+    const detected = adapter.detect(worktreePath);
+    return detected ? { ...detected, id: framework } : null;
+  }
+  const detected = detectFramework(worktreePath);
+  return detected ? { ...detected, id: framework } : null;
+}
+
 function artifactBaseRel(data) {
   const prNumber = data.prNumber ?? data.pr_number;
   const claimId = data.claim_id ?? data.claimId;
@@ -471,7 +507,12 @@ async function runRedPhase(context) {
   try {
     return await withPreparedWorktree(context, { ref: data.red_base_sha, name: 'verify-red' }, async (worktreePath) => {
       const detectFramework = context.detectFramework ?? detectFrameworkDefault;
-      const detected = detectFramework(worktreePath);
+      const adapters = context.adapters ?? adapterRegistryDefault;
+      const detected = resolveFramework(worktreePath, {
+        verification: data.verification,
+        detectFramework,
+        adapters,
+      });
       if (!detected) {
         return {
           status: 'completed',
@@ -481,8 +522,20 @@ async function runRedPhase(context) {
           }),
         };
       }
+      if (detected.id === 'custom') {
+        return {
+          status: 'completed',
+          verification: {
+            ...buildSkippedVerification({
+              phase: 'red',
+              redBaseSha: data.red_base_sha,
+              reason: 'custom verification commands are suite-only and cannot prove red at the base commit',
+            }),
+            framework: 'custom',
+          },
+        };
+      }
 
-      const adapters = context.adapters ?? adapterRegistryDefault;
       const adapter = adapters.get(detected.id);
       if (!adapter) {
         return { status: 'failed', failure_kind: 'terminal' };
@@ -530,7 +583,7 @@ async function runRedPhase(context) {
           };
         }
 
-        const install = await executeArgv(context.execute, adapter.installCommand(detected.root, detected.packageManager), detected.root, redTimeoutMs);
+        const install = await executeArgv(context.execute, installCommandFor(adapter, detected, data.verification), detected.root, redTimeoutMs);
         if (install.exitCode !== 0) {
           return { status: 'failed', failure_kind: 'transient' };
         }
@@ -686,9 +739,51 @@ function buildTamperedVerification({ data, redRecord, framework }) {
   };
 }
 
+async function runCustomGreenPhase(context, data, redRecord) {
+  const suiteCommand = customVerificationCommand(data.verification);
+  if (!suiteCommand) {
+    return { status: 'failed', failure_kind: 'terminal' };
+  }
+
+  return withPreparedWorktree(context, { ref: data.green_sha ?? data.head_sha, name: 'verify-green' }, async (worktreePath) => {
+    const greenTimeoutMs = data.verification.timeouts_min.green * 60_000;
+    const installCommand = configuredInstallCommand(data.verification);
+    if (installCommand) {
+      const install = await executeArgv(context.execute, installCommand, worktreePath, greenTimeoutMs);
+      if (install.exitCode !== 0) {
+        return { status: 'failed', failure_kind: 'transient' };
+      }
+    }
+
+    const suite = await executeArgv(context.execute, suiteCommand, worktreePath, greenTimeoutMs);
+    const passed = suite.exitCode === 0;
+    return {
+      status: 'completed',
+      verification: {
+        phase: 'green',
+        framework: 'custom',
+        outcome: passed ? 'PASS' : 'FAIL',
+        matrix: buildMatrix([], {
+          total: 1,
+          passed: passed ? 1 : 0,
+          failed: passed ? 0 : 1,
+          flaky: 0,
+          skipped: 0,
+        }),
+        red_base_sha: redRecord?.red_base_sha ?? data.red_base_sha,
+        green_sha: data.green_sha ?? data.head_sha,
+      },
+    };
+  });
+}
+
 async function runGreenPhase(context) {
   const data = normalizeWork(context.work);
   const redRecord = data.red_record;
+  if (redRecord?.framework === 'custom' || data.verification.framework === 'custom') {
+    return runCustomGreenPhase(context, data, redRecord);
+  }
+
   if (!redRecord?.manifest || !Array.isArray(redRecord.test_hashes)) {
     return { status: 'failed', failure_kind: 'terminal' };
   }
@@ -710,12 +805,22 @@ async function runGreenPhase(context) {
     }
 
     const detectFramework = context.detectFramework ?? detectFrameworkDefault;
-    const detected = detectFramework(worktreePath);
+    const adapters = context.adapters ?? adapterRegistryDefault;
+    const requestedFramework = redRecord.framework && redRecord.framework !== 'none'
+      ? redRecord.framework
+      : data.verification.framework;
+    const detected = resolveFramework(worktreePath, {
+      verification: data.verification,
+      requestedFramework,
+      detectFramework,
+      adapters,
+    });
     if (!detected) {
       return { status: 'failed', failure_kind: 'transient' };
     }
-    const frameworkId = redRecord.framework ?? detected.id;
-    const adapters = context.adapters ?? adapterRegistryDefault;
+    const frameworkId = requestedFramework && requestedFramework !== 'auto' && requestedFramework !== 'none'
+      ? requestedFramework
+      : detected.id;
     const adapter = adapters.get(frameworkId);
     if (!adapter) {
       return { status: 'failed', failure_kind: 'terminal' };
@@ -756,7 +861,7 @@ async function runGreenPhase(context) {
       }
     }
 
-    const install = await executeArgv(context.execute, adapter.installCommand(detected.root, detected.packageManager), detected.root, greenTimeoutMs);
+    const install = await executeArgv(context.execute, installCommandFor(adapter, detected, data.verification), detected.root, greenTimeoutMs);
     if (install.exitCode !== 0) {
       return { status: 'failed', failure_kind: 'transient' };
     }

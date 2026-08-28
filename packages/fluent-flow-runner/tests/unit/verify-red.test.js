@@ -115,7 +115,7 @@ function makeExecuteForRed({
     if (cmd.bin === 'npm') {
       return { exitCode: 0, stdout: '' };
     }
-    if (cmd.bin === 'vitest') {
+    if (cmd.bin === 'vitest' || cmd.bin === 'jest') {
       const result = redRuns[redIndex++] ?? { results: [] };
       return { exitCode: 1, stdout: JSON.stringify(result) };
     }
@@ -188,6 +188,98 @@ describe('runVerifyClaim red phase', () => {
         red_base_sha: 'a'.repeat(40),
       },
     });
+    expect(cleanup).toHaveBeenCalled();
+  });
+
+  it('honors an explicitly configured framework instead of auto detection order', async () => {
+    const redWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-red-'));
+    const pushWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-push-'));
+    setupRepo(redWorktree);
+    setupRepo(pushWorktree);
+    const manifest = makeManifest({
+      requirements: [{
+        requirement: {
+          id: 'REQ-1',
+          form: 'when',
+          text: 'When login is invalid, the request fails.',
+          source_finding_id: 'F-1',
+        },
+        tests: ['packages/app/tests/verify/login.red.test.js'],
+        dependency_files: ['packages/app/tests/helpers/setup.js'],
+        framework: 'jest',
+      }],
+    });
+    const jestAdapter = {
+      ...makeVitestAdapter(),
+      detect: vi.fn(() => ({ id: 'jest', packageManager: 'npm', root: join(redWorktree, 'packages', 'app') })),
+      testCommand: vi.fn(({ files }) => ['jest', '--json', ...(files ?? [])]),
+    };
+    const execute = makeExecuteForRed({
+      worktreePath: redWorktree,
+      manifestFactory: () => ({
+        manifest,
+        createdFiles: ['packages/app/tests/verify/login.red.test.js'],
+      }),
+      redRuns: [
+        { results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'assertion-fail', message: 'expected failure' }] },
+        { results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'assertion-fail', message: 'expected failure' }] },
+      ],
+    });
+    const autoDetect = vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(redWorktree, 'packages', 'app') }));
+
+    const result = await runVerifyClaim(makeContext({
+      execute,
+      prepareWorktree: vi.fn()
+        .mockResolvedValueOnce({ worktreePath: redWorktree, cleanup: vi.fn().mockResolvedValue() })
+        .mockResolvedValueOnce({ worktreePath: pushWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      resolveCommand: vi.fn(() => ({ bin: 'claude', args: ['author'] })),
+      detectFramework: autoDetect,
+      adapters: new Map([['jest', jestAdapter]]),
+      work: makeWork({
+        verification: { ...makeWork().verification, framework: 'jest' },
+        findings: [{ id: 'F-1', blocking: true }],
+      }),
+    }));
+
+    expect(result.verification.outcome).toBe('PASS');
+    expect(result.verification.framework).toBe('jest');
+    expect(autoDetect).not.toHaveBeenCalled();
+    expect(jestAdapter.detect).toHaveBeenCalledWith(redWorktree);
+    expect(jestAdapter.testCommand).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips custom red verification without invoking authoring or auto detection', async () => {
+    const worktreePath = mkdtempSync(join(tmpdir(), 'ff-verify-red-'));
+    const cleanup = vi.fn().mockResolvedValue();
+    const execute = vi.fn();
+    const resolveCommand = vi.fn(() => ({ bin: 'claude', args: ['author'] }));
+    const detectFramework = vi.fn(() => null);
+
+    const result = await runVerifyClaim(makeContext({
+      execute,
+      resolveCommand,
+      detectFramework,
+      prepareWorktree: vi.fn().mockResolvedValue({ worktreePath, cleanup }),
+      work: makeWork({
+        verification: {
+          ...makeWork().verification,
+          framework: 'custom',
+          command: ['pytest', '-q'],
+          install_command: ['python', '-m', 'pip', 'install', '-r', 'requirements.txt'],
+        },
+      }),
+    }));
+
+    expect(result.verification).toEqual(expect.objectContaining({
+      phase: 'red',
+      framework: 'custom',
+      outcome: 'SKIPPED',
+      matrix: null,
+      red_base_sha: 'a'.repeat(40),
+    }));
+    expect(execute).not.toHaveBeenCalled();
+    expect(resolveCommand).not.toHaveBeenCalled();
+    expect(detectFramework).not.toHaveBeenCalled();
     expect(cleanup).toHaveBeenCalled();
   });
 

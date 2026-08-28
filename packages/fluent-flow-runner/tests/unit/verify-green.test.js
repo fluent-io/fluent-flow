@@ -127,7 +127,7 @@ function makeExecuteForGreen({ pinnedRuns = [], fullRuns = [], diffOutput = '', 
     if (cmd.bin === 'git' && cmd.args[0] === 'diff') {
       return { exitCode: gitExitCode, stdout: diffOutput };
     }
-    if (cmd.bin === 'vitest') {
+    if (cmd.bin === 'vitest' || cmd.bin === 'jest') {
       const isPinned = cmd.args.some((arg) => arg.includes('login.red.test.js'));
       const payload = isPinned
         ? (pinnedRuns[pinnedIndex] ?? pinnedRuns.at(-1) ?? { results: [] })
@@ -263,6 +263,108 @@ describe('runVerifyClaim green phase', () => {
     }));
 
     expect(result.verification.outcome).toBe('TAMPERED');
+  });
+
+  it('runs custom green command with a degraded suite matrix', async () => {
+    const greenWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-green-'));
+    setupRepo(greenWorktree);
+    const execute = vi.fn(async (cmd) => {
+      if (cmd.bin === 'python') return { exitCode: 0, stdout: '' };
+      if (cmd.bin === 'pytest') return { exitCode: 0, stdout: 'passed\n' };
+      throw new Error(`Unexpected command: ${cmd.bin}`);
+    });
+
+    const result = await runVerifyClaim(makeContext({
+      work: makeWork({
+        verification: {
+          ...makeWork().verification,
+          framework: 'custom',
+          command: ['pytest', '-q'],
+          install_command: ['python', '-m', 'pip', 'install', '-r', 'requirements.txt'],
+        },
+        red_record: {
+          phase: 'red',
+          framework: 'custom',
+          outcome: 'SKIPPED',
+          test_hashes: [],
+          red_base_sha: 'a'.repeat(40),
+        },
+      }),
+      execute,
+      prepareWorktree: vi.fn().mockResolvedValue({ worktreePath: greenWorktree, cleanup: vi.fn().mockResolvedValue() }),
+    }));
+
+    expect(execute).toHaveBeenNthCalledWith(
+      1,
+      { bin: 'python', args: ['-m', 'pip', 'install', '-r', 'requirements.txt'] },
+      greenWorktree,
+      30 * 60_000,
+    );
+    expect(execute).toHaveBeenNthCalledWith(
+      2,
+      { bin: 'pytest', args: ['-q'] },
+      greenWorktree,
+      30 * 60_000,
+    );
+    expect(result).toEqual({
+      status: 'completed',
+      verification: {
+        phase: 'green',
+        framework: 'custom',
+        outcome: 'PASS',
+        matrix: {
+          requirements: [],
+          suite: { total: 1, passed: 1, failed: 0, flaky: 0, skipped: 0 },
+          schema_version: 1,
+        },
+        red_base_sha: 'a'.repeat(40),
+        green_sha: 'b'.repeat(40),
+      },
+    });
+  });
+
+  it('detects the package root with the red-record framework adapter', async () => {
+    const greenWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-green-'));
+    setupRepo(greenWorktree);
+    const redRecord = buildRedRecord(greenWorktree, {
+      framework: 'jest',
+      manifest: {
+        pr_number: 22,
+        requirements: [{
+          requirement: {
+            id: 'REQ-1',
+            form: 'when',
+            text: 'When login is invalid, the request fails.',
+            source_finding_id: 'F-1',
+          },
+          tests: ['packages/app/tests/verify/login.red.test.js'],
+          dependency_files: ['packages/app/tests/helpers/setup.js'],
+          framework: 'jest',
+        }],
+      },
+    });
+    const jestAdapter = {
+      ...makeAdapter(),
+      detect: vi.fn(() => ({ id: 'jest', packageManager: 'npm', root: join(greenWorktree, 'packages', 'app') })),
+      testCommand: vi.fn(({ files }) => ['jest', '--json', ...(files ?? [])]),
+    };
+    const autoDetect = vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(greenWorktree, 'packages', 'app') }));
+
+    const result = await runVerifyClaim(makeContext({
+      work: makeWork({ red_record: redRecord }),
+      execute: makeExecuteForGreen({
+        pinnedRuns: [{ results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'pass', message: '' }] }],
+        fullRuns: [{ results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'pass', message: '' }] }],
+      }),
+      prepareWorktree: vi.fn().mockResolvedValue({ worktreePath: greenWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      detectFramework: autoDetect,
+      adapters: new Map([['jest', jestAdapter]]),
+    }));
+
+    expect(result.verification.outcome).toBe('PASS');
+    expect(result.verification.framework).toBe('jest');
+    expect(autoDetect).not.toHaveBeenCalled();
+    expect(jestAdapter.detect).toHaveBeenCalledWith(greenWorktree);
   });
 
   it('uses payload.red_record as the source of truth and does not read branch verify artifacts', async () => {
