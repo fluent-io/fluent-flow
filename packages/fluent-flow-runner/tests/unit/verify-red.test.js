@@ -94,9 +94,11 @@ function makeExecuteForRed({
   statusOutput,
   artifactSha = '1'.repeat(40),
   gitExitCodes = {},
+  installResults = [{ exitCode: 0, stdout: '' }],
 }) {
   let authorIndex = 0;
   let redIndex = 0;
+  let installIndex = 0;
 
   return vi.fn(async (cmd, commandCwd) => {
     if (cmd.bin === 'claude') {
@@ -112,12 +114,15 @@ function makeExecuteForRed({
       }
       return { exitCode: 0, stdout: JSON.stringify({ type: 'result', is_error: false, result: 'ok' }) };
     }
-    if (cmd.bin === 'npm') {
-      return { exitCode: 0, stdout: '' };
+    if (cmd.bin === 'npm' || cmd.bin === 'pnpm' || cmd.bin === 'yarn' || cmd.bin === 'python') {
+      return installResults[installIndex++] ?? installResults.at(-1);
     }
     if (cmd.bin === 'vitest' || cmd.bin === 'jest') {
       const result = redRuns[redIndex++] ?? { results: [] };
-      return { exitCode: 1, stdout: JSON.stringify(result) };
+      if (result.timedOut) {
+        return { exitCode: result.exitCode ?? 124, stdout: result.stdout ?? '', timedOut: true };
+      }
+      return { exitCode: result.exitCode ?? 1, stdout: JSON.stringify(result) };
     }
     if (cmd.bin === 'git' && cmd.args[0] === 'status') {
       const defaultStatus = cmd.args.includes('--untracked-files=all')
@@ -189,6 +194,68 @@ describe('runVerifyClaim red phase', () => {
       },
     });
     expect(cleanup).toHaveBeenCalled();
+  });
+
+  it('classifies repeated identical install failures as terminal', async () => {
+    const redWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-red-'));
+    setupRepo(redWorktree);
+    const execute = makeExecuteForRed({
+      worktreePath: redWorktree,
+      manifestFactory: () => ({
+        manifest: makeManifest(),
+        createdFiles: ['packages/app/tests/verify/login.red.test.js'],
+      }),
+      installResults: [
+        { exitCode: 1, stdout: 'lockfile is malformed' },
+        { exitCode: 1, stdout: 'lockfile is malformed' },
+      ],
+    });
+
+    const result = await runVerifyClaim(makeContext({
+      execute,
+      resolveCommand: vi.fn(() => ({ bin: 'claude', args: ['author'] })),
+      prepareWorktree: vi.fn().mockResolvedValueOnce({ worktreePath: redWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(redWorktree, 'packages', 'app') })),
+      adapters: new Map([['vitest', makeVitestAdapter()]]),
+      work: makeWork({ findings: [{ id: 'F-1', blocking: true }] }),
+    }));
+
+    expect(result).toEqual({ status: 'failed', failure_kind: 'terminal' });
+    expect(execute.mock.calls.filter(([cmd]) => cmd.bin === 'npm')).toHaveLength(2);
+  });
+
+  it('classifies repeated red suite timeouts as terminal', async () => {
+    const redWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-red-'));
+    setupRepo(redWorktree);
+    const execute = makeExecuteForRed({
+      worktreePath: redWorktree,
+      manifestFactory: () => ({
+        manifest: makeManifest(),
+        createdFiles: ['packages/app/tests/verify/login.red.test.js'],
+      }),
+      redRuns: [
+        { exitCode: 124, stdout: '', timedOut: true },
+        { exitCode: 124, stdout: '', timedOut: true },
+      ],
+    });
+
+    const result = await runVerifyClaim(makeContext({
+      execute,
+      resolveCommand: vi.fn(() => ({ bin: 'claude', args: ['author'] })),
+      prepareWorktree: vi.fn().mockResolvedValueOnce({ worktreePath: redWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(redWorktree, 'packages', 'app') })),
+      adapters: new Map([['vitest', makeVitestAdapter()]]),
+      work: makeWork({
+        findings: [{ id: 'F-1', blocking: true }],
+        verification: {
+          ...makeWork().verification,
+          authoring: { ...makeWork().verification.authoring, retries: 0, red_reproductions: 2 },
+        },
+      }),
+    }));
+
+    expect(result).toEqual({ status: 'failed', failure_kind: 'terminal' });
+    expect(execute.mock.calls.filter(([cmd]) => cmd.bin === 'vitest')).toHaveLength(2);
   });
 
   it('honors an explicitly configured framework instead of auto detection order', async () => {
@@ -746,7 +813,39 @@ describe('runVerifyClaim red phase', () => {
     expect(commitCall[0].args.join(' ')).toContain('[skip ci]');
   });
 
-  it('fails the claim when git publication steps exit non-zero', async () => {
+  it('fails the claim transiently when local git publication setup exits non-zero', async () => {
+    const redWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-red-'));
+    const pushWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-push-'));
+    setupRepo(redWorktree);
+    setupRepo(pushWorktree);
+    const execute = makeExecuteForRed({
+      worktreePath: redWorktree,
+      manifestFactory: () => ({
+        manifest: makeManifest(),
+        createdFiles: ['packages/app/tests/verify/login.red.test.js'],
+      }),
+      redRuns: [
+        { results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'assertion-fail', message: 'expected failure' }] },
+        { results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'assertion-fail', message: 'expected failure' }] },
+      ],
+      gitExitCodes: { add: 1 },
+    });
+
+    const result = await runVerifyClaim(makeContext({
+      execute,
+      resolveCommand: vi.fn(() => ({ bin: 'claude', args: ['author'] })),
+      prepareWorktree: vi.fn()
+        .mockResolvedValueOnce({ worktreePath: redWorktree, cleanup: vi.fn().mockResolvedValue() })
+        .mockResolvedValueOnce({ worktreePath: pushWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(redWorktree, 'packages', 'app') })),
+      adapters: new Map([['vitest', makeVitestAdapter()]]),
+      work: makeWork({ findings: [{ id: 'F-1', blocking: true }] }),
+    }));
+
+    expect(result).toEqual({ status: 'failed', failure_kind: 'transient' });
+  });
+
+  it('skips red verification when the red artifact push cannot publish to the PR branch', async () => {
     const redWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-red-'));
     const pushWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-push-'));
     setupRepo(redWorktree);
@@ -775,7 +874,15 @@ describe('runVerifyClaim red phase', () => {
       work: makeWork({ findings: [{ id: 'F-1', blocking: true }] }),
     }));
 
-    expect(result).toEqual({ status: 'failed', failure_kind: 'transient' });
+    expect(result).toEqual({
+      status: 'completed',
+      verification: expect.objectContaining({
+        phase: 'red',
+        framework: 'vitest',
+        outcome: 'SKIPPED',
+        red_base_sha: 'a'.repeat(40),
+      }),
+    });
   });
 
   it('retries malformed manifests and fails deterministically when authoring never produces a valid manifest', async () => {

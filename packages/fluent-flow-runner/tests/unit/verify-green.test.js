@@ -116,11 +116,12 @@ function buildRedRecord(root, overrides = {}) {
   return { ...base, ...overrides, manifest };
 }
 
-function makeExecuteForGreen({ pinnedRuns = [], fullRuns = [], diffOutput = '', gitExitCode = 0, catFileExitCode = 0 }) {
+function makeExecuteForGreen({ pinnedRuns = [], fullRuns = [], diffOutput = '', gitExitCode = 0, catFileExitCode = 0, installResults = [{ exitCode: 0, stdout: '' }] }) {
   let pinnedIndex = 0;
   let fullIndex = 0;
+  let installIndex = 0;
   return vi.fn(async (cmd) => {
-    if (cmd.bin === 'npm') return { exitCode: 0, stdout: '' };
+    if (cmd.bin === 'npm' || cmd.bin === 'pnpm' || cmd.bin === 'yarn' || cmd.bin === 'python') return installResults[installIndex++] ?? installResults.at(-1);
     if (cmd.bin === 'git' && cmd.args[0] === 'cat-file') {
       return { exitCode: catFileExitCode, stdout: '' };
     }
@@ -134,6 +135,9 @@ function makeExecuteForGreen({ pinnedRuns = [], fullRuns = [], diffOutput = '', 
         : (fullRuns[fullIndex] ?? fullRuns.at(-1) ?? { results: [] });
       if (isPinned) pinnedIndex++;
       else fullIndex++;
+      if (payload.timedOut) {
+        return { exitCode: payload.exitCode ?? 124, stdout: payload.stdout ?? '', timedOut: true };
+      }
       return { exitCode: payload.exitCode ?? 0, stdout: JSON.stringify(payload) };
     }
     throw new Error(`Unexpected command: ${cmd.bin}`);
@@ -263,6 +267,52 @@ describe('runVerifyClaim green phase', () => {
     }));
 
     expect(result.verification.outcome).toBe('TAMPERED');
+  });
+
+  it('classifies repeated identical green install failures as terminal', async () => {
+    const greenWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-green-'));
+    setupRepo(greenWorktree);
+    const redRecord = buildRedRecord(greenWorktree);
+    const execute = makeExecuteForGreen({
+      installResults: [
+        { exitCode: 1, stdout: 'lockfile is malformed' },
+        { exitCode: 1, stdout: 'lockfile is malformed' },
+      ],
+    });
+
+    const result = await runVerifyClaim(makeContext({
+      work: makeWork({ red_record: redRecord }),
+      execute,
+      prepareWorktree: vi.fn().mockResolvedValue({ worktreePath: greenWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(greenWorktree, 'packages', 'app') })),
+      adapters: new Map([['vitest', makeAdapter()]]),
+    }));
+
+    expect(result).toEqual({ status: 'failed', failure_kind: 'terminal' });
+    expect(execute.mock.calls.filter(([cmd]) => cmd.bin === 'npm')).toHaveLength(2);
+  });
+
+  it('classifies repeated pinned suite timeouts as terminal', async () => {
+    const greenWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-green-'));
+    setupRepo(greenWorktree);
+    const redRecord = buildRedRecord(greenWorktree);
+    const execute = makeExecuteForGreen({
+      pinnedRuns: [
+        { exitCode: 124, stdout: '', timedOut: true },
+        { exitCode: 124, stdout: '', timedOut: true },
+      ],
+    });
+
+    const result = await runVerifyClaim(makeContext({
+      work: makeWork({ red_record: redRecord }),
+      execute,
+      prepareWorktree: vi.fn().mockResolvedValue({ worktreePath: greenWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(greenWorktree, 'packages', 'app') })),
+      adapters: new Map([['vitest', makeAdapter()]]),
+    }));
+
+    expect(result).toEqual({ status: 'failed', failure_kind: 'terminal' });
+    expect(execute.mock.calls.filter(([cmd]) => cmd.bin === 'vitest')).toHaveLength(2);
   });
 
   it('runs custom green command with a degraded suite matrix', async () => {

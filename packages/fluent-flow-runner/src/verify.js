@@ -54,6 +54,34 @@ async function executeArgv(execute, argv, cwd, timeoutMs) {
   return execute(commandFromArgv(argv), cwd, timeoutMs);
 }
 
+function commandFailureSignature(result) {
+  return JSON.stringify({
+    exitCode: result?.exitCode ?? null,
+    stdout: result?.stdout ?? '',
+    stderr: result?.stderr ?? '',
+  });
+}
+
+async function runInstallWithClassification(context, argv, cwd, timeoutMs) {
+  const first = await executeArgv(context.execute, argv, cwd, timeoutMs);
+  if (first.exitCode === 0) return { ok: true };
+
+  const second = await executeArgv(context.execute, argv, cwd, timeoutMs);
+  if (second.exitCode !== 0 && commandFailureSignature(second) === commandFailureSignature(first)) {
+    return { ok: false, kind: 'terminal' };
+  }
+  return { ok: false, kind: 'transient' };
+}
+
+async function runSuiteWithTimeoutClassification(context, argv, cwd, timeoutMs) {
+  const first = await executeArgv(context.execute, argv, cwd, timeoutMs);
+  if (!first.timedOut) return { ok: true, result: first };
+
+  const second = await executeArgv(context.execute, argv, cwd, timeoutMs);
+  if (second.timedOut) return { ok: false, kind: 'terminal' };
+  return { ok: true, result: second };
+}
+
 function customVerificationCommand(verification) {
   return Array.isArray(verification?.command) && verification.command.length > 0
     ? verification.command
@@ -583,20 +611,27 @@ async function runRedPhase(context) {
           };
         }
 
-        const install = await executeArgv(context.execute, installCommandFor(adapter, detected, data.verification), detected.root, redTimeoutMs);
-        if (install.exitCode !== 0) {
-          return { status: 'failed', failure_kind: 'transient' };
+        const install = await runInstallWithClassification(
+          context,
+          installCommandFor(adapter, detected, data.verification),
+          detected.root,
+          redTimeoutMs,
+        );
+        if (!install.ok) {
+          return { status: 'failed', failure_kind: install.kind };
         }
 
         let reproduced = true;
         for (let runIndex = 0; runIndex < data.verification.authoring.red_reproductions; runIndex++) {
           const files = uniquePaths(manifest.requirements.flatMap((entry) => entry.tests));
-          const testRun = await executeArgv(
-            context.execute,
+          const suiteRun = await runSuiteWithTimeoutClassification(
+            context,
             adapter.testCommand({ files, root: detected.root, worktreeRoot: worktreePath }),
             detected.root,
             redTimeoutMs,
           );
+          if (!suiteRun.ok) return { status: 'failed', failure_kind: suiteRun.kind };
+          const testRun = suiteRun.result;
           const parsed = JSON.parse(testRun.stdout || '{}');
           const rows = normalizeRows(worktreePath, adapter.parseResults(parsed));
           const evaluation = evaluateRedRows(manifest, rows);
@@ -666,7 +701,19 @@ async function runRedPhase(context) {
           );
           if (gitCommit.exitCode !== 0) return { status: 'failed', failure_kind: 'transient' };
           const gitPush = await executeArgv(context.execute, ['git', 'push', 'origin', `HEAD:${data.branch}`], pushWorktreePath);
-          if (gitPush.exitCode !== 0) return { status: 'failed', failure_kind: 'transient' };
+          if (gitPush.exitCode !== 0) {
+            return {
+              status: 'completed',
+              verification: {
+                ...buildSkippedVerification({
+                  phase: 'red',
+                  redBaseSha: data.red_base_sha,
+                  reason: 'red verification artifacts could not be pushed to the PR branch',
+                }),
+                framework: detected.id,
+              },
+            };
+          }
           const revParse = await executeArgv(context.execute, ['git', 'rev-parse', 'HEAD'], pushWorktreePath);
           if (revParse.exitCode !== 0 || revParse.stdout.trim() === '') return { status: 'failed', failure_kind: 'transient' };
           const artifactSha = revParse.stdout.trim();
@@ -749,13 +796,15 @@ async function runCustomGreenPhase(context, data, redRecord) {
     const greenTimeoutMs = data.verification.timeouts_min.green * 60_000;
     const installCommand = configuredInstallCommand(data.verification);
     if (installCommand) {
-      const install = await executeArgv(context.execute, installCommand, worktreePath, greenTimeoutMs);
-      if (install.exitCode !== 0) {
-        return { status: 'failed', failure_kind: 'transient' };
+      const install = await runInstallWithClassification(context, installCommand, worktreePath, greenTimeoutMs);
+      if (!install.ok) {
+        return { status: 'failed', failure_kind: install.kind };
       }
     }
 
-    const suite = await executeArgv(context.execute, suiteCommand, worktreePath, greenTimeoutMs);
+    const suiteRun = await runSuiteWithTimeoutClassification(context, suiteCommand, worktreePath, greenTimeoutMs);
+    if (!suiteRun.ok) return { status: 'failed', failure_kind: suiteRun.kind };
+    const suite = suiteRun.result;
     const passed = suite.exitCode === 0;
     return {
       status: 'completed',
@@ -861,9 +910,14 @@ async function runGreenPhase(context) {
       }
     }
 
-    const install = await executeArgv(context.execute, installCommandFor(adapter, detected, data.verification), detected.root, greenTimeoutMs);
-    if (install.exitCode !== 0) {
-      return { status: 'failed', failure_kind: 'transient' };
+    const install = await runInstallWithClassification(
+      context,
+      installCommandFor(adapter, detected, data.verification),
+      detected.root,
+      greenTimeoutMs,
+    );
+    if (!install.ok) {
+      return { status: 'failed', failure_kind: install.kind };
     }
 
     const manifest = redRecord.manifest;
@@ -871,12 +925,14 @@ async function runGreenPhase(context) {
     const pinnedRuns = [];
     const runBudget = (data.verification.flake?.retries ?? 0) + 1;
     for (let attempt = 0; attempt < runBudget; attempt++) {
-      const run = await executeArgv(
-        context.execute,
+      const suiteRun = await runSuiteWithTimeoutClassification(
+        context,
         adapter.testCommand({ files: pinnedFiles, root: detected.root, worktreeRoot: worktreePath }),
         detected.root,
         greenTimeoutMs,
       );
+      if (!suiteRun.ok) return { status: 'failed', failure_kind: suiteRun.kind };
+      const run = suiteRun.result;
       const parsed = JSON.parse(run.stdout || '{}');
       const rows = normalizeRows(worktreePath, adapter.parseResults(parsed));
       const evaluation = evaluateGreenRows(manifest, rows);
@@ -921,12 +977,14 @@ async function runGreenPhase(context) {
     const pinnedSet = new Set(pinnedFiles);
     const fullRuns = [];
     for (let attempt = 0; attempt < runBudget; attempt++) {
-      const run = await executeArgv(
-        context.execute,
+      const suiteRun = await runSuiteWithTimeoutClassification(
+        context,
         adapter.testCommand({ files: null, root: detected.root, worktreeRoot: worktreePath }),
         detected.root,
         greenTimeoutMs,
       );
+      if (!suiteRun.ok) return { status: 'failed', failure_kind: suiteRun.kind };
+      const run = suiteRun.result;
       const parsed = JSON.parse(run.stdout || '{}');
       const rows = normalizeRows(worktreePath, adapter.parseResults(parsed));
       fullRuns.push(rows);
