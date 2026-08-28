@@ -1,13 +1,15 @@
 import Link from 'next/link';
 import { getServerSession } from 'next-auth';
-import { getPipelineDetail } from '@fluent-flow/db';
 import { authOptions, getOrgScope } from '@/lib/auth';
+import { loadDb } from '@/lib/runtime-db';
 import { PipelineTimeline } from '@/components/pipelines/pipeline-timeline';
 import { VerificationPanel } from '@/components/pipelines/verification-panel';
 import { Badge } from '@/components/ui/badge';
 import { notFound } from 'next/navigation';
 import { DismissButton } from '@/components/pipelines/dismiss-button';
 import { derivePipelineStatus, getLatestAttemptClaims, getPipelineHeaderClaim } from '@/components/pipelines/pipeline-summary';
+
+export const dynamic = 'force-dynamic';
 
 
 function formatDuration(start: Date | string, end: Date | string | null): string {
@@ -34,6 +36,7 @@ export default async function PipelineDetailPage({ params }: { params: Promise<{
 
   const fullRepo = `${owner}/${repo}`;
   const { orgIds } = getOrgScope(session);
+  const { getPipelineDetail } = await loadDb();
   const claims = await getPipelineDetail(orgIds, fullRepo, prNumber);
 
   if (claims.length === 0) notFound();

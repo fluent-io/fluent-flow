@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
-import { getAgentDetail, regenerateKey } from '@fluent-flow/db';
 import { authOptions, getOrgScope, hasRole } from '@/lib/auth';
+import { loadDb } from '@/lib/runtime-db';
+
+export const dynamic = 'force-dynamic';
 
 export async function POST(
   _request: Request,
@@ -14,6 +16,7 @@ export async function POST(
 
   const { id } = await params;
   const { orgIds } = getOrgScope(session);
+  const { getAgentDetail, regenerateKey } = await loadDb();
   const agent = await getAgentDetail(orgIds, id);
 
   if (!agent) {

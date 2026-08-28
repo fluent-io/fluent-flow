@@ -1,13 +1,16 @@
 import { getServerSession } from 'next-auth';
-import { listRepos } from '@fluent-flow/db';
 import { authOptions, getOrgScope } from '@/lib/auth';
+import { loadDb } from '@/lib/runtime-db';
 import { RepoCard } from '@/components/repos/repo-card';
+
+export const dynamic = 'force-dynamic';
 
 export default async function ReposPage() {
   const session = await getServerSession(authOptions);
   if (!session) return null;
 
   const { orgIds, isSuperadmin } = getOrgScope(session);
+  const { listRepos } = await loadDb();
   const repos = await listRepos(orgIds, isSuperadmin);
 
   return (
