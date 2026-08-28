@@ -287,6 +287,31 @@ describe('sweepStrandedVerifyClaims', () => {
     expect(dispatchReview).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 5 }));
   });
 
+  it('does not replay terminal decisions that cannot create a successor', async () => {
+    const claimRow = {
+      id: 43,
+      org_id: 'o1',
+      repo: 'owner/repo',
+      pr_number: 5,
+      attempt: 3,
+      payload: { phase: 'green', verification: { skip_policy: 'require' }, agent_id: 'agent-1' },
+      head_sha: 'abc',
+    };
+    const resultRow = { phase: 'green', framework: 'vitest', outcome: 'SKIPPED', matrix: null, test_hashes: null, artifact_sha: null, red_base_sha: null, green_sha: 'def' };
+    const db = {
+      execute: vi.fn()
+        .mockResolvedValueOnce({ rows: [claimRow] })
+        .mockResolvedValueOnce([resultRow])
+        .mockResolvedValueOnce({ rows: [] }),
+    };
+
+    await sweepStrandedVerifyClaims(db);
+
+    expect(createClaimWithRetry).not.toHaveBeenCalled();
+    expect(dispatchReview).not.toHaveBeenCalled();
+    expect(notifyDispatch).not.toHaveBeenCalled();
+  });
+
   it('logs + audits completed verify claims without a result row', async () => {
     const db = {
       execute: vi.fn()

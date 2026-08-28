@@ -229,13 +229,12 @@ export async function applyVerifyTransition(claim, verification, ctx, external =
   return result;
 }
 
-export async function applyVerifyTransitionWithEffects(claim, verification, ctx) {
+export async function applyVerifyTransitionWithEffects(claim, verification, ctx, precomputedDecision = null) {
   const { orgId } = ctx;
   const { repo, pr_number, head_sha, payload } = claim;
   const [owner, repoName] = repo.split('/');
 
-  const decision = await applyVerifyTransition(claim, verification, ctx);
-
+  const decision = precomputedDecision ?? await applyVerifyTransition(claim, verification, ctx);
   if (decision.action === 'create_claim' && decision.claimSpec) {
     await createClaimWithRetry(decision.claimSpec, createClaim);
     logger.info({
@@ -352,7 +351,12 @@ export async function sweepStrandedVerifyClaims(db) {
         green_sha: resultRow.green_sha,
       };
 
-      await applyVerifyTransitionWithEffects(claim, verification, { orgId: claim.org_id });
+      const decision = await applyVerifyTransition(claim, verification, { orgId: claim.org_id });
+      if (decision.action !== 'create_claim' && decision.action !== 'dispatch_review') {
+        logger.info({ msg: 'Skipped terminal verify transition replay', claimId: claim.id, action: decision.action });
+        continue;
+      }
+      await applyVerifyTransitionWithEffects(claim, verification, { orgId: claim.org_id }, decision);
       logger.info({ msg: 'Replayed transition for stranded verify claim', claimId: claim.id });
     } catch (err) {
       logger.error({ msg: 'Failed to replay transition for stranded verify claim', claimId: claim.id, error: err.message });
