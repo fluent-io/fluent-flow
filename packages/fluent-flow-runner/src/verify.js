@@ -1002,7 +1002,10 @@ async function runGreenPhase(context) {
     const blockingFullFailures = finalFullRows.filter((row) => row.status !== 'pass' && pinnedSet.has(row.file));
     const hadPriorFullFailure = fullRuns.slice(0, -1).some((rows) => rows.some((row) => row.status !== 'pass'));
     const suite = countStatuses(finalFullRows);
-    if (warnings.length > 0) {
+    // Under flake.blocking, orphan rows persisting in the final run are real
+    // failures — keep raw suite totals so downstream readers see failed > 0.
+    const persistentFullFailure = finalFullRows.some((row) => row.status !== 'pass');
+    if (warnings.length > 0 && !(Boolean(data.verification.flake?.blocking) && persistentFullFailure)) {
       suite.failed = blockingFullFailures.length;
       suite.passed = finalFullRows.filter((row) => row.status === 'pass').length;
     }
@@ -1016,7 +1019,7 @@ async function runGreenPhase(context) {
     const requirementFailure = requirements.some((req) => req.status === 'FAIL');
     const suiteBlockingFailure = blockingFullFailures.length > 0;
     const fullSuiteFlakeBlocking = Boolean(data.verification.flake?.blocking) &&
-      (hadPriorFullFailure || finalFullRows.some((row) => row.status !== 'pass'));
+      (hadPriorFullFailure || persistentFullFailure);
     const outcome = requirementFailure || suiteBlockingFailure || fullSuiteFlakeBlocking ? 'FAIL' : 'PASS';
 
     return {

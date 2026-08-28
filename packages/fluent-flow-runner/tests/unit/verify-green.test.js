@@ -553,7 +553,9 @@ describe('runVerifyClaim green phase', () => {
     }));
 
     expect(result.verification.outcome).toBe('FAIL');
-    expect(result.verification.matrix.warnings.some((w) => w.file === 'packages/app/tests/integration/broken.test.js')).toBe(true);
+    // A blocking persistent failure is real suite data — the matrix must not hide it
+    // behind warnings with zero failed rows (spec §12 downstream readability).
+    expect(result.verification.matrix.suite.failed).toBe(1);
   });
 
   it('downgrades orphan full-suite failures outside the manifest to warnings', async () => {
