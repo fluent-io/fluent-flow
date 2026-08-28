@@ -1,5 +1,5 @@
 import { expireClaims, redispatchClaim } from '../agents/claim-manager.js';
-import { sweepStrandedVerifyClaims } from '../engine/verify-transitions.js';
+import { sweepStrandedVerifyClaims, handleVerifyRedispatchExhausted } from '../engine/verify-transitions.js';
 import { db } from '@fluent-flow/db';
 import logger from '../logger.js';
 
@@ -21,6 +21,14 @@ export async function expireClaimsTick() {
             oldAttempt: claim.attempt,
             newAttempt: claim.attempt + 1,
             claimId: newClaim.id,
+          });
+        } else if (claim.claim_type === 'verify') {
+          await handleVerifyRedispatchExhausted(claim, { orgId: claim.org_id });
+          logger.warn({
+            msg: 'Expired verify claim reached re-dispatch cap; terminal follow-up created',
+            repo: claim.repo,
+            prNumber: claim.pr_number,
+            attempt: claim.attempt,
           });
         } else {
           logger.warn({

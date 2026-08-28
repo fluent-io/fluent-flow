@@ -3,8 +3,10 @@ import { sql } from 'drizzle-orm';
 import { createClaim, createClaimWithRetry, nextChainAttempt, countCompletedFixIterations } from '../agents/claim-manager.js';
 import { dispatchReview } from './review-manager.js';
 import { dispatch } from '../notifications/dispatcher.js';
+import { getProvider } from '../providers/index.js';
 import { addLabel, postComment } from '../providers/github/rest.js';
 import { recordPause } from './pause-manager.js';
+import { onClaimResolved, renderMatrixSummary } from './check-run.js';
 import { audit } from '../db/client.js';
 import logger from '../logger.js';
 import { resolveConfig, installationCtxForRepo } from '../config/loader.js';
@@ -62,6 +64,35 @@ function buildCheckRunNote(outcome, matrix) {
     return 'Verification skipped: framework not detected or configured.';
   }
   return null;
+}
+
+const VERIFY_FRAMEWORKS = new Set(['vitest', 'jest', 'node', 'custom', 'none']);
+
+function verificationFrameworkFromClaim(claim) {
+  const configured = claim.payload?.verification?.framework;
+  return VERIFY_FRAMEWORKS.has(configured) ? configured : 'none';
+}
+
+function buildRedispatchExhaustedVerification(claim) {
+  const phase = claim.payload?.phase === 'green' ? 'green' : 'red';
+  return {
+    phase,
+    framework: verificationFrameworkFromClaim(claim),
+    outcome: 'FAIL',
+    matrix: {
+      requirements: [{
+        id: 'VERIFY-EXHAUSTED',
+        status: 'FAIL',
+        text: 'Verification infrastructure retry limit exhausted; continuing with ungated review fix.',
+        failed: 1,
+        passed: 0,
+      }],
+      suite: { total: 0, passed: 0, failed: 0, flaky: 0, skipped: 0 },
+      schema_version: 1,
+    },
+    ...(claim.payload?.red_base_sha ? { red_base_sha: claim.payload.red_base_sha } : {}),
+    ...(phase === 'green' && claim.head_sha ? { green_sha: claim.head_sha } : {}),
+  };
 }
 
 export async function applyVerifyTransition(claim, verification, ctx, external = {}) {
@@ -313,6 +344,32 @@ export async function applyVerifyTransitionWithEffects(claim, verification, ctx,
   return decision;
 }
 
+
+export async function handleVerifyRedispatchExhausted(claim, ctx) {
+  const verification = buildRedispatchExhaustedVerification(claim);
+  const decision = await applyVerifyTransitionWithEffects(claim, verification, ctx);
+
+  try {
+    const [owner, repoName] = claim.repo.split('/');
+    const installCtx = await installationCtxForRepo(owner, repoName);
+    const provider = getProvider({ provider: 'github', installation_id: installCtx.installation_id });
+    await onClaimResolved(provider, claim, {
+      conclusion: 'failure',
+      output: renderMatrixSummary(verification),
+    });
+  } catch (err) {
+    logger.warn({ msg: 'Failed to resolve exhausted verify check run', repo: claim.repo, claimId: claim.id, error: err.message });
+  }
+
+  logger.warn({
+    msg: 'Verify re-dispatch exhausted; created terminal follow-up',
+    repo: claim.repo,
+    prNumber: claim.pr_number,
+    claimId: claim.id,
+    phase: verification.phase,
+  });
+  return { decision, verification };
+}
 export async function sweepStrandedVerifyClaims(db) {
   logger.info({ msg: 'Starting sweep for stranded verify claims' });
 

@@ -23,6 +23,14 @@ vi.mock('../../src/agents/claim-manager.js', () => ({
   createClaimWithRetry: vi.fn(),
 }));
 
+vi.mock('../../src/engine/verify-transitions.js', async () => {
+  const actual = await vi.importActual('../../src/engine/verify-transitions.js');
+  return {
+    ...actual,
+    handleVerifyRedispatchExhausted: vi.fn(),
+  };
+});
+
 import {
   completeClaimById,
   failClaim,
@@ -32,6 +40,7 @@ import {
   createClaim,
   redispatchClaim,
 } from '../../src/agents/claim-manager.js';
+import { handleVerifyRedispatchExhausted } from '../../src/engine/verify-transitions.js';
 import { handleClaimResult } from '../../src/routes/runner.js';
 
 function makeRes() {
@@ -121,6 +130,28 @@ describe('handleClaimResult — claim_id path', () => {
       expect.objectContaining({ id: 7, claim_type: 'review_fix', payload: CLAIM_ROW.payload, head_sha: 'abc123' }),
     );
     expect(res.body.status).toBe('failed');
+  });
+
+  it('turns exhausted transient verify failures into an ungated review_fix transition', async () => {
+    const verifyClaim = {
+      ...CLAIM_ROW,
+      attempt: 10,
+      claim_type: 'verify',
+      payload: { phase: 'red', branch: 'fix/x', verification: { skip_policy: 'allow_ungated' } },
+      status: 'failed',
+    };
+    failClaimById.mockResolvedValueOnce(verifyClaim);
+    redispatchClaim.mockResolvedValueOnce(null);
+    const res = makeRes();
+
+    await handleClaimResult(
+      REQ({ status: 'failed', repo: 'o/r', pr_number: 5, attempt: 10, claim_id: 7, failure_kind: 'transient' }),
+      res,
+    );
+
+    expect(redispatchClaim).toHaveBeenCalledWith(expect.objectContaining({ id: 7, claim_type: 'verify' }));
+    expect(handleVerifyRedispatchExhausted).toHaveBeenCalledWith(verifyClaim, { orgId: 'o1' });
+    expect(res.statusCode).toBe(200);
   });
 
   it('terminal failure (default) does NOT re-dispatch', async () => {

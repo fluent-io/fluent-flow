@@ -12,6 +12,7 @@ vi.mock('../../src/db/client.js', () => ({
 
 vi.mock('../../src/agents/claim-manager.js', () => ({
   createClaimWithRetry: vi.fn(),
+  createClaim: vi.fn(),
   nextChainAttempt: vi.fn(),
   countCompletedFixIterations: vi.fn(),
 }));
@@ -24,11 +25,31 @@ vi.mock('../../src/notifications/dispatcher.js', () => ({
   dispatch: vi.fn(),
 }));
 
+vi.mock('../../src/config/loader.js', () => ({
+  resolveConfig: vi.fn().mockResolvedValue({ default_agent: 'agent-1' }),
+  installationCtxForRepo: vi.fn().mockResolvedValue({ installation_id: 456 }),
+}));
+
+vi.mock('../../src/providers/index.js', () => ({
+  getProvider: vi.fn((ctx) => ({ ctx })),
+}));
+
+vi.mock('../../src/providers/github/rest.js', () => ({
+  addLabel: vi.fn(),
+  postComment: vi.fn(),
+}));
+
+vi.mock('../../src/engine/check-run.js', () => ({
+  onClaimResolved: vi.fn(),
+  renderMatrixSummary: vi.fn(() => ({ title: 'Verification Matrix', summary: 'retry limit exhausted', annotations: [] })),
+}));
+
 import { audit } from '../../src/db/client.js';
-import { sweepStrandedVerifyClaims, applyVerifyTransition, applyVerifyTransitionWithEffects } from '../../src/engine/verify-transitions.js';
+import { sweepStrandedVerifyClaims, applyVerifyTransition, applyVerifyTransitionWithEffects, handleVerifyRedispatchExhausted } from '../../src/engine/verify-transitions.js';
 import { createClaimWithRetry, nextChainAttempt, countCompletedFixIterations } from '../../src/agents/claim-manager.js';
 import { dispatchReview } from '../../src/engine/review-manager.js';
 import { dispatch as notifyDispatch } from '../../src/notifications/dispatcher.js';
+import { onClaimResolved } from '../../src/engine/check-run.js';
 
 function makeClaim(overrides = {}) {
   return {
@@ -269,6 +290,40 @@ describe('verify-transitions — TAMPERED path', () => {
     );
     expect(createClaimWithRetry).not.toHaveBeenCalled();
     expect(dispatchReview).not.toHaveBeenCalled();
+  });
+});
+
+describe('verify redispatch exhaustion', () => {
+  it('creates the ungated follow-up and resolves the verify check run', async () => {
+    const claim = makeClaim({
+      id: 77,
+      attempt: 10,
+      payload: { phase: 'red', branch: 'fix/x', verification: { skip_policy: 'allow_ungated' }, agent_id: 'agent-1' },
+      check_run_external_id: 321,
+    });
+
+    const result = await handleVerifyRedispatchExhausted(claim, { orgId: 'o1' });
+
+    expect(result.verification).toEqual(expect.objectContaining({
+      phase: 'red',
+      framework: 'none',
+      outcome: 'FAIL',
+      matrix: expect.objectContaining({
+        requirements: [expect.objectContaining({ id: 'VERIFY-EXHAUSTED', status: 'FAIL' })],
+      }),
+    }));
+    expect(createClaimWithRetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        claimType: 'review_fix',
+        payload: expect.objectContaining({ source_claim_id: 77, branch: 'fix/x' }),
+      }),
+      expect.any(Function),
+    );
+    expect(onClaimResolved).toHaveBeenCalledWith(
+      { ctx: { provider: 'github', installation_id: 456 } },
+      claim,
+      expect.objectContaining({ conclusion: 'failure', output: expect.objectContaining({ title: 'Verification Matrix' }) }),
+    );
   });
 });
 

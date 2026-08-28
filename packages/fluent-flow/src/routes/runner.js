@@ -17,7 +17,7 @@ import { dequeue, hasPending } from '../notifications/transports/long-poll.js';
 import { sql } from 'drizzle-orm';
 import { db, withTransaction } from '@fluent-flow/db';
 import { insertVerificationResult } from '@fluent-flow/db';
-import { applyVerifyTransitionWithEffects, VerificationResultSchema } from '../engine/verify-transitions.js';
+import { applyVerifyTransitionWithEffects, handleVerifyRedispatchExhausted, VerificationResultSchema } from '../engine/verify-transitions.js';
 import { audit } from '../db/client.js';
 import logger from '../logger.js';
 import { getInstallationToken } from '../providers/github/token-cache.js';
@@ -530,6 +530,9 @@ export async function handleClaimResult(req, res) {
             newAttempt: redispatched ? claim.attempt + 1 : null,
             claimId: redispatched?.id ?? null,
           });
+          if (!redispatched && claim.claim_type === 'verify') {
+            await handleVerifyRedispatchExhausted(claim, { orgId: org_id });
+          }
         } catch (err) {
           // Safe to continue: the failure is already durably recorded; a lost
           // re-dispatch leaves the pipeline paused for manual dispatch rather
