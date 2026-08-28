@@ -181,6 +181,7 @@ describe('handleCheckRun — green claim path (replaces test_verify)', () => {
           framework: 'vitest',
           test_file_patterns: ['**/*.test.js'],
         },
+        findings: [{ id: 'F-1', issue: 'Broken auth' }],
       },
     });
 
@@ -215,6 +216,7 @@ describe('handleCheckRun — green claim path (replaces test_verify)', () => {
       payload: {
         phase: 'green',
         green_sha: 'abc123',
+        red_claim_id: 5,
         red_record: {
           phase: 'red',
           framework: 'vitest',
@@ -228,6 +230,7 @@ describe('handleCheckRun — green claim path (replaces test_verify)', () => {
           framework: 'vitest',
           test_file_patterns: ['**/*.test.js'],
         },
+        findings: [{ id: 'F-1', issue: 'Broken auth' }],
       },
     });
 
@@ -250,6 +253,7 @@ describe('handleCheckRun — green claim path (replaces test_verify)', () => {
       payload: {
         phase: 'green',
         green_sha: 'abc123',
+        red_claim_id: 5,
         red_record: {
           phase: 'red',
           framework: 'vitest',
@@ -263,6 +267,7 @@ describe('handleCheckRun — green claim path (replaces test_verify)', () => {
           framework: 'vitest',
           test_file_patterns: ['**/*.test.js'],
         },
+        findings: [{ id: 'F-1', issue: 'Broken auth' }],
       },
     });
     expect(mockGetProvider).toHaveBeenCalledWith({ provider: 'github', installation_id: 1 });

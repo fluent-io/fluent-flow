@@ -120,6 +120,7 @@ async function createGreenClaim({ orgId, repo, prNumber, headSha, checkRun, conf
   // Inline the full red record + config snapshot
   const payload = {
     phase: 'green',
+    red_claim_id: redClaimId,
     green_sha: headSha,
     red_record: {
       phase: redRecord.phase,
@@ -129,8 +130,10 @@ async function createGreenClaim({ orgId, repo, prNumber, headSha, checkRun, conf
       manifest: redRecord.manifest,
       test_hashes: redRecord.testHashes,
       artifact_sha: redRecord.artifactSha,
+      red_base_sha: redRecord.redBaseSha,
     },
     verification: redClaim.payload.verification,
+    findings: redClaim.payload.findings ?? [],
   };
 
   const claim = await createClaimWithRetry(

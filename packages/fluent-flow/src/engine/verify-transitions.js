@@ -206,6 +206,10 @@ export async function applyVerifyTransition(claim, verification, ctx, external =
       } else {
         result.action = 'create_claim';
         const nextAttempt = await getNextAttempt(orgId, repo, pr_number);
+        const sourceRedClaimId = payload?.red_claim_id ?? claim.id;
+        const immutability = Array.isArray(payload?.red_record?.test_hashes)
+          ? payload.red_record.test_hashes.map((hash) => hash.path).filter(Boolean)
+          : [];
         result.claimSpec = {
           orgId,
           repo,
@@ -213,8 +217,11 @@ export async function applyVerifyTransition(claim, verification, ctx, external =
           attempt: nextAttempt,
           claimType: 'review_fix',
           payload: {
-            source_claim_id: claim.id,
+            source_claim_id: sourceRedClaimId,
+            source_green_claim_id: claim.id,
             branch: payload?.branch,
+            findings: payload?.findings ?? [],
+            immutability,
           },
           headSha: head_sha,
         };

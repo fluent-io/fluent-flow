@@ -198,6 +198,42 @@ describe('verify-transitions — green phase', () => {
     expect(decision.claimSpec.claimType).toBe('review_fix');
     expect(countCompletedFixIterations).toHaveBeenCalledWith('o1', 'owner/repo', 5);
     expect(nextChainAttempt).toHaveBeenCalled();
+    expect(decision.claimSpec.payload.source_claim_id).toBe(1);
+  });
+
+  it('green FAIL review_fix points back to the red claim and carries verifier context', async () => {
+    const claim = makeClaim({
+      id: 12,
+      payload: {
+        phase: 'green',
+        red_claim_id: 7,
+        branch: 'fix/x',
+        findings: [{ id: 'F-1', issue: 'Broken auth' }],
+        red_record: {
+          test_hashes: [
+            { path: 'tests/verify/auth.red.test.js', sha256: 'abc' },
+            { path: 'package-lock.json', sha256: 'def' },
+          ],
+        },
+      },
+    });
+    const verification = makeVerification({ phase: 'green', outcome: 'FAIL' });
+    countCompletedFixIterations.mockResolvedValue(5);
+    const ctx = { orgId: 'o1' };
+
+    const decision = await applyVerifyTransition(claim, verification, ctx, {
+      getNextAttempt: nextChainAttempt,
+      getCountFixIterations: countCompletedFixIterations,
+    });
+
+    expect(decision.action).toBe('create_claim');
+    expect(decision.claimSpec.payload).toEqual(expect.objectContaining({
+      source_claim_id: 7,
+      source_green_claim_id: 12,
+      branch: 'fix/x',
+      findings: [{ id: 'F-1', issue: 'Broken auth' }],
+      immutability: ['tests/verify/auth.red.test.js', 'package-lock.json'],
+    }));
   });
 
   it('green FAIL with exhausted iterations → needs-human escalation', async () => {
