@@ -109,6 +109,26 @@ describe('prompts', () => {
       expect(prompt).toContain('42');
       expect(prompt).toContain('Fix the login bug');
     });
+
+    it('review_fix template threads findings and pinned verifier immutability', () => {
+      const prompt = resolvePrompt({
+        claimType: 'review_fix',
+        work: {
+          ...baseWork,
+          findings: [{ id: 'F-1', file: 'src/auth.js', line: 12, issue: 'Missing authorization check' }],
+          immutability: ['test/verify/req-1.test.js', 'package-lock.json'],
+          source_claim_id: 41,
+        },
+      });
+      expect(prompt).toContain('"id": "F-1"');
+      expect(prompt).toContain('Missing authorization check');
+      expect(prompt).toContain('Source verify claim: 41');
+      expect(prompt).toContain('Pinned verifier files are immutable');
+      expect(prompt).toContain('test/verify/req-1.test.js');
+      expect(prompt).toContain('package-lock.json');
+      expect(prompt).toContain('Do not create, modify, rename, or delete tests or framework files');
+      expect(prompt).not.toContain('Add tests that verify the fixes.');
+    });
   });
 });
 

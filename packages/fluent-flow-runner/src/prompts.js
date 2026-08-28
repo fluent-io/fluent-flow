@@ -130,7 +130,11 @@ const TEMPLATES = {
     return parts.join('\n');
   },
 
-  review_fix({ repo, prNumber, message, branch }) {
+  review_fix({ repo, prNumber, message, branch, findings = [], immutability = [], source_claim_id: sourceClaimIdSnake, sourceClaimId }) {
+    const hasFindings = Array.isArray(findings) && findings.length > 0;
+    const pinnedFiles = Array.isArray(immutability) ? immutability.filter(Boolean) : [];
+    const hasPinnedFiles = pinnedFiles.length > 0;
+    const sourceClaimIdValue = sourceClaimIdSnake ?? sourceClaimId;
     const parts = [
       `You are a fix agent for ${repo} (PR #${prNumber}).`,
       '',
@@ -139,12 +143,29 @@ const TEMPLATES = {
     if (message) {
       parts.push('', 'Review feedback:', message);
     }
+    if (sourceClaimIdValue != null) {
+      parts.push('', `Source verify claim: ${sourceClaimIdValue}`);
+    }
+    if (hasFindings) {
+      parts.push('', 'Blocking findings JSON:', JSON.stringify(findings, null, 2));
+    }
+    if (hasPinnedFiles) {
+      parts.push(
+        '',
+        'Pinned verifier files are immutable:',
+        ...pinnedFiles.map((file) => `- ${file}`),
+        '',
+        'Do not create, modify, rename, or delete tests or framework files that can affect the pinned verifier artifacts. The green verifier treats those changes as tampering.',
+      );
+    }
     parts.push(
       '',
       'Your task:',
       '1. Fix each issue identified in the review.',
-      '2. Add tests that verify the fixes.',
-      '3. Ensure all existing and new tests pass.',
+      hasPinnedFiles
+        ? '2. Use the existing pinned verifier tests as the behavioral contract; do not add or edit verifier tests.'
+        : '2. Add tests that verify the fixes.',
+      '3. Ensure all existing and relevant tests pass.',
       '4. Commit your changes with a descriptive message.',
     );
     if (branch) {
@@ -165,7 +186,7 @@ const TEMPLATES = {
       '',
       'Rules:',
       '- Address every blocking issue',
-      '- Write tests first (TDD)',
+      hasPinnedFiles ? '- Do not alter pinned verifier tests, dependency files, lockfiles, or framework config' : '- Write tests first (TDD)',
       '- Do not modify unrelated code',
       '- The task is only complete when your commits are pushed',
     );
