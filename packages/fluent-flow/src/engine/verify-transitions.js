@@ -154,6 +154,10 @@ export async function applyVerifyTransition(claim, verification, ctx, external =
       result.action = 'create_claim';
       result.checkRun = { summary: buildCheckRunNote(outcome, matrix) };
       const nextAttempt = await getNextAttempt(orgId, repo, pr_number);
+      // Ungated fixes still need full context: re-inline findings (spec §6.1)
+      // and pin whatever tests the red run managed to hash so future fix
+      // agents cannot mutate them into green.
+      const immutability = test_hashes?.map((h) => h.path).filter(Boolean) ?? [];
       result.claimSpec = {
         orgId,
         repo,
@@ -163,6 +167,10 @@ export async function applyVerifyTransition(claim, verification, ctx, external =
         payload: {
           source_claim_id: claim.id,
           branch: payload?.branch,
+          // Re-inline the red claim's findings so ungated fix iterations carry
+          // full context (spec §6.1) — not just the pointer.
+          findings: payload?.findings ?? [],
+          immutability,
         },
         headSha: head_sha,
       };

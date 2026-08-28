@@ -166,6 +166,53 @@ describe('verify-transitions — red phase', () => {
     expect(decision.notify).toBeDefined();
     expect(nextChainAttempt).toHaveBeenCalled();
   });
+
+  it('red FAIL → review_fix inlines findings and test-hash immutability (ungated path)', async () => {
+    const claim = makeClaim({
+      id: 9,
+      payload: {
+        phase: 'red',
+        branch: 'fix/red',
+        findings: [{ id: 'F-1', issue: 'Broken auth' }, { id: 'F-2', issue: 'Missing input validation' }],
+      },
+    });
+    const verification = makeVerification({
+      phase: 'red',
+      outcome: 'FAIL',
+      test_hashes: [{ path: 'test/verify/red-1.test.ts', sha256: 'ffff0000' }],
+      matrix: { requirements: [], suite: { total: 0, passed: 0, failed: 0, flaky: 0, skipped: 0 }, schema_version: 1 },
+    });
+
+    const decision = await applyVerifyTransition(claim, verification, { orgId: 'o1' }, {
+      getNextAttempt: nextChainAttempt,
+      getCountFixIterations: countCompletedFixIterations,
+    });
+
+    expect(decision.claimSpec.payload.source_claim_id).toBe(9);
+    expect(decision.claimSpec.payload.branch).toBe('fix/red');
+    expect(decision.claimSpec.payload.findings).toEqual([
+      { id: 'F-1', issue: 'Broken auth' },
+      { id: 'F-2', issue: 'Missing input validation' },
+    ]);
+    expect(decision.claimSpec.payload.immutability).toEqual(['test/verify/red-1.test.ts']);
+  });
+
+  it('red SKIPPED → review_fix inlines findings with empty immutability when no hashes (ungated path)', async () => {
+    const claim = makeClaim({
+      id: 10,
+      payload: { phase: 'red', branch: 'fix/red2', findings: [{ id: 'F-3', issue: 'Unhandled error' }] },
+    });
+    const verification = makeVerification({ phase: 'red', outcome: 'SKIPPED', framework: 'none' });
+
+    const decision = await applyVerifyTransition(claim, verification, { orgId: 'o1' }, {
+      getNextAttempt: nextChainAttempt,
+      getCountFixIterations: countCompletedFixIterations,
+    });
+
+    expect(decision.claimSpec.payload.source_claim_id).toBe(10);
+    expect(decision.claimSpec.payload.findings).toEqual([{ id: 'F-3', issue: 'Unhandled error' }]);
+    expect(decision.claimSpec.payload.immutability).toEqual([]);
+  });
 });
 
 describe('verify-transitions — green phase', () => {
