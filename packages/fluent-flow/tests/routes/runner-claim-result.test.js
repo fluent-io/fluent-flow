@@ -30,6 +30,33 @@ vi.mock('../../src/engine/verify-transitions.js', async () => {
     handleVerifyRedispatchExhausted: vi.fn(),
   };
 });
+const mockAddLabel = vi.fn().mockResolvedValue(undefined);
+const mockPostComment = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../src/providers/github/rest.js', () => ({
+  addLabel: (...a) => mockAddLabel(...a),
+  postComment: (...a) => mockPostComment(...a),
+}));
+
+const mockNotifyDispatch = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../src/notifications/dispatcher.js', () => ({
+  dispatch: (...a) => mockNotifyDispatch(...a),
+}));
+
+vi.mock('../../src/config/loader.js', () => ({
+  resolveConfig: vi.fn().mockResolvedValue({ default_agent: 'agent-1' }),
+  installationCtxForRepo: vi.fn().mockResolvedValue({ installation_id: 456 }),
+}));
+
+const mockDbExecute = vi.fn().mockResolvedValue({ rows: [] });
+vi.mock('@fluent-flow/db', async () => {
+  const actual = await vi.importActual('@fluent-flow/db');
+  return {
+    ...actual,
+    db: { execute: (...a) => mockDbExecute(...a), ...(actual.db ?? {}) },
+    withTransaction: async (fn) => fn(null),
+    insertVerificationResult: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 import {
   completeClaimById,
@@ -179,5 +206,38 @@ describe('handleClaimResult — claim_id path', () => {
     expect(failClaim).toHaveBeenCalledWith('o1', 'o/r', 5, 2, 'review_fix');
     expect(failClaimById).not.toHaveBeenCalled();
     expect(redispatchClaim).toHaveBeenCalled();
+  });
+});
+
+describe('handleClaimResult — verify redelivery', () => {
+  it('terminal verify result re-delivery returns already_resolved without label/comment/notify side effects', async () => {
+    completeClaimById.mockResolvedValueOnce(null);
+    getClaimById.mockResolvedValueOnce({
+      ...CLAIM_ROW,
+      claim_type: 'verify',
+      payload: { phase: 'green' },
+      status: 'completed',
+    });
+    const res = makeRes();
+
+    await handleClaimResult(
+      REQ({
+        status: 'completed',
+        repo: 'o/r',
+        pr_number: 5,
+        attempt: 2,
+        claim_id: 7,
+        verification: { phase: 'green', framework: 'vitest', outcome: 'TAMPERED', matrix: null },
+      }),
+      res,
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.note).toBe('already_resolved');
+    // TAMPERED is terminal (needs_human + PR comment) — the first delivery already
+    // posted them; redelivery must not repeat terminal side effects.
+    expect(mockAddLabel).not.toHaveBeenCalled();
+    expect(mockPostComment).not.toHaveBeenCalled();
+    expect(mockNotifyDispatch).not.toHaveBeenCalled();
   });
 });

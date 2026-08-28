@@ -17,7 +17,7 @@ import { dequeue, hasPending } from '../notifications/transports/long-poll.js';
 import { sql } from 'drizzle-orm';
 import { db, withTransaction } from '@fluent-flow/db';
 import { insertVerificationResult } from '@fluent-flow/db';
-import { applyVerifyTransitionWithEffects, handleVerifyRedispatchExhausted, VerificationResultSchema } from '../engine/verify-transitions.js';
+import { applyVerifyTransition, applyVerifyTransitionWithEffects, handleVerifyRedispatchExhausted, VerificationResultSchema } from '../engine/verify-transitions.js';
 import { audit } from '../db/client.js';
 import logger from '../logger.js';
 import { getInstallationToken } from '../providers/github/token-cache.js';
@@ -391,7 +391,12 @@ export async function handleClaimResult(req, res) {
           // Verify redeliveries re-derive the transition (spec §6.4) instead of returning early.
           if (alreadyResolved.claim_type === 'verify' && verification) {
             try {
-              await applyVerifyTransitionWithEffects(alreadyResolved, verification, { orgId: org_id });
+              const decision = await applyVerifyTransition(alreadyResolved, verification, { orgId: org_id });
+              if (decision.action !== 'create_claim' && decision.action !== 'dispatch_review') {
+                logger.info({ msg: 'Skipped terminal verify transition redelivery', claimId: alreadyResolved.id, action: decision.action });
+              } else {
+                await applyVerifyTransitionWithEffects(alreadyResolved, verification, { orgId: org_id }, decision);
+              }
             } catch (err) {
               // Safe to continue: re-derived transition failure — the first delivery's
               // transition already ran; log for the replay sweep to pick up.
