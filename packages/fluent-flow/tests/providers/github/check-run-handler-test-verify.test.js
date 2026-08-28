@@ -254,6 +254,7 @@ describe('handleCheckRun — green claim path (replaces test_verify)', () => {
         phase: 'green',
         green_sha: 'abc123',
         red_claim_id: 5,
+        branch: 'feature/x',
         red_record: {
           phase: 'red',
           framework: 'vitest',

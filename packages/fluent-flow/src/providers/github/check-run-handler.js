@@ -106,7 +106,7 @@ function isUsableRedRecord(record, { orgId, repo, prNumber }) {
  * @param {Function} [linkageResolver] - Test hook: resolves source_claim_id
  * @returns {Promise<{status: 'created', claim: object}|{status: 'duplicate'}|null>} Outcome, or null when no green claim applies
  */
-async function createGreenClaim({ orgId, repo, prNumber, headSha, checkRun, config }, linkageResolver = findRedClaimIdFromLatestReviewFix) {
+async function createGreenClaim({ orgId, repo, prNumber, headSha, branch, checkRun, config }, linkageResolver = findRedClaimIdFromLatestReviewFix) {
   // Exact linkage: latest completed review_fix → source_claim_id → red claim
   const redClaimId = await linkageResolver(orgId, repo, prNumber);
   if (!redClaimId) return null;
@@ -122,6 +122,7 @@ async function createGreenClaim({ orgId, repo, prNumber, headSha, checkRun, conf
     phase: 'green',
     red_claim_id: redClaimId,
     green_sha: headSha,
+    branch: branch ?? null,
     red_record: {
       phase: redRecord.phase,
       framework: redRecord.framework,
@@ -364,6 +365,7 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
       repo: repoKey,
       prNumber: pr.number,
       headSha: checkRun.head_sha,
+      branch: pr.head?.ref ?? null,
       checkRun,
       config,
     });
