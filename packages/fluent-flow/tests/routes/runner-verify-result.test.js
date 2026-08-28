@@ -21,7 +21,7 @@ vi.mock('@fluent-flow/db', async (importOriginal) => {
 
 vi.mock('../../src/engine/verify-transitions.js', async (importOriginal) => {
   const actual = await importOriginal();
-  return { ...actual, applyVerifyTransitionWithEffects: vi.fn() };
+  return { ...actual, applyVerifyTransitionWithEffects: vi.fn(), applyVerifyTransition: vi.fn() };
 });
 
 vi.mock('../../src/engine/check-run.js', () => ({
@@ -41,7 +41,7 @@ vi.mock('../../src/providers/index.js', () => ({
 
 import { handleClaimResult } from '../../src/routes/runner.js';
 import { getClaimById, completeClaimById } from '../../src/agents/claim-manager.js';
-import { applyVerifyTransitionWithEffects } from '../../src/engine/verify-transitions.js';
+import { applyVerifyTransition, applyVerifyTransitionWithEffects } from '../../src/engine/verify-transitions.js';
 import { onClaimResolved } from '../../src/engine/check-run.js';
 import { withTransaction, insertVerificationResult } from '@fluent-flow/db';
 import { installationCtxForRepo } from '../../src/config/loader.js';
@@ -82,6 +82,7 @@ beforeEach(() => {
   getClaimById.mockResolvedValue(VERIFY_CLAIM);
   completeClaimById.mockResolvedValue(VERIFY_CLAIM);
   applyVerifyTransitionWithEffects.mockResolvedValue({ action: 'create_claim' });
+  vi.mocked(applyVerifyTransition).mockResolvedValue({ action: 'dispatch_review', dispatchReviewSpec: null });
   vi.mocked(withTransaction).mockImplementation(async (fn) => fn(TX));
   vi.mocked(installationCtxForRepo).mockResolvedValue({ installation_id: 456 });
   vi.mocked(getProvider).mockImplementation((ctx) => ({ ctx }));
@@ -244,11 +245,19 @@ describe('handleClaimResult — verify branch', () => {
       }),
       res,
     );
-
+    // F3: redelivery computes the decision plain, then applies effects only for
+    // non-terminal actions (create_claim / dispatch_review), passing the precomputed
+    // decision through as the 4th arg so idempotent replays never re-derive it.
+    expect(applyVerifyTransition).toHaveBeenCalledWith(
+      { ...VERIFY_CLAIM, status: 'completed' },
+      expect.objectContaining({ phase: 'green', outcome: 'PASS' }),
+      expect.objectContaining({ orgId: 'o1' }),
+    );
     expect(applyVerifyTransitionWithEffects).toHaveBeenCalledWith(
       { ...VERIFY_CLAIM, status: 'completed' },
       expect.objectContaining({ phase: 'green', outcome: 'PASS' }),
       expect.objectContaining({ orgId: 'o1' }),
+      expect.objectContaining({ action: 'dispatch_review' }),
     );
     expect(res.statusCode).toBe(200);
     expect(res.body.note).toBe('already_resolved');
