@@ -530,6 +530,32 @@ describe('runVerifyClaim green phase', () => {
     expect(result.verification.matrix.suite.flaky).toBe(1);
   });
 
+  it('treats a persistent pre-existing full-suite failure as blocking when flake.blocking is true', async () => {
+    const greenWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-green-'));
+    setupRepo(greenWorktree);
+    const redRecord = buildRedRecord(greenWorktree);
+
+    const result = await runVerifyClaim(makeContext({
+      work: makeWork({
+        red_record: redRecord,
+        verification: { flake: { retries: 1, blocking: true } },
+      }),
+      execute: makeExecuteForGreen({
+        pinnedRuns: [{ results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'pass', message: '' }] }],
+        fullRuns: [
+          { results: [{ file: 'packages/app/tests/integration/broken.test.js', name: 'broken', status: 'assertion-fail', message: 'persistent' }] },
+          { results: [{ file: 'packages/app/tests/integration/broken.test.js', name: 'broken', status: 'assertion-fail', message: 'still broken' }] },
+        ],
+      }),
+      prepareWorktree: vi.fn().mockResolvedValue({ worktreePath: greenWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(greenWorktree, 'packages', 'app') })),
+      adapters: new Map([['vitest', makeAdapter()]]),
+    }));
+
+    expect(result.verification.outcome).toBe('FAIL');
+    expect(result.verification.matrix.warnings.some((w) => w.file === 'packages/app/tests/integration/broken.test.js')).toBe(true);
+  });
+
   it('downgrades orphan full-suite failures outside the manifest to warnings', async () => {
     const greenWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-green-'));
     setupRepo(greenWorktree);

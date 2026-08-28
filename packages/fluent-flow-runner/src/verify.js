@@ -1015,9 +1015,8 @@ async function runGreenPhase(context) {
 
     const requirementFailure = requirements.some((req) => req.status === 'FAIL');
     const suiteBlockingFailure = blockingFullFailures.length > 0;
-    const fullSuiteFlakeBlocking = Boolean(data.verification.flake?.blocking)
-      && hadPriorFullFailure
-      && finalFullRows.every((row) => row.status === 'pass');
+    const fullSuiteFlakeBlocking = Boolean(data.verification.flake?.blocking) &&
+      (hadPriorFullFailure || finalFullRows.some((row) => row.status !== 'pass'));
     const outcome = requirementFailure || suiteBlockingFailure || fullSuiteFlakeBlocking ? 'FAIL' : 'PASS';
 
     return {
