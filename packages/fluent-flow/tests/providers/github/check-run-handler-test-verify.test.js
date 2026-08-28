@@ -29,6 +29,17 @@ vi.mock('../../../src/engine/review-manager.js', () => ({
   claimDispatch: (...a) => mockClaimDispatch(...a),
 }));
 
+const mockOnClaimDispatched = vi.fn().mockResolvedValue(null);
+vi.mock('../../../src/engine/check-run.js', () => ({
+  onClaimDispatched: (...a) => mockOnClaimDispatched(...a),
+}));
+
+const mockGetProvider = vi.fn().mockReturnValue({ provider: 'github' });
+vi.mock('../../../src/providers/index.js', () => ({
+  getProvider: (...a) => mockGetProvider(...a),
+}));
+
+
 vi.mock('../../../src/engine/test-manager.js', () => ({
   handleTestFailure: vi.fn().mockResolvedValue(undefined),
   handleTestSuccess: vi.fn().mockResolvedValue(undefined),
@@ -144,6 +155,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockReviewFixRows = [];
   mockDbExecute.mockImplementation(async () => ({ rows: mockReviewFixRows }));
+  mockOnClaimDispatched.mockResolvedValue(null);
+  mockGetProvider.mockReturnValue({ provider: 'github' });
 });
 
 describe('handleCheckRun — green claim path (replaces test_verify)', () => {
@@ -252,6 +265,16 @@ describe('handleCheckRun — green claim path (replaces test_verify)', () => {
         },
       },
     });
+    expect(mockGetProvider).toHaveBeenCalledWith({ provider: 'github', installation_id: 1 });
+    expect(mockOnClaimDispatched).toHaveBeenCalledWith(
+      { provider: 'github' },
+      expect.objectContaining({
+        id: 99,
+        claim_type: 'verify',
+        head_sha: 'abc123',
+        installation_id: 1,
+      }),
+    );
     // Should NOT dispatch a review — early return
     expect(mockDispatchReview).not.toHaveBeenCalled();
   });

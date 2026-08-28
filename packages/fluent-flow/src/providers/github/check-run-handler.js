@@ -9,6 +9,8 @@ import { db, getVerificationResultByClaim } from '@fluent-flow/db';
 import { audit } from '../../db/client.js';
 import { resolveOrgId } from '../../config/loader.js';
 import { createClaimWithRetry, getClaimById } from '../../agents/claim-manager.js';
+import { onClaimDispatched } from '../../engine/check-run.js';
+import { getProvider } from '../index.js';
 import logger from '../../logger.js';
 
 const FLUENT_FLOW_APP_SLUGS = new Set(['fluent-flow', 'fluent-flow-ci[bot]']);
@@ -364,6 +366,22 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
     });
 
     if (greenClaim?.status === 'created') {
+      if (ctx?.installation_id) {
+        try {
+          const providerClient = getProvider({ provider: 'github', installation_id: ctx.installation_id });
+          await onClaimDispatched(providerClient, {
+            ...greenClaim.claim,
+            head_sha: checkRun.head_sha,
+            installation_id: ctx.installation_id,
+          });
+        } catch (err) {
+          // Safe to continue: the green verify claim exists and runners can
+          // execute it; only the GitHub check-run mirror failed.
+          logger.warn({ msg: 'Green verify check-run dispatch failed', repo: repoKey, prNumber: pr.number, error: err.message });
+        }
+      } else {
+        logger.warn({ msg: 'Green verify check-run dispatch skipped — no installation context', repo: repoKey, prNumber: pr.number });
+      }
       logger.info({ msg: 'Created green claim after review_fix + CI pass', repo: repoKey, prNumber: pr.number });
       // Early return: green claim will verify fixes, then auto-chain will trigger review
       return;
