@@ -1,6 +1,6 @@
 # Fluent Flow
 
-Loop engineering platform for autonomous development workflows. Fluent Flow lets developers define autonomous development loops — systems that observe, plan, act, verify, and iterate — without the developer manually prompting each step.
+Open-source, self-hostable control plane for agent-written pull requests. Today Fluent Flow orchestrates review and remediation through customer-controlled runners; its in-flight verification machine will add independent red-before-fix and green-after-fix evidence at the merge boundary.
 
 **Bring your own subscription.** Fluent Flow never holds your API keys — your runner invokes the model locally with whatever credentials it already has.
 
@@ -27,6 +27,14 @@ Push → CI completes → check_run.completed webhook → server
   → on failure, creates a pending fix claim → runner claims it → pushes a fix → loop continues
   → on claim expiry, auto-re-dispatches at attempt + 1 (cap at 10)
 ```
+
+The deterministic verification machine is in development. Its target failure path is:
+
+```text
+review FAIL → verify:red → fix → CI success → verify:green → re-review → merge or human escalation
+```
+
+The verifier will bind evidence to the reviewed commit, prove new tests fail before the fix, seal the verifier inputs, and rerun them without LLM judgment after the fix.
 
 **Proactive** — you start work from the dashboard:
 ```
@@ -91,9 +99,11 @@ docker compose up -d --build
 
 ## Documentation
 
-- [Roadmap](ROADMAP.md) — shipped, in-flight, known gaps
-- [Design specs](docs/specs/) — architecture and design decisions, including [Loop Engine v2](docs/specs/2026-06-10-loop-engineering-product-architecture.md)
-- [Implementation plans](docs/plans/) — step-by-step build plans, including the [Loop Engine v2 phased plan](docs/plans/2026-06-10-loop-engine-v2-phased-plan.md)
+- [Documentation index](docs/README.md) — product direction, architecture specifications, implementation plans, and project history
+- [Product positioning and competitive landscape](docs/product-positioning-and-competitive-landscape.md) — open-source/self-hosted offer, competitive boundaries, and roadmap implications
+- [Roadmap](ROADMAP.md) — shipped, in-flight, and known gaps
+- [Design specs](docs/specs/) — architecture and design decisions
+- [Implementation plans](docs/plans/) — step-by-step build plans
 - Per-package: [fluent-flow](packages/fluent-flow/README.md) · [runner](packages/fluent-flow-runner/README.md) · [dashboard](packages/dashboard/README.md) · [db](packages/db/README.md)
 
 ## License

@@ -98,24 +98,24 @@ Each entry: the gap, the impact, and the rough shape of the fix.
 
 - **Consolidate webhook routers.** `webhook.js` exists only to host `routeWebhookEvent` + legacy 410 stubs; `github-app-webhook.js` forwards to it. Merge into one module now that PAT-era paths are fully retired.
 
-## Loop Engine (v2 — in design)
+## Product direction
 
-**Spec:** `docs/specs/2026-06-10-loop-engineering-product-architecture.md`
+**Decision:** [Product positioning and competitive landscape](docs/product-positioning-and-competitive-landscape.md)
 
-The loop engineering paradigm (Boris Cherny, Peter Steinberger, Addy Osmani, June 2026) formalizes the shift from manual prompt orchestration to designing autonomous loops. Fluent Flow is already an orchestration system — this spec evolves it to a full loop engineering platform.
+Fluent Flow's target product is an open-source, self-hostable verification and merge-control product for agent-written code. The customer-facing category is **the merge gate for agent-written code**, not a general agent framework or workflow engine. Paid enterprise support covers operational assurance, deployment, security, and commercial terms while the core product remains inspectable and self-hostable.
 
-Key changes:
-- **Loop engine** — new module for loop lifecycle (definition, scheduling, execution, memory, verification, budget enforcement, reporting)
-- **Loop contract** — every loop defined by TRIGGER → SCOPE → ACTION → BUDGET → STOP → REPORT
-- **Sub-agent orchestration** — server loops dispatch multiple isolated claims per tick; runners provide per-claim worktree isolation while executing each claim
-- **Skills system** — named recipes (prompt + tool policy + verification) composable into loop actions
-- **Loop designer UI** — creation wizard, templates, real-time monitoring, history
-- **Server as loop orchestrator** — backend owns loop definitions, scheduling, dispatch, verification, budgets, stop conditions, and reporting
-- **Runner remains single-purpose executor** — poll → claim → prepare isolated worktree → spawn one harness task → report result; no loop state or sub-agent orchestration in the runner
-- **Anchor files** — VISION.md, CLAUDE.md, PROMPT.md, SPEC.md, PROGRESS.md as persistent loop memory
-- **Guardrails** — max iterations, no-progress detection, token/dollar budgets, verification gates
+Near-term product work must strengthen:
 
-Backward compatible — existing claims without `loop_instance_id` treated as standalone. No breaking changes.
+- deterministic red-before-fix and green-after-fix verification;
+- fail-closed merge policy with explicit Verified, Evidence incomplete, Monitored, Inconclusive, Tampered, and Failed states;
+- an exportable evidence record and coverage ledger;
+- policy-enforced reviewer, verifier, and fixer identity separation where required;
+- customer-controlled runners and a supported self-hosting path;
+- external reviewer and security-tool ingestion, with CodeRabbit as the first direct integration target;
+- broader language and framework coverage;
+- enterprise deployment, identity, audit, and support readiness.
+
+The earlier [Loop Engine v2 exploration](docs/specs/2026-06-10-loop-engineering-product-architecture.md) remains useful as internal orchestration research but is superseded as product positioning. Do not build a generic loop designer, arbitrary workflow marketplace, general-purpose agent SDK, or broad review-platform parity. Future automation should ship as curated change-assurance protocols that terminate in executable evidence or human escalation.
 
 ## Longer-horizon work
 
