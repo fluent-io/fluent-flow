@@ -31,7 +31,7 @@ Rolling view of what's shipped, what's in flight, and what's known-missing.
 
 ## In flight
 
-- None currently tracked in-repo. Next work should target the highest-risk known gaps below.
+- **Deterministic verification machine (unreleased)** — review failures gate through `verify:red → review_fix → CI success → verify:green → re-review/automerge`. Runner adapters author pinned red artifacts, green checks protect verifier tests/config from tampering, check-runs render the requirement matrix, and the dashboard shows the full chain.
 
 ## Known gaps / next candidates
 
@@ -39,8 +39,8 @@ Each entry: the gap, the impact, and the rough shape of the fix.
 
 ### Runner distribution
 
-- **`@fluent-flow/runner` not published to npm.** Runner package name is still `fluent-flow-runner` (unscoped). Victor owns the `fluent-flow` npm scope. End users running `npx @fluent-flow/runner@latest` (the dashboard's generated command) will hit 404 until publish lands.
-  - **Fix shape:** rename runner package to `@fluent-flow/runner`, add `publishConfig.access: public`, set up a release workflow (`release: { types: [published] }` + `NPM_TOKEN` secret), cut v0.1.0.
+- **`@fluent-flow/runner` not published to npm.** The package is now scoped and has public publish metadata, but `npm view @fluent-flow/runner` still returns 404. End users running the dashboard's generated `npx @fluent-flow/runner@latest` command will fail until the first publish lands.
+  - **Fix shape:** add or run the release workflow with `NPM_TOKEN`, publish v0.1.0, then verify `npm view @fluent-flow/runner version`.
 
 ### Reviewer reliability
 
@@ -75,9 +75,6 @@ Each entry: the gap, the impact, and the rough shape of the fix.
   - **Fix shape:** join to `provider_installations` in the outbound worker's token path (or in `getInstallationToken` itself — safer, kills the whole class of bug) and pass the external id.
 
 ### Review pipeline
-
-- **Verdict parsing is fragile for non-Claude-Code agents.** The review→review_fix auto-chain depends on the agent echoing a `<!-- reviewer-result -->` marker to stdout. Works for Claude Code but if the agent posts reviews via `gh api` directly (the new prompt), the marker goes to GitHub, not stdout. The auto-chain won't fire unless the agent also prints the marker.
-  - **Fix shape:** after the agent exits, fetch the latest review from GitHub API and parse the verdict from there.
 
 - **DismissStaleButton visible to non-superadmins.** The button renders for all logged-in users but the API returns 403. Should gate on `isSuperadmin`.
   - **Fix shape:** pass `isSuperadmin` from session to client component, conditionally render.

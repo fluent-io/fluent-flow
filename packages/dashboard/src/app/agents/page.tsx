@@ -1,14 +1,17 @@
 import { getServerSession } from 'next-auth';
-import { listAgents } from '@fluent-flow/db';
 import { authOptions, getOrgScope } from '@/lib/auth';
+import { loadDb } from '@/lib/runtime-db';
 import { AgentTable } from '@/components/agents/agent-table';
 import { NewAgentDialog } from '@/components/agents/new-agent-dialog';
+
+export const dynamic = 'force-dynamic';
 
 export default async function AgentsPage() {
   const session = await getServerSession(authOptions);
   if (!session) return null;
 
   const { orgIds } = getOrgScope(session);
+  const { listAgents } = await loadDb();
   const agents = await listAgents(orgIds);
 
   return (

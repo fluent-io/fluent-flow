@@ -1,12 +1,15 @@
 import { getServerSession } from 'next-auth';
-import { listPipelines } from '@fluent-flow/db';
+import type { PipelineListItem } from '@fluent-flow/db';
 import { authOptions, getOrgScope } from '@/lib/auth';
+import { loadDb } from '@/lib/runtime-db';
 import { PipelineCard } from '@/components/pipelines/pipeline-card';
 import { PipelineFilterToggle } from '@/components/pipelines/pipeline-filter-toggle';
 import { DismissStaleButton } from '@/components/pipelines/dismiss-stale-button';
 import { Suspense } from 'react';
 
-function PipelinesContent({ pipelines }: { pipelines: Awaited<ReturnType<typeof listPipelines>> }) {
+export const dynamic = 'force-dynamic';
+
+function PipelinesContent({ pipelines }: { pipelines: PipelineListItem[] }) {
   return (
     <div>
       <div className="mb-6 flex items-center justify-between">
@@ -43,6 +46,7 @@ export default async function PipelinesPage({ searchParams }: { searchParams: Pr
   const { orgIds } = getOrgScope(session);
   const params = await searchParams;
   const filter = (params.filter ?? 'active') as 'active' | 'archived' | 'all';
+  const { listPipelines } = await loadDb();
   const pipelines = await listPipelines(orgIds, filter);
 
   return <PipelinesContent pipelines={pipelines} />;

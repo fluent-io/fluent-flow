@@ -1,4 +1,6 @@
 import { pgTable, text, jsonb, timestamp, integer, varchar, index, uniqueIndex } from 'drizzle-orm/pg-core';
+import { agentClaims } from './agents.js';
+import { orgs } from './orgs.js';
 
 export const pauses = pgTable('pauses', {
   id: integer('id').primaryKey().generatedByDefaultAsIdentity(),
@@ -81,4 +83,24 @@ export const testFailures = pgTable('test_failures', {
   repoPrKey: uniqueIndex('test_failures_repo_pr_number_key').on(t.repo, t.prNumber),
   createdIdx: index('idx_test_failures_created').on(t.createdAt),
   repoPrIdx: index('idx_test_failures_repo_pr').on(t.repo, t.prNumber),
+}));
+
+export const verificationResults = pgTable('verification_results', {
+  id: integer('id').primaryKey().generatedByDefaultAsIdentity(),
+  orgId: text('org_id').notNull().references(() => orgs.id),
+  claimId: integer('claim_id').notNull().unique().references(() => agentClaims.id, { onDelete: 'cascade' }),
+  repo: text('repo').notNull(),
+  prNumber: integer('pr_number').notNull(),
+  phase: text('phase').notNull(),
+  framework: text('framework').notNull(),
+  outcome: text('outcome').notNull(),
+  matrix: jsonb('matrix'),
+  manifest: jsonb('manifest'),
+  testHashes: jsonb('test_hashes'),
+  artifactSha: text('artifact_sha'),
+  redBaseSha: text('red_base_sha'),
+  greenSha: text('green_sha'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (t) => ({
+  prIdx: index('idx_verification_results_pr').on(t.orgId, t.repo, t.prNumber),
 }));

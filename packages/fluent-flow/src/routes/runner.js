@@ -15,13 +15,18 @@ import {
 } from '../agents/claim-manager.js';
 import { dequeue, hasPending } from '../notifications/transports/long-poll.js';
 import { sql } from 'drizzle-orm';
-import { db } from '@fluent-flow/db';
+import { db, withTransaction } from '@fluent-flow/db';
+import { insertVerificationResult } from '@fluent-flow/db';
+import { applyVerifyTransition, applyVerifyTransitionWithEffects, handleVerifyRedispatchExhausted, VerificationResultSchema } from '../engine/verify-transitions.js';
 import { audit } from '../db/client.js';
 import logger from '../logger.js';
 import { getInstallationToken } from '../providers/github/token-cache.js';
 import { installationCtxForRepo } from '../config/loader.js';
+import { onClaimStarted, onClaimResolved, renderMatrixSummary } from '../engine/check-run.js';
+import { getProvider } from '../providers/index.js';
 
 const router = Router();
+const LEGACY_CLAIM_TYPES = ['review', 'review_fix', 'spec', 'build', 'test_verify', 'triage'];
 
 const PollSchema = z.object({
   session_id: z.number().int().positive(),
@@ -35,6 +40,7 @@ const ClaimResultSchema = z.object({
   verdict: z.enum(['pass', 'fail']).optional(), // review verdict for chaining
   claim_id: z.number().int().positive().optional(), // unambiguous claim identity
   failure_kind: z.enum(['transient', 'terminal']).optional(), // transient → server re-dispatches
+  verification: VerificationResultSchema.optional(), // verify-claim result (phase/outcome/matrix)
 });
 
 const HeartbeatSchema = z.object({
@@ -44,6 +50,25 @@ const HeartbeatSchema = z.object({
 
 /** How far a heartbeat extends a claimed claim's expiry. Env: CLAIM_TTL_MS. */
 const CLAIM_TTL_MS = Number(process.env.CLAIM_TTL_MS) || 15 * 60 * 1000;
+
+async function persistVerificationResult(claim, verification, orgId, executor) {
+  await insertVerificationResult({
+    orgId,
+    claimId: claim.id,
+    repo: claim.repo,
+    prNumber: claim.pr_number,
+    phase: verification.phase,
+    framework: verification.framework,
+    outcome: verification.outcome,
+    matrix: verification.matrix,
+    manifest: verification.manifest ?? null,
+    testHashes: verification.test_hashes ?? null,
+    artifactSha: verification.artifact_sha ?? null,
+    redBaseSha: verification.red_base_sha ?? null,
+    greenSha: verification.green_sha ?? null,
+  }, executor);
+}
+
 
 /**
  * Authenticate runner requests via agent token.
@@ -89,6 +114,26 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 export async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 60 * 1000) {
   const expiresAt = new Date(Date.now() + ttlMs);
+  let claimTypes = LEGACY_CLAIM_TYPES;
+  try {
+    const sessionRows = await db.execute(sql`
+      SELECT session_meta
+      FROM agent_sessions
+      WHERE org_id = ${orgId}
+        AND agent_id = ${agentId}
+        AND id = ${sessionId}
+      LIMIT 1
+    `);
+    const sessionMeta = sessionRows.rows?.[0]?.session_meta ?? sessionRows.rows?.[0]?.sessionMeta ?? {};
+    const supportedClaimTypes = Array.isArray(sessionMeta?.supported_claim_types)
+      ? sessionMeta.supported_claim_types.filter((type) => typeof type === 'string' && type.length > 0)
+      : null;
+    if (supportedClaimTypes?.length) {
+      claimTypes = supportedClaimTypes;
+    }
+  } catch (err) {
+    logger.warn({ msg: 'Failed to load runner capability metadata; using legacy claim types', orgId, agentId, sessionId, error: err.message });
+  }
   // UPDATE … WHERE id = (SELECT … FOR UPDATE SKIP LOCKED) — the canonical
   // atomic claim pattern. Kept as raw SQL because drizzle doesn't express
   // UPDATE-from-locked-subselect ergonomically.
@@ -105,6 +150,7 @@ export async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 6
         AND c.status = 'pending'
         AND c.session_id IS NULL
         AND (a.repos = '{}' OR c.repo = ANY(a.repos))
+        AND c.claim_type = ANY(${claimTypes})
       ORDER BY c.created_at ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED
@@ -120,25 +166,45 @@ export async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 6
 }
 
 /**
- * Resolve GitHub App installation token for a repo.
- * Returns the token string or undefined if resolution fails.
+ * Resolve GitHub App installation context for a repo.
+ * Returns null if resolution fails; check-run updates are best-effort side effects.
  */
-async function resolveGitHubToken(fullRepo) {
-  if (!fullRepo?.includes('/')) return undefined;
+async function resolveGitHubContext(fullRepo) {
+  if (!fullRepo?.includes('/')) return null;
   try {
     const [owner, repoName] = fullRepo.split('/');
     const ctx = await installationCtxForRepo(owner, repoName);
-    if (ctx?.installation_id) {
-      const token = await getInstallationToken(ctx.installation_id);
-      logger.info({ msg: 'Resolved GitHub App token for runner', repo: fullRepo, installationId: ctx.installation_id });
-      return token;
-    }
+    if (ctx?.installation_id) return ctx;
     logger.info({ msg: 'No installation context for repo', repo: fullRepo });
+  } catch (err) {
+    logger.warn({ msg: 'Could not resolve GitHub App installation context for runner', repo: fullRepo, error: err.message });
+  }
+  return null;
+}
+
+/**
+ * Resolve GitHub App installation token for a repo.
+ * Returns the token string or undefined if resolution fails.
+ */
+async function resolveGitHubToken(fullRepo, ctx) {
+  const installCtx = arguments.length >= 2 ? ctx : await resolveGitHubContext(fullRepo);
+  if (!installCtx?.installation_id) return undefined;
+  try {
+    const token = await getInstallationToken(installCtx.installation_id);
+    logger.info({ msg: 'Resolved GitHub App token for runner', repo: fullRepo, installationId: installCtx.installation_id });
+    return token;
   } catch (err) {
     logger.warn({ msg: 'Could not resolve GitHub App token for runner', repo: fullRepo, error: err.message });
   }
   return undefined;
 }
+
+function getGitHubProviderForContext(ctx) {
+  return ctx?.installation_id
+    ? getProvider({ provider: 'github', installation_id: ctx.installation_id })
+    : null;
+}
+
 
 /**
  * POST /api/runner/poll — long-poll for work.
@@ -191,7 +257,14 @@ export async function handlePoll(req, res, opts = {}) {
         ? JSON.parse(pendingClaim.payload)
         : pendingClaim.payload;
 
-      const githubToken = await resolveGitHubToken(pendingClaim.repo);
+      const githubCtx = await resolveGitHubContext(pendingClaim.repo);
+      const githubToken = await resolveGitHubToken(pendingClaim.repo, githubCtx);
+      try {
+        const providerClient = getGitHubProviderForContext(githubCtx);
+        if (providerClient) await onClaimStarted(providerClient, pendingClaim);
+      } catch (err) {
+        logger.warn({ msg: 'onClaimStarted failed but claim can continue', claimId: pendingClaim.id, error: err.message });
+      }
 
       respond({
         work: {
@@ -222,7 +295,14 @@ export async function handlePoll(req, res, opts = {}) {
       if (loopClaim) {
         await touchSession(org_id, agent_id, sessionId);
         const lp = typeof loopClaim.payload === 'string' ? JSON.parse(loopClaim.payload) : loopClaim.payload;
-        const githubToken = await resolveGitHubToken(loopClaim.repo);
+        const githubCtx = await resolveGitHubContext(loopClaim.repo);
+        const githubToken = await resolveGitHubToken(loopClaim.repo, githubCtx);
+        try {
+          const providerClient = getGitHubProviderForContext(githubCtx);
+          if (providerClient) await onClaimStarted(providerClient, loopClaim);
+        } catch (err) {
+          logger.warn({ msg: 'onClaimStarted failed but claim can continue', claimId: loopClaim.id, error: err.message });
+        }
         respond({
           work: {
             repo: loopClaim.repo,
@@ -262,16 +342,26 @@ export async function handleClaimResult(req, res) {
 
   try {
     const { org_id } = req.tokenInfo;
-    const { status, repo, pr_number, attempt, claim_id, failure_kind } = parsed.data;
+    const { status, repo, pr_number, attempt, claim_id, failure_kind, verification } = parsed.data;
 
     if (status === 'completed') {
+      let claim;
+      let alreadyResolved = null;
       // Resolve the claim by id when the runner sent one — the id path can
       // never collide two claim types sharing an attempt number. Fall back
       // to the natural key only for older runners.
-      let claim;
-      let alreadyResolved = null;
       if (claim_id != null) {
-        claim = await completeClaimById(org_id, claim_id);
+        if (verification) {
+          claim = await withTransaction(async (tx) => {
+            const completed = await completeClaimById(org_id, claim_id, tx);
+            if (completed?.claim_type === 'verify') {
+              await persistVerificationResult(completed, verification, org_id, tx);
+            }
+            return completed;
+          });
+        } else {
+          claim = await completeClaimById(org_id, claim_id);
+        }
         if (!claim) {
           const existing = await getClaimById(org_id, claim_id);
           if (existing?.status === 'completed' || existing?.status === 'failed') {
@@ -280,14 +370,39 @@ export async function handleClaimResult(req, res) {
         }
       } else {
         const existingClaim = await getClaimByAttempt(org_id, repo, pr_number, attempt);
-        claim = await completeClaim(org_id, repo, pr_number, attempt, existingClaim?.claim_type ?? 'review_fix');
+        if (verification) {
+          claim = await withTransaction(async (tx) => {
+            const completed = await completeClaim(org_id, repo, pr_number, attempt, existingClaim?.claim_type ?? 'review_fix', tx);
+            if (completed?.claim_type === 'verify') {
+              await persistVerificationResult(completed, verification, org_id, tx);
+            }
+            return completed;
+          });
+        } else {
+          claim = await completeClaim(org_id, repo, pr_number, attempt, existingClaim?.claim_type ?? 'review_fix');
+        }
         if (!claim && (existingClaim?.status === 'completed' || existingClaim?.status === 'failed')) {
           alreadyResolved = existingClaim;
         }
       }
       if (!claim) {
         if (alreadyResolved) {
-          // Claim may already be completed via webhook (pull_request_review) — treat as success
+          // Claim may already be completed via webhook (pull_request_review) — treat as success.
+          // Verify redeliveries re-derive the transition (spec §6.4) instead of returning early.
+          if (alreadyResolved.claim_type === 'verify' && verification) {
+            try {
+              const decision = await applyVerifyTransition(alreadyResolved, verification, { orgId: org_id });
+              if (decision.action !== 'create_claim' && decision.action !== 'dispatch_review') {
+                logger.info({ msg: 'Skipped terminal verify transition redelivery', claimId: alreadyResolved.id, action: decision.action });
+              } else {
+                await applyVerifyTransitionWithEffects(alreadyResolved, verification, { orgId: org_id }, decision);
+              }
+            } catch (err) {
+              // Safe to continue: re-derived transition failure — the first delivery's
+              // transition already ran; log for the replay sweep to pick up.
+              logger.error({ msg: 'Verify redelivery transition failed', repo, claimId: alreadyResolved.id, error: err.message });
+            }
+          }
           return res.json({ ok: true, claim_id: alreadyResolved.id, status: alreadyResolved.status, note: 'already_resolved' });
         }
         return res.status(404).json({ error: 'Claim not found or already resolved' });
@@ -297,7 +412,7 @@ export async function handleClaimResult(req, res) {
       // Verdict fallback: review agents that post via `gh api` put the marker
       // in the GitHub review body, not stdout. Fetch the latest review and
       // parse it before treating this result as verdict-less — otherwise the
-      // review→review_fix chain and auto-merge silently never fire.
+      // chain dispatch via handleReviewResult may not fire.
       let verdict = parsed.data.verdict;
       if (claimType === 'review' && !verdict && pr_number != null) {
         try {
@@ -309,31 +424,41 @@ export async function handleClaimResult(req, res) {
           }
         } catch (err) {
           // Safe to continue: the posted review is already on the PR; the
-          // auto-chain simply doesn't fire for this attempt.
+          // chain dispatch via handleReviewResult may not fire for this attempt.
           logger.warn({ msg: 'Verdict fallback failed', repo, prNumber: pr_number, error: err.message });
         }
       }
 
       audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status, claimType, verdict: verdict ?? null } });
 
-      // Auto-chain: review FAIL → review_fix
-      if (claimType === 'review' && verdict === 'fail') {
+      // Verify claims: result persistence happened in the same transaction as
+      // completion above, so a DB error cannot leave a completed verifier
+      // claim without the red/green record the replay sweep and dashboard use.
+      if (claimType === 'verify' && verification) {
         try {
-          await createClaim({
-            orgId: org_id,
-            repo,
-            prNumber: pr_number,
-            attempt: attempt + 1,
-            claimType: 'review_fix',
-            payload: { source_claim_id: claim.id, branch: claim.payload?.branch },
-          });
-          logger.info({ msg: 'Auto-created review_fix claim after FAIL review', repo, prNumber: pr_number, attempt: attempt + 1 });
+          await applyVerifyTransitionWithEffects(claim, verification, { orgId: org_id });
         } catch (err) {
-          // Safe to continue: review_fix claim creation failure — the
-          // original review result is already recorded. The agent can
-          // manually pick up the work via polling.
-          logger.error({ msg: 'Failed to create review_fix claim', error: err.message });
+          // Safe to continue: the claim is completed and the result persisted;
+          // a later redelivery re-derives this same transition (spec §6.4).
+          logger.error({ msg: 'Verify transition failed — redelivery re-derives', repo, claimId: claim.id, error: err.message });
         }
+        try {
+          const conclusion = verification.outcome === 'PASS'
+            ? 'success'
+            : verification.outcome === 'SKIPPED'
+              ? 'neutral'
+              : 'failure';
+          const providerClient = getGitHubProviderForContext(await resolveGitHubContext(claim.repo));
+          if (providerClient) {
+            await onClaimResolved(providerClient, claim, {
+              conclusion,
+              output: renderMatrixSummary(verification),
+            });
+          }
+        } catch (err) {
+          logger.warn({ msg: 'onClaimResolved failed but verify result is persisted', repo, claimId: claim.id, error: err.message });
+        }
+        return res.json({ ok: true, claim_id: claim.id });
       }
 
       // Auto-chain: spec → build (only if payload.auto_chain !== false)
@@ -410,6 +535,9 @@ export async function handleClaimResult(req, res) {
             newAttempt: redispatched ? claim.attempt + 1 : null,
             claimId: redispatched?.id ?? null,
           });
+          if (!redispatched && claim.claim_type === 'verify') {
+            await handleVerifyRedispatchExhausted(claim, { orgId: org_id });
+          }
         } catch (err) {
           // Safe to continue: the failure is already durably recorded; a lost
           // re-dispatch leaves the pipeline paused for manual dispatch rather

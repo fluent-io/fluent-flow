@@ -34,11 +34,11 @@ Config-driven state transitions with requirement validation.
 Automated code review dispatch and retry tracking.
 
 - `dispatchReview({ owner, repo, prNumber, ref, attempt, priorIssues, issueNumber })` — dismisses stale Fluent Flow reviews, then creates a `claim_type: 'review'` claim via `claim-manager.createClaim` (always as `pending`, no session pre-assignment). Stores `head_sha` on the claim for check-run creation on re-dispatch. An online runner claims it via `claimPendingWork()` (long-poll) and invokes the configured harness (`claude-code` / `aider` / …) with a prompt that tells it to post a PR review comment terminated by `<!-- reviewer-result: {…} -->`. Skips dispatch if the issue is paused. Called by the check-run handler after CI passes (not on PR open). No GitHub Actions workflow is triggered — review runs on the user's runner. Returns `{ claimed: boolean, claimId?: number, reason?: string }`.
-- `handleReviewResult({ ..., result, agentId })` — PASS: enable auto-merge, complete active claim. FAIL: increment retry, create a `pending` claim (no session pre-assignment), notify agent with rich issue details and optional `on_failure` model/thinking config. FAIL at max retries: escalate (add `needs-human` label, record pause, reset counter). Claims are created before notification so the long-poll push can hint the runner, but runners always fall through to `claimPendingWork()` if the push was lost.
+- `handleReviewResult({ ..., result, agentId })` — PASS: enable auto-merge, complete active claim. FAIL: increment retry, create `verify:red` when verification is enabled, otherwise create `review_fix`. Max retries escalate to human review (`needs-human` label, pause record, retry reset). Claims are created before notification so the long-poll push can hint the runner, but runners always fall through to `claimPendingWork()` if the push was lost.
 - `getRetryRecord(repo, prNumber)` — query `review_retries` table
 - `resetRetries(repo, prNumber)` — zero out counter and clear issues. Called after escalation and unconditionally on PR close to prevent stale retry records.
 
-**Review result flow:** GitHub Actions posts review with `<!-- reviewer-result: {...} -->` → webhook parses → `handleReviewResult` → agent notified or PR auto-merged.
+**Review result flow:** runner posts a review with `<!-- reviewer-result: {...} -->` → webhook or runner fallback parses the verdict → `handleReviewResult` → verify/red-fix-green chain or auto-merge.
 
 ### pause-manager.js
 

@@ -2,6 +2,10 @@ import type { PipelineDetailClaim } from '@fluent-flow/db';
 import { getStageConfig, formatDuration, statusIcons } from './pipeline-stage';
 import { cn } from '@/lib/utils';
 
+type TimelineClaim = PipelineDetailClaim & {
+  verification_result?: { phase?: string | null } | null;
+};
+
 const nodeStyles: Record<string, string> = {
   completed: 'border-green-500 bg-green-950 text-green-400',
   claimed: 'border-amber-500 bg-amber-950 text-amber-400',
@@ -30,7 +34,7 @@ function formatDate(date: Date | string | null): string {
   return new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-export function PipelineTimeline({ claims }: { claims: PipelineDetailClaim[] }) {
+export function PipelineTimeline({ claims }: { claims: TimelineClaim[] }) {
   if (claims.length === 0) {
     return <p className="py-8 text-center text-sm text-muted-foreground">No pipeline stages found</p>;
   }
@@ -38,7 +42,12 @@ export function PipelineTimeline({ claims }: { claims: PipelineDetailClaim[] }) 
   return (
     <div className="flex flex-col">
       {claims.map((claim, i) => {
-        const config = getStageConfig(claim.claim_type);
+        const payload = typeof claim.payload === 'object' && claim.payload !== null && !Array.isArray(claim.payload)
+          ? claim.payload as { phase?: unknown }
+          : {};
+        const resultPhase = claim.verification_result?.phase;
+        const phase = typeof resultPhase === 'string' ? resultPhase : typeof payload.phase === 'string' ? payload.phase : null;
+        const config = getStageConfig(claim.claim_type, phase);
         const icon = statusIcons[claim.status] ?? '\u2014';
         const nodeStyle = nodeStyles[claim.status] ?? 'border-border bg-secondary text-muted-foreground';
         const lineStyle = lineStyles[claim.status] ?? 'bg-border';

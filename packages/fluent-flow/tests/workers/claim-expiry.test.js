@@ -10,9 +10,15 @@ vi.mock('../../src/agents/claim-manager.js', () => ({
   redispatchClaim: vi.fn(),
 }));
 
+vi.mock('../../src/engine/verify-transitions.js', () => ({
+  sweepStrandedVerifyClaims: vi.fn(),
+  handleVerifyRedispatchExhausted: vi.fn(),
+}));
+
 import logger from '../../src/logger.js';
 import { expireClaims, redispatchClaim } from '../../src/agents/claim-manager.js';
 import { expireClaimsTick } from '../../src/workers/claim-expiry.js';
+import { handleVerifyRedispatchExhausted } from '../../src/engine/verify-transitions.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -75,5 +81,24 @@ describe('expireClaimsTick', () => {
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ msg: expect.stringContaining('Failed to re-dispatch expired claim') }),
     );
+  });
+
+  it('handles exhausted verify expirations instead of warning-only dead ends', async () => {
+    const claim = {
+      id: 'c1',
+      org_id: 'o1',
+      repo: 'o/r',
+      pr_number: 1,
+      attempt: 10,
+      claim_type: 'verify',
+      payload: { phase: 'red', branch: 'fix/x' },
+      head_sha: 'abc123',
+    };
+    expireClaims.mockResolvedValueOnce([claim]);
+    redispatchClaim.mockResolvedValueOnce(null);
+
+    await expireClaimsTick();
+
+    expect(handleVerifyRedispatchExhausted).toHaveBeenCalledWith(claim, { orgId: 'o1' });
   });
 });

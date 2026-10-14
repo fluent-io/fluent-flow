@@ -18,7 +18,45 @@ vi.mock('../../src/agents/claim-manager.js', () => ({
   getClaimByAttempt: vi.fn(),
   createClaim: vi.fn(),
   redispatchClaim: vi.fn(),
+  nextChainAttempt: vi.fn(),
+  countCompletedFixIterations: vi.fn(),
+  createClaimWithRetry: vi.fn(),
 }));
+
+vi.mock('../../src/engine/verify-transitions.js', async () => {
+  const actual = await vi.importActual('../../src/engine/verify-transitions.js');
+  return {
+    ...actual,
+    handleVerifyRedispatchExhausted: vi.fn(),
+  };
+});
+const mockAddLabel = vi.fn().mockResolvedValue(undefined);
+const mockPostComment = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../src/providers/github/rest.js', () => ({
+  addLabel: (...a) => mockAddLabel(...a),
+  postComment: (...a) => mockPostComment(...a),
+}));
+
+const mockNotifyDispatch = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../src/notifications/dispatcher.js', () => ({
+  dispatch: (...a) => mockNotifyDispatch(...a),
+}));
+
+vi.mock('../../src/config/loader.js', () => ({
+  resolveConfig: vi.fn().mockResolvedValue({ default_agent: 'agent-1' }),
+  installationCtxForRepo: vi.fn().mockResolvedValue({ installation_id: 456 }),
+}));
+
+const mockDbExecute = vi.fn().mockResolvedValue({ rows: [] });
+vi.mock('@fluent-flow/db', async () => {
+  const actual = await vi.importActual('@fluent-flow/db');
+  return {
+    ...actual,
+    db: { execute: (...a) => mockDbExecute(...a), ...(actual.db ?? {}) },
+    withTransaction: async (fn) => fn(null),
+    insertVerificationResult: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 import {
   completeClaimById,
@@ -29,6 +67,7 @@ import {
   createClaim,
   redispatchClaim,
 } from '../../src/agents/claim-manager.js';
+import { handleVerifyRedispatchExhausted } from '../../src/engine/verify-transitions.js';
 import { handleClaimResult } from '../../src/routes/runner.js';
 
 function makeRes() {
@@ -75,9 +114,8 @@ describe('handleClaimResult — claim_id path', () => {
     expect(res.body.claim_id).toBe(7);
   });
 
-  it('completed review with FAIL verdict still auto-chains review_fix at attempt+1', async () => {
+  it('completed review with FAIL verdict does NOT auto-chain review_fix (handleReviewResult is the sole coordinator)', async () => {
     completeClaimById.mockResolvedValueOnce({ ...CLAIM_ROW, status: 'completed' });
-    createClaim.mockResolvedValueOnce({ id: 8 });
     const res = makeRes();
 
     await handleClaimResult(
@@ -85,11 +123,9 @@ describe('handleClaimResult — claim_id path', () => {
       res,
     );
 
-    expect(createClaim).toHaveBeenCalledWith(expect.objectContaining({
-      claimType: 'review_fix',
-      attempt: 3,
-      prNumber: 5,
-    }));
+    expect(createClaim).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(200);
+    expect(res.body.claim_id).toBe(7);
   });
 
   it('already-resolved claim by id returns 200 already_resolved', async () => {
@@ -123,6 +159,28 @@ describe('handleClaimResult — claim_id path', () => {
     expect(res.body.status).toBe('failed');
   });
 
+  it('turns exhausted transient verify failures into an ungated review_fix transition', async () => {
+    const verifyClaim = {
+      ...CLAIM_ROW,
+      attempt: 10,
+      claim_type: 'verify',
+      payload: { phase: 'red', branch: 'fix/x', verification: { skip_policy: 'allow_ungated' } },
+      status: 'failed',
+    };
+    failClaimById.mockResolvedValueOnce(verifyClaim);
+    redispatchClaim.mockResolvedValueOnce(null);
+    const res = makeRes();
+
+    await handleClaimResult(
+      REQ({ status: 'failed', repo: 'o/r', pr_number: 5, attempt: 10, claim_id: 7, failure_kind: 'transient' }),
+      res,
+    );
+
+    expect(redispatchClaim).toHaveBeenCalledWith(expect.objectContaining({ id: 7, claim_type: 'verify' }));
+    expect(handleVerifyRedispatchExhausted).toHaveBeenCalledWith(verifyClaim, { orgId: 'o1' });
+    expect(res.statusCode).toBe(200);
+  });
+
   it('terminal failure (default) does NOT re-dispatch', async () => {
     failClaimById.mockResolvedValueOnce({ ...CLAIM_ROW, status: 'failed' });
     const res = makeRes();
@@ -148,5 +206,38 @@ describe('handleClaimResult — claim_id path', () => {
     expect(failClaim).toHaveBeenCalledWith('o1', 'o/r', 5, 2, 'review_fix');
     expect(failClaimById).not.toHaveBeenCalled();
     expect(redispatchClaim).toHaveBeenCalled();
+  });
+});
+
+describe('handleClaimResult — verify redelivery', () => {
+  it('terminal verify result re-delivery returns already_resolved without label/comment/notify side effects', async () => {
+    completeClaimById.mockResolvedValueOnce(null);
+    getClaimById.mockResolvedValueOnce({
+      ...CLAIM_ROW,
+      claim_type: 'verify',
+      payload: { phase: 'green' },
+      status: 'completed',
+    });
+    const res = makeRes();
+
+    await handleClaimResult(
+      REQ({
+        status: 'completed',
+        repo: 'o/r',
+        pr_number: 5,
+        attempt: 2,
+        claim_id: 7,
+        verification: { phase: 'green', framework: 'vitest', outcome: 'TAMPERED', matrix: null },
+      }),
+      res,
+    );
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body.note).toBe('already_resolved');
+    // TAMPERED is terminal (needs_human + PR comment) — the first delivery already
+    // posted them; redelivery must not repeat terminal side effects.
+    expect(mockAddLabel).not.toHaveBeenCalled();
+    expect(mockPostComment).not.toHaveBeenCalled();
+    expect(mockNotifyDispatch).not.toHaveBeenCalled();
   });
 });

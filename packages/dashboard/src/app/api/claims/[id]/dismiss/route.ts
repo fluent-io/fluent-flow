@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
-import { query, dismissClaim } from '@fluent-flow/db';
 import { authOptions, getOrgScope } from '@/lib/auth';
+import { loadDb } from '@/lib/runtime-db';
+
+export const dynamic = 'force-dynamic';
 
 type RouteContext = {
   params: Promise<{ id: string }>;
@@ -20,6 +22,7 @@ export async function POST(_request: Request, { params }: RouteContext) {
   }
 
   const { orgIds, isSuperadmin } = getOrgScope(session);
+  const { query, dismissClaim } = await loadDb();
 
   // Verify the claim exists and is within the user's org scope
   if (!isSuperadmin) {

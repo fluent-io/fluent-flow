@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
-import { createClaim, query } from '@fluent-flow/db';
 import { authOptions, getOrgScope } from '@/lib/auth';
 import { buildSpecWorkflowPayload, START_WORKFLOW_CLAIM_TYPE } from './claim-request';
+import { loadDb } from '@/lib/runtime-db';
+
+export const dynamic = 'force-dynamic';
 
 type RouteContext = {
   params: Promise<{ repoId: string }>;
@@ -16,6 +18,7 @@ export async function POST(req: Request, { params }: RouteContext) {
 
   const { repoId } = await params;
   const { orgIds, isSuperadmin } = getOrgScope(session);
+  const { createClaim, query } = await loadDb();
 
   if (!isSuperadmin) {
     const repoCheck = await query(

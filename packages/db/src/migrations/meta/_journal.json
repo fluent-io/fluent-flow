@@ -71,6 +71,27 @@
       "when": 1777766400000,
       "tag": "0009_agent_claims_unique_include_claim_type",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1777852800000,
+      "tag": "0010_verification_results",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1777939200000,
+      "tag": "0011_verification_results_manifest",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1787925254500,
+      "tag": "0012_agent_claims_verify_green_active_unique",
+      "breakpoints": true
     }
   ]
 }

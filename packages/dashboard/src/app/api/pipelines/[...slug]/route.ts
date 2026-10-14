@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
-import { getPipelineDetail } from '@fluent-flow/db';
 import { authOptions, getOrgScope } from '@/lib/auth';
+import { loadDb } from '@/lib/runtime-db';
+
+export const dynamic = 'force-dynamic';
 
 export async function GET(
   _request: Request,
@@ -28,6 +30,7 @@ export async function GET(
   }
 
   const { orgIds } = getOrgScope(session);
+  const { getPipelineDetail } = await loadDb();
   const claims = await getPipelineDetail(orgIds, `${owner}/${repo}`, prNumber);
   return NextResponse.json(claims);
 }

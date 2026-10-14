@@ -10,6 +10,11 @@ vi.mock('../../src/worktree.js', () => ({
   prepareWorktree: (...args) => mockPrepareWorktree(...args),
 }));
 
+const mockRunVerifyClaim = vi.fn();
+vi.mock('../../src/verify.js', () => ({
+  runVerifyClaim: (...args) => mockRunVerifyClaim(...args),
+}));
+
 vi.mock('../../src/health.js', () => ({
   // Inline implementations (not mockResolvedValue) so vi.resetAllMocks in
   // per-describe beforeEach hooks restores these healthy defaults.
@@ -68,6 +73,7 @@ function hangingProcess() {
 describe('runner', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockRunVerifyClaim.mockReset();
   });
 
   describe('createRunner()', () => {
@@ -95,7 +101,30 @@ describe('runner', () => {
       await new Promise((r) => setTimeout(r, 50));
       runner.shutdown();
       await startPromise;
-      expect(client.register).toHaveBeenCalledWith({ hostname: 'test' });
+      expect(client.register).toHaveBeenCalledWith({
+        hostname: 'test',
+        supported_claim_types: ['spec', 'build', 'review', 'review_fix', 'test_verify', 'verify'],
+      });
+    });
+
+    it('preserves explicit supported claim types when registering a constrained runner', async () => {
+      const client = makeClient();
+      const runner = createRunner({
+        client,
+        log: makeLogger(),
+        resolveCommand: vi.fn(),
+        meta: { hostname: 'test', supported_claim_types: ['review', 'review_fix'] },
+      });
+
+      const startPromise = runner.start();
+      await new Promise((r) => setTimeout(r, 50));
+      runner.shutdown();
+      await startPromise;
+
+      expect(client.register).toHaveBeenCalledWith({
+        hostname: 'test',
+        supported_claim_types: ['review', 'review_fix'],
+      });
     });
 
     it('polls after registration', async () => {
@@ -633,6 +662,113 @@ describe('runner', () => {
       const promptArg = mockResolveCommand.mock.calls[0][0].prompt;
       expect(promptArg).toContain('Fix the bug');
       expect(promptArg).toContain('fix agent');
+    });
+
+    it('routes verify claims through runVerifyClaim and reports verification results', async () => {
+      const work = {
+        event: 'claim_created',
+        claim_id: 55,
+        claim_type: 'verify',
+        repo: 'org/repo',
+        prNumber: 11,
+        attempt: 2,
+        head_sha: 'b'.repeat(40),
+        phase: 'red',
+        red_base_sha: 'a'.repeat(40),
+        verification: { timeouts_min: { red: 15, green: 30 } },
+        agentType: 'claude-code',
+      };
+
+      let pollCount = 0;
+      const client = makeClient({
+        poll: vi.fn().mockImplementation(async () => {
+          pollCount++;
+          return pollCount === 1 ? work : null;
+        }),
+      });
+
+      mockRunVerifyClaim.mockResolvedValueOnce({
+        status: 'completed',
+        verification: {
+          phase: 'red',
+          framework: 'vitest',
+          outcome: 'PASS',
+          matrix: { requirements: [], suite: { total: 0, passed: 0, failed: 0, flaky: 0, skipped: 0 }, schema_version: 1 },
+        },
+      });
+
+      const runner = createRunner({
+        client,
+        log: makeLogger(),
+        resolveCommand: vi.fn(),
+        cwd: '/repo',
+      });
+
+      const startPromise = runner.start();
+      await new Promise((r) => setTimeout(r, 80));
+      runner.shutdown();
+      await startPromise;
+
+      expect(mockRunVerifyClaim).toHaveBeenCalledWith(expect.objectContaining({
+        work,
+        client,
+        sessionId: 1,
+        cwd: '/repo',
+        resolveCommand: expect.any(Function),
+        execute: expect.any(Function),
+      }));
+      expect(client.reportClaim).toHaveBeenCalledWith(expect.objectContaining({
+        claim_id: 55,
+        status: 'completed',
+        verification: {
+          phase: 'red',
+          framework: 'vitest',
+          outcome: 'PASS',
+          matrix: { requirements: [], suite: { total: 0, passed: 0, failed: 0, flaky: 0, skipped: 0 }, schema_version: 1 },
+        },
+      }));
+      expect(mockPrepareWorktree).not.toHaveBeenCalled();
+    });
+
+    it('reports unknown claim types as terminal failed claims', async () => {
+      const work = {
+        event: 'claim_created',
+        claim_id: 73,
+        claim_type: 'mystery',
+        repo: 'org/repo',
+        prNumber: 9,
+        attempt: 4,
+        agentType: 'claude-code',
+      };
+
+      let pollCount = 0;
+      const client = makeClient({
+        poll: vi.fn().mockImplementation(async () => {
+          pollCount++;
+          return pollCount === 1 ? work : null;
+        }),
+      });
+
+      const runner = createRunner({
+        client,
+        log: makeLogger(),
+        resolveCommand: vi.fn(),
+      });
+
+      const startPromise = runner.start();
+      await new Promise((r) => setTimeout(r, 80));
+      runner.shutdown();
+      await startPromise;
+
+      expect(mockRunVerifyClaim).not.toHaveBeenCalled();
+      expect(client.reportClaim).toHaveBeenCalledWith({
+        status: 'failed',
+        repo: 'org/repo',
+        pr_number: 9,
+        attempt: 4,
+        claim_id: 73,
+        failure_kind: 'terminal',
+      });
     });
   });
 

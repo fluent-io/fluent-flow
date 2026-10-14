@@ -3,8 +3,8 @@ import { resolvePrompt, CLAIM_TYPES } from '../../src/prompts.js';
 
 describe('prompts', () => {
   describe('CLAIM_TYPES', () => {
-    it('includes review alongside spec, build, review_fix, test_verify', () => {
-      expect(CLAIM_TYPES).toEqual(['spec', 'build', 'review', 'review_fix', 'test_verify']);
+    it('includes verify alongside spec, build, review, review_fix, test_verify', () => {
+      expect(CLAIM_TYPES).toEqual(['spec', 'build', 'review', 'review_fix', 'test_verify', 'verify']);
     });
   });
 
@@ -43,6 +43,36 @@ describe('prompts', () => {
       expect(prompt).toContain('test');
     });
 
+    it('verify template includes the red authoring contract', () => {
+      const prompt = resolvePrompt({
+        claimType: 'verify',
+        work: {
+          ...baseWork,
+          issue_number: 7,
+          pr_body: 'Fix the login bug',
+          payload: {
+            phase: 'red',
+            findings: [
+              { id: 'F-1', severity: 'high', blocking: true, title: 'Login fails', body: 'Broken flow' },
+            ],
+            verification: {
+              framework: 'auto',
+              authoring: { max_requirements: 3 },
+            },
+          },
+        },
+      });
+      expect(prompt).toContain('DO NOT read any fix — author against the current (broken) state only.');
+      expect(prompt).toContain('"id": "F-1"');
+      expect(prompt).toContain('manifest.json');
+      expect(prompt).toContain('spec.md');
+      expect(prompt).toContain('repo-relative');
+      expect(prompt).toContain('EARS');
+      expect(prompt).toContain('issue #7');
+      expect(prompt).toContain('Fix the login bug');
+      expect(prompt).toContain('max_requirements');
+    });
+
     it('review template instructs the harness to post a review comment with the reviewer-result marker', () => {
       const prompt = resolvePrompt({
         claimType: 'review',
@@ -78,6 +108,26 @@ describe('prompts', () => {
       expect(prompt).toContain('fluent-io/fluent-flow');
       expect(prompt).toContain('42');
       expect(prompt).toContain('Fix the login bug');
+    });
+
+    it('review_fix template threads findings and pinned verifier immutability', () => {
+      const prompt = resolvePrompt({
+        claimType: 'review_fix',
+        work: {
+          ...baseWork,
+          findings: [{ id: 'F-1', file: 'src/auth.js', line: 12, issue: 'Missing authorization check' }],
+          immutability: ['test/verify/req-1.test.js', 'package-lock.json'],
+          source_claim_id: 41,
+        },
+      });
+      expect(prompt).toContain('"id": "F-1"');
+      expect(prompt).toContain('Missing authorization check');
+      expect(prompt).toContain('Source verify claim: 41');
+      expect(prompt).toContain('Pinned verifier files are immutable');
+      expect(prompt).toContain('test/verify/req-1.test.js');
+      expect(prompt).toContain('package-lock.json');
+      expect(prompt).toContain('Do not create, modify, rename, or delete tests or framework files');
+      expect(prompt).not.toContain('Add tests that verify the fixes.');
     });
   });
 });

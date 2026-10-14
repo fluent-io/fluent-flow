@@ -7,3 +7,8 @@ export { listPipelines, getPipelineDetail } from './pipelines.js';
 export type { PipelineListItem, PipelineStage, PipelineDetailClaim } from './pipelines.js';
 export { listRepos, createClaim } from './repos.js';
 export type { RepoListItem, CreatedClaim } from './repos.js';
+export {
+  insertVerificationResult,
+  getVerificationResultByClaim,
+  getVerificationResultsForPR
+} from './verification.js';

@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
-import { listPipelines, dismissStaleClaims, dismissPipelineClaims } from '@fluent-flow/db';
 import { authOptions, getOrgScope } from '@/lib/auth';
+import { loadDb } from '@/lib/runtime-db';
+
+export const dynamic = 'force-dynamic';
 
 export async function GET(request: Request) {
   const session = await getServerSession(authOptions);
@@ -12,6 +14,7 @@ export async function GET(request: Request) {
   const { orgIds } = getOrgScope(session);
   const { searchParams } = new URL(request.url);
   const filter = (searchParams.get('filter') ?? 'active') as 'active' | 'archived' | 'all';
+  const { listPipelines } = await loadDb();
   const pipelines = await listPipelines(orgIds, filter);
   return NextResponse.json(pipelines);
 }
@@ -23,6 +26,7 @@ export async function POST(request: Request) {
   }
 
   const { orgIds, isSuperadmin } = getOrgScope(session);
+  const { dismissStaleClaims, dismissPipelineClaims } = await loadDb();
 
   let body: unknown;
   try {

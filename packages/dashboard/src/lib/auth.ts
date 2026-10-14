@@ -1,6 +1,6 @@
 import type { NextAuthOptions, Session } from 'next-auth';
 import GitHubProvider from 'next-auth/providers/github';
-import { upsertUser, getUserOrgs } from '@fluent-flow/db';
+import { loadDb } from './runtime-db';
 import type { UserOrg } from '@fluent-flow/db';
 
 declare module 'next-auth' {
@@ -26,6 +26,7 @@ export const authOptions: NextAuthOptions = {
   callbacks: {
     async signIn({ user, profile }) {
       const ghProfile = profile as { id: number; login: string; avatar_url?: string };
+      const { upsertUser } = await loadDb();
       await upsertUser({
         github_id: ghProfile.id,
         login: ghProfile.login,
@@ -43,7 +44,7 @@ export const authOptions: NextAuthOptions = {
       return token;
     },
     async session({ session, token }) {
-      const { query } = await import('@fluent-flow/db');
+      const { query, getUserOrgs } = await loadDb();
       const userResult = await query(
         'SELECT id, is_superadmin FROM users WHERE github_id = $1',
         [token.github_id as number],

@@ -1,8 +1,9 @@
 import { spawn, execFile as execFileCb } from 'node:child_process';
 import { hostname, platform } from 'node:os';
 import { prepareWorktree } from './worktree.js';
-import { resolvePrompt } from './prompts.js';
+import { CLAIM_TYPES, resolvePrompt } from './prompts.js';
 import { checkRunnerHealth, sendAlert } from './health.js';
+import { runVerifyClaim } from './verify.js';
 
 /**
  * Build an isolated environment for shell commands.
@@ -70,7 +71,7 @@ export function parseHarnessResult(stdout) {
  * @param {object} opts.log — createLogger() instance
  * @param {Function} opts.resolveCommand — resolveCommand() from commands.js
  * @param {string} [opts.cwd] — working directory for agent commands
- * @param {object} [opts.meta] — session metadata override
+ * @param {object} [opts.meta] — session metadata override; `supported_claim_types` defaults to current CLAIM_TYPES
  * @param {number} [opts.maxPollFailures] — max consecutive poll failures before stopping
  * @param {number} [opts.heartbeatIntervalMs] — claim heartbeat interval (default env FLUENT_FLOW_HEARTBEAT_MS or 60s)
  * @param {number} [opts.agentTimeoutMs] — per-execution timeout (default env FLUENT_FLOW_AGENT_TIMEOUT_MS or 60min)
@@ -103,10 +104,14 @@ export function createRunner({
   const killEscalateMs = killEscalationMs ?? DEFAULT_KILL_ESCALATION_MS;
   const healthCheckIntervalMs = healthIntervalMs ?? numFromEnv('FLUENT_FLOW_HEALTH_INTERVAL_MS', 300_000);
 
-  const sessionMeta = meta ?? {
+  const baseSessionMeta = meta ?? {
     hostname: hostname(),
     os: platform(),
     ...(cwd && { cwd }),
+  };
+  const sessionMeta = {
+    ...baseSessionMeta,
+    supported_claim_types: Array.isArray(baseSessionMeta.supported_claim_types) ? baseSessionMeta.supported_claim_types : CLAIM_TYPES,
   };
 
   /** Resolve the server-assigned claim id from a work payload (any casing). */
@@ -343,10 +348,41 @@ export function createRunner({
       }
 
       let cmd;
+      const claimType = work.claim_type ?? work.claimType ?? 'review_fix';
+      if (!work.claim_type && !work.claimType) {
+        log.info('No claim_type in work payload, defaulting to review_fix');
+      }
+      if (claimType === 'verify') {
+        try {
+          const verifyResult = await runVerifyClaim({
+            work,
+            log,
+            execute,
+            client,
+            sessionId,
+            cwd: cwd ?? process.cwd(),
+            resolveCommand,
+          });
+          await reportClaimWithRetry(claimPayload(work, verifyResult.status, {
+            ...(verifyResult.verification && { verification: verifyResult.verification }),
+            ...(verifyResult.failure_kind && { failure_kind: verifyResult.failure_kind }),
+          }));
+        } catch (err) {
+          log.error('Verify claim failed unexpectedly', { error: err.message, claimId });
+          await reportClaimWithRetry(claimPayload(work, 'failed', { failure_kind: 'transient' })).catch((e) => {
+            log.error('Failed to report claim', { error: e.message });
+          });
+        }
+        return;
+      }
+
       try {
-        const claimType = work.claim_type ?? work.claimType ?? 'review_fix';
-        if (!work.claim_type && !work.claimType) {
-          log.info('No claim_type in work payload, defaulting to review_fix');
+        if (!CLAIM_TYPES.includes(claimType)) {
+          log.error('Unknown claim type', { claimType, claimId, repo, prNumber });
+          await reportClaimWithRetry(claimPayload(work, 'failed', { failure_kind: 'terminal' })).catch((e) => {
+            log.error('Failed to report claim', { error: e.message });
+          });
+          return;
         }
         const prompt = resolvePrompt({ claimType, work });
         if (!work.agentType) {
@@ -434,7 +470,6 @@ export function createRunner({
 
       // Parse review verdict from agent output for chaining
       let verdict;
-      const claimType = work.claim_type ?? work.claimType;
       if (status === 'completed' && claimType === 'review' && agentOutput) {
         try {
           // Claude Code returns JSON with a "result" field containing the text

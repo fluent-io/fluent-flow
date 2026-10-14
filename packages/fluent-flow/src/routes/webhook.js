@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { eq, isNull, and } from 'drizzle-orm';
+import { eq, isNull, and, ne, sql } from 'drizzle-orm';
 import { db, schema } from '@fluent-flow/db';
 import { handleCheckRun } from '../providers/github/check-run-handler.js';
 import { audit } from '../db/client.js';
@@ -9,6 +9,7 @@ import { recordPause, processResume, parseResumeCommand, getActivePause } from '
 import { handleReviewResult, resetRetries } from '../engine/review-manager.js';
 import { resolveAgentId, notifyPRMerged, resolveAgentForIssue } from '../notifications/dispatcher.js';
 import { getLinkedPR, getPR } from '../providers/github/rest.js';
+import { resolveOrgId } from '../config/loader.js';
 import logger from '../logger.js';
 
 const router = Router();
@@ -162,6 +163,7 @@ async function handlePullRequest(owner, repo, payload, config) {
   const { action, pull_request: pr } = payload;
   const prNumber = pr.number;
   const issueNumber = extractLinkedIssue(pr.body);
+  const repoKey = `${owner}/${repo}`;
 
   switch (action) {
     case 'opened':
@@ -192,7 +194,6 @@ async function handlePullRequest(owner, repo, payload, config) {
 
     case 'closed': {
       // Clean up review retries unconditionally — works even without linked issue
-      const repoKey = `${owner}/${repo}`;
       try {
         await resetRetries(repoKey, prNumber);
         audit('retries_cleared', { repo: repoKey, data: { prNumber, trigger: 'pr_closed' } });
@@ -256,7 +257,69 @@ async function handlePullRequest(owner, repo, payload, config) {
     }
 
     case 'synchronize': {
-      // Review dispatch moved to check_run.completed handler (CI-gated)
+      // Cancel pending verify green claims for this PR whose head_sha != new head
+      try {
+        const orgId = await resolveOrgId(owner, repo);
+        const newHeadSha = pr.head.sha;
+        const { agentClaims } = schema;
+
+        // Find pending verify claims with old head_sha
+        const staleClaims = await db
+          .select()
+          .from(agentClaims)
+          .where(
+            and(
+              eq(agentClaims.orgId, orgId),
+              eq(agentClaims.repo, repoKey),
+              eq(agentClaims.prNumber, prNumber),
+              eq(agentClaims.claimType, 'verify'),
+              eq(agentClaims.status, 'pending'),
+              sql`${agentClaims.payload}->>'phase' = 'green'`,
+              ne(agentClaims.headSha, newHeadSha),
+            ),
+          );
+
+        // Cancel each stale claim
+        for (const claim of staleClaims) {
+          await db
+            .update(agentClaims)
+            .set({
+              status: 'cancelled',
+              completedAt: sql`NOW()`,
+              archivedAt: sql`NOW()`,
+            })
+            .where(eq(agentClaims.id, claim.id));
+
+          audit('green_claim_cancelled', {
+            repo: repoKey,
+            data: {
+              claimId: claim.id,
+              prNumber,
+              oldHeadSha: claim.headSha,
+              newHeadSha,
+            },
+          });
+
+          logger.info({
+            msg: 'Cancelled pending green claim on synchronize',
+            repo: repoKey,
+            prNumber,
+            claimId: claim.id,
+            oldHeadSha: claim.headSha,
+            newHeadSha,
+          });
+        }
+      } catch (err) {
+        // Not safe to continue: pending green claims have no expiry before
+        // runners claim them, so failure here can run stale verification.
+        logger.error({
+          msg: 'Failed to cancel pending green claims on synchronize',
+          repo: repoKey,
+          prNumber,
+          error: err.message,
+        });
+        throw err;
+      }
       break;
     }
   }
@@ -291,6 +354,7 @@ async function handlePullRequestReview(owner, repo, payload, config) {
         agentId,
         headBranch: pr.head.ref,
         ctx: reviewCtx,
+        prBody: pr.body,
       });
     } catch (err) {
       logger.error({ msg: 'Failed to handle automated review result', error: err.message, prNumber });

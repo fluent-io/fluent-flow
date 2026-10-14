@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
-import { listAgents, createAgent, createToken, query } from '@fluent-flow/db';
 import { authOptions, getOrgScope, hasRole } from '@/lib/auth';
+import { loadDb } from '@/lib/runtime-db';
+
+export const dynamic = 'force-dynamic';
 
 export async function GET() {
   const session = await getServerSession(authOptions);
@@ -10,6 +12,7 @@ export async function GET() {
   }
 
   const { orgIds } = getOrgScope(session);
+  const { listAgents } = await loadDb();
   const agents = await listAgents(orgIds);
   return NextResponse.json(agents);
 }
@@ -88,6 +91,7 @@ export async function POST(req: Request) {
   if (!hasRole(session, org_id, 'admin')) {
     return NextResponse.json({ error: 'Forbidden: must be admin of the target org' }, { status: 403 });
   }
+  const { createAgent, createToken, query } = await loadDb();
 
   let agent;
   try {

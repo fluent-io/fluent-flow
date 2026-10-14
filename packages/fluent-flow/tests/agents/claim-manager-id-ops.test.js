@@ -49,7 +49,8 @@ vi.mock('@fluent-flow/db', async (importOriginal) => {
 });
 
 import { db } from '@fluent-flow/db';
-import { extendClaim, getClaimById, redispatchClaim, MAX_RETRY_ATTEMPTS } from '../../src/agents/claim-manager.js';
+import { setSessionStatus } from '../../src/agents/session-manager.js';
+import { extendClaim, getClaimById, completeClaimById, redispatchClaim, MAX_RETRY_ATTEMPTS } from '../../src/agents/claim-manager.js';
 
 const CLAIM = {
   id: 7,
@@ -112,6 +113,42 @@ describe('getClaimById', () => {
     expect(await getClaimById('o1', 404)).toBeNull();
   });
 });
+
+describe('completeClaimById', () => {
+  it('uses the provided transaction executor for claim completion and session release', async () => {
+    const txReturning = vi.fn().mockResolvedValue([{
+      id: 7,
+      orgId: 'o1',
+      repo: 'o/r',
+      prNumber: 5,
+      attempt: 2,
+      sessionId: 3,
+      claimType: 'verify',
+      status: 'completed',
+      payload: { phase: 'red' },
+      claimedAt: null,
+      completedAt: new Date('2026-01-01T00:00:00Z'),
+      archivedAt: null,
+      expiresAt: null,
+      createdAt: new Date('2026-01-01T00:00:00Z'),
+      checkRunExternalId: 321,
+      headSha: 'abc123',
+      sessionAgentId: 'agent-1',
+    }]);
+    const txWhere = vi.fn().mockReturnValue({ returning: txReturning });
+    const txSet = vi.fn().mockReturnValue({ where: txWhere });
+    const txUpdate = vi.fn().mockReturnValue({ set: txSet });
+    const tx = { update: txUpdate };
+
+    const res = await completeClaimById('o1', 7, tx);
+
+    expect(txUpdate).toHaveBeenCalled();
+    expect(db.update).not.toHaveBeenCalled();
+    expect(setSessionStatus).toHaveBeenCalledWith('o1', 'agent-1', 3, 'online', tx);
+    expect(res).toMatchObject({ id: 7, claim_type: 'verify', check_run_external_id: 321 });
+  });
+});
+
 describe('redispatchClaim', () => {
   it('inserts a follow-on claim at attempt + 1 preserving type, payload, and head_sha', async () => {
     const newClaim = { id: 99, attempt: 3 };

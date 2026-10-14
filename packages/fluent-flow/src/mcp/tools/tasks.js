@@ -9,12 +9,12 @@ import { audit } from '../../db/client.js';
 export function registerTaskTools(server) {
   server.tool(
     'trigger_task',
-    'Create a claim of a specific type (spec, build, review_fix, test_verify) for a PR',
+    'Create a claim of a specific type (spec, build, verify, review_fix, or historical test_verify) for a PR',
     {
       org_id: z.string().default('self-hosted').describe('Organization ID'),
       repo: z.string().describe('Repository in owner/repo format'),
       pr_number: z.number().int().positive(),
-      claim_type: z.enum(['spec', 'build', 'review_fix', 'test_verify']),
+      claim_type: z.enum(['spec', 'build', 'verify', 'review_fix', 'test_verify']),
       attempt: z.number().int().positive().optional().default(1),
       payload: z.record(z.any()).optional().describe('Optional payload (message, issues, context)'),
     },

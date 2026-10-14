@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
-import { listRepos } from '@fluent-flow/db';
 import { authOptions, getOrgScope } from '@/lib/auth';
+import { loadDb } from '@/lib/runtime-db';
+
+export const dynamic = 'force-dynamic';
 
 export async function GET() {
   const session = await getServerSession(authOptions);
@@ -10,6 +12,7 @@ export async function GET() {
   }
 
   const { orgIds, isSuperadmin } = getOrgScope(session);
+  const { listRepos } = await loadDb();
   const repos = await listRepos(orgIds, isSuperadmin);
   return NextResponse.json(repos);
 }

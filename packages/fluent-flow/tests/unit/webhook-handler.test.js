@@ -3,9 +3,49 @@ import {
   buildConfig, TEST_OWNER, TEST_REPO, TEST_REPO_KEY, makeRetryRecord,
 } from '../helpers/mocks.js';
 
+
+const dbMockState = vi.hoisted(() => ({
+  staleClaims: [],
+  selectWhereArgs: [],
+  updateSets: [],
+  updateWhereArgs: [],
+  failUpdate: false,
+}));
+
 vi.mock('../../src/logger.js', async () => {
   const { createMockLogger } = await import('../helpers/mock-logger.js');
   return { default: createMockLogger() };
+});
+vi.mock('@fluent-flow/db', async (importOriginal) => {
+  const real = await importOriginal();
+  return {
+    ...real,
+    db: {
+      select: vi.fn().mockImplementation(() => ({
+        from: vi.fn().mockImplementation(() => ({
+          where: vi.fn().mockImplementation((...args) => {
+            dbMockState.selectWhereArgs.push(args);
+            return Promise.resolve(dbMockState.staleClaims);
+          }),
+        })),
+      })),
+      update: vi.fn().mockImplementation(() => ({
+        set: vi.fn().mockImplementation((values) => {
+          dbMockState.updateSets.push(values);
+          return {
+            where: vi.fn().mockImplementation((...args) => {
+              dbMockState.updateWhereArgs.push(args);
+              if (dbMockState.failUpdate) {
+                return Promise.reject(new Error('update failed'));
+              }
+              return Promise.resolve([]);
+            }),
+          };
+        }),
+      })),
+    },
+    schema: real.schema,
+  };
 });
 vi.mock('../../src/db/client.js', () => ({ query: vi.fn(), audit: vi.fn() }));
 vi.mock('../../src/config/loader.js', () => ({
@@ -46,6 +86,7 @@ vi.mock('../../src/providers/github/webhook-verify.js', () => ({
   webhookSignatureMiddleware: (req, res, next) => next(),
 }));
 
+import { db } from '@fluent-flow/db';
 import { audit } from '../../src/db/client.js';
 import { resolveConfig } from '../../src/config/loader.js';
 import { dispatchReview, getRetryRecord, resetRetries } from '../../src/engine/review-manager.js';
@@ -56,8 +97,14 @@ import { handlePullRequest, handleIssues, handleIssueComment } from '../../src/r
 
 beforeEach(() => {
   vi.clearAllMocks();
+  dbMockState.staleClaims = [];
+  dbMockState.selectWhereArgs = [];
+  dbMockState.updateSets = [];
+  dbMockState.updateWhereArgs = [];
+  dbMockState.failUpdate = false;
   resolveConfig.mockResolvedValue(buildConfig());
 });
+
 
 describe('handlePullRequest — closed', () => {
   it('calls resetRetries unconditionally when PR is merged', async () => {
@@ -128,6 +175,33 @@ describe('handlePullRequest — closed', () => {
   });
 });
 
+function walkQueryTree(node, visit, depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 8) return;
+  visit(node);
+  if (Array.isArray(node.queryChunks)) {
+    for (const chunk of node.queryChunks) walkQueryTree(chunk, visit, depth + 1);
+  }
+  if (Array.isArray(node)) {
+    for (const item of node) walkQueryTree(item, visit, depth + 1);
+  }
+}
+
+function collectQueryText(whereArgs) {
+  const parts = [];
+  walkQueryTree(whereArgs, (node) => {
+    if (typeof node.name === 'string') parts.push(node.name);
+    if (typeof node.value === 'string' || typeof node.value === 'number') {
+      parts.push(String(node.value));
+    }
+    if (Array.isArray(node.value)) {
+      for (const value of node.value) {
+        if (typeof value === 'string' || typeof value === 'number') parts.push(String(value));
+      }
+    }
+  });
+  return parts.join(' ');
+}
+
 describe('handlePullRequest — synchronize (CI-gated)', () => {
   it('synchronize does not dispatch review or read retry record (CI-gated)', async () => {
     await handlePullRequest(TEST_OWNER, TEST_REPO, {
@@ -143,6 +217,75 @@ describe('handlePullRequest — synchronize (CI-gated)', () => {
 
     expect(dispatchReview).not.toHaveBeenCalled();
     expect(getRetryRecord).not.toHaveBeenCalled();
+  });
+
+  it('cancels stale pending green verify claims and filters the lookup to green phase only', async () => {
+    dbMockState.staleClaims = [
+      {
+        id: 21,
+        repo: TEST_REPO_KEY,
+        prNumber: 7,
+        claimType: 'verify',
+        status: 'pending',
+        payload: { phase: 'green' },
+        headSha: 'old-sha',
+      },
+    ];
+
+    await handlePullRequest(TEST_OWNER, TEST_REPO, {
+      action: 'synchronize',
+      pull_request: {
+        number: 7, body: 'Fixes #42',
+        base: { ref: 'main' }, head: { sha: 'def456' },
+        user: { login: 'bot' },
+      },
+      sender: { login: 'bot' },
+      repository: { full_name: TEST_REPO_KEY },
+    }, buildConfig());
+
+    expect(db.select).toHaveBeenCalledOnce();
+    const queryText = collectQueryText(dbMockState.selectWhereArgs);
+    expect(queryText).toContain('verify');
+    expect(queryText).toContain('pending');
+    expect(queryText).toContain('phase');
+    expect(queryText).toContain('green');
+    expect(db.update).toHaveBeenCalledOnce();
+    expect(dbMockState.updateSets[0]).toMatchObject({ status: 'cancelled' });
+    expect(audit).toHaveBeenCalledWith('green_claim_cancelled', {
+      repo: TEST_REPO_KEY,
+      data: expect.objectContaining({
+        claimId: 21,
+        prNumber: 7,
+        oldHeadSha: 'old-sha',
+        newHeadSha: 'def456',
+      }),
+    });
+  });
+
+  it('throws when stale green claim cancellation cannot be persisted', async () => {
+    dbMockState.staleClaims = [
+      {
+        id: 21,
+        repo: TEST_REPO_KEY,
+        prNumber: 7,
+        claimType: 'verify',
+        status: 'pending',
+        payload: { phase: 'green' },
+        headSha: 'old-sha',
+      },
+    ];
+    dbMockState.failUpdate = true;
+
+    await expect(handlePullRequest(TEST_OWNER, TEST_REPO, {
+      action: 'synchronize',
+      pull_request: {
+        number: 7, body: 'Fixes #42',
+        base: { ref: 'main' }, head: { sha: 'def456' },
+        user: { login: 'bot' },
+      },
+      sender: { login: 'bot' },
+      repository: { full_name: TEST_REPO_KEY },
+    }, buildConfig())).rejects.toThrow('update failed');
   });
 });
 

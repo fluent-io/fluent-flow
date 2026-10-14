@@ -18,6 +18,46 @@ function exec(cmd, args, opts = {}) {
   });
 }
 
+export class WorktreeRefUnavailableError extends Error {
+  constructor(ref, message) {
+    super(message);
+    this.name = 'WorktreeRefUnavailableError';
+    this.ref = ref;
+  }
+}
+
+function sanitizeWorktreeNamePart(value) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9._-]+$/.test(value) || value === '.' || value === '..') {
+    throw new Error(`Unsafe worktree name: ${value}`);
+  }
+  return value;
+}
+
+function isMissingRefError(err) {
+  const text = `${err?.message ?? ''} ${err?.stderr ?? ''}`.toLowerCase();
+  return (
+    text.includes('missing ref') ||
+    text.includes('couldn\'t find remote ref') ||
+    text.includes('could not find remote ref') ||
+    text.includes('unknown revision') ||
+    text.includes('no such ref') ||
+    text.includes('refspec') ||
+    text.includes('remote ref')
+  );
+}
+
+async function resolveFetchedRef(ref, baseDir) {
+  const { stdout } = await exec('git', ['rev-parse', '--verify', 'FETCH_HEAD^{commit}'], { cwd: baseDir });
+  return stdout.trim();
+}
+
+function refUnavailableError(ref, repo) {
+  return new WorktreeRefUnavailableError(
+    ref,
+    `Unable to resolve git ref "${ref}" after fetching origin for ${repo}`,
+  );
+}
+
 /**
  * Prepare a git worktree for a claim.
  * Clones the repo if not already cloned, fetches latest, creates a worktree on the PR branch.
@@ -26,15 +66,22 @@ function exec(cmd, args, opts = {}) {
  * @param {string} opts.workDir — base working directory (cwd or --cwd flag)
  * @param {string} opts.repo — "owner/repo"
  * @param {number} opts.prNumber
- * @param {number} opts.attempt
- * @param {string} opts.branch — PR branch name
+ * @param {number} [opts.attempt]
+ * @param {string} [opts.branch] — PR branch name
+ * @param {number|string} [opts.claimId]
+ * @param {string} [opts.name]
+ * @param {string} [opts.ref]
  * @returns {Promise<{ worktreePath: string, cleanup: () => Promise<void> }>}
  */
-export async function prepareWorktree({ workDir, repo, prNumber, attempt, branch }) {
-  const [owner, name] = repo.split('/');
-  const baseDir = join(workDir, '.fluent-flow', 'repos', owner, name);
-  const worktreeName = `pr-${prNumber}-attempt-${attempt}`;
+export async function prepareWorktree({ workDir, repo, prNumber, attempt, branch, claimId, name, ref }) {
+  const [owner, repoName] = repo.split('/');
+  const baseDir = join(workDir, '.fluent-flow', 'repos', owner, repoName);
+  const safeName = name == null ? null : sanitizeWorktreeNamePart(name);
+  const worktreeName = claimId != null
+    ? `pr-${prNumber}-claim-${claimId}${safeName ? `-${safeName}` : ''}`
+    : `pr-${prNumber}-attempt-${attempt}`;
   const worktreePath = join(baseDir, '.worktrees', worktreeName);
+  let checkoutRef = ref ?? (branch ? `origin/${branch}` : undefined);
 
   // 1. Clone if base repo doesn't exist
   if (!existsSync(join(baseDir, '.git'))) {
@@ -100,12 +147,41 @@ export async function prepareWorktree({ workDir, repo, prNumber, attempt, branch
     }
   }
 
-  // 2. Fetch latest
-  await exec('git', ['fetch', 'origin'], { cwd: baseDir });
+  // 2. Fetch latest or explicit ref
+  if (ref) {
+    try {
+      await exec('git', ['fetch', 'origin', ref], { cwd: baseDir });
+    } catch (explicitErr) {
+      if (!isMissingRefError(explicitErr)) {
+        throw explicitErr;
+      }
+      await exec('git', ['fetch', 'origin'], { cwd: baseDir });
+      try {
+        await exec('git', ['fetch', 'origin', ref], { cwd: baseDir });
+      } catch (retryErr) {
+        if (isMissingRefError(retryErr)) {
+          throw refUnavailableError(ref, repo);
+        }
+        throw retryErr;
+      }
+    }
+
+    try {
+      checkoutRef = await resolveFetchedRef(ref, baseDir);
+      if (!checkoutRef) throw refUnavailableError(ref, repo);
+    } catch {
+      throw refUnavailableError(ref, repo);
+    }
+  } else {
+    await exec('git', ['fetch', 'origin'], { cwd: baseDir });
+  }
 
   // 3. Create worktree
   mkdirSync(join(baseDir, '.worktrees'), { recursive: true });
-  await exec('git', ['worktree', 'add', worktreePath, `origin/${branch}`], { cwd: baseDir });
+  const worktreeArgs = ref
+    ? ['worktree', 'add', '--detach', worktreePath, checkoutRef]
+    : ['worktree', 'add', worktreePath, checkoutRef];
+  await exec('git', worktreeArgs, { cwd: baseDir });
 
   // 4. Return path and cleanup function
   return {

@@ -1,19 +1,22 @@
 import Link from 'next/link';
 import { getServerSession } from 'next-auth';
-import { getAgentDetail, getAgentSessions, getAgentClaims, getKeyInfo } from '@fluent-flow/db';
 import { authOptions, getOrgScope, hasRole } from '@/lib/auth';
+import { loadDb } from '@/lib/runtime-db';
 import { AgentDetailHeader } from '@/components/agents/agent-detail-header';
 import { SessionsTab } from '@/components/agents/sessions-tab';
 import { ClaimsTab } from '@/components/agents/claims-tab';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { notFound } from 'next/navigation';
 
+
+export const dynamic = 'force-dynamic';
 export default async function AgentDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await getServerSession(authOptions);
   if (!session) return null;
 
   const { id } = await params;
   const { orgIds } = getOrgScope(session);
+  const { getAgentDetail, getAgentSessions, getAgentClaims, getKeyInfo } = await loadDb();
   const agent = await getAgentDetail(orgIds, id);
 
   if (!agent) notFound();

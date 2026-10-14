@@ -1,6 +1,6 @@
 # fluent-flow-runner
 
-CLI runner for [Fluent Flow](../fluent-flow/README.md). Connects to a Fluent Flow server, picks up fix claims (work assignments created when a code review fails), spawns the configured AI coding agent, and reports results.
+CLI runner for [Fluent Flow](../fluent-flow/README.md). Connects to a Fluent Flow server, advertises the claim types it can execute, picks up `review`, `review_fix`, and `verify` claims, spawns the configured AI coding agent when human-authored work is needed, and reports deterministic results.
 
 ## Preferred: register via the dashboard
 
@@ -59,7 +59,7 @@ export MCP_AUTH_TOKEN=<your-server-token>
 Create an agent on the Fluent Flow server using the Admin API:
 
 ```bash
-curl -X POST http://flow.fluenthive.io/api/agents \
+curl -X POST https://flow.fluenthive.io/api/agents \
   -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -91,7 +91,7 @@ curl -X POST http://flow.fluenthive.io/api/agents \
 Minimal — uses the default `claude-code` command, all repos:
 
 ```bash
-curl -X POST http://flow.fluenthive.io/api/agents \
+curl -X POST https://flow.fluenthive.io/api/agents \
   -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -104,7 +104,7 @@ curl -X POST http://flow.fluenthive.io/api/agents \
 Scoped to specific repos:
 
 ```bash
-curl -X POST http://flow.fluenthive.io/api/agents \
+curl -X POST https://flow.fluenthive.io/api/agents \
   -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -118,7 +118,7 @@ curl -X POST http://flow.fluenthive.io/api/agents \
 Custom command template (e.g. wrapping codex with extra flags):
 
 ```bash
-curl -X POST http://flow.fluenthive.io/api/agents \
+curl -X POST https://flow.fluenthive.io/api/agents \
   -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -137,7 +137,7 @@ Alternatively, use the `create_agent` MCP tool if connected via MCP. See [MCP to
 ### 2. Generate a Token
 
 ```bash
-curl -X POST http://flow.fluenthive.io/api/agents/my-runner/tokens \
+curl -X POST https://flow.fluenthive.io/api/agents/my-runner/tokens \
   -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"label": "my-laptop"}'
@@ -170,7 +170,7 @@ npm link
 ```bash
 fluent-flow-runner \
   --token ff_<your-token> \
-  --server http://flow.fluenthive.io \
+  --server https://flow.fluenthive.io \
   --verbose
 ```
 
@@ -179,7 +179,7 @@ Or run directly without installing:
 ```bash
 node packages/fluent-flow-runner/bin/fluent-flow-runner.js \
   --token ff_<your-token> \
-  --server http://flow.fluenthive.io \
+  --server https://flow.fluenthive.io \
   --verbose
 ```
 
@@ -192,6 +192,22 @@ node packages/fluent-flow-runner/bin/fluent-flow-runner.js \
 | `--command` | No | Override the default agent command template |
 | `--cwd` | No | Working directory for spawned agent processes |
 | `--verbose` | No | Enable debug-level JSON logging to stdout |
+
+
+## Claim Types and Verification
+
+On registration, current runners advertise `supported_claim_types` so the server can keep legacy runners away from `verify` work. The default set is `spec`, `build`, `review`, `review_fix`, `test_verify`, and `verify`. `test_verify` remains for historical claims; new automated verification uses `verify`.
+
+`verify` has two phases:
+
+| Phase | Runner behavior |
+|-------|-----------------|
+| `red` | Check out the reviewed SHA in a claim-scoped worktree, detect the supported test framework, ask the configured agent to author only verifier artifacts, prove each pinned test fails against the broken tree, then push the verifier artifact commit with `[skip ci]`. |
+| `green` | Check out the fixed SHA in a separate claim-scoped worktree, verify pinned test/config hashes have not changed, rerun the pinned verifier tests, run the full suite, classify flakes according to repo policy, and report the requirement matrix. |
+
+Supported adapters are Vitest, Jest, node:test, and custom argv-based configs. The runner never executes commands from the authoring agent; executable commands come from adapters or repository config.
+
+Each `verify` result reports the outcome (`PASS`, `FAIL`, `TAMPERED`, or `SKIPPED`), framework, suite totals, finding→requirement→test matrix, pinned hashes, and artifact SHAs. The server persists that result, updates the `Fluent Flow — verify` check-run, and decides whether to create `review_fix`, create `verify:green`, re-review, auto-merge, or stop for human review.
 
 ## Environment Variables
 
@@ -223,28 +239,31 @@ sequenceDiagram
 
     GH->>FF: PR pushed / updated
     FF->>FF: Automated review
-    FF->>FF: Review fails → create claim
-
-    R->>FF: Poll for work
-    FF-->>R: Claim (fix prompt + PR details)
-    R->>A: Spawn agent with fix prompt
-    A->>GH: Push fix commit
-    A-->>R: Exit (success/failure)
-    R->>FF: Report result
-
-    FF->>FF: Re-review triggered
     alt Review passes
         FF->>GH: Auto-merge PR
-    else Review fails again
-        Note over FF,R: New claim created → runner picks it up
+    else Review fails
+        FF->>FF: Create verify:red claim
+        R->>FF: Poll for work
+        FF-->>R: verify:red at reviewed SHA
+        R->>A: Author verifier artifacts
+        R->>GH: Push verifier commit [skip ci]
+        R->>FF: Report red matrix + artifact hashes
+        FF->>FF: Create review_fix claim
+        R->>A: Apply fix on PR branch
+        A->>GH: Push fix commit
+        GH-->>FF: CI success
+        FF->>FF: Create verify:green claim
+        FF-->>R: verify:green at fixed SHA
+        R->>FF: Report green matrix
+        FF->>FF: Re-review triggered
     end
 ```
 
-1. **Register** — Connects to the server and registers an ephemeral session (5min TTL)
-2. **Poll** — Continuously checks the server for pending fix claims (~1s interval, extends session TTL on each poll)
-3. **Execute** — When a review fails and work is assigned, automatically spawns the agent (e.g. `claude-code`) with the fix prompt
-4. **Report** — After the agent finishes, reports the result (completed or failed) back to the server
-5. **Repeat** — Returns to polling for the next claim
+1. **Register** — Connects to the server, advertises supported claim types, and registers an ephemeral session (5min TTL).
+2. **Poll** — Continuously checks the server for pending claims (~1s interval, extends session TTL on each poll).
+3. **Execute review/fix work** — For `review` and `review_fix`, spawns the configured harness with a prompt and reports completion.
+4. **Execute verification work** — For `verify:red`, authors and pins red artifacts at the reviewed SHA. For `verify:green`, validates pinned hashes, runs pinned tests plus the full suite, and reports the matrix.
+5. **Repeat** — Returns to polling for the next claim.
 
 On shutdown (`Ctrl+C`), the runner reports any active claim as failed before exiting.
 

@@ -85,22 +85,57 @@ describe('listPipelines', () => {
 describe('getPipelineDetail', () => {
   beforeEach(() => { mockQuery.mockReset(); });
 
-  it('returns claims for a specific PR pipeline', async () => {
+  it('returns every claim attempt in order with verification results when present', async () => {
+    const redCreatedAt = new Date('2026-08-27T10:00:00.000Z');
+    const greenCreatedAt = new Date('2026-08-27T10:05:00.000Z');
+    const verificationResult = {
+      id: 7,
+      org_id: 'fluent-io',
+      claim_id: 2,
+      repo: 'fluent-io/fluent-flow',
+      pr_number: 28,
+      phase: 'green',
+      framework: 'vitest',
+      outcome: 'PASS',
+      matrix: { total: 2, passed: 2 },
+      manifest: { requirements: [{ requirement: { id: 'REQ-1' }, tests: ['test/verify/req-1.test.js'] }] },
+      test_hashes: { 'packages/db/tests/queries/pipelines.test.ts': 'abc123' },
+      artifact_sha: 'artifact-sha',
+      red_base_sha: 'red-base-sha',
+      green_sha: 'green-sha',
+      created_at: '2026-08-27T10:06:00.000Z',
+    };
     mockQuery.mockResolvedValueOnce({
       rows: [
         {
           id: 1, org_id: 'fluent-io', repo: 'fluent-io/fluent-flow', pr_number: 28,
           attempt: 1, session_id: 12, claim_type: 'spec', status: 'completed',
-          payload: {}, claimed_at: new Date(), completed_at: new Date(),
-          expires_at: null, created_at: new Date(), agent_id: 'ff-runner', session_meta: {},
+          payload: {}, claimed_at: redCreatedAt, completed_at: redCreatedAt,
+          expires_at: null, created_at: redCreatedAt, agent_id: 'ff-runner', session_meta: {},
+          verification_result: null,
+        },
+        {
+          id: 2, org_id: 'fluent-io', repo: 'fluent-io/fluent-flow', pr_number: 28,
+          attempt: 2, session_id: 13, claim_type: 'verify', status: 'completed',
+          payload: { phase: 'green' }, claimed_at: greenCreatedAt, completed_at: greenCreatedAt,
+          expires_at: null, created_at: greenCreatedAt, agent_id: 'ff-runner', session_meta: {},
+          verification_result: verificationResult,
         },
       ],
     });
 
     const result = await getPipelineDetail(['fluent-io'], 'fluent-io/fluent-flow', 28);
-    expect(result).toHaveLength(1);
-    expect(result[0].claim_type).toBe('spec');
-    expect(result[0].agent_id).toBe('ff-runner');
+    const sql = mockQuery.mock.calls[0][0] as string;
+
+    expect(result).toHaveLength(2);
+    expect(result.map((claim) => claim.attempt)).toEqual([1, 2]);
+    expect(result[0].verification_result).toBeNull();
+    expect(result[1].claim_type).toBe('verify');
+    expect(result[1].agent_id).toBe('ff-runner');
+    expect(result[1].verification_result).toEqual(verificationResult);
+    expect(sql).toContain('LEFT JOIN verification_results vr ON vr.claim_id = c.id');
+    expect(sql).not.toContain('MAX(c2.attempt)');
+    expect(sql).toContain('ORDER BY c.attempt ASC, c.created_at ASC');
   });
 
   it('returns claims for a null-pr pipeline (standalone)', async () => {
@@ -111,6 +146,7 @@ describe('getPipelineDetail', () => {
           attempt: 1, session_id: 12, claim_type: 'spec', status: 'pending',
           payload: { auto_chain: false }, claimed_at: null, completed_at: null,
           expires_at: null, created_at: new Date(), agent_id: 'ff-runner', session_meta: {},
+          verification_result: null,
         },
       ],
     });
@@ -119,6 +155,7 @@ describe('getPipelineDetail', () => {
     expect(result).toHaveLength(1);
     expect(result[0].claim_type).toBe('spec');
     expect(result[0].pr_number).toBeNull();
+    expect(result[0].verification_result).toBeNull();
   });
 
   it('returns empty array when pipeline not found', async () => {
