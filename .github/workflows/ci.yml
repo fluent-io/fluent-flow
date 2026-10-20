@@ -42,10 +42,9 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
 
-      - name: Install all dependencies (clean, workaround npm optional deps bug)
-        run: |
-          rm -f package-lock.json
-          npm install
+      # Keep the tested workspace dependency graph instead of resolving it in CI.
+      - name: Install dependencies from committed lockfile
+        run: npm ci
 
       # Service containers start before checkout, so the databases cannot be
       # created via init scripts bind-mounted from the workspace. Create them
