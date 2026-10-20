@@ -16,6 +16,8 @@
       ]
     },
     "dev": {
+      "dependsOn": ["^build"],
+      "passThroughEnv": ["*"],
       "cache": false,
       "persistent": true
     }

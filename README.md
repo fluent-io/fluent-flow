@@ -77,25 +77,40 @@ Both paths produce claims that flow through the same dispatch pipeline. The pipe
 
 ### For developers
 
-Turborepo monorepo. All packages run together:
+Use Node 22 and a running PostgreSQL database. From the repository root, install dependencies and prepare each app's local environment once:
 
 ```bash
-npm install         # install workspace deps
-npm run dev         # turbo run dev — server (3847) + dashboard (3000)
+npm ci
+cp packages/fluent-flow/.env.example packages/fluent-flow/.env.local
+cp packages/dashboard/.env.example packages/dashboard/.env.local
+```
+
+Fill in both files before starting. Set `DATABASE_URL` to your development database in both apps and use the same private `FF_COLLAB_AUTH_SECRET`. The server also requires its existing `FF_GITHUB_APP_ID`, `FF_GITHUB_APP_PRIVATE_KEY` and `FF_GITHUB_APP_WEBHOOK_SECRET` configuration. In the dashboard, set `FF_COLLAB_API_URL=http://127.0.0.1:3847`, `NEXTAUTH_URL=http://localhost:3000` and a private `NEXTAUTH_SECRET`; configure GitHub OAuth credentials when using GitHub sign-in. Legacy Agents/runner registration also needs dashboard `NEXT_PUBLIC_FLUENT_FLOW_URL=http://127.0.0.1:3847`. See the [server](packages/fluent-flow/README.md#environment-variables) and [dashboard](packages/dashboard/README.md#setup) setup guides.
+
+Then start the API and dashboard together:
+
+```bash
+npm run dev         # server (3847) + dashboard (3000); Ctrl+C stops both
+```
+
+Turbo builds the shared database package before starting the apps. Each app loads its own `.env.local`; exported shell variables also reach the dev processes. The server applies pending migrations to the configured database during normal startup. Database creation and optional fixture seeding are separate setup steps.
+
+Other root commands:
+
+```bash
 npm test            # full test suite
 npm run build       # build all packages
 ```
 
 Collaboration tests need separate disposable PostgreSQL databases for the database, server and connector suites. Existing claim SQL tests use a fourth database. The collaboration suites refuse non-loopback or non-test database names and reset their dedicated schemas. See the [database package testing guide](packages/db/README.md) before running them. The Paseo connector requires Node 22 or newer; the existing review runner also supports Node 20.
 
-Per-package:
+To develop one app separately, build the shared database package first and run the desired workspace:
 
 ```bash
-cd packages/fluent-flow    && npm run dev   # server
-cd packages/dashboard      && npm run dev   # Next.js
+npm run build -w @fluent-flow/db
+npm run dev -w fluent-flow             # server
+npm run dev -w @fluent-flow/dashboard   # Next.js, in a separate terminal
 ```
-
-Copy `.env.example` → `.env.local` in each package. Dashboard needs `NEXT_PUBLIC_FLUENT_FLOW_URL=http://localhost:3847`.
 
 Local runner (workspace-linked, no publish yet):
 

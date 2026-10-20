@@ -51,6 +51,8 @@ Next.js 15 (App Router), TypeScript, Tailwind CSS, shadcn/ui, NextAuth.js, @flue
 
 ## Setup
 
+Install dependencies with `npm ci` from the repository root. In `packages/dashboard`, copy the environment template:
+
 ```bash
 cp .env.example .env.local
 ```
@@ -63,15 +65,23 @@ GITHUB_CLIENT_ID=<from GitHub OAuth app>
 GITHUB_CLIENT_SECRET=<from GitHub OAuth app>
 NEXTAUTH_SECRET=<random string: openssl rand -hex 32>
 NEXTAUTH_URL=http://localhost:3000
+FF_COLLAB_API_URL=http://127.0.0.1:3847
+FF_COLLAB_AUTH_SECRET=<same private value as the server>
+NEXT_PUBLIC_FLUENT_FLOW_URL=http://127.0.0.1:3847
 ```
+
+Use the same development database as the server. Configure the server's [required environment](../fluent-flow/README.md#environment-variables) separately, including its GitHub App settings.
+`NEXT_PUBLIC_FLUENT_FLOW_URL` supplies the server URL in legacy runner registration commands generated from Agents.
 
 GitHub OAuth app settings:
 - Homepage URL: `http://localhost:3000`
 - Callback URL: `http://localhost:3000/api/auth/callback/github`
 
 ```bash
-npm run dev     # http://localhost:3000
+npm run dev     # from repository root: API on 3847 + dashboard on 3000
 ```
+
+The root command builds the shared database package before either app starts and forwards exported environment variables. Next continues to load this package's `.env.local`. To run only Next after building the database package, use `npm run dev -w @fluent-flow/dashboard` from the root.
 
 ### Registering your first agent
 

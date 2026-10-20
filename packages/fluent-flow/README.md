@@ -62,17 +62,20 @@ MCP is a stateless HTTP protocol that AI agents (Claude Code, Cursor) use to int
 | `FF_GITHUB_APP_ID` | Yes | GitHub App ID |
 | `FF_GITHUB_APP_PRIVATE_KEY` | Yes | Base64-encoded GitHub App private key (PEM) |
 | `FF_GITHUB_APP_WEBHOOK_SECRET` | Yes | Webhook signature verification secret |
+| `FF_COLLAB_AUTH_SECRET` | For collaboration | Private HMAC secret shared with the dashboard |
 | `MCP_AUTH_TOKEN` | No | Bearer token for MCP and Admin API auth (required in production) |
 | `PORT` | No | Server port (default: `3847`) |
 | `LOG_LEVEL` | No | Pino log level (default: `info`) |
 
 ### Run Locally
 
+From the repository root, run `npm ci`, copy this package's `.env.example` to `.env.local`, and fill in the database and required GitHub App configuration above. For the collaborative dashboard, configure its [environment](../dashboard/README.md#setup) with the same database and `FF_COLLAB_AUTH_SECRET`.
+
 ```bash
-cd packages/fluent-flow
-npm install
-npm run dev
+npm run dev          # API on 3847 and dashboard on 3000
 ```
+
+The root dev command builds the shared database package first and forwards exported environment variables. The server's existing dev command also loads `packages/fluent-flow/.env.local`. PostgreSQL and the database must already exist; normal server startup applies pending migrations. To run only the API, first run `npm run build -w @fluent-flow/db`, then `npm run dev -w fluent-flow` from the root.
 
 ### Run with Docker
 
