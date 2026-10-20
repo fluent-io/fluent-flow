@@ -80,7 +80,7 @@ The publication test run passes 1,055 tests, with all five Turbo tasks successfu
 - [Backend tests](../../packages/fluent-flow/src/collab/README.md): actual `createApp()` and SQL, current identity/RBAC, ordering, scoped MCP/events, command leases, evidence and delivery.
 - [Connector guide](../../packages/fluent-flow-runner/src/connector/README.md): Node22+, private host config, local repo/profile allowlist, existing public SDK/CLI, durable journal and supported runtime limits.
 - [Dashboard guide](../../packages/dashboard/README.md): GitHub/password entry, invitations, project roles and same-origin proxy configuration.
-- CI uses independent database/server/connector/legacy databases, tests Node20 and22, checks migration journal and runner types. Collaboration test resets never target the browser fixture or production.
+- CI uses independent database/server/connector/legacy databases, runs the full test suite once on Node22, checks migration journal and runner types. Collaboration test resets never target the browser fixture or production.
 
 Screenshots from the real isolated browser are retained under `/tmp/fluent-flow-root-browser/`: `invited-client-offline.png`, `native-question.png`, `native-approval.png`, `cancellation-fixed.png`, `reviewer-open-items.png`, `owned-workspace-archived.png`, and `decision-history-final.png`. No credential is included. All listeners used for this acceptance are loopback-only, with no production workers.
 
