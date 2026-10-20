@@ -10,7 +10,7 @@
 // Idempotent: workspaces (bootstrap keys), projects (workspace+name) and
 // principals (email) are reused on re-run. Credentials are preserved across
 // runs by merging with the existing output file — new credentials are only
-// generated for principals created in that run.
+// generated for new principals or demo owners without password credentials.
 //
 // Prerequisite: `npm run build` in packages/db (imports ../dist/index.js).
 
@@ -243,12 +243,38 @@ const clientB = await ensureInvitedPrincipal({
 });
 await upsertPrincipalCredential({email:'fixture-collaborator@client-b.test',password:clientB.password,role:'collaborator (project B1 only)',principalId:clientB.principalId});
 
+// These two trusted local demo owners keep their GitHub identity and roles;
+// only the fixture CLI provisions password login, never a public auth route.
+async function ensureDemoOwnerPassword(admin) {
+  let password = previousPasswordByPrincipalId.get(admin.id) ?? null;
+  const existing = await db.getPool().query(
+    'SELECT password_hash FROM collab_password_credentials WHERE principal_id=$1', [admin.id],
+  );
+  let stored = existing.rows[0]?.password_hash;
+  if (existing.rows.length === 0) {
+    password ??= randomPassword();
+    const inserted = await db.getPool().query(
+      'INSERT INTO collab_password_credentials(principal_id,password_hash) VALUES($1,$2) ON CONFLICT(principal_id) DO NOTHING RETURNING password_hash',
+      [admin.id, await db.hashPassword(password)],
+    );
+    stored = inserted.rows[0]?.password_hash ?? (await db.getPool().query(
+      'SELECT password_hash FROM collab_password_credentials WHERE principal_id=$1', [admin.id],
+    )).rows[0]?.password_hash;
+  }
+  if (password && stored && await db.verifyPassword(password, stored)) return password;
+  fixture.notes.push(`owner ${admin.email} has existing credentials without a matching saved password; existing credentials preserved`);
+  return null;
+}
+
+const ownerPasswords = new Map();
 for (const admin of [adminA, adminB]) {
+  const password = await ensureDemoOwnerPassword(admin);
+  ownerPasswords.set(admin.id, password);
   fixture.principals.push({
     email: admin.email,
     role: 'github workspace admin',
     principalId: admin.id,
-    password: null,
+    password,
   });
 }
 
@@ -260,7 +286,7 @@ fixture.principals.push({
   email: adminA.email,
   role: 'host owner (Fixture PC)',
   principalId: adminA.id,
-  password: null,
+  password: ownerPasswords.get(adminA.id),
 });
 
 writeFileSync(output, `${JSON.stringify(fixture, null, 2)}\n`, { mode: 0o600 });
