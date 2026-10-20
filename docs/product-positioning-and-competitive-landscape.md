@@ -1,12 +1,26 @@
 # Product Positioning and Competitive Landscape
 
-**Status:** Product direction
+**Status:** Collaborative product expansion approved 2026-10-19; implementation and validation in progress. Earlier verification strategy and competitor research are retained below.
 
 **Audience:** Maintainers, contributors, and product owners deciding what Fluent Flow should build.
 
-**Post-read action:** Use this document to accept or reject roadmap work based on whether it strengthens Fluent Flow as an open-source verification and merge-control product for agent-written code.
+**Post-read action:** Evaluate roadmap work against the approved collaborative workflow and its delivery controls. Check the acceptance ledger before treating a capability as verified.
 
-## Decision
+## Current decision
+
+Fluent Flow is expanding into a collaborative client/project Kanban with task-linked execution through customer-controlled Paseo hosts. A task can begin as an ordinary backlog item, gather discussion and acceptance criteria, then carry multiple runs and sessions through review and human acceptance.
+
+Kaneo supplies reference patterns for collaboration, ordering and permissions. Flowly supplies reference patterns for the task-linked execution experience, including workpads, checks, artifacts, ideas, summaries, attention and safe wrap-up. Fluent Flow owns the task record; Paseo remains the execution engine. The control plane stays usable while a selected PC is offline, and that PC's connector initiates its own outbound connection.
+
+Existing GitHub onboarding, review/remediation, claims and pipeline controls remain supported. Deterministic verification and role-separated merge assurance remain development targets; a completed session or generated summary does not establish that they have occurred.
+
+The [approved collaborative specification](plans/2026-10-19-collaborative-spec.md) governs scope. The [acceptance ledger](plans/2026-10-19-collaborative-status.md) records implementation evidence and outstanding work. Earlier statements below that exclude task-first collaboration or give verification work priority over this expansion are superseded by this decision.
+
+## Earlier verification strategy and competitive research
+
+The remaining sections preserve the prior merge-control strategy and research retrieved on 2026-09-07. They describe earlier target capabilities and market assumptions, not a release or current competitor audit. Verification controls remain useful within the broader delivery workflow.
+
+### Earlier decision
 
 Fluent Flow will be an **open-source, self-hostable competitor to AI code-review and agentic change-management products**, with paid enterprise support.
 

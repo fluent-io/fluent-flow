@@ -30,7 +30,11 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     return null;
   }
 
-  if (session.user.orgs.length === 0 && !session.user.isSuperadmin) {
+  // Collaboration-only (invited) principals have no legacy GitHub identity and
+  // enter the board directly — no installation call to action. The GitHub CTA
+  // remains only for legacy GitHub users who have not connected an org.
+  const isLegacyUser = session.user.id !== null || session.user.isSuperadmin;
+  if (isLegacyUser && session.user.orgs.length === 0 && !session.user.isSuperadmin) {
     return (
       <div className="flex min-h-screen items-center justify-center">
         <div className="mx-auto flex max-w-md flex-col items-center gap-4 text-center">

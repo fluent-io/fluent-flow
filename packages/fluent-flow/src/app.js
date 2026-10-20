@@ -17,6 +17,9 @@ import configRouter from './routes/config.js';
 import healthRouter from './routes/health.js';
 import agentsRouter from './routes/agents.js';
 import runnerRouter from './routes/runner.js';
+import collabRouter from './collab/routes.js';
+import connectorRouter from './collab/routes-connector.js';
+import { collabMcpHandler } from './collab/mcp.js';
 
 /**
  * Build the Express app. Separated from startup (src/index.js) so tests can
@@ -63,8 +66,17 @@ export function createApp() {
   app.use('/api', agentsRouter);
   app.use('/api', runnerRouter);
 
+  // Collaboration API (actor-assertion auth boundary inside the router).
+  app.use('/api/collab/v1', collabRouter);
+
+  // Connector protocol (host Bearer-token auth inside the router).
+  app.use('/api/connector/v1', connectorRouter);
+
   // MCP endpoint
   app.post('/mcp', mcpAuthMiddleware, mcpHandler);
+  app.post('/mcp/collab', collabMcpHandler);
+  app.get('/mcp/collab', mcpMethodNotAllowed);
+  app.delete('/mcp/collab', mcpMethodNotAllowed);
   app.get('/mcp', mcpMethodNotAllowed);
   app.delete('/mcp', mcpMethodNotAllowed);
 

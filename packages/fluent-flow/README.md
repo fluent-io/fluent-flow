@@ -1,6 +1,10 @@
 # Fluent Flow
 
-Config-driven GitHub workflow orchestrator. A deterministic state machine manages the review-fix loop for AI coding agents — agents only read and write code, they never decide what step comes next.
+Fluent Flow combines client/project task collaboration with GitHub delivery
+controls. The [collaboration API](src/collab/README.md) owns independent backlog,
+scoped discussion and explicit Paseo execution requests through an outbound
+host connector. Task acceptance is a human decision and does not merge a PR.
+Existing GitHub review, claims and configured merge behavior remain separate.
 
 ## The Review Loop
 
@@ -58,17 +62,20 @@ MCP is a stateless HTTP protocol that AI agents (Claude Code, Cursor) use to int
 | `FF_GITHUB_APP_ID` | Yes | GitHub App ID |
 | `FF_GITHUB_APP_PRIVATE_KEY` | Yes | Base64-encoded GitHub App private key (PEM) |
 | `FF_GITHUB_APP_WEBHOOK_SECRET` | Yes | Webhook signature verification secret |
+| `FF_COLLAB_AUTH_SECRET` | For collaboration | Private HMAC secret shared with the dashboard |
 | `MCP_AUTH_TOKEN` | No | Bearer token for MCP and Admin API auth (required in production) |
 | `PORT` | No | Server port (default: `3847`) |
 | `LOG_LEVEL` | No | Pino log level (default: `info`) |
 
 ### Run Locally
 
+From the repository root, run `npm ci`, copy this package's `.env.example` to `.env.local`, and fill in the database and required GitHub App configuration above. For the collaborative dashboard, configure its [environment](../dashboard/README.md#setup) with the same database and `FF_COLLAB_AUTH_SECRET`.
+
 ```bash
-cd packages/fluent-flow
-npm install
-npm run dev
+npm run dev          # API on 3847 and dashboard on 3000
 ```
+
+The root dev command builds the shared database package first and forwards exported environment variables. The server's existing dev command also loads `packages/fluent-flow/.env.local`. PostgreSQL and the database must already exist; normal server startup applies pending migrations. To run only the API, first run `npm run build -w @fluent-flow/db`, then `npm run dev -w fluent-flow` from the root.
 
 ### Run with Docker
 
@@ -79,9 +86,11 @@ docker compose up -d --build
 ### Run Tests
 
 ```bash
-npm test              # 366 tests, runs sequentially
+npm test              # runs sequentially
 npm run test:watch    # watch mode
 ```
+
+[HTTP route regressions](tests/routes/README.md) document mounted collaboration acceptance and the dedicated database/Settings browser fixtures.
 
 ## Configuration
 
@@ -144,4 +153,4 @@ Known limits:
 | 006 | `agent_sessions` — ephemeral runner sessions with TTL |
 | 007 | `agent_claims` — per-attempt work assignments |
 
-Migrations run automatically on server startup. See [DESIGN.md](DESIGN.md) for full schema.
+Migrations run automatically on server startup. See the [database guide](../db/README.md) and [migration sources](../db/src/migrations/) for the current schema.

@@ -74,4 +74,30 @@ describe('GET /api/agents/[id]', () => {
     expect(data.claims).toEqual([]);
     expect(data.key).toBeDefined();
   });
+
+  it('forbids empty-org collaborator from reading legacy org agents via ?org=', async () => {
+    mockGetServerSession.mockResolvedValueOnce({
+      user: { id: 7, isSuperadmin: false, orgs: [] },
+    });
+
+    const request = new Request('http://localhost/api/agents/ff-runner?org=legacy-org');
+    const response = await GET(request, { params: Promise.resolve({ id: 'ff-runner' }) });
+    expect(response.status).toBe(403);
+    expect(mockGetAgentDetail).not.toHaveBeenCalled();
+  });
+
+  it('passes explicit isSuperadmin to getAgentDetail for superadmin scoped requests', async () => {
+    mockGetServerSession.mockResolvedValueOnce({
+      user: { id: 1, isSuperadmin: true, orgs: [] },
+    });
+    mockGetAgentDetail.mockResolvedValueOnce({ id: 'ff-runner', org_id: 'legacy-org' });
+    mockGetAgentSessions.mockResolvedValueOnce([]);
+    mockGetAgentClaims.mockResolvedValueOnce([]);
+    mockGetKeyInfo.mockResolvedValueOnce({ id: 3, created_at: new Date() });
+
+    const request = new Request('http://localhost/api/agents/ff-runner?org=legacy-org');
+    const response = await GET(request, { params: Promise.resolve({ id: 'ff-runner' }) });
+    expect(response.status).toBe(200);
+    expect(mockGetAgentDetail).toHaveBeenCalledWith(['legacy-org'], 'ff-runner', true);
+  });
 });

@@ -1,0 +1,106 @@
+{
+  "$comment": "Canonical /api/connector/v1 wire fixtures shared by A (server) and C (connector client). ALL success responses use the {data:...} envelope — clients unwrap and validate. Errors: {error:{code,message}} with HTTP status; codes: stale_lease (session/epoch mismatch, 409), connector_active (another live instance, 409), state_conflict (conflicting terminal ack, 409), unauthenticated (unknown/revoked token, 401), not_found (foreign/unknown command, 404), batch_too_large (422). Raw reporting credentials attach ONLY at launch delivery as payload.reportingCredential and are never stored in payloads.",
+  "register": {
+    "status": 200,
+    "body": {
+      "data": {
+        "hostId": "0e5c6b2e-1f41-4a2e-9f0a-6b7c8d9e0f11",
+        "connectorSessionId": "5f0e4d3c-2b1a-4c9d-8e7f-6a5b4c3d2e1f",
+        "leaseEpoch": 7,
+        "heartbeatIntervalMs": 15000,
+        "staleAfterMs": 45000,
+        "offlineAfterMs": 120000
+      }
+    }
+  },
+  "registerConflictActiveInstance": {
+    "status": 409,
+    "body": { "error": { "code": "connector_active", "message": "Another connector instance is active for this host." } }
+  },
+  "heartbeat": {
+    "status": 200,
+    "body": { "data": { "status": "ok", "leaseEpoch": 7 } }
+  },
+  "pollWithLaunch": {
+    "status": 200,
+    "body": {
+      "data": {
+        "commands": [
+          {
+            "id": "c1a2b3d4-0000-4000-8000-000000000001",
+            "runId": "aa000000-0000-4000-8000-000000000001",
+            "sessionId": "bb000000-0000-4000-8000-000000000002",
+            "kind": "launch",
+            "payload": {
+              "repositoryKey": "owner/repo",
+              "profileId": "ai3-coder",
+              "profileSnapshot": { "id": "ai3-coder", "provider": "omp" },
+              "model": null,
+              "instructions": "Do the bounded thing",
+              "prompt": "[fluent-flow task aa000000-0000-4000-8000-000000000001] Do the bounded thing\\n\\n--- operator instructions (trusted, from the requesting operator) ---\\nDo the bounded thing",
+              "promptTruncated": false,
+              "workspace": { "mode": "worktree", "branchName": "ff/run-aa000000-0000-4000-8000-000000000001", "baseRef": "main" },
+              "labels": {
+                "fluent-flow.run": "aa000000-0000-4000-8000-000000000001",
+                "fluent-flow.session": "bb000000-0000-4000-8000-000000000002"
+              },
+              "reportingCredential": "ffag_bb000000-0000-4000-8000-000000000002_9xKq2mLp8vRt5wZy1cHj4nB6"
+            },
+            "createdAt": "2026-10-19T18:00:00.000Z",
+            "leaseEpoch": 7
+          }
+        ]
+      }
+    }
+  },
+  "$commentCreateSession": "create_session commands deliver payload.reportingCredential the same way (their own session-derived token).",
+  "pollWithCreateSession": {
+    "status": 200,
+    "body": {
+      "data": {
+        "commands": [
+          {
+            "id": "c1a2b3d4-0000-4000-8000-000000000003",
+            "runId": "aa000000-0000-4000-8000-000000000001",
+            "sessionId": "cc000000-0000-4000-8000-000000000003",
+            "kind": "create_session",
+            "payload": {
+              "title": "Second work session",
+              "profileId": "ai3-coder",
+              "model": null,
+              "instructions": "Continue in a fresh session",
+              "reportingCredential": "ffag_cc000000-0000-4000-8000-000000000003_2mNq7rTv5xZb8wKc1hJd4gF6"
+            },
+            "createdAt": "2026-10-19T18:05:00.000Z",
+            "leaseEpoch": 7
+          }
+        ]
+      }
+    }
+  },
+  "pollEmpty": {
+    "status": 200,
+    "body": { "data": { "commands": [] } }
+  },
+  "ack": {
+    "status": 200,
+    "body": { "data": { "state": "applied" } }
+  },
+  "ackStaleLease": {
+    "status": 409,
+    "body": { "error": { "code": "stale_lease", "message": "This connection is no longer active." } }
+  },
+  "observations": {
+    "status": 200,
+    "body": {
+      "data": {
+        "acceptedEventIds": ["evt-1", "evt-2"],
+        "highWatermarks": { "aa000000-0000-4000-8000-000000000001:bb000000-0000-4000-8000-000000000002:pe": "42" }
+      }
+    }
+  },
+  "unauthenticated": {
+    "status": 401,
+    "body": { "error": { "code": "unauthenticated", "message": "Authentication required." } }
+  }
+}

@@ -78,7 +78,10 @@ describeDb('claimPendingWork (integration)', () => {
     expect(winners).toHaveLength(1);
     expect(winners[0].id).toBe(claimId);
     // The winning session must be one of the two; the other got null.
-    expect([sessionA, sessionB]).toContain(winners[0].sessionId);
+    expect([sessionA, sessionB]).toContain(winners[0].session_id);
+    expect([resA,resB].filter(result=>result===null)).toHaveLength(1);
+    const stored=await db.execute(sql`SELECT status,session_id FROM agent_claims WHERE id=${claimId}`);
+    expect(stored.rows[0]).toMatchObject({status:'claimed',session_id:winners[0].session_id});
   });
 
   it('repo-scoped agent skips claims outside its repos[]', async () => {

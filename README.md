@@ -1,10 +1,20 @@
 # Fluent Flow
 
-Open-source, self-hostable control plane for agent-written pull requests. Today Fluent Flow orchestrates review and remediation through customer-controlled runners; its in-flight verification machine will add independent red-before-fix and green-after-fix evidence at the merge boundary.
+Open-source, self-hostable collaboration and delivery control plane for agent-assisted work. The approved expansion brings client/project Kanban, individual collaborators, and task-linked Paseo execution into Fluent Flow, alongside its existing GitHub review and remediation workflows.
 
-**Bring your own subscription.** Fluent Flow never holds your API keys — your runner invokes the model locally with whatever credentials it already has.
+The collaborative expansion is implemented and locally verified, including real PC-side Paseo execution. See the [acceptance status](docs/plans/2026-10-19-collaborative-status.md) for evidence, setup guides and release boundaries. This work has not been released or deployed. Deterministic red-before-fix and green-after-fix verification remains an unreleased delivery target.
 
-## How it works
+**Bring your own subscription.** Model-provider credentials stay on the execution host. Your runner uses the local tools and credentials already configured there.
+
+## Collaborative work and execution
+
+A client workspace contains projects and tasks. Collaborators can capture and discuss backlog work without a repository, pull request, agent session, or online execution host. Project permissions separately control editing, AI execution, internal information, delivery acceptance, and administration.
+
+An authorized operator explicitly starts AI work from a task. Moving a card to Ready does not launch work. The PC connector connects outward to the control plane and uses the PC's existing Paseo daemon and allowed profiles; offline requests stay queued for that selected host. The Mac can run the web app, server, and database without model credentials or a Paseo daemon.
+
+Tasks retain their runs, sessions, discussion, workpad, checks, artifacts, summaries, and ideas. A finished agent turn is separate from human delivery acceptance. The [approved specification](docs/plans/2026-10-19-collaborative-spec.md) defines the complete behavior; it is not evidence that every scenario has passed.
+
+## Existing GitHub workflows
 
 Three boundaries: **GitHub**, the **Fluent Flow server + DB**, and **one or more runners** you register to your org. The server orchestrates; runners execute.
 
@@ -67,23 +77,40 @@ Both paths produce claims that flow through the same dispatch pipeline. The pipe
 
 ### For developers
 
-Turborepo monorepo. All packages run together:
+Use Node 22 and a running PostgreSQL database. From the repository root, install dependencies and prepare each app's local environment once:
 
 ```bash
-npm install         # install workspace deps
-npm run dev         # turbo run dev — server (3847) + dashboard (3000)
+npm ci
+cp packages/fluent-flow/.env.example packages/fluent-flow/.env.local
+cp packages/dashboard/.env.example packages/dashboard/.env.local
+```
+
+Fill in both files before starting. Set `DATABASE_URL` to your development database in both apps and use the same private `FF_COLLAB_AUTH_SECRET`. The server also requires its existing `FF_GITHUB_APP_ID`, `FF_GITHUB_APP_PRIVATE_KEY` and `FF_GITHUB_APP_WEBHOOK_SECRET` configuration. In the dashboard, set `FF_COLLAB_API_URL=http://127.0.0.1:3847`, `NEXTAUTH_URL=http://localhost:3000` and a private `NEXTAUTH_SECRET`; configure GitHub OAuth credentials when using GitHub sign-in. Legacy Agents/runner registration also needs dashboard `NEXT_PUBLIC_FLUENT_FLOW_URL=http://127.0.0.1:3847`. See the [server](packages/fluent-flow/README.md#environment-variables) and [dashboard](packages/dashboard/README.md#setup) setup guides.
+
+Then start the API and dashboard together:
+
+```bash
+npm run dev         # server (3847) + dashboard (3000); Ctrl+C stops both
+```
+
+Turbo builds the shared database package before starting the apps. Each app loads its own `.env.local`; exported shell variables also reach the dev processes. The server applies pending migrations to the configured database during normal startup. Database creation and optional fixture seeding are separate setup steps.
+
+Other root commands:
+
+```bash
 npm test            # full test suite
 npm run build       # build all packages
 ```
 
-Per-package:
+Collaboration tests need separate disposable PostgreSQL databases for the database, server and connector suites. Existing claim SQL tests use a fourth database. The collaboration suites refuse non-loopback or non-test database names and reset their dedicated schemas. See the [database package testing guide](packages/db/README.md) before running them. The Paseo connector requires Node 22 or newer; the existing review runner also supports Node 20.
+
+To develop one app separately, build the shared database package first and run the desired workspace:
 
 ```bash
-cd packages/fluent-flow    && npm run dev   # server
-cd packages/dashboard      && npm run dev   # Next.js
+npm run build -w @fluent-flow/db
+npm run dev -w fluent-flow             # server
+npm run dev -w @fluent-flow/dashboard   # Next.js, in a separate terminal
 ```
-
-Copy `.env.example` → `.env.local` in each package. Dashboard needs `NEXT_PUBLIC_FLUENT_FLOW_URL=http://localhost:3847`.
 
 Local runner (workspace-linked, no publish yet):
 
@@ -108,4 +135,4 @@ docker compose up -d --build
 
 ## License
 
-MIT
+MIT. See [third-party notices](THIRD_PARTY_NOTICES.md) for Flowly and Kaneo source references and licenses.

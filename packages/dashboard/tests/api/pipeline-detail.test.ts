@@ -55,6 +55,17 @@ describe('GET /api/pipelines/[...slug]', () => {
     const data = await response.json();
     expect(response.status).toBe(200);
     expect(data).toHaveLength(1);
-    expect(mockGetPipelineDetail).toHaveBeenCalledWith(['fluent-io'], 'fluent-io/fluent-flow', 28);
+    expect(mockGetPipelineDetail).toHaveBeenCalledWith(['fluent-io'], 'fluent-io/fluent-flow', 28, 'active', false);
+  });
+
+  it('passes isSuperadmin=false for empty-org collaborator so legacy pipelines are not unscoped', async () => {
+    mockGetServerSession.mockResolvedValueOnce({
+      user: { id: 7, isSuperadmin: false, orgs: [] },
+    });
+    mockGetPipelineDetail.mockResolvedValueOnce([]);
+
+    const response = await GET({} as Request, { params: Promise.resolve({ slug: ['legacy-org', 'legacy', '28'] }) });
+    expect(response.status).toBe(200);
+    expect(mockGetPipelineDetail).toHaveBeenCalledWith([], 'legacy-org/legacy', 28, 'active', false);
   });
 });
