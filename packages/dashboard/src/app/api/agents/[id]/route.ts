@@ -17,8 +17,7 @@ async function resolveAgent(
   session: Session,
   agentId: string,
 ): Promise<{ agent: Awaited<ReturnType<typeof getAgentDetail>>; error?: never } | { error: NextResponse; agent?: never }> {
-  const { orgIds } = getOrgScope(session);
-  const isSuperadmin = orgIds.length === 0;
+  const { orgIds, isSuperadmin } = getOrgScope(session);
   const requestedOrg = new URL(request.url).searchParams.get('org');
 
   let scope: string[];
@@ -41,7 +40,7 @@ async function resolveAgent(
     };
   }
 
-  const agent = await getAgentDetail(scope, agentId);
+  const agent = await getAgentDetail(scope, agentId, isSuperadmin);
   return { agent };
 }
 

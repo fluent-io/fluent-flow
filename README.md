@@ -1,10 +1,20 @@
 # Fluent Flow
 
-Open-source, self-hostable control plane for agent-written pull requests. Today Fluent Flow orchestrates review and remediation through customer-controlled runners; its in-flight verification machine will add independent red-before-fix and green-after-fix evidence at the merge boundary.
+Open-source, self-hostable collaboration and delivery control plane for agent-assisted work. The approved expansion brings client/project Kanban, individual collaborators, and task-linked Paseo execution into Fluent Flow, alongside its existing GitHub review and remediation workflows.
 
-**Bring your own subscription.** Fluent Flow never holds your API keys — your runner invokes the model locally with whatever credentials it already has.
+The collaborative expansion is implemented and locally verified, including real PC-side Paseo execution. See the [acceptance status](docs/plans/2026-10-19-collaborative-status.md) for evidence, setup guides and release boundaries. This work has not been released or deployed. Deterministic red-before-fix and green-after-fix verification remains an unreleased delivery target.
 
-## How it works
+**Bring your own subscription.** Model-provider credentials stay on the execution host. Your runner uses the local tools and credentials already configured there.
+
+## Collaborative work and execution
+
+A client workspace contains projects and tasks. Collaborators can capture and discuss backlog work without a repository, pull request, agent session, or online execution host. Project permissions separately control editing, AI execution, internal information, delivery acceptance, and administration.
+
+An authorized operator explicitly starts AI work from a task. Moving a card to Ready does not launch work. The PC connector connects outward to the control plane and uses the PC's existing Paseo daemon and allowed profiles; offline requests stay queued for that selected host. The Mac can run the web app, server, and database without model credentials or a Paseo daemon.
+
+Tasks retain their runs, sessions, discussion, workpad, checks, artifacts, summaries, and ideas. A finished agent turn is separate from human delivery acceptance. The [approved specification](docs/plans/2026-10-19-collaborative-spec.md) defines the complete behavior; it is not evidence that every scenario has passed.
+
+## Existing GitHub workflows
 
 Three boundaries: **GitHub**, the **Fluent Flow server + DB**, and **one or more runners** you register to your org. The server orchestrates; runners execute.
 
@@ -76,6 +86,8 @@ npm test            # full test suite
 npm run build       # build all packages
 ```
 
+Collaboration tests need separate disposable PostgreSQL databases for the database, server and connector suites. Existing claim SQL tests use a fourth database. The collaboration suites refuse non-loopback or non-test database names and reset their dedicated schemas. See the [database package testing guide](packages/db/README.md) before running them. The Paseo connector requires Node 22 or newer; the existing review runner also supports Node 20.
+
 Per-package:
 
 ```bash
@@ -108,4 +120,4 @@ docker compose up -d --build
 
 ## License
 
-MIT
+MIT. See [third-party notices](THIRD_PARTY_NOTICES.md) for Flowly and Kaneo source references and licenses.

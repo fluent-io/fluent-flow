@@ -9,20 +9,27 @@
     "url": "git+https://github.com/fluent-io/fluent-flow.git",
     "directory": "packages/fluent-flow-runner"
   },
-  "description": "Lightweight CLI runner for Fluent Flow — connects agents to the review pipeline",
+  "description": "Lightweight CLI runner for Fluent Flow \u2014 connects agents to the review pipeline",
   "type": "module",
   "bin": {
-    "fluent-flow-runner": "./bin/fluent-flow-runner.js"
+    "fluent-flow-runner": "./bin/fluent-flow-runner.js",
+    "fluent-flow-connector": "./bin/fluent-flow-connector.js"
   },
   "main": "src/runner.js",
   "scripts": {
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "typecheck": "tsc -p jsconfig.json"
   },
   "engines": {
     "node": ">=20.0.0"
   },
   "devDependencies": {
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.0",
+    "@getpaseo/protocol": "0.12.0"
+  },
+  "dependencies": {
+    "@getpaseo/client": "0.12.0",
+    "zod": "4.4.3"
   }
 }

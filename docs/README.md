@@ -6,7 +6,9 @@ This directory contains product decisions, architecture specifications, implemen
 
 ## Product direction
 
-- [Product positioning and competitive landscape](product-positioning-and-competitive-landscape.md) — defines Fluent Flow as an open-source, self-hostable verification and merge-control product; compares Mastra, Hatchet, and CodeRabbit; and sets roadmap boundaries.
+- [Collaborative Kanban with Paseo execution](plans/2026-10-19-collaborative-spec.md): approved task-first product expansion, retaining GitHub delivery controls and Flowly execution features. [Implementation and contracts](plans/README.md) define the coding boundaries; [acceptance ledger](plans/2026-10-19-collaborative-status.md) records verification separately from approval.
+
+- [Product positioning and competitive landscape](product-positioning-and-competitive-landscape.md) — current collaborative direction, with the earlier verification strategy and dated competitive research retained for context.
 - [Project state summary](PROJECT_STATE_SUMMARY.md) — archival implementation snapshot. Use the roadmap for current status.
 
 ## Architecture specifications
@@ -15,7 +17,7 @@ This directory contains product decisions, architecture specifications, implemen
 
 ## Implementation plans
 
-- [Plans](plans/) — phased and historical implementation plans derived from the architecture specifications.
+- [Plans index](plans/README.md) — current collaborative implementation plan, shared contracts, acceptance status and historical plans.
 
 ## Supporting material
 

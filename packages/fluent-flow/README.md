@@ -1,6 +1,10 @@
 # Fluent Flow
 
-Config-driven GitHub workflow orchestrator. A deterministic state machine manages the review-fix loop for AI coding agents — agents only read and write code, they never decide what step comes next.
+Fluent Flow combines client/project task collaboration with GitHub delivery
+controls. The [collaboration API](src/collab/README.md) owns independent backlog,
+scoped discussion and explicit Paseo execution requests through an outbound
+host connector. Task acceptance is a human decision and does not merge a PR.
+Existing GitHub review, claims and configured merge behavior remain separate.
 
 ## The Review Loop
 
@@ -79,9 +83,11 @@ docker compose up -d --build
 ### Run Tests
 
 ```bash
-npm test              # 366 tests, runs sequentially
+npm test              # runs sequentially
 npm run test:watch    # watch mode
 ```
+
+[HTTP route regressions](tests/routes/README.md) document mounted collaboration acceptance and the dedicated database/Settings browser fixtures.
 
 ## Configuration
 
@@ -144,4 +150,4 @@ Known limits:
 | 006 | `agent_sessions` — ephemeral runner sessions with TTL |
 | 007 | `agent_claims` — per-attempt work assignments |
 
-Migrations run automatically on server startup. See [DESIGN.md](DESIGN.md) for full schema.
+Migrations run automatically on server startup. See the [database guide](../db/README.md) and [migration sources](../db/src/migrations/) for the current schema.

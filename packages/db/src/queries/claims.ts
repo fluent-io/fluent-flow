@@ -30,8 +30,10 @@ export async function dismissClaim(id: number): Promise<void> {
  * Dismiss stale claims (pending, claimed, or expired) older than a threshold.
  * Cancels and archives matching claims. Defaults to 24 hours if olderThanMs not provided.
  */
-export async function dismissStaleClaims(orgIds: string[], olderThanMs = 86_400_000): Promise<number> {
-  const isSuper = orgIds.length === 0;
+export async function dismissStaleClaims(orgIds: string[], olderThanMs = 86_400_000, isSuperadmin = false): Promise<number> {
+  // Empty orgIds without superadmin means no org access, not global scope
+  if (orgIds.length === 0 && !isSuperadmin) return 0;
+  const isSuper = isSuperadmin && orgIds.length === 0;
   const sql = `
     UPDATE agent_claims
     SET status = 'cancelled', archived_at = NOW(), completed_at = NOW()
@@ -47,8 +49,10 @@ export async function dismissStaleClaims(orgIds: string[], olderThanMs = 86_400_
 /**
  * Dismiss all active (pending or claimed) claims in a pipeline (repo + optional pr_number).
  */
-export async function dismissPipelineClaims(orgIds: string[], repo: string, prNumber?: number | null): Promise<number> {
-  const isSuper = orgIds.length === 0;
+export async function dismissPipelineClaims(orgIds: string[], repo: string, prNumber?: number | null, isSuperadmin = false): Promise<number> {
+  // Empty orgIds without superadmin means no org access, not global scope
+  if (orgIds.length === 0 && !isSuperadmin) return 0;
+  const isSuper = isSuperadmin && orgIds.length === 0;
   const params: unknown[] = ['cancelled', repo];
   let orgFilter = '';
   if (!isSuper) {

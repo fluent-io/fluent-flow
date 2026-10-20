@@ -50,7 +50,7 @@ describe('GET /api/pipelines', () => {
     const data = await response.json();
     expect(response.status).toBe(200);
     expect(data).toHaveLength(1);
-    expect(mockListPipelines).toHaveBeenCalledWith(['fluent-io'], 'active');
+    expect(mockListPipelines).toHaveBeenCalledWith(['fluent-io'], 'active', false);
   });
 
   it('passes filter param to listPipelines', async () => {
@@ -61,7 +61,18 @@ describe('GET /api/pipelines', () => {
 
     const response = await GET({ url: 'http://localhost/api/pipelines?filter=all' } as Request);
     expect(response.status).toBe(200);
-    expect(mockListPipelines).toHaveBeenCalledWith([], 'all');
+    expect(mockListPipelines).toHaveBeenCalledWith([], 'all', true);
+  });
+
+  it('passes isSuperadmin=false for empty-org collaborator so legacy pipelines are not unscoped', async () => {
+    mockGetServerSession.mockResolvedValueOnce({
+      user: { id: 7, login: 'client-user', isSuperadmin: false, orgs: [] },
+    });
+    mockListPipelines.mockResolvedValueOnce([]);
+
+    const response = await GET({ url: 'http://localhost/api/pipelines' } as Request);
+    expect(response.status).toBe(200);
+    expect(mockListPipelines).toHaveBeenCalledWith([], 'active', false);
   });
 });
 
@@ -96,7 +107,7 @@ describe('POST /api/pipelines', () => {
     const data = await response.json();
     expect(response.status).toBe(200);
     expect(data.dismissed).toBe(3);
-    expect(mockDismissStaleClaims).toHaveBeenCalledWith([], undefined);
+    expect(mockDismissStaleClaims).toHaveBeenCalledWith([], undefined, true);
   });
 
   it('allows dismiss-stale for non-superadmin org members', async () => {
@@ -109,7 +120,7 @@ describe('POST /api/pipelines', () => {
     const data = await response.json();
     expect(response.status).toBe(200);
     expect(data.dismissed).toBe(2);
-    expect(mockDismissStaleClaims).toHaveBeenCalledWith(['fluent-io'], undefined);
+    expect(mockDismissStaleClaims).toHaveBeenCalledWith(['fluent-io'], undefined, false);
   });
 
   it('dismisses stale claims with custom threshold', async () => {
@@ -122,7 +133,7 @@ describe('POST /api/pipelines', () => {
     const data = await response.json();
     expect(response.status).toBe(200);
     expect(data.dismissed).toBe(1);
-    expect(mockDismissStaleClaims).toHaveBeenCalledWith([], 3600000);
+    expect(mockDismissStaleClaims).toHaveBeenCalledWith([], 3600000, true);
   });
 
   it('dismisses pipeline claims by repo', async () => {
@@ -135,7 +146,7 @@ describe('POST /api/pipelines', () => {
     const data = await response.json();
     expect(response.status).toBe(200);
     expect(data.dismissed).toBe(2);
-    expect(mockDismissPipelineClaims).toHaveBeenCalledWith(['fluent-io'], 'fluent-io/app', 42);
+    expect(mockDismissPipelineClaims).toHaveBeenCalledWith(['fluent-io'], 'fluent-io/app', 42, false);
   });
 
   it('returns 400 for missing repo on dismiss-pipeline', async () => {

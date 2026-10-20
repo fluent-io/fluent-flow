@@ -17,8 +17,10 @@ export interface PipelineListItem {
   stages: PipelineStage[];
 }
 
-export async function listPipelines(orgIds: string[], filter: 'active' | 'archived' | 'all' = 'active'): Promise<PipelineListItem[]> {
-  const isSuper = orgIds.length === 0;
+export async function listPipelines(orgIds: string[], filter: 'active' | 'archived' | 'all' = 'active', isSuperadmin = false): Promise<PipelineListItem[]> {
+  // Empty orgIds without superadmin means no org access, not global scope
+  if (orgIds.length === 0 && !isSuperadmin) return [];
+  const isSuper = isSuperadmin && orgIds.length === 0;
 
   const archiveFilter =
     filter === 'active' ? 'AND c.archived_at IS NULL'
@@ -75,8 +77,10 @@ export interface PipelineDetailClaim {
   session_meta: Record<string, unknown> | null;
 }
 
-export async function getPipelineDetail(orgIds: string[], repo: string, prNumber: number | null, filter: 'active' | 'archived' | 'all' = 'active'): Promise<PipelineDetailClaim[]> {
-  const isSuper = orgIds.length === 0;
+export async function getPipelineDetail(orgIds: string[], repo: string, prNumber: number | null, filter: 'active' | 'archived' | 'all' = 'active', isSuperadmin = false): Promise<PipelineDetailClaim[]> {
+  // Empty orgIds without superadmin means no org access, not global scope
+  if (orgIds.length === 0 && !isSuperadmin) return [];
+  const isSuper = isSuperadmin && orgIds.length === 0;
   const archivedFilter =
     filter === 'active' ? 'AND c.archived_at IS NULL'
     : filter === 'archived' ? 'AND c.archived_at IS NOT NULL'

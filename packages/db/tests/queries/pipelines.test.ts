@@ -73,10 +73,16 @@ describe('listPipelines', () => {
     expect(result[0].stages[0].claim_type).toBe('spec');
   });
 
-  it('returns all pipelines for superadmin (no org filter)', async () => {
+  it('returns no pipelines for empty-org non-superadmin without querying', async () => {
+    const result = await listPipelines([]);
+    expect(result).toEqual([]);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('returns all pipelines for explicit superadmin (no org filter)', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [] });
 
-    const result = await listPipelines([]);
+    const result = await listPipelines([], 'active', true);
     expect(result).toEqual([]);
     expect(mockQuery.mock.calls[0][0]).not.toContain('org_id = ANY');
   });
@@ -119,6 +125,29 @@ describe('getPipelineDetail', () => {
     expect(result).toHaveLength(1);
     expect(result[0].claim_type).toBe('spec');
     expect(result[0].pr_number).toBeNull();
+  });
+
+  it('returns no claims for empty-org non-superadmin without querying', async () => {
+    const result = await getPipelineDetail([], 'fluent-io/fluent-flow', 28);
+    expect(result).toEqual([]);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('returns claims across orgs for explicit superadmin', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          id: 1, org_id: 'legacy-org', repo: 'legacy-org/legacy', pr_number: 28,
+          attempt: 1, session_id: 12, claim_type: 'spec', status: 'completed',
+          payload: {}, claimed_at: new Date(), completed_at: new Date(),
+          expires_at: null, created_at: new Date(), agent_id: 'ff-runner', session_meta: {},
+        },
+      ],
+    });
+
+    const result = await getPipelineDetail([], 'legacy-org/legacy', 28, 'active', true);
+    expect(result).toHaveLength(1);
+    expect(mockQuery.mock.calls[0][1]).toEqual(['legacy-org/legacy', 28]);
   });
 
   it('returns empty array when pipeline not found', async () => {

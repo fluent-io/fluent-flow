@@ -41,8 +41,8 @@ export default async function PipelineDetailPage({ params }: { params: Promise<{
   if (prNumber !== null && isNaN(prNumber)) notFound();
 
   const fullRepo = `${owner}/${repo}`;
-  const { orgIds } = getOrgScope(session);
-  const claims = await getPipelineDetail(orgIds, fullRepo, prNumber);
+  const { orgIds, isSuperadmin } = getOrgScope(session);
+  const claims = await getPipelineDetail(orgIds, fullRepo, prNumber, 'active', isSuperadmin);
 
   if (claims.length === 0) notFound();
 

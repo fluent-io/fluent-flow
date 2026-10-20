@@ -3,19 +3,26 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Bot, FolderGit2, GitBranch, Settings, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useSession } from 'next-auth/react';
+import { Bot, FolderGit2, GitBranch, Settings, ChevronLeft, ChevronRight, Kanban, Bell } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
-const navItems = [
+const INTERNAL_NAV = [
   { label: 'Agents', href: '/agents', icon: Bot },
   { label: 'Repos', href: '/repos', icon: FolderGit2 },
   { label: 'Pipelines', href: '/pipelines', icon: GitBranch },
   { label: 'Settings', href: '/settings', icon: Settings },
 ];
 
+const COLLAB_NAV = [
+  { label: 'Board', href: '/board', icon: Kanban },
+  { label: 'Needs attention', href: '/attention', icon: Bell },
+];
+
 export function Sidebar() {
   const pathname = usePathname();
+  const { data: session } = useSession();
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
@@ -28,6 +35,11 @@ export function Sidebar() {
     setCollapsed(next);
     localStorage.setItem('sidebar-collapsed', String(next));
   }
+
+  // Internal GitHub users keep the legacy admin surfaces; collaboration-only
+  // principals see the board and attention views. Both groups get the board.
+  const isInternal = (session?.user.id ?? null) !== null || (session?.user.isSuperadmin ?? false);
+  const navItems = isInternal ? [...COLLAB_NAV, ...INTERNAL_NAV] : COLLAB_NAV;
 
   return (
     <TooltipProvider delayDuration={0}>
