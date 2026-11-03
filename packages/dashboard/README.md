@@ -5,7 +5,9 @@ Client/project task board and internal agent, repository and pipeline management
 
 ## Collaborative work
 
-The dashboard owns a client/project/task board alongside existing agent, repository and pipeline screens. Invited collaborators sign in with a password; GitHub OAuth remains available for internal users. Project roles control editing, execution, internal output, delivery acceptance and administration. A task can be created and discussed while the execution PC is offline.
+The dashboard owns a client/project/task board alongside existing agent, repository and pipeline screens. Invited collaborators sign in with a password; GitHub OAuth remains available for internal users. The view depends on the signed-in principal, not the sign-in method: a principal linked to a GitHub user gets that user's current login, email, avatar, superadmin flag and orgs either way, so password and GitHub sign-in show the same navigation. A GitHub session whose `github_id` does not match the principal's linked user is rejected. Unlinked invited collaborators stay limited to Board and Needs attention, and nothing is linked by email. Project roles control editing, execution, internal output, delivery acceptance and administration. A task can be created and discussed while the execution PC is offline.
+
+Password sign-in for a GitHub-linked principal requires an already provisioned password. Local fixtures provision those credentials directly; this change does not introduce product password enrollment, password reset or account linking for GitHub users.
 
 - [Board](src/app/board/README.md), [task detail](src/app/tasks/README.md), [attention](src/app/attention/README.md), [invitation entry](src/app/invite/README.md) and [settings](src/app/settings/README.md).
 - [Collaboration views](src/components/collab/README.md), [browser-safe API helpers](src/lib/collab/README.md), [authenticated proxy](src/app/api/collab/README.md) and [regression tests](tests/collab/README.md).
