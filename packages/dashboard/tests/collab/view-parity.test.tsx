@@ -232,12 +232,41 @@ describe('restricted and fail-closed cases', () => {
 
     await expect(resolveSession(password.token)).rejects.toThrow();
   });
+
+  it('rejects an OAuth token when the linked legacy user row cannot be read', async () => {
+    const ids = seedLinked({ userId: 7, githubId: 9001, login: 'owner', orgs: [{ org_id: 'acme', role: 'admin' }] });
+    const oauth = await oauthLogin(ids.profile, ids.email);
+    db.users = [];
+
+    await expect(resolveSession(oauth.token)).rejects.toThrow();
+  });
 });
 
 describe('view-parity browser script database preflight', () => {
   // Port 1 has no listener: if the script tried to connect or reset, it would
   // fail with a connection error instead of the preflight refusal.
   const script = fileURLToPath(new URL('./view-parity.browser.mjs', import.meta.url));
+  for (const [name, url] of [
+    ['host override', 'postgres://nobody@localhost:1/ff_view_parity_test?host=127.0.0.1&port=1'],
+    ['socket database override', 'socket://localhost:1/ff_view_parity_test?db=ff_demo'],
+    ['fragment', 'postgresql://nobody@127.0.0.1:1/ff_view_parity_test#ignored'],
+  ]) {
+    it(`refuses ${name} before connecting`, () => {
+      const run = spawnSync(process.execPath, [script], {
+        env: {
+          ...process.env,
+          FF_COLLAB_TEST_DB_OPTIN: '1',
+          FF_COLLAB_AUTH_SECRET: 'preflight-test-secret-not-used-for-authentication',
+          FF_VIEW_PARITY_DATABASE_URL: url,
+        },
+        encoding: 'utf8',
+        timeout: 20000,
+      });
+      expect(run.error).toBeUndefined();
+      expect(run.status).toBe(2);
+      expect(run.stderr).not.toMatch(/ECONNREFUSED|ENOENT|connect/i);
+    });
+  }
   for (const name of ['ff_demo', 'ff_prod', 'ff_demo_test', 'ff_auth_parity_db', 'postgres']) {
     it(`refuses ${name} before connecting`, () => {
       const run = spawnSync(process.execPath, [script], {

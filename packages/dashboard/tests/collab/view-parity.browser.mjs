@@ -13,7 +13,14 @@ import { randomBytes } from 'node:crypto';
 // the schema, so only names that are clearly disposable test databases pass.
 const databaseUrl = process.env.FF_VIEW_PARITY_DATABASE_URL;
 if (!databaseUrl) throw new Error('FF_VIEW_PARITY_DATABASE_URL is required');
-const dbName = new URL(databaseUrl).pathname.replace(/^\//, '');
+const parsedDatabaseUrl = new URL(databaseUrl);
+// pg accepts target overrides in query parameters and gives socket: a different
+// database meaning. Keep the validated URL identical to the connection target.
+if (!['postgres:', 'postgresql:'].includes(parsedDatabaseUrl.protocol) || databaseUrl.includes('?') || databaseUrl.includes('#')) {
+  console.error('view-parity: refusing database URL; use postgres:// or postgresql:// without query parameters or fragments');
+  process.exit(2);
+}
+const dbName = parsedDatabaseUrl.pathname.replace(/^\//, '');
 if (!/^ff_[a-z0-9_]+_test$/.test(dbName) || /(^|_)(demo|prod|production)(_|$)/.test(dbName)) {
   console.error(`view-parity: refusing to reset database "${dbName}"; use a dedicated ff_*_test database`);
   process.exit(2);
@@ -36,9 +43,8 @@ const { createApp } = await import('../../../fluent-flow/src/app.js');
 const { chromium } = await import('@playwright/test');
 await db.runMigrations();
 
-const password = `parity-${randomBytes(12).toString('hex')}`;
-const owner = { email: 'owner+pw@example.test', login: 'parity-owner' };
-const external = { email: 'external@example.test', name: 'External Collaborator' };
+const owner = { email: 'owner+pw@example.test', login: 'parity-owner', password: `owner-${randomBytes(12).toString('hex')}` };
+const external = { email: 'external@example.test', name: 'External Collaborator', password: `external-${randomBytes(12).toString('hex')}` };
 const names = { workspace: 'Parity Client', project: 'Parity Project', task: 'Parity seeded task' };
 const pool = db.getPool();
 
@@ -50,7 +56,7 @@ const { rows: [user] } = await pool.query(
 await pool.query(`INSERT INTO user_orgs (user_id, org_id, role) VALUES ($1, 'parity-org', 'admin')`, [user.id]);
 // Same principal a GitHub sign-in materializes; the password is provisioned for it directly.
 const linked = await db.ensureGithubPrincipal({ legacyUserId: user.id, displayName: 'Owner via password', email: owner.email });
-await pool.query('INSERT INTO collab_password_credentials (principal_id, password_hash) VALUES ($1, $2)', [linked.id, await db.hashPassword(password)]);
+await pool.query('INSERT INTO collab_password_credentials (principal_id, password_hash) VALUES ($1, $2)', [linked.id, await db.hashPassword(owner.password)]);
 // FK semantics: a linked legacy user cannot be deleted out from under its principal.
 await assert.rejects(pool.query('DELETE FROM users WHERE id = $1', [user.id]), (e) => e.code === '23503');
 
@@ -76,7 +82,7 @@ const invitation = await api('POST', `/projects/${project.id}/invitations`, { em
 const accepted = await fetch(`${apiBase}/invitations/accept`, {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
-  body: JSON.stringify({ token: invitation.url.split('token=')[1], displayName: external.name, password }),
+  body: JSON.stringify({ token: invitation.url.split('token=')[1], displayName: external.name, password: external.password }),
 });
 assert.equal(accepted.status, 201, 'invitation accept');
 
@@ -84,7 +90,7 @@ const NAV = ['Board', 'Needs attention', 'Agents', 'Repos', 'Pipelines', 'Settin
 const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
 const results = {};
 
-async function signIn(email) {
+async function signIn(email, password) {
   const context = await browser.newContext();
   const page = await context.newPage();
   const pageErrors = [];
@@ -117,7 +123,7 @@ async function finalText(page) {
 }
 
 try {
-  const o = await signIn(owner.email);
+  const o = await signIn(owner.email, owner.password);
   if (shots) { mkdirSync(shots, { recursive: true }); await o.page.screenshot({ path: `${shots}/linkedOwner-board.png` }); }
   await o.page.locator('aside nav').getByText('Settings', { exact: true }).click();
   await o.page.waitForURL(`${origin}/settings`, { timeout: 30000 });
@@ -136,7 +142,7 @@ try {
   };
   await o.context.close();
 
-  const x = await signIn(external.email);
+  const x = await signIn(external.email, external.password);
   if (shots) await x.page.screenshot({ path: `${shots}/external-board.png` });
   const boardFinal = await finalText(x.page);
   await x.page.goto(`${origin}/agents`);

@@ -9,7 +9,7 @@
 - [proxy.test.ts](<proxy.test.ts>) — Behavior regressions for proxy.
 - [questions.test.ts](<questions.test.ts>) — Behavior regressions for questions.
 
-- [view-parity.test.tsx](view-parity.test.tsx) — runs the real NextAuth callbacks for password and GitHub sign-in of the same linked principal (owner, member, superadmin) over in-memory rows, checks equal sessions, org scope and server-rendered shell (TopBar, Sidebar, AuthGuard, legacy gate on internal pages); also covers unlinked collaborators, GitHub/principal mismatch, disabled or version-bumped principals and a missing linked user. It also checks that the browser script refuses non-`ff_*_test`, demo and prod database names before connecting.
+- [view-parity.test.tsx](view-parity.test.tsx) — runs the real NextAuth callbacks for password and GitHub sign-in of the same linked principal (owner, member, superadmin) over in-memory rows, checks equal sessions, org scope and server-rendered shell (TopBar, Sidebar, AuthGuard, legacy gate on internal pages); also covers unlinked collaborators, GitHub/principal mismatch, disabled or version-bumped principals and a missing linked user for both providers. Subprocess regressions check that the browser script refuses unsafe database names, target-override query parameters, socket URLs and fragments before connecting.
 - [view-parity.browser.mjs](view-parity.browser.mjs) — actual password sign-in against a dedicated dashboard, an in-process mounted `createApp()` API and PostgreSQL, no HTTP mocks. Resets and seeds only `FF_VIEW_PARITY_DATABASE_URL` (loopback, name must match `ff_*_test`, never demo/prod), creating a linked org owner with a client workspace, project and task, plus an external collaborator invited to the project. Checks the owner sees full navigation, opens Settings and sees real workspace/project/member data; the external user sees only Board and Needs attention, sees the project task and is redirected from Agents. Fails on page errors or any 4xx/5xx collaboration response. It does not perform GitHub OAuth.
 - [legacy-gate.test.tsx](legacy-gate.test.tsx) — real server-render regression for provider ordering on legacy pages.
 - [run-refresh.browser.mjs](run-refresh.browser.mjs) — real execution components under server/network failures, recovery and revoked access; checks retained drafts/output and unhandled errors.
@@ -26,6 +26,8 @@ The host script uses the same fixture and dedicated servers: run `node tests/col
 
 For the view-parity script, put two random secrets in owner-only files, start a dedicated dashboard pointed at the script's API port and the same disposable database, then run the script with the matching collaboration secret:
 
+`FF_VIEW_PARITY_DATABASE_URL` must use `postgres://` or `postgresql://`, a loopback host and a database name matching `ff_*_test` without `demo`, `prod` or `production` segments. Query strings and fragments are rejected, including empty `?` or `#` delimiters. Test mode or `FF_COLLAB_TEST_DB_OPTIN=1` is also required. The script checks the URL before importing the database helper or opening a connection.
+
 ```bash
 DB=postgres://user@127.0.0.1:5432/ff_view_parity_test
 DATABASE_URL=$DB NEXTAUTH_URL=http://127.0.0.1:3190 NEXTAUTH_SECRET=$(cat /tmp/nextauth-secret) \
@@ -36,3 +38,5 @@ FF_COLLAB_AUTH_SECRET=$(cat /tmp/collab-secret) FF_COLLAB_TEST_DB_OPTIN=1 FF_VIE
 ```
 
 Set `FF_VIEW_PARITY_SCREENSHOT_DIR` to save screenshots. The script prints booleans and lists only, never credentials.
+
+The linked owner's password is provisioned directly by this disposable fixture; the external collaborator chooses a different generated password through invitation acceptance. These checks do not add product password enrollment or account linking for GitHub users. Linked-account password sign-in requires trusted provisioning outside the product flow. Provisioned linked accounts must use distinct login emails: the existing password lookup is ambiguous if multiple credentialed principals share an email, and this parity fix does not change identity lookup or uniqueness rules.
