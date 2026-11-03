@@ -168,26 +168,34 @@ export const authOptions: NextAuthOptions = {
         throw new Error('Session rejected');
       }
 
-      if (token.github_id) {
-        const userResult = await query('SELECT id, is_superadmin FROM users WHERE github_id = $1', [
-          token.github_id,
-        ]);
-        if (userResult.rows.length === 0) {
-          throw new Error('User not found');
-        }
+      // The principal's legacy link decides the view, whichever provider signed
+      // in, so a linked owner sees the same dashboard via password or GitHub.
+      // A GitHub token must belong to that linked user; otherwise reject before
+      // loading anyone's orgs.
+      if (principal.legacyUserId !== null) {
+        const userResult = await query(
+          'SELECT id, github_id, login, email, avatar_url, is_superadmin FROM users WHERE id = $1',
+          [principal.legacyUserId],
+        );
         const dbUser = userResult.rows[0];
+        if (!dbUser || (token.github_id !== undefined && token.github_id !== dbUser.github_id)) {
+          throw new Error('Session rejected');
+        }
         const orgs = await getUserOrgs(dbUser.id);
         session.user = {
           id: dbUser.id,
           principalId: principal.id,
           sessionVersion: principal.sessionVersion,
-          login: token.login as string,
-          email: token.email ?? null,
-          image: (token.picture as string | null) ?? null,
+          login: dbUser.login,
+          email: dbUser.email ?? null,
+          image: dbUser.avatar_url ?? null,
           isSuperadmin: dbUser.is_superadmin,
           orgs,
         };
       } else {
+        if (token.github_id !== undefined) {
+          throw new Error('Session rejected');
+        }
         session.user = {
           id: null,
           principalId: principal.id,

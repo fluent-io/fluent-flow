@@ -372,7 +372,17 @@ describe('session callback', () => {
 
   it('builds a GitHub user session with legacy identity, orgs and a mapped principal', async () => {
     mockGetCollabPrincipal.mockResolvedValueOnce({ ...PRINCIPAL, legacyUserId: 7 });
-    mockQuery.mockResolvedValueOnce({ rows: [userRow({ id: 7, is_superadmin: true })] });
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        {
+          ...userRow({ id: 7, is_superadmin: true }),
+          github_id: 9001,
+          login: 'victor',
+          email: 'v@example.com',
+          avatar_url: 'https://avatar',
+        },
+      ],
+    });
     mockGetUserOrgs.mockResolvedValueOnce([{ org_id: 'acme', role: 'admin' }]);
 
     const session = await callSession({
