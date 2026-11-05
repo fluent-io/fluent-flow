@@ -16,7 +16,6 @@ import type { UserOrg } from '@fluent-flow/db';
 declare module 'next-auth' {
   interface Session {
     user: {
-      /** Legacy `users` row id; null for collaboration-only (invited) principals. */
       id: number | null;
       principalId: string;
       sessionVersion: number;
@@ -39,7 +38,6 @@ declare module 'next-auth/jwt' {
 }
 
 interface AuthorizeUser {
-  /** NextAuth requires a string user id; the collaboration principal UUID serves here. */
   id: string;
   principalId: string;
   sessionVersion: number;
@@ -47,13 +45,6 @@ interface AuthorizeUser {
   email: string | null;
 }
 
-/**
- * Rate limit bucket for password attempts. NextAuth's authorize() has no
- * verified socket address; inbound forwarding headers are caller-controlled,
- * so the default bucket is server-defined and stable. A deployment behind a
- * verified reverse proxy may opt in with FF_TRUSTED_PROXY_CLIENT_HEADER
- * naming the header it controls; A additionally rate limits per account.
- */
 function rateLimitKeyFrom(req: { headers?: Record<string, unknown> } | undefined): string {
   const trustedHeader = process.env.FF_TRUSTED_PROXY_CLIENT_HEADER?.toLowerCase();
   if (trustedHeader) {
@@ -98,8 +89,6 @@ export const authOptions: NextAuthOptions = {
   ],
   callbacks: {
     async signIn({ user, account, profile }) {
-      // Legacy GitHub upsert only applies to the GitHub OAuth flow; invited
-      // password sign-ins carry no provider profile.
       if (account?.provider !== 'github' || !profile) return true;
       const ghProfile = profile as { id: number; login: string; avatar_url?: string };
       await upsertUser({
@@ -137,11 +126,6 @@ export const authOptions: NextAuthOptions = {
           token.email = authorized.email ?? null;
         }
       }
-      // Pre-collab GitHub JWTs carry no principal identity. Materialize it from
-      // the authoritative legacy user row so existing sessions keep working;
-      // ensureGithubPrincipal returns the existing principal unchanged, so a
-      // version mismatch or disabled principal is still rejected at session
-      // resolution — never silently refreshed here.
       if (!token.principalId && token.github_id) {
         const userResult = await query('SELECT id FROM users WHERE github_id = $1', [token.github_id]);
         if (userResult.rows.length > 0) {
@@ -161,17 +145,11 @@ export const authOptions: NextAuthOptions = {
       if (!principalId) {
         throw new Error('No collaboration principal on session token');
       }
-      // Fresh reload on every session resolution: disabled or version-mismatched
-      // JWTs are rejected outright, never silently refreshed to the new version.
       const principal = await getCollabPrincipal(principalId);
       if (!principal || principal.disabledAt || principal.sessionVersion !== token.sessionVersion) {
         throw new Error('Session rejected');
       }
 
-      // The principal's legacy link decides the view, whichever provider signed
-      // in, so a linked owner sees the same dashboard via password or GitHub.
-      // A GitHub token must belong to that linked user; otherwise reject before
-      // loading anyone's orgs.
       if (principal.legacyUserId !== null) {
         const userResult = await query(
           'SELECT id, github_id, login, email, avatar_url, is_superadmin FROM users WHERE id = $1',

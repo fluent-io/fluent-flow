@@ -61,8 +61,6 @@ describe('mounted Settings scope and configuration security',()=>{
       const path=process.env.FF_SETTINGS_BROWSER_FIXTURE_PATH;
       if(!path.startsWith('/tmp/'))throw new Error('Browser fixture must stay private in /tmp');
       const task=await db.createCollabTask({actor:owner,projectId:project.id,title:'Private configuration Start fixture'});
-      // Internal-only fixture: the genuine legacy org admin signs in through
-      // the normal password provider. No public password/linking endpoint.
       const passwordHash=await db.hashPassword('synthetic settings passphrase');
       await db.getPool().query('INSERT INTO collab_password_credentials(principal_id,password_hash) VALUES($1,$2)',[owner.principalId,passwordHash]);
       writeFileSync(path,JSON.stringify({databaseUrl:process.env.DATABASE_URL,authSecret:secret,sessionSecret:randomBytes(32).toString('hex'),workspaceId:workspace.id,projectId:project.id,siblingId:sibling.id,taskId:task.id,password:'synthetic settings passphrase',emails:{memberAdmin:'settings-4@example.test',config:'settings-3@example.test',workspaceAdmin:'settings-7@example.test',blindStart:'settings-8@example.test',legacyAdmin:'owner@settings.test'}}),{mode:0o600});chmodSync(path,0o600);

@@ -57,7 +57,6 @@ export const ACTIVE_RUN_STATES = [
 const startRunSchema = z.object({
   actor: z.object({ principalId: z.string().uuid(), sessionVersion: z.number().int().min(1) }),
   taskId: z.string().uuid(),
-  // Optimistic confirmation against the task the operator reviewed.
   expectedVersion: z.number().int().min(1),
   idempotencyKey: z.string().min(8).max(256),
   mappingId: z.string().uuid().optional(),
@@ -72,7 +71,6 @@ function requestHash(parts: Record<string, unknown>): string {
 }
 
 
-/** Fixed reporting capability set for agent credentials (constraint mirrors the DB). */
 export const REPORTING_CAPABILITIES = [
   'report.check',
   'report.artifact',
@@ -92,12 +90,6 @@ export type AgentReportingContext = {
   tokenPrefix: string;
 };
 
-/**
- * Reporting credential: deterministically derived per session with the
- * server-only key (domain-separated HMAC). Restart-stable and re-derivable
- * for delivery and auth; only the sha256 hash + short prefix persist. The
- * sessionId is embedded in the token so auth re-derives without storing raw.
- */
 export function reportingServerKey(): string {
   const key = process.env.FF_COLLAB_AUTH_SECRET;
   if (typeof key !== 'string' || key.length < 16) {
@@ -111,11 +103,6 @@ export function deriveReportingCredential(secret: string, sessionId: string): st
   return `ffag_${sessionId}_${mac.slice(0, 32)}`;
 }
 
-/**
- * Ensure the run/session-bound reporting binding row exists (scopes fixed;
- * hash of the derived token; never raw). Called in the same transaction that
- * creates the session.
- */
 export async function ensureReportingBinding(
   tx: PoolClient,
   binding: { projectId: string; runId: string; sessionId: string; principalId: string },
@@ -142,11 +129,6 @@ export async function ensureReportingBinding(
   );
 }
 
-/**
- * Resolve an agent credential to its narrowed reporting context. Unknown,
- * revoked, or misbound tokens are unauthenticated — no capability inference
- * from principal roles.
- */
 export async function authenticateAgentToken(token: string): Promise<AgentReportingContext> {
   const match = /^ffag_([0-9a-fA-F-]{36})_([A-Za-z0-9_-]{32})$/.exec(token);
   const secret = reportingServerKey();
@@ -232,13 +214,6 @@ export type StartRunResult =
   | { run: Run; sessionId: string; created: boolean }
   | { run: Pick<Run, 'id' | 'taskId' | 'state' | 'stage' | 'version' | 'createdAt' | 'updatedAt'>; created: boolean };
 
-/**
- * Explicit Start. Idempotent per (principal, task, Idempotency-Key) with a
- * canonical request hash: same key+body replays the same run, same key with a
- * different body conflicts. Resolves and freezes mapping/profile against the
- * current project+host allowlist; stores the launch command durably in the
- * same transaction. Ready moves never reach this path.
- */
 export async function startCollabRun(input: {
   actor: { principalId: string; sessionVersion: number };
   taskId: string;
@@ -289,8 +264,6 @@ export async function startCollabRun(input: {
       return { run: rowToRun(run.rows[0]), sessionId: session.rows[0].id, created: false };
     }
 
-    // Stale operator confirmation → 409 (replays above use the ORIGINAL
-    // request identity and are unaffected by later task edits).
     const taskNow = await tx.query(
       `SELECT version FROM collab_tasks WHERE id = $1 FOR UPDATE`,
       [input2.taskId],
@@ -309,8 +282,6 @@ export async function startCollabRun(input: {
     const instructions = input2.instructions ?? (typeof defaults.instructions === 'string' ? defaults.instructions : '');
     const model = input2.model !== undefined ? input2.model : typeof defaults.model === 'string' ? defaults.model : null;
 
-    // Resolve mapping: explicit → project default → the project's single
-    // active mapping (multiple mappings without a default is ambiguous).
     const mappingRows = input2.mappingId
       ? await tx.query(
           `SELECT m.id, m.host_id, m.repository_key, m.base_ref, m.profile_ids, m.default_profile_id,
@@ -370,8 +341,6 @@ export async function startCollabRun(input: {
     };
     const profileSnapshot: { id: string; model?: string | null } =
       (hostCatalog.profiles ?? []).find((p) => p.id === profileId) ?? { id: profileId, model: null };
-    // Model enforcement at Start (contract): a profile that pins a model only
-    // accepts that exact model — never queue an override C must reject later.
     if (model && profileSnapshot.model && model !== profileSnapshot.model) {
       throw new CollabServiceError(
         422,
@@ -380,7 +349,6 @@ export async function startCollabRun(input: {
       );
     }
 
-    // Retry only from a known-terminal predecessor.
     if (input2.retryOfRunId) {
       const prior = await tx.query(
         `SELECT state FROM collab_runs WHERE id = $1 AND task_id = $2`,
@@ -407,10 +375,6 @@ export async function startCollabRun(input: {
       );
     }
 
-    // Canonical task-context prompt, FROZEN at start: task identity/content +
-    // acceptance criteria + operator instructions clearly separated. Task text
-    // is untrusted work content — it never routes cwd/host/credentials. The
-    // command row persists this snapshot; later task edits do not mutate it.
     const taskSnapshot = await tx.query(
       `SELECT id, title, description FROM collab_tasks WHERE id = $1`,
       [input2.taskId],
@@ -464,8 +428,6 @@ export async function startCollabRun(input: {
     );
     const runId = insertedRun.rows[0].id;
 
-    // Primary work session: created queued; launch binds workspace+agent via
-    // session_bound observation before any prompt is delivered.
     const session = await tx.query<{ id: string }>(
       `INSERT INTO collab_sessions (run_id, title) VALUES ($1, 'Work session') RETURNING id`,
       [runId],
@@ -533,7 +495,6 @@ function authorizeRunRead(
   return authorize(actor, { projectId }, ['task.read']);
 }
 
-/** Client-safe execution badge: no instructions, mapping, profile or session IDs. */
 export type RunBadge = {
   id: string;
   taskId: string;
@@ -570,8 +531,6 @@ export async function getCollabRun(
   if (rows.length === 0) {
     throw new CollabServiceError(404, 'not_found', 'Not found.');
   }
-  // Raw run/session detail (instructions, mapping, profile, provider IDs) is
-  // INTERNAL: internal.read required. task.read gets the badge projection only.
   await authorizeRunRead(actor, rows[0].project_id);
   const capabilities = await getProjectCapabilities(actor.principalId, rows[0].project_id);
   if (!capabilities.has('internal.read')) {
@@ -626,13 +585,12 @@ export async function listCollabRuns(input: {
   return { runs: page.map(rowToRun), nextCursor };
 }
 
-/** Execution-stage edit (run.steer): never touches the business task status. */
 export async function updateRunStage(input: {
   actor: { principalId: string; sessionVersion: number };
   runId: string;
   expectedVersion: number;
   stage: ExecutionStage;
-}): Promise<Run> {
+}): Promise<Run | RunBadge> {
   if (!z.string().uuid().safeParse(input.runId).success) {
     throw new CollabServiceError(404, 'not_found', 'Not found.');
   }
@@ -654,16 +612,12 @@ export async function updateRunStage(input: {
     });
   }
   const run = await getPool().query(`${RUN_SELECT} WHERE r.id = $1`, [input.runId]);
-  return rowToRun(run.rows[0]);
+  const capabilities = await getProjectCapabilities(input.actor.principalId, rows[0].project_id);
+  return capabilities.has('internal.read') ? rowToRun(run.rows[0]) : runBadge(run.rows[0]);
 }
 
 export type { CollabTask };
 
-/**
- * Create an additional session inside an active run (contract: multiple
- * sessions per run). Durably queued as a create_session command; the
- * session_bound observation later binds real agent IDs.
- */
 export async function createRunSession(input: {
   actor: { principalId: string; sessionVersion: number };
   runId: string;
@@ -672,7 +626,7 @@ export async function createRunSession(input: {
   profileId?: string;
   model?: string | null;
   instructions: string;
-}): Promise<{ session: CollabSession; commandId: string; created: boolean }> {
+}): Promise<{ session: CollabSession; commandId: string; created: boolean } | { created: boolean }> {
   if (!z.string().uuid().safeParse(input.runId).success) {
     throw new CollabServiceError(404, 'not_found', 'Not found.');
   }
@@ -691,7 +645,7 @@ export async function createRunSession(input: {
     instructions: input.instructions,
   });
 
-  return withClientTransaction(async (tx: PoolClient) => {
+  const result = await withClientTransaction(async (tx: PoolClient) => {
     await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`run-start:${runRows.rows[0].task_id}`]);
     await tx.query('SELECT id FROM collab_tasks WHERE id=$1 FOR UPDATE',[runRows.rows[0].task_id]);
     await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`run-cmds:${input.runId}`]);
@@ -743,7 +697,6 @@ export async function createRunSession(input: {
         JSON.stringify(frozen),
         principal.id,
       ],
-      /* session binding ensured above */
     );
     await tx.query(
       `INSERT INTO collab_idempotency_records (principal_id, scope_key, idempotency_key, request_hash, resource_id)
@@ -752,6 +705,8 @@ export async function createRunSession(input: {
     );
     return { session: rowToSession(session.rows[0]), commandId: command.rows[0].id, created: true };
   });
+  const capabilities = await getProjectCapabilities(principal.id, runRows.rows[0].project_id);
+  return capabilities.has('internal.read') ? result : { created: result.created };
 }
 
 function rowToSession(row: Record<string, unknown>): CollabSession {
@@ -781,11 +736,6 @@ const sessionCommandSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('cancel') }),
 ]);
 
-/**
- * Steer/answer/cancel inside a session. Requires internal.read plus the
- * matching execution capability; payload shapes are the contract's — the
- * connector adapts them to the provider.
- */
 export async function submitSessionCommand(input: {
   actor: { principalId: string; sessionVersion: number };
   sessionId: string;
@@ -880,8 +830,6 @@ export async function getConnectorCommand(
   if (rows.length === 0) {
     throw new CollabServiceError(404, 'not_found', 'Not found.');
   }
-  // Historic authorship never bypasses current internal access.
-  const { getProjectCapabilities } = await import('./authorize.js');
   const caps = await getProjectCapabilities(actor.principalId, rows[0].project_id);
   if (!(caps.has('run.steer') && caps.has('internal.read'))) {
     throw new CollabServiceError(404, 'not_found', 'Not found.');
@@ -908,11 +856,6 @@ export type PendingRequest = {
   expiresAt: string | null;
 };
 
-/**
- * Authoritative current request for a session, derived from attention
- * observations (permission_resolved / expiry clears it). B renders from this
- * instead of scraping raw timelines.
- */
 export async function getSessionPendingRequest(
   actor: { principalId: string; sessionVersion: number },
   sessionId: string,
@@ -953,12 +896,6 @@ export async function getSessionPendingRequest(
   return null;
 }
 
-/**
- * Shared durable command-queue helper (B summaries, wrap-ups, artifact
- * reads). Authorizes internal.read + the mapped execution capability,
- * idempotent per (principal, run, Idempotency-Key), requires an active run,
- * and stores the command durably before delivery.
- */
 export async function queueRunCommand(input: {
   actor: { principalId: string; sessionVersion: number };
   runId: string;
@@ -1042,7 +979,6 @@ const timelineSchema = z.object({
   limit: z.number().int().min(1).max(200).default(100),
 });
 
-/** Normalized persisted timeline (internal.read; bounded keyset pagination). */
 export async function getSessionTimeline(input: {
   actor: { principalId: string; sessionVersion: number };
   sessionId: string;

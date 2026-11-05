@@ -1,9 +1,5 @@
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 
-// A4 evidence DOMAIN tests: focused service/route behavior with a manually
-// assembled router and verbatim 0014 DDL. These bypass app wiring by design
-// (fast, isolated) and are NOT app-acceptance evidence; see
-// collab-evidence.test.js for the real createApp + runMigrations acceptance.
 vi.mock('../../src/tracing.cjs', () => ({}));
 vi.mock('../../src/logger.js', async () => {
   const { createMockLogger } = await import('../helpers/mock-logger.js');
@@ -12,9 +8,6 @@ vi.mock('../../src/logger.js', async () => {
 
 const { resolveCollabTestDatabaseUrl, resetCollabSchema, seedLegacyUser, seedLegacyOrgMembership } =
   await import('../helpers/collab-db.js');
-// Dedicated evidence-domain DB: CI gives it its own ff_* database so parallel
-// package suites never share or race a reset (falls back to the shared collab
-// routes URL locally).
 const resolveEvidenceDomainDatabaseUrl = () => {
   const url = process.env.COLLAB_EVIDENCE_DOMAIN_TEST_DATABASE_URL ?? process.env.COLLAB_ROUTES_TEST_DATABASE_URL ?? process.env.TEST_DATABASE_URL;
   if (!url) {
@@ -79,8 +72,6 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
     });
     projectA1 = await db.createCollabProject({ actor: managerActor, workspaceId: ws.id, name: 'Evidence A1' });
 
-    // Collaborator principal (password path): invite through the real service,
-    // then add the workspace collaborator role membership.
     const { rows: roleRows0 } = await db.getPool().query(
       `SELECT id FROM collab_roles WHERE workspace_id = $1 AND name = 'collaborator'`,
       [ws.id],
@@ -101,7 +92,6 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
     });
     collaboratorActor = { principalId: collaborator.principal.id, sessionVersion: collaborator.principal.sessionVersion };
 
-    // Outsider: separate client, no access to workspace A.
     const adminB = await seedLegacyUser(process.env.DATABASE_URL, { githubId: 9202, login: 'evidence-outsider' });
     await seedLegacyOrgMembership(process.env.DATABASE_URL, adminB, 'org-evidence-b', 'admin');
     const outsiderPrincipal = await db.ensureGithubPrincipal({
@@ -173,7 +163,6 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
     expect(stale.status).toBe(409);
     expect(stale.body.error.code).toBe('version_conflict');
 
-    // History preserves who changed what (delivery acknowledgment consumes it).
     const history = await api(baseUrl, 'GET', `/tasks/${taskA1.id}/criteria/${criterionId}/history`, {
       actor: managerActor,
     });
@@ -188,7 +177,6 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
   });
 
   it('rejects criterion writes from actors without task.write', async () => {
-    // Viewer principal: task.read only.
     const db = await import('@fluent-flow/db');
     const { rows: viewerRows } = await db.getPool().query(
       `INSERT INTO collab_principals (display_name, email) VALUES ('Evidence Viewer', 'evidence-viewer@example.test') RETURNING id, session_version`,
@@ -214,7 +202,6 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
       body: { text: 'should not persist' },
     });
     expect(denied.status).toBe(403);
-    // A's authorize emits code 'forbidden' for known-scope missing capability.
     expect(denied.body.error.code).toBe('forbidden');
   });
 });
@@ -313,8 +300,6 @@ describe('A4 evidence slice 2: named checks and append-only evidence', () => {
     expect(evidence.status).toBe(201);
     expect(evidence.body.data).toMatchObject({ status: 'passed', provenance: 'human' });
 
-    // Internal checks require internal.read: the collaborator (task.write but
-    // no internal.read) must not see their own internal check listed.
     const collaboratorList = await api(baseUrl, 'GET', `/tasks/${taskA1.id}/checks`, { actor: collaboratorActor });
     expect(collaboratorList.status).toBe(200);
     expect(collaboratorList.body.data.find((c) => c.id === checkId)).toBeUndefined();
@@ -323,7 +308,7 @@ describe('A4 evidence slice 2: named checks and append-only evidence', () => {
     expect(list.status).toBe(200);
     const check = list.body.data.find((c) => c.id === checkId);
     expect(check.evidence).toHaveLength(1);
-    expect(check.evidence[0].stale).toBe(true); // commit unknown to any run head
+    expect(check.evidence[0].stale).toBe(true);
     expect(check.evidence[0].staleReason).toMatch(/unknown|head/i);
   });
 
@@ -340,7 +325,6 @@ describe('A4 evidence slice 2: named checks and append-only evidence', () => {
     expect(check.evidence[0].stale).toBe(true);
     expect(check.evidence[0].staleReason).toMatch(/definition/i);
 
-    // Check edit requires task.write: collaborator may not edit the manager's check version here? (both have task.write; guard instead on a viewer)
   });
 
   it('rejects non-human provenance on the actor path (agent/runner use trusted contexts)', async () => {
@@ -350,7 +334,6 @@ describe('A4 evidence slice 2: named checks and append-only evidence', () => {
     });
     expect(runner.status).toBe(403);
     expect(runner.body.error.code).toBe('provenance_forbidden');
-    // And agent provenance is reserved for trusted report contexts.
     const agent = await api(baseUrl, 'POST', `/tasks/${taskA1.id}/checks/${checkId}/evidence`, {
       actor: managerActor,
       body: { status: 'passed', provenance: 'agent', runId: '00000000-0000-0000-0000-000000000001' },
@@ -443,13 +426,11 @@ describe('A4 evidence domain slice 3: delivery acknowledgment and human-only dec
   });
 
   it('captures open items at delivery and requires their acknowledgment at current version', async () => {
-    // An open criterion becomes an open item in the delivery snapshot.
     await api(baseUrl, 'POST', `/tasks/${taskA1.id}/criteria`, {
       actor: managerActor,
       body: { text: 'Perf budget met' },
     });
 
-    // Deliveries need internal.read: collaborator (no internal.read) is denied.
     const denied = await api(baseUrl, 'POST', `/tasks/${taskA1.id}/deliveries`, {
       actor: collaboratorActor,
       body: { expectedVersion: (await getCollabTask(managerActor, taskA1.id)).task.version, note: 'should not persist' },
@@ -463,7 +444,6 @@ describe('A4 evidence domain slice 3: delivery acknowledgment and human-only dec
     expect(delivery.status).toBe(201);
     expect(delivery.body.data.openItemIds.length).toBe(1);
 
-    // Accept requires review state + acknowledgment of the captured open items.
     const db = await import('@fluent-flow/db');
     const currentVersion = async () =>
       (await db.getPool().query('SELECT version FROM collab_tasks WHERE id = $1', [taskA1.id])).rows[0].version;
@@ -475,7 +455,6 @@ describe('A4 evidence domain slice 3: delivery acknowledgment and human-only dec
     expect(acceptBlocked.status).toBe(422);
     expect(acceptBlocked.body.error.code).toMatch(/not_in_review|acknowledgment_required/);
 
-    // Move to review via the status endpoint A provides; here via direct service (moves are A2).
     await db.getPool().query(`UPDATE collab_tasks SET status = 'review', version = version + 1 WHERE id = $1`, [taskA1.id]);
 
     const acceptNoAck = await api(baseUrl, 'POST', `/tasks/${taskA1.id}/decisions`, {
@@ -610,7 +589,7 @@ describe('A4 evidence domain slice 4: idea conversion idempotency', () => {
     );
     expect(rows[0].n).toBe(1);
     const { rows: runRows } = await db.getPool().query('SELECT count(*)::int AS n FROM collab_runs');
-    expect(runRows[0].n).toBe(0); // conversion to backlog never launches work
+    expect(runRows[0].n).toBe(0);
   });
 });
 
@@ -724,7 +703,6 @@ describe('A4 evidence domain slice 5: workpad plan snapshots and open questions'
 
   it('records an agent plan snapshot with run binding via trusted report context', async () => {
     const db = await import('@fluent-flow/db');
-    // Trusted report context (A's scoped token path): run + session bound to the task.
     const { rows: hostRows } = await db.getPool().query(
       `INSERT INTO collab_hosts (name, token_hash, enrolled_by_principal_id)
        VALUES ('workpad-host', 'hash-workpad', $1) RETURNING id`,
@@ -811,7 +789,6 @@ describe('A4 evidence domain slice 6: decision integrity and reviewer projection
       assigneeId: null,
     });
 
-    // Reviewer: delivery.accept WITHOUT internal.read.
     const { rows: roles } = await db.getPool().query(
       `SELECT id, name FROM collab_roles WHERE workspace_id = $1 AND name = 'reviewer'`,
       [ws.id],
@@ -870,7 +847,6 @@ describe('A4 evidence domain slice 6: decision integrity and reviewer projection
     const items = await api(baseUrl, 'GET', `/tasks/${taskA1.id}/open-items`, { actor: managerActor });
     expect(items.body.data.some((i) => i.label.startsWith('Check not run:'))).toBe(true);
 
-    // Humans cannot claim runner provenance via the actor path.
     await expect(
       db.addCollabCheckEvidence({
         actor: managerActor,
@@ -888,7 +864,6 @@ describe('A4 evidence domain slice 6: decision integrity and reviewer projection
 
     const items = await api(baseUrl, 'GET', `/tasks/${taskA1.id}/open-items`, { actor: reviewerActor });
     expect(items.status).toBe(200);
-    // Internal check names are not leaked to reviewers without internal.read.
     for (const item of items.body.data) {
       expect(item.label).not.toMatch(/internal-lint/);
     }
@@ -898,21 +873,18 @@ describe('A4 evidence domain slice 6: decision integrity and reviewer projection
     const db = await import('@fluent-flow/db');
     await db.getPool().query(`UPDATE collab_tasks SET status = 'review' WHERE id = $1`, [taskA1.id]);
 
-    // Deliver now (open items snapshot A).
     const delivery = await api(baseUrl, 'POST', `/tasks/${taskA1.id}/deliveries`, {
       actor: managerActor,
       body: { expectedVersion: (await getCollabTask(managerActor, taskA1.id)).task.version, note: 'first delivery' },
     });
     expect(delivery.status).toBe(201);
 
-    // A new open criterion appears AFTER the delivery.
     const criterion = await api(baseUrl, 'POST', `/tasks/${taskA1.id}/criteria`, {
       actor: managerActor,
       body: { text: 'Late-breaking requirement' },
     });
     expect(criterion.status).toBe(201);
 
-    // Acknowledging only the old snapshot is not enough.
     const denied = await api(baseUrl, 'POST', `/tasks/${taskA1.id}/decisions`, {
       actor: managerActor,
       body: {
@@ -928,7 +900,6 @@ describe('A4 evidence domain slice 6: decision integrity and reviewer projection
       expect(denied.body.error.openItemIds.length).toBeGreaterThanOrEqual(1);
     }
 
-    // ExpectedVersion enforcement: stale task version → 409.
     const staleVersion = await api(baseUrl, 'POST', `/tasks/${taskA1.id}/decisions`, {
       actor: managerActor,
       body: {
@@ -940,7 +911,6 @@ describe('A4 evidence domain slice 6: decision integrity and reviewer projection
     });
     expect(staleVersion.status).toBe(409);
 
-    // Current version + full recomputed acknowledgment (read fresh) → accepted.
     const { rows } = await db.getPool().query('SELECT version FROM collab_tasks WHERE id = $1', [taskA1.id]);
     const fresh = await api(baseUrl, 'GET', `/tasks/${taskA1.id}/open-items`, { actor: managerActor });
     const accepted = await api(baseUrl, 'POST', `/tasks/${taskA1.id}/decisions`, {
@@ -1040,13 +1010,10 @@ describe('A4 evidence domain slice 7: usage dedupe and honest insights', () => {
       runId, taskId: taskA1.id, sessionId: null, providerTurnId: 'turn-1',
       tokensIn: 10, tokensOut: 5, costUsd: null, unavailableReason: null,
     });
-    // Later cumulative snapshot for the same turn: replaces, not adds.
     await db.recordUsageSample({
       runId, taskId: taskA1.id, sessionId: null, providerTurnId: 'turn-1',
       tokensIn: 20, tokensOut: 9, costUsd: null, unavailableReason: null,
     });
-    // Compute the range AFTER the inserts so the PG now() observed_at
-    // (set inside recordUsageSample) is guaranteed to fall inside it.
     const to = new Date(Date.now() + 10_000).toISOString();
     const from = new Date(Date.now() - 3600_000).toISOString();
     const insights = await db.getCollabProjectInsights({
@@ -1055,7 +1022,7 @@ describe('A4 evidence domain slice 7: usage dedupe and honest insights', () => {
     expect(insights.usage.available).toBe(true);
     expect(insights.usage.tokensIn).toBe(20);
     expect(insights.usage.tokensOut).toBe(9);
-    expect(insights.usage.costUsd).toBeNull(); // provider reported no cost: honest null
+    expect(insights.usage.costUsd).toBeNull();
   });
 
   it('keeps null-only unsupported usage as unavailable with reason', async () => {
@@ -1069,8 +1036,6 @@ describe('A4 evidence domain slice 7: usage dedupe and honest insights', () => {
     const insights = await db.getCollabProjectInsights({
       actor: managerActor, projectId: projectA1.id, from: new Date(from), to: new Date(to),
     });
-    // The known turn-1 sample keeps availability, but the null-only sample
-    // never invents zero tokens. Cost stays null (no cost reported).
     expect(insights.usage.available).toBe(true);
     expect(insights.usage.tokensIn).toBe(20);
     expect(insights.usage.costUsd).toBeNull();

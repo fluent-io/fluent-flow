@@ -148,6 +148,13 @@
       "when": 1778716800000,
       "tag": "0020_collab_decision_review",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1778803200000,
+      "tag": "0021_collab_project_overviews",
+      "breakpoints": true
     }
   ]
 }

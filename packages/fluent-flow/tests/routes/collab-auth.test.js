@@ -1,8 +1,5 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 
-// Standard test silencing — tracing + logger only. The collaboration router
-// must be exercised for real (no mocks): this suite pins the consumer-visible
-// auth boundary of /api/collab/v1.
 vi.mock('../../src/tracing.cjs', () => ({}));
 vi.mock('../../src/logger.js', async () => {
   const { createMockLogger } = await import('../helpers/mock-logger.js');
@@ -11,8 +8,6 @@ vi.mock('../../src/logger.js', async () => {
 
 const { createApp } = await import('../../src/app.js');
 
-// Server-only assertion secret as an operator would configure it. Never a
-// caller-supplied value; the route reads it per request.
 const TEST_AUTH_SECRET = 'collab-test-secret-0123456789abcdef0123456789abcdef';
 
 describe('collaboration API auth boundary (/api/collab/v1)', () => {

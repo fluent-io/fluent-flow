@@ -25,10 +25,6 @@ const RUN_STATE_CLASS: Record<RunState, string> = {
   reconciling: 'border-orange-500/40 bg-orange-500/10 text-orange-600 dark:text-orange-400',
 };
 
-/**
- * Client-safe execution badge. Reflects only the server's safe projection —
- * never raw session/transcript payloads.
- */
 export function ExecutionBadge({
   state,
   reachability,

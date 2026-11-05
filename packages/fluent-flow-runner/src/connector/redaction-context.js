@@ -16,16 +16,13 @@ function readSecrets(file, optional = false) {
     return values;
   } catch (error) {
     if (optional && error.code === 'ENOENT') return [];
-    // Parsing and filesystem exceptions may contain the private contents/path.
     throw new Error(PRIVATE_FILE_ERROR);
   } finally {
     if (fd !== undefined) fs.closeSync(fd);
   }
 }
 
-/** Reporting credentials live separately from the token-free intent journal.
- * Persist before native creation so an immediate crash can still redact backfill.
- * Host and daemon credentials are supplied afresh by runtime, never stored here.
+/**
  * @param {{dir: string, secretsFile?: string}} options
  */
 export function createRedactionContext({ dir, secretsFile }) {

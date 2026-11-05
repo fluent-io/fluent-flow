@@ -1,4 +1,3 @@
-// Real AttentionView and polling; HTTP fixtures only, no database/provider calls.
 import assert from 'node:assert/strict';
 import {existsSync} from 'node:fs';
 import {chromium,expect} from '@playwright/test';

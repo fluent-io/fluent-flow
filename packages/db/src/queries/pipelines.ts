@@ -18,7 +18,6 @@ export interface PipelineListItem {
 }
 
 export async function listPipelines(orgIds: string[], filter: 'active' | 'archived' | 'all' = 'active', isSuperadmin = false): Promise<PipelineListItem[]> {
-  // Empty orgIds without superadmin means no org access, not global scope
   if (orgIds.length === 0 && !isSuperadmin) return [];
   const isSuper = isSuperadmin && orgIds.length === 0;
 
@@ -78,7 +77,6 @@ export interface PipelineDetailClaim {
 }
 
 export async function getPipelineDetail(orgIds: string[], repo: string, prNumber: number | null, filter: 'active' | 'archived' | 'all' = 'active', isSuperadmin = false): Promise<PipelineDetailClaim[]> {
-  // Empty orgIds without superadmin means no org access, not global scope
   if (orgIds.length === 0 && !isSuperadmin) return [];
   const isSuper = isSuperadmin && orgIds.length === 0;
   const archivedFilter =

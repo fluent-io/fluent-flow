@@ -41,11 +41,6 @@ const ensureGithubPrincipalSchema = z.object({
   email: z.string().max(320).nullable(),
 });
 
-/**
- * Load-or-create the collaboration principal mirroring a legacy GitHub user.
- * The users.id link is the identity (never email). Mirrors display name/email
- * changes; never touches session_version.
- */
 export async function ensureGithubPrincipal(input: {
   legacyUserId: number;
   displayName: string;
@@ -75,11 +70,6 @@ export async function getCollabPrincipal(id: string): Promise<CollabPrincipal | 
   return rows.length > 0 ? rowToPrincipal(rows[0]) : null;
 }
 
-/**
- * Resolve the CURRENT enabled principal for an actor (assertion-derived).
- * Session-version mismatch or a disabled principal yields null — callers turn
- * that into an unauthenticated rejection.
- */
 export async function requireCurrentPrincipal(
   actor: CollabActorInput,
 ): Promise<CollabPrincipal> {

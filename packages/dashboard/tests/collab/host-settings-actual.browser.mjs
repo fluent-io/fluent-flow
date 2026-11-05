@@ -1,5 +1,3 @@
-// Actual host administration through password auth, HMAC proxy, createApp and PG.
-// Tokens stay in volatile local variables, never logs, screenshots or storage.
 import assert from 'node:assert/strict';
 import {existsSync,readFileSync,statSync} from 'node:fs';
 import {chromium,expect} from '@playwright/test';
@@ -56,8 +54,6 @@ try{
   assert.equal(pageErrors,0,'host settings must have no unhandled page errors');
   console.log(JSON.stringify({result:'PASS',scenarios:['actual legacy-admin password session','required creation token shown exactly once then dismissed','observed heartbeat rendered','token-free list/DOM/storage'],pageErrors}));
 }catch(error){
-  // No screenshots, response bodies or exception objects: they may contain a
-  // one-time token. Boolean assertions above identify the failure safely.
   console.error(JSON.stringify({result:'FAIL',message:error instanceof assert.AssertionError?error.message:'Host browser step failed.',pageErrors}));
   process.exitCode=1;
 }finally{

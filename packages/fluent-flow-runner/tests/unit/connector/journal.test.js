@@ -62,8 +62,7 @@ describe('durable launch journal', () => {
     await j.append(intent('cmd-2', 'run-2', 'sess-2'));
     const path = join(dir, 'journal.jsonl');
     const original = readFileSync(path, 'utf8');
-    // Crash mid-write: complete JSON of cmd-3 but no newline ever hit disk.
-    appendFileSync(path, JSON.stringify(intent('cmd-3', 'run-3', 'sess-3'))); // no \n
+    appendFileSync(path, JSON.stringify(intent('cmd-3', 'run-3', 'sess-3')));
     const j2 = createJournal({ dir });
     expect(j2.byCommand('cmd-1').intent).toBeTruthy();
     expect(j2.byCommand('cmd-2').intent).toBeTruthy();
@@ -98,12 +97,10 @@ describe('durable launch journal', () => {
     await j.append(intent('cmd-2', 'run-2', 'sess-2'));
     const path = join(dir, 'journal.jsonl');
     const before = readFileSync(path, 'utf8');
-    // Corrupt a MIDDLE line (byte-level flip), leaving a valid-looking tail.
     const lines = before.split('\n');
     lines[1] = lines[1].replace('"ag-1"', 'broken');
     writeFileSync(path, lines.join('\n'));
     expect(() => createJournal({ dir })).toThrow(/corrupt/i);
-    // Original file preserved byte-for-byte so nothing is destroyed.
     expect(readFileSync(path, 'utf8')).toBe(lines.join('\n'));
   });
 
@@ -125,8 +122,6 @@ describe('durable launch journal', () => {
   });
 
   it('writes every byte of a record before fsync (no short-write torn records)', async () => {
-    // Big record: force a long line; after append the parsed content must
-    // round-trip exactly through a fresh journal instance.
     const j = createJournal({ dir });
     const big = intent('cmd-big', 'run-big', 'sess-big', 'd'.repeat(200_000));
     await j.append(big);
@@ -162,7 +157,6 @@ describe('durable launch journal', () => {
     await j.append({ type: 'acked', commandId: 'cmd-failed', state: 'failed', errorCode: 'profile_missing', at: 't' });
     await j.append(intent('cmd-noack', 'r5', 's5'));
     expect(j.unackedCommandIds().sort()).toEqual(['cmd-accepted', 'cmd-ambiguous', 'cmd-noack']);
-    // Survives reopen identically.
     const j2 = createJournal({ dir });
     expect(j2.unackedCommandIds().sort()).toEqual(['cmd-accepted', 'cmd-ambiguous', 'cmd-noack']);
   });
@@ -178,13 +172,11 @@ describe('durable launch journal', () => {
     await j.append({ type: 'observation', eventId: 'ev-1', commandId: 'c1', runId: 'r1', sessionId: 's1', kind: 'state', payload: { a: 1 }, at: 't' });
     await j.append({ type: 'observation', eventId: 'ev-2', commandId: 'c1', runId: 'r1', sessionId: 's1', kind: 'state', payload: { a: 2 }, at: 't' });
     expect(j.pendingObservationIds()).toEqual(['ev-1', 'ev-2']);
-    // Server confirmed ev-1 only (ev-2's HTTP ack was lost).
     await j.markObservationsAccepted(['ev-1']);
     expect(j.pendingObservationIds()).toEqual(['ev-2']);
-    // Survives restart identically: no historical resubmission storm.
     const j2 = createJournal({ dir });
     expect(j2.pendingObservationIds()).toEqual(['ev-2']);
-    expect(j2.observationById('ev-1')).toBeTruthy(); // record still readable
+    expect(j2.observationById('ev-1')).toBeTruthy();
   });
 
   it('stores timeline cursors per session for reconnect backfill', async () => {

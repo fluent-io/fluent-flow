@@ -6,8 +6,6 @@ import { closePool, getPool } from '../../src/pool.js';
 import { authenticateCollabPassword, hashPassword, verifyPassword } from '../../src/collaboration/passwords.js';
 import { rateLimitBucket } from '../../src/collaboration/rate-limit.js';
 
-// Observe the actual expensive crypto boundary, without replacing its work or
-// comparing noisy wall-clock durations.
 vi.mock('node:crypto', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:crypto')>();
   return { ...actual, scrypt: vi.fn(actual.scrypt) };

@@ -4,7 +4,6 @@ import type { AgentListItem, Agent } from '../schemas/agents.js';
 import { SESSION_STATUS_AT_READ_TIME } from './_helpers.js';
 
 export async function listAgents(orgIds: string[], isSuperadmin = false): Promise<AgentListItem[]> {
-  // Empty orgIds without superadmin means no org access, not global scope
   if (orgIds.length === 0 && !isSuperadmin) return [];
   const isSuper = isSuperadmin && orgIds.length === 0;
 
@@ -35,7 +34,6 @@ export async function listAgents(orgIds: string[], isSuperadmin = false): Promis
 }
 
 export async function getAgentDetail(orgIds: string[], agentId: string, isSuperadmin = false): Promise<Agent | null> {
-  // Empty orgIds without superadmin means no org access, not global scope
   if (orgIds.length === 0 && !isSuperadmin) return null;
   const isSuper = isSuperadmin && orgIds.length === 0;
 

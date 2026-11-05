@@ -8,10 +8,6 @@ import { createPaseoAdapter } from '../../../src/connector/paseo-adapter.js';
 import { fakePaseoSdk } from './helpers/fake-paseo.js';
 import { createObservationPrivacy } from '../../../src/connector/observation-privacy.js';
 
-/**
- * Coupling regressions over the REAL journal + executor + adapter stack.
- * Only the external SDK (and, in loop.test.js, HTTP) is faked.
- */
 
 let dir;
 let journal;
@@ -55,7 +51,6 @@ describe('coupling: digest ownership', () => {
     expect(o1.stage).toBe('bound');
     const creates = paseo.state.createCalls.length;
 
-    // Same id, deep payload change (prompt text).
     const changed = structuredClone(command);
     changed.payload.prompt = 'CHANGED instructions';
     const o2 = await executor.execute(changed);
@@ -64,7 +59,6 @@ describe('coupling: digest ownership', () => {
     expect(paseo.state.createCalls).toHaveLength(creates);
     expect(paseo.state.sends).toHaveLength(0);
 
-    // Nested-in-workspace change is caught the same way.
     const nested = structuredClone(command);
     nested.payload.workspace.baseRef = 'main-evil';
     const o3 = await executor.execute(nested);
@@ -86,14 +80,12 @@ describe('coupling: lost prompt acknowledgment', () => {
     const o1 = await executor.execute(structuredClone(command));
     expect(o1.state).toBe('accepted');
 
-    // Daemon applied the send but the connector saw the transport die.
     paseo.state.fail.onSend = { recordFirst: true, error: Object.assign(new Error('send failed'), { cause: { code: 'ECONNRESET' } }) };
     const o2 = await executor.complete(structuredClone(command));
     expect(o2.state).toBe('ambiguous');
     expect(o2.errorCode).toBe('send_unconfirmed');
-    expect(paseo.state.sends).toHaveLength(1); // recorded, then "connection died"
+    expect(paseo.state.sends).toHaveLength(1);
 
-    // Restart: fresh journal view over the same dir, redelivered same command.
     const journal2 = createJournal({ dir });
     const adapter2 = createPaseoAdapter({ paseo, journal: journal2 });
     const executor2 = createExecutor({ config, adapter: adapter2, journal: journal2, catalogProfiles: [catalogProfile] });
@@ -101,7 +93,7 @@ describe('coupling: lost prompt acknowledgment', () => {
     expect(o3.stage).toBe('bound');
     const o4 = await executor2.complete(structuredClone(command));
     expect(o4.state).toBe('applied');
-    expect(paseo.state.sends).toHaveLength(1); // timeline proved delivery: NO resend
+    expect(paseo.state.sends).toHaveLength(1);
   });
 
   it('send fails with NO trace in timeline: provably absent, resent ONCE with the same message id', async () => {
@@ -284,7 +276,7 @@ describe('coupling: launch prompt guard', () => {
       payload: { profileId: 'p1', profileSnapshot: catalogProfile, model: null },
     };
     const o = await executor.execute(s);
-    expect(o.state).toBe('accepted'); // session may bind
+    expect(o.state).toBe('accepted');
     const o2 = await executor.complete(s);
     expect(o2.state).toBe('failed');
     expect(o2.errorCode).toBe('prompt_required');
@@ -314,7 +306,7 @@ describe('coupling: summary staging', () => {
     const o1 = await executor.execute(s);
     expect(o1.stage).toBe('bound');
     expect(o1.state).toBe('accepted');
-    expect(paseo.state.sends).toHaveLength(1); // no summary prompt yet
+    expect(paseo.state.sends).toHaveLength(1);
     expect(journal.byCommand('cmd-sum').binding).toBeTruthy();
     const o2 = await executor.complete(s);
     expect(o2.state).toBe('applied');
@@ -328,20 +320,15 @@ describe('coupling: bidirectional timeline verification', () => {
     expect(o1.state).toBe('accepted');
     const agentId = journal.byCommand('cmd-1').binding.paseoAgentId;
 
-    // Journey: the send landed but the ack was lost...
     paseo.state.fail.onSend = { recordFirst: true, error: Object.assign(new Error('send failed'), { cause: { code: 'ECONNRESET' } }) };
     const o2 = await executor.complete(structuredClone(command));
     expect(o2.state).toBe('ambiguous');
 
-    // ...and afterwards the timeline grew beyond one tail window, so the
-    // default tail page no longer contains the original user_message.
     const timeline = paseo.state.timelineByAgent.get(agentId);
     for (let i = 0; i < 30; i++) {
       timeline.items.push({ type: 'assistant_message', text: `filler ${i}`, messageId: `filler-${i}` });
     }
 
-    // Windowed refetch: tail returns only the last 20 items (the prompt sits
-    // at index 0 of 31); 'before' pages walk toward older entries.
     paseo.state.customRefetch = (id, opts, defaultPayload) => {
       const direction = opts?.direction ?? 'tail';
       const items = timeline.items;
@@ -374,7 +361,7 @@ describe('coupling: bidirectional timeline verification', () => {
     await executor2.execute(structuredClone(command));
     const o3 = await executor2.complete(structuredClone(command));
     expect(o3.state).toBe('applied');
-    expect(paseo.state.sends).toHaveLength(1); // verified via older pages: no resend
+    expect(paseo.state.sends).toHaveLength(1);
   });
 });
 
@@ -422,12 +409,10 @@ describe('coupling: permission contract (translated to the real SDK union)', () 
     const agentId = journal.byCommand('cmd-1').binding.paseoAgentId;
     paseo.state.pendingPermissions.set('q-1', questionRequest);
 
-    // WIRE shape: behavior allow|deny with optional answers (headers->string).
     const wire = { id: 'cmd-a1', runId: 'run-1', sessionId: 'sess-1', kind: 'permission', payload: { requestId: 'q-1', response: { behavior: 'allow', answers: { choice: 'b' } } } };
     const o = await executor.execute(wire);
     expect(o.state).toBe('applied');
 
-    // SDK-visible shape: allow only, updatedInput = current input + answers.
     expect(paseo.state.permissionResponses).toHaveLength(1);
     const sent = paseo.state.permissionResponses[0];
     expect(sent.requestId).toBe('q-1');

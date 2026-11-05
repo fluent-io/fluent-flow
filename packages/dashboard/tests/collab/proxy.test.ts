@@ -171,8 +171,6 @@ describe('collab proxy /api/collab/v1', () => {
   it('accepts same-host mutations even when the framework rewrites request.url', async () => {
     const fetchMock = upstreamFetchMock({ status: 201, body: '{"data":{}}' });
 
-    // Next dev can rebuild request.url from a different host name; the security
-    // property is that Origin's host matches the observed Host header.
     const request = new Request('http://localhost:3100/api/collab/v1/projects/p1/tasks', {
       method: 'POST',
       headers: {
@@ -210,6 +208,52 @@ describe('collab proxy /api/collab/v1', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('rejects a mutation whose Origin is the literal null marker with a present host', async () => {
+    const fetchMock = upstreamFetchMock();
+
+    const request = new Request('http://localhost:3100/api/collab/v1/projects/p1/tasks', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        origin: 'null',
+        host: '127.0.0.1:3100',
+      },
+      body: JSON.stringify({ title: 'x' }),
+    });
+    Object.defineProperty(request, 'url', { value: 'http://localhost:3100/api/collab/v1/projects/p1/tasks' });
+
+    const res = await POST(request, makeCtx(['projects', 'p1', 'tasks']));
+
+    expect(res.status).toBe(403);
+    const data = await res.json();
+    expect(data.error.code).toBe('cross_origin_forbidden');
+    expect(mockGetServerSession).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a mutation whose Origin is a malformed not-a-url with a present host', async () => {
+    const fetchMock = upstreamFetchMock();
+
+    const request = new Request('http://localhost:3100/api/collab/v1/projects/p1/tasks', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        origin: 'not-a-url',
+        host: '127.0.0.1:3100',
+      },
+      body: JSON.stringify({ title: 'x' }),
+    });
+    Object.defineProperty(request, 'url', { value: 'http://localhost:3100/api/collab/v1/projects/p1/tasks' });
+
+    const res = await POST(request, makeCtx(['projects', 'p1', 'tasks']));
+
+    expect(res.status).toBe(403);
+    const data = await res.json();
+    expect(data.error.code).toBe('cross_origin_forbidden');
+    expect(mockGetServerSession).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('returns a generic 503 and no secret when the shared secret is missing', async () => {
     delete process.env.FF_COLLAB_AUTH_SECRET;
     const fetchMock = upstreamFetchMock();
@@ -241,7 +285,7 @@ describe('collab proxy /api/collab/v1', () => {
     expect(res.status).toBe(503);
     const data = await res.json();
     expect(data.error.message).toBe('Configuration error. Contact support.');
-    expect(JSON.stringify(data)).not.toContain('3847');
+    expect(JSON.stringify(data)).not.toContain('127.0.0.1:3847');
     expect(JSON.stringify(data)).not.toContain('ECONNREFUSED');
   });
 

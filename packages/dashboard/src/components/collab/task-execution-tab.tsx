@@ -800,12 +800,6 @@ interface RequestLike {
   choices?: { id: string; label: string }[];
 }
 
-/**
- * Fallback pending-request extraction from the normalized timeline: C emits
- * kind='attention' entries carrying permissionKind/name/input/actions (and the
- * legacy 'permission_request' shape). Resolution is signaled by a separate
- * resolved event, so an entry is pending only if no later resolution exists.
- */
 function extractUnresolvedRequest(entries: TimelineEntry[]): PendingRequest | null {
   for (let i = entries.length - 1; i >= 0; i -= 1) {
     const entry = entries[i];
@@ -853,11 +847,6 @@ interface PendingRequestDto {
   expiresAt?: string | null;
 }
 
-/**
- * Question/permission card following Flowly's session-question encoding
- * (MIT, pinned 13213f4): question forms render options plus "Other" text and
- * submit answers keyed by question header; approvals submit the host action id.
- */
 function PendingRequestCard({
   request,
   draft,
@@ -917,8 +906,6 @@ function PendingRequestCard({
               <Button
                 size="sm"
                 disabled={!answerable}
-                // Wire contract: behavior allow|deny with header-keyed answers;
-                // C maps them onto the provider's updatedInput server-side.
                 onClick={() => onSend({ behavior: 'allow', answers: buildAnswers(questions, current) })}
               >
                 Submit answers
@@ -935,7 +922,6 @@ function PendingRequestCard({
     );
   }
 
-  // Approval (tool/plan permission): submit the host-supplied action id.
   return (
     <div className="rounded-md border border-orange-500/40 bg-orange-500/10 p-2.5 text-sm">
       <p className="font-medium">{request.title ?? request.name ?? 'Permission request'}</p>

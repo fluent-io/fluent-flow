@@ -1,9 +1,5 @@
 import { z } from 'zod';
 
-/**
- * Shared wire schemas for the collaboration domain (camelCase). B consumes
- * these from `@fluent-flow/db`; A validates service boundaries with them.
- */
 export const taskStatusSchema = z.enum([
   'backlog',
   'ready',
@@ -36,7 +32,6 @@ export const collabTaskSchema = z.object({
   status: taskStatusSchema,
   priority: taskPrioritySchema,
   assigneeId: z.string().uuid().nullable(),
-  /** Server-side projection of the assignee's display name (null when unassigned). */
   assigneeName: z.string().nullable(),
   version: z.number().int().min(1),
   position: z.string().min(1).max(64),

@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { collabFetch, collabFetchAll, ApiError } from '@/lib/collab/api';
@@ -44,11 +45,20 @@ export function SettingsView() {
     [me],
   );
 
+  const requestedProjectId = useSearchParams().get('projectId');
+  const appliedRequest = useRef<string | null>(null);
   useEffect(() => {
-    if (!scope && workspaceOptions.length > 0) {
+    if (!requestedProjectId || appliedRequest.current === requestedProjectId) return;
+    if (!projectOptions.some((p) => p.id === requestedProjectId)) return;
+    appliedRequest.current = requestedProjectId;
+    setScope({ kind: 'project', id: requestedProjectId });
+  }, [requestedProjectId, projectOptions]);
+
+  useEffect(() => {
+    if (!scope && workspaceOptions.length > 0 && !requestedProjectId) {
       setScope({ kind: 'workspace', id: workspaceOptions[0].id });
     }
-  }, [scope, workspaceOptions]);
+  }, [scope, workspaceOptions, requestedProjectId]);
 
   if (!me) return <p className="py-16 text-center text-sm text-muted-foreground">Loading…</p>;
 
@@ -287,7 +297,7 @@ function ProjectScopedPanels({ me, project, reload }: { me: MeResponse; project:
   );
 }
 
-function ProjectCreate({ projectId, workspaceId, canCreate, onCreated }: { projectId: string | null; workspaceId: string | null; canCreate: boolean; onCreated: () => Promise<void> }) {
+export function ProjectCreate({ projectId, workspaceId, canCreate, onCreated }: { projectId: string | null; workspaceId: string | null; canCreate: boolean; onCreated: () => Promise<void> }) {
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -310,8 +320,8 @@ function ProjectCreate({ projectId, workspaceId, canCreate, onCreated }: { proje
   }
 
   return (
-    <form onSubmit={submit} className="mt-3 flex gap-2">
-      <Input placeholder="New project name" value={name} onChange={(e) => setName(e.target.value)} required />
+    <form onSubmit={submit} className="mt-3 flex flex-wrap gap-2">
+      <Input aria-label="New project name" placeholder="New project name" className="min-w-0 flex-1" maxLength={200} value={name} onChange={(e) => setName(e.target.value)} required />
       <Button size="sm" type="submit" disabled={busy}>
         Create project
       </Button>
@@ -540,16 +550,31 @@ function ExecutionDefaultsPanel({ project, mappings, onChanged }: { project: Pro
   const summaryProfile = profiles.find(profile => profile.id === summaryProfileId);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [conflict, setConflict] = useState(false);
+  const defaultsKey = JSON.stringify(defaults ?? null);
+  const [dirty, setDirty] = useState(false);
+  const [baseVersion, setBaseVersion] = useState(project.version);
+  const changedElsewhere = dirty && project.version !== baseVersion;
 
   useEffect(() => {
-    setMappingId(defaults?.mappingId ?? '');
-    setProfileId(defaults?.profileId ?? '');
-    setModel(defaults?.model ?? '');
-    setInstructions(defaults?.instructions ?? '');
-    setSummaryEnabled(defaults?.summary?.enabled ?? false);
-    setSummaryProfileId(defaults?.summary?.profileId ?? '');
-    setSummaryModel(defaults?.summary?.model ?? '');
-  }, [defaults, project.id]);
+    if (dirty) return;
+    const saved = JSON.parse(defaultsKey) as typeof defaults;
+    setMappingId(saved?.mappingId ?? '');
+    setProfileId(saved?.profileId ?? '');
+    setModel(saved?.model ?? '');
+    setInstructions(saved?.instructions ?? '');
+    setSummaryEnabled(saved?.summary?.enabled ?? false);
+    setSummaryProfileId(saved?.summary?.profileId ?? '');
+    setSummaryModel(saved?.summary?.model ?? '');
+    setBaseVersion(project.version);
+  }, [defaultsKey, project.id, project.version, dirty]);
+
+  async function reloadDefaults() {
+    setError(null);
+    setConflict(false);
+    await onChanged();
+    setDirty(false);
+  }
 
   async function save(event: React.FormEvent) {
     event.preventDefault();
@@ -559,7 +584,7 @@ function ExecutionDefaultsPanel({ project, mappings, onChanged }: { project: Pro
       await collabFetch(`/projects/${project.id}`, {
         method: 'PATCH',
         body: {
-          expectedVersion: project.version,
+          expectedVersion: baseVersion,
           executionDefaults: {
             mappingId,
             profileId,
@@ -570,8 +595,12 @@ function ExecutionDefaultsPanel({ project, mappings, onChanged }: { project: Pro
         },
       });
       await onChanged();
+      setConflict(false);
+      setDirty(false);
     } catch (err) {
-      setError(err instanceof ApiError && err.status === 409 ? 'This item changed. Refresh before saving.' : err instanceof Error ? err.message : 'Could not save execution defaults.');
+      const isConflict = err instanceof ApiError && err.status === 409;
+      setConflict(isConflict);
+      setError(isConflict ? 'This item changed. Reload the saved defaults before saving; your edits stay here until you do.' : err instanceof Error ? err.message : 'Could not save execution defaults.');
     } finally {
       setBusy(false);
     }
@@ -580,7 +609,10 @@ function ExecutionDefaultsPanel({ project, mappings, onChanged }: { project: Pro
   return (
     <section aria-label="Execution defaults" className="rounded-lg border border-border bg-card p-4">
       <h2 className="text-sm font-medium">Execution defaults for {project.name}</h2>
-      <form onSubmit={save} className="mt-2 flex flex-col gap-2 text-sm">
+      {changedElsewhere && !conflict ? (
+        <p role="status" className="mt-2 text-xs text-muted-foreground">These defaults were changed elsewhere. Saving will be refused until you reload them.</p>
+      ) : null}
+      <form onSubmit={save} onChange={() => setDirty(true)} className="mt-2 flex flex-col gap-2 text-sm">
         <label className="flex flex-col gap-1 text-xs">
           Repository mapping
           <select aria-label="Default mapping" className="h-8 rounded border border-border bg-background px-2 text-xs" value={mappingId} onChange={(e) => setMappingId(e.target.value)}>
@@ -641,6 +673,11 @@ function ExecutionDefaultsPanel({ project, mappings, onChanged }: { project: Pro
         </Button>
       </form>
       {error ? <p role="alert" className="mt-2 text-xs text-destructive">{error}</p> : null}
+      {conflict || changedElsewhere ? (
+        <Button size="sm" variant="outline" className="mt-2" onClick={() => void reloadDefaults()}>
+          Reload defaults
+        </Button>
+      ) : null}
     </section>
   );
 }

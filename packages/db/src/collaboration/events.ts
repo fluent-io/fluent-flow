@@ -20,8 +20,6 @@ export type TaskEvent = {
 };
 
 function cursorFor(row: Record<string, any>): string {
-  // Preserve PostgreSQL microseconds; JS Date would replay events within the
-  // same millisecond on an open stream.
   return Buffer.from(JSON.stringify({ t: row.cursor_at, i: row.id })).toString('base64url');
 }
 
@@ -90,7 +88,6 @@ async function projectIdForTask(taskId: string): Promise<string> {
   return rows[0].project_id;
 }
 
-/** A read cursor acknowledges visible updates, never resolves pending work. */
 export async function markTaskRead(input: {
   actor: { principalId: string; sessionVersion: number }; taskId: string; eventId: string;
 }): Promise<void> {
@@ -119,7 +116,6 @@ export type AttentionItem = {
   title: string; detail: string | null; createdAt: string; sessionId: string | null; requestId: string | null;
 };
 
-/** Scope and visibility precede pagination; resolved requests are history only. */
 export async function listAttention(input: z.input<typeof listEventsSchema>): Promise<{
   attention: AttentionItem[]; nextCursor: string | null;
 }> {

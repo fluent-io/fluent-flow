@@ -42,11 +42,6 @@ function membershipRow(row: Record<string, unknown>): CollabMembership {
   };
 }
 
-/**
- * Delegation boundary shared by invite/add/update: the granted role's
- * capabilities must be a subset of the actor's effective capabilities at that
- * exact scope. Returns the checked actor capability set.
- */
 async function requireDelegableRole(
   actor: { principalId: string; sessionVersion: number },
   scope: { workspaceId?: string; projectId?: string | null },
@@ -60,13 +55,6 @@ async function requireDelegableRole(
   requireCapabilitySubset(roleCapabilities, actorCapabilities);
 }
 
-/**
- * 409 when a WORKSPACE-SCOPED admin-capable membership would lose its admin
- * (removal or demotion) and no other workspace admin remains. Project-scope
- * rows and same-role updates never trigger it. Runs INSIDE the caller's
- * transaction, which must hold the workspace membership advisory lock so
- * concurrent mutual removals serialize.
- */
 async function guardAdminRetention(
   tx: PoolClient,
   input: {
@@ -111,9 +99,6 @@ async function guardAdminRetention(
 }
 
 function membershipLock(tx: PoolClient, workspaceId: string): Promise<unknown> {
-  // Serialize workspace-scope membership mutations (add is excluded but
-  // harmless); prevents concurrent mutual removals from dropping the last
-  // admin between the check and the write.
   return tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`collab-memberships:${workspaceId}`]);
 }
 
@@ -260,7 +245,6 @@ export async function listCollabMembers(input:{actor:{principalId:string;session
   return {members:rows.slice(0,parsed.limit),nextCursor:rows.length>parsed.limit?rows[parsed.limit-1].id:null};
 }
 
-/** Assignment choices reveal only enabled people who can read this project. */
 export async function listCollabAssignees(input:{actor:{principalId:string;sessionVersion:number};projectId:string}) {
   const projectId=z.string().uuid().parse(input.projectId);
   await resolveScopeCapabilities(input.actor,{projectId}).then(caps=>requireCapabilities(caps,['task.write']));

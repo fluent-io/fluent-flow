@@ -39,7 +39,6 @@ export async function authenticateCollabToken(token:string):Promise<CollabTokenC
   return {kind:'human',actor,projectId:rows[0].project_id,tokenId:rows[0].id};
 }
 
-/** Agent context resolves identity from the credential, never model arguments. */
 export async function getAgentReportingTask(context:AgentReportingContext) {
   const {rows}=await getPool().query(`SELECT t.id,t.project_id AS "projectId",t.title,t.description,t.status,t.version,
       r.state AS "runState" FROM collab_tasks t JOIN collab_runs r ON r.task_id=t.id

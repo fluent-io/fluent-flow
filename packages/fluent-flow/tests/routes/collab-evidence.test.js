@@ -1,10 +1,5 @@
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 
-// A4 evidence acceptance against the REAL application wiring: actual
-// createApp, actual collab router registration and runMigrations only — no
-// manual router assembly, no manual DDL. Domain-level focused tests that
-// bypass app wiring live in collab-evidence-domain.test.js and are labeled as
-// such there.
 vi.mock('../../src/tracing.cjs', () => ({}));
 vi.mock('../../src/logger.js', async () => {
   const { createMockLogger } = await import('../helpers/mock-logger.js');
@@ -70,8 +65,6 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
     });
     projectA1 = await db.createCollabProject({ actor: managerActor, workspaceId: ws.id, name: 'Evidence A1' });
 
-    // Collaborator principal (password path): invite through the real service,
-    // then add the workspace collaborator role membership.
     const { rows: roleRows0 } = await db.getPool().query(
       `SELECT id FROM collab_roles WHERE workspace_id = $1 AND name = 'collaborator'`,
       [ws.id],
@@ -92,7 +85,6 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
     });
     collaboratorActor = { principalId: collaborator.principal.id, sessionVersion: collaborator.principal.sessionVersion };
 
-    // Outsider: separate client, no access to workspace A.
     const adminB = await seedLegacyUser(process.env.DATABASE_URL, { githubId: 9202, login: 'evidence-outsider' });
     await seedLegacyOrgMembership(process.env.DATABASE_URL, adminB, 'org-evidence-b', 'admin');
     const outsiderPrincipal = await db.ensureGithubPrincipal({
@@ -164,7 +156,6 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
     expect(stale.status).toBe(409);
     expect(stale.body.error.code).toBe('version_conflict');
 
-    // History preserves who changed what (delivery acknowledgment consumes it).
     const history = await api(baseUrl, 'GET', `/tasks/${taskA1.id}/criteria/${criterionId}/history`, {
       actor: managerActor,
     });
@@ -179,7 +170,6 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
   });
 
   it('rejects criterion writes from actors without task.write', async () => {
-    // Viewer principal: task.read only.
     const db = await import('@fluent-flow/db');
     const { rows: viewerRows } = await db.getPool().query(
       `INSERT INTO collab_principals (display_name, email) VALUES ('Evidence Viewer', 'evidence-viewer@example.test') RETURNING id, session_version`,
@@ -205,7 +195,6 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
       body: { text: 'should not persist' },
     });
     expect(denied.status).toBe(403);
-    // A's authorize emits code 'forbidden' for known-scope missing capability.
     expect(denied.body.error.code).toBe('forbidden');
   });
 
@@ -479,7 +468,6 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
     expect(registration.status).toBe(200);
     const connector = (await registration.json()).data;
     const mapping = await db.createProjectHostMapping({ actor: managerActor, projectId: project.id, hostId: host.id, repositoryKey: 'private/generic-repo', profileIds: ['profile'], defaultProfileId: 'profile' });
-    // Simulate an old poisoned configuration; new settings writes also validate it.
     await db.getPool().query('UPDATE collab_projects SET execution_defaults=$2 WHERE id=$1', [project.id, { mappingId: foreign.mapping_id }]);
     const poisonTask = await db.createCollabTask({ actor: managerActor, projectId: project.id, title: 'Foreign default must not route' });
     const poisonStart = await api(baseUrl, 'POST', `/tasks/${poisonTask.id}/runs`, { actor: managerActor, idempotencyKey: 'poisoned-default-start', body: { expectedVersion: poisonTask.version } });
@@ -785,8 +773,6 @@ describe('A4 evidence slice 2: named checks and append-only evidence', () => {
     expect(evidence.status).toBe(201);
     expect(evidence.body.data).toMatchObject({ status: 'passed', provenance: 'human' });
 
-    // Internal checks require internal.read: the collaborator (task.write but
-    // no internal.read) must not see their own internal check listed.
     const collaboratorList = await api(baseUrl, 'GET', `/tasks/${taskA1.id}/checks`, { actor: collaboratorActor });
     expect(collaboratorList.status).toBe(200);
     expect(collaboratorList.body.data.find((c) => c.id === checkId)).toBeUndefined();
@@ -795,7 +781,7 @@ describe('A4 evidence slice 2: named checks and append-only evidence', () => {
     expect(list.status).toBe(200);
     const check = list.body.data.find((c) => c.id === checkId);
     expect(check.evidence).toHaveLength(1);
-    expect(check.evidence[0].stale).toBe(true); // commit unknown to any run head
+    expect(check.evidence[0].stale).toBe(true);
     expect(check.evidence[0].staleReason).toMatch(/unknown|head/i);
   });
 
@@ -812,7 +798,6 @@ describe('A4 evidence slice 2: named checks and append-only evidence', () => {
     expect(check.evidence[0].stale).toBe(true);
     expect(check.evidence[0].staleReason).toMatch(/definition/i);
 
-    // Check edit requires task.write: collaborator may not edit the manager's check version here? (both have task.write; guard instead on a viewer)
   });
 
   it('rejects non-human provenance on the actor path (trusted contexts only)', async () => {
@@ -820,8 +805,6 @@ describe('A4 evidence slice 2: named checks and append-only evidence', () => {
       actor: managerActor,
       body: { status: 'passed', provenance: 'agent' },
     });
-    // The HTTP actor path records human provenance only; agent/runner go
-    // through A's trusted report contexts / observation sink.
     expect(rejected.status).toBe(403);
     expect(rejected.body.error.code).toBe('provenance_forbidden');
   });

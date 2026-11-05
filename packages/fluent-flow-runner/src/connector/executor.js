@@ -1,21 +1,5 @@
 import { createHash } from 'node:crypto';
 
-/**
- * Command executor: turns control-plane commands into journal-guarded,
- * allowlist-checked Paseo operations and normalized observations.
- *
- * Responsibilities:
- * - SINGLE authoritative intent/digest writer: the wire command's canonical
- *   digest is journaled here and nowhere else (nested keys included), so a
- *   redelivered command with a changed payload can never execute.
- * - Launch is STAGED per contract: bind (idle workspace+agent, journal
- *   binding, `accepted` ack with IDs) happens BEFORE the initial prompt is
- *   sent (`applied` ack).
- * - Prompts/permissions/cancels resolve the EXACT (runId, sessionId) binding;
- *   foreign agent ids in payloads are rejected.
- * - Lost/uncertain prompt sends surface as `ambiguous` (reconciliation),
- *   never terminal failed — a paid run may have started.
- */
 
 export class ExecutorError extends Error {
   /**
@@ -29,7 +13,6 @@ export class ExecutorError extends Error {
   }
 }
 
-/** Recursively canonical serialization: sorted keys at every depth. */
 export function canonicalSerialize(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null);
   if (Array.isArray(value)) return `[${value.map(canonicalSerialize).join(',')}]`;
@@ -47,9 +30,6 @@ export function canonicalDigest(payload) {
  * @param {object} opts.adapter - createPaseoAdapter(...) result
  * @param {object} opts.journal
  * @param {Array<object>} [opts.catalogProfiles] - sanitized local catalog profiles
- *   (exactly what was published at registration). Command profileSnapshots are
- *   pinned against these: a control plane cannot swap provider/mode/model
- *   behind the host's allowlist.
  * @param {(obj: object, msg?: string) => void} [opts.log]
  * @param {object} [opts.capabilities] - injected host capabilities
  * @param {(agentId: string) => Promise<void>} [opts.capabilities.stopAgent]
@@ -82,13 +62,6 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
     return profileId;
   }
 
-  /**
-   * The command's profile snapshot must EXACTLY match the local allowlisted
-   * catalog descriptor, and a run-level model override must equal the
-   * snapshot's model: the host only executes its own allowlisted
-   * profile+model pairs, whatever a (possibly compromised or buggy) control
-   * plane sends.
-   */
   function pinProfile(payload) {
     const profileId = payload?.profileId;
     resolveProfile(profileId);
@@ -177,8 +150,6 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
         sessionId: command.sessionId,
         observedAt: new Date().toISOString(),
         kind: 'session_bound',
-        // Omit null providerSessionId: a partial merge on the server would
-        // otherwise wipe the previously bound Paseo id.
         payload: {
           paseoAgentId: binding.paseoAgentId,
           ...(binding.providerSessionId ? { providerSessionId: binding.providerSessionId } : {}),
@@ -190,14 +161,8 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
 
   return {
     /**
-     * Execute one control-plane command up to its next ack boundary.
-     * Launch commands return {stage:'bound', state:'accepted',...} first (IDs
-     * persisted/acked before the billable prompt); call complete() for the
-     * deliver stage. All other kinds resolve in one call.
-     *
      * @param {object} command - {id, runId, sessionId, kind, payload}
      * @returns {Promise<{stage?:string, state:string, result?:object, errorCode?:string, observations?:object[]}>}
-     *   state: 'applied' | 'accepted' | 'failed' | 'ambiguous'
      */
     async execute(command) {
       const intent = intentFor(command);
@@ -205,7 +170,6 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
         await journal.append(intent);
       } catch (err) {
         if (/digest/i.test(err.message)) {
-          // Same command id, different payload: refuse to execute.
           log({ msg: 'command digest mismatch; refusing', commandId: command.id });
           return { state: 'failed', errorCode: 'digest_mismatch' };
         }
@@ -235,10 +199,6 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
             throw new ExecutorError('unknown_command_kind', 'Command kind is not supported by this connector.');
         }
       } catch (err) {
-        // Domain rejections (allowlist, snapshot pinning, session identity,
-        // inactive permission requests) are DEFINITE outcomes: terminal
-        // failed with a stable code. Uncertain transport failures surface as
-        // ambiguous from the adapter, never as failed.
         if (err instanceof ExecutorError) {
           log({ msg: 'command rejected', commandId: command.id, code: err.code });
           return { state: 'failed', errorCode: err.code };
@@ -252,7 +212,6 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
       const { id: commandId, runId, sessionId } = command;
       let binding = journal.byCommand(commandId)?.binding;
       if (!binding) {
-        // BIND STAGE: allowlist resolution + idle workspace/agent + journal.
         const repoPath = resolveRepo(payload.repositoryKey);
         pinProfile(payload);
         const result = await adapter.launch({
@@ -275,9 +234,6 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
         }
         binding = journal.byCommand(commandId)?.binding;
       } else {
-        // Redelivery after a bind whose ack never reached the control plane:
-        // re-present the SAME journaled IDs for the accepted ack. The prompt
-        // is only ever delivered after that ack is CONFIRMED (loop gating).
         pinProfile(payload);
       }
       return {
@@ -288,17 +244,6 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
       };
     },
 
-    /**
-     * DELIVER STAGE of a bound prompt-bearing command (launch, create_session,
-     * summarize): send the initial prompt once, guarded by the journaled
-     * `sent` intent. The caller must have a CONFIRMED control-plane
-     * acceptance of the bind stage first.
-     *
-     * LAUNCH GUARD: an initial launch without a real bounded prompt is a
-     * failed `prompt_required` — never an applied no-op (a blank Start must
-     * still produce exactly one actual task prompt, composed server-side).
-     * Additional work and summary sessions require the same bounded prompt.
-     */
 
     async complete(command) {
       const payload = command.payload ?? {};
@@ -332,7 +277,6 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
           digest: intentFor(command).payloadDigest,
         });
       } else {
-        // create_session / summarize deliver inside the run's workspace.
         const runBinding = command.kind === 'create_session' ? journal.bindingForRun(command.runId) : binding;
         if (!runBinding) return { state: 'failed', errorCode: 'run_not_bound' };
         result = await adapter.createSession({
@@ -430,9 +374,6 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
       const { id: commandId, runId, sessionId } = command;
       const binding = boundSession(runId, sessionId, payload.paseoAgentId);
       const response = payload.response;
-      // WIRE contract (A3): behavior allow|deny with optional answers
-      // (header->string). There is NO 'answer' behavior anywhere: question
-      // answers are TRANSLATED into the real SDK union below.
       if (!response || !['allow', 'deny'].includes(response.behavior)) {
         throw new ExecutorError('invalid_response', 'Permission response behavior must be allow or deny.');
       }
@@ -442,9 +383,6 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
 
       let sdkResponse;
       if (response.behavior === 'allow' && response.answers !== undefined) {
-        // Question-kind translation: answers must be an object of
-        // header->string and every value must be among the CURRENT request's
-        // offered options when it offers exactly one option list.
         if (!response.answers || typeof response.answers !== 'object' || Array.isArray(response.answers)) {
           throw new ExecutorError('invalid_response', 'Answers must be an object of header to string.');
         }
@@ -452,8 +390,6 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
         if (!entries.length || !entries.every(([, v]) => typeof v === 'string')) {
           throw new ExecutorError('invalid_response', 'Answers must map headers to string values.');
         }
-        // CURRENT request authority: the response is only valid for a request
-        // that is pending RIGHT NOW on this exact session.
         const handle = adapter.resolveAgentHandle(binding.paseoAgentId);
         let current = null;
         try {
@@ -490,8 +426,6 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
             if (matches.length > 1) throw new ExecutorError('invalid_response', 'The answered option is ambiguous.');
             return matches[0] ?? selection;
           };
-          // Resolve only current offered options; never expand arbitrary
-          // user text or display placeholders into local paths/credentials.
           answer = nativeOption(answer);
           if (question.multiSelect === true && !labels.includes(answer)) answer = answer.split(', ').map(nativeOption).join(', ');
           const acceptsText = !labels.length || question.allowOther === true || question.isOther === true;
@@ -552,10 +486,6 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
 
     async executeSummarize(command) {
       const payload = command.payload ?? {};
-      // Summary settings come from the AUTHORIZED server command/run snapshot
-      // (project executionDefaults frozen by the control plane); the connector
-      // re-pins the profile against the local allowlist. No snapshot means
-      // summaries are disabled/unconfigured for this project.
       if (!payload.profileId || !payload.profileSnapshot) {
         throw new ExecutorError('summary_disabled', 'Summary generation is disabled or unavailable.');
       }
@@ -568,8 +498,6 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
       if (!capabilities.readArtifact) {
         throw new ExecutorError('artifact_read_unavailable', 'Artifact reads are not available on this host.');
       }
-      // The workspace root comes from the JOURNALED run binding — the payload
-      // cannot select (or spoof) a root.
       const binding = journal.bindingForRun(runId);
       if (!binding?.repositoryKey) {
         throw new ExecutorError('run_not_bound', 'No allowlisted workspace is journaled for this run yet.');

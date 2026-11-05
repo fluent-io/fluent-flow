@@ -27,6 +27,9 @@ rate-limited secret invitation redemption.
   `GET /hosts` returns token-free summaries with nullable `lastHeartbeatAt`;
   consumers must not substitute a different timestamp field or creation DTO.
 - `routes-connector.js`: outbound host lease/command/observation protocol.
+  `POST /poll` holds an empty poll up to the body's `waitMs`; when the client
+  drops the connection (response closes before it finishes) it aborts the
+  wait so the server stops rechecking.
 - `routes-evidence.js`: retained workpad/artifact/idea/summary/usage/delivery APIs.
 - `mcp.js`: separate `/mcp/collab` Streamable HTTP endpoint, twelve canonical
   task tools plus bound plan/progress/summary reporting. Human tokens scope
@@ -62,6 +65,27 @@ mapping, and catalog-allowlisted work/summary profiles and model selections.
 Known cached catalogs remain configurable while the host is offline. Invalid
 selection returns422; stale configuration writes return409. Summary generation
 can be disabled without discarding its configured profile/model.
+
+Project overviews: `GET /projects/:id` returns a safe DTO (`id`, `workspaceId`,
+`workspaceName`, `name`, `version`, `boardVersion`, `description`,
+`runInstructions`, `testInstructions`) to any current project member. It never
+includes hosts, mappings, execution defaults, profiles or sessions. A project
+without a saved overview returns empty strings. `PATCH /projects/:id/overview`
+requires `project.admin` and `expectedVersion`; `name` (1–200 characters) and
+each text field (up to 20,000 characters) are optional, but at least one must be
+present. Unknown keys and malformed values return400 with nothing saved,
+non-members get404, members without `project.admin` get403, and a stale version
+returns409 `version_conflict` with `currentVersion`. Overview edits and
+execution-default writes share the project version, so either side conflicts
+instead of overwriting the other. Board version, tasks and execution defaults
+are never changed. `/me` stays a lightweight catalog without overview text.
+
+Run mutation responses use the caller's current visibility. `PATCH /runs/:id`
+returns the safe run badge unless the actor has `internal.read`.
+`POST /runs/:id/sessions` returns only `created` to start-only actors; internal
+readers also receive the session and command identifiers. Idempotent replay
+uses the actor's current capabilities rather than the capabilities held when
+the request was first accepted.
 
 Operator UAT: create a backlog task with the host offline, confirm Ready creates
 no command, explicitly Start, reconnect the intended host, then verify progress,

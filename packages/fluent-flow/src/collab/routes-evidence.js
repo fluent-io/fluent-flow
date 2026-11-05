@@ -31,13 +31,6 @@ import {
   updateCollabCriterion,
 } from '@fluent-flow/db/dist/collaboration/evidence.js';
 
-/**
- * A4 evidence routes (B-owned slice): acceptance criteria, checks + evidence,
- * artifacts, ideas, summaries, usage and delivery. Mounted by the main collab
- * router behind requireActor; services re-check principal/capability, so the
- * routes stay thin envelope mapping. Deep import until the index re-export is
- * registered (coordinated with A).
- */
 export function registerEvidenceRoutes(router) {
   router.get('/tasks/:id/criteria', async (req, res, next) => {
     try {
@@ -199,7 +192,6 @@ export function registerEvidenceRoutes(router) {
       const inline=['text/plain','image/png','image/jpeg','image/webp','image/gif','application/pdf'].includes(mediaType);
       res.set('Content-Type',mediaType);
       res.set('Content-Security-Policy',"default-src 'none'; sandbox");
-      // ASCII fallback prevents header injection; the full name remains in metadata.
       const name=result.name.replace(/[^a-zA-Z0-9._ -]/g,'_').slice(0,150)||'artifact';
       res.set('Content-Disposition',`${inline?'inline':'attachment'}; filename="${name}"`);
       res.send(result.contentBase64 ? Buffer.from(result.contentBase64,'base64') : result.content);

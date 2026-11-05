@@ -1,4 +1,3 @@
-/** A late response from an old project/session must never restore revoked data. */
 export class LatestRequest {
   private controller: AbortController | null = null;
   private signal: AbortSignal | null = null;
@@ -21,7 +20,6 @@ export class LatestRequest {
   }
 }
 
-/** The refresh callback owns its error UI; slow requests never overlap. */
 export function pollResource(refresh: (signal: AbortSignal) => Promise<void>, intervalMs = 3000): () => void {
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;

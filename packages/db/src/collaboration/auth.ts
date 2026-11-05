@@ -1,17 +1,5 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
-/**
- * Bridge actor assertion (dashboard -> Express collaboration API).
- *
- * Wire format: `v1.<payloadBase64url>.<signatureBase64url>` where the payload
- * is UTF-8 JSON `{iss,aud,sub,sessionVersion,iat,exp}` and the signature is
- * HMAC-SHA256 over the ASCII signing input `v1.<payloadBase64url>` keyed with
- * the server-only FF_COLLAB_AUTH_SECRET. See
- * docs/plans/2026-10-19-collaborative-contracts.md ("Identity and permissions").
- *
- * These helpers are pure cryptography: principal/sessionVersion/membership are
- * re-checked against the DB by callers on every operation.
- */
 
 export type CollabActor = { principalId: string; sessionVersion: number };
 
@@ -20,17 +8,14 @@ const ACTOR_ISSUER = 'fluent-flow-dashboard';
 const ACTOR_AUDIENCE = 'fluent-flow-collab';
 const ACTOR_TTL_SECONDS = 60;
 const ACTOR_CLOCK_SKEW_SECONDS = 5;
-const SIGNATURE_LENGTH_BYTES = 32; // HMAC-SHA256
+const SIGNATURE_LENGTH_BYTES = 32;
 const MAX_PAYLOAD_BYTES = 4096;
 const MAX_SUB_LENGTH = 128;
 
-/** Typed rejection with a stable internal reason for server-side logs only. */
 export class CollabAssertionError extends Error {
   readonly reason: string;
 
   constructor(reason: string) {
-    // The message never contains assertion content — it may end up in logs
-    // alongside request IDs and must not carry secrets or tokens.
     super(`collab actor assertion rejected: ${reason}`);
     this.name = 'CollabAssertionError';
     this.reason = reason;
@@ -38,8 +23,6 @@ export class CollabAssertionError extends Error {
 }
 
 function hmac(secret: string, payloadB64: string): Buffer {
-  // The signing input `v1.<payloadBase64url>` is the wire contract — sign and
-  // verify must construct it identically.
   return createHmac('sha256', secret)
     .update(`${ACTOR_VERSION}.${payloadB64}`, 'ascii')
     .digest();
@@ -51,8 +34,6 @@ export function signCollaborationActor(
   nowSeconds: number = Math.floor(Date.now() / 1000),
 ): string {
   if (typeof secret !== 'string' || secret.length === 0) {
-    // Callers translate this into 503 unavailable configuration; the detail
-    // stays server-side.
     throw new CollabAssertionError('missing_secret');
   }
   if (
@@ -83,7 +64,6 @@ function decodeSegment(segment: string, reason: string): Buffer {
     throw new CollabAssertionError(reason);
   }
   const decoded = Buffer.from(segment, 'base64url');
-  // base64url decoding is permissive; re-encode to prove the segment was canonical.
   if (decoded.toString('base64url') !== segment) {
     throw new CollabAssertionError(reason);
   }

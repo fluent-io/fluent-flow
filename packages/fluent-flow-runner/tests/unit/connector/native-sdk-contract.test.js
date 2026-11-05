@@ -14,9 +14,6 @@ it('validates actual public SDK workspace/agent/send/refetch/permission mapping 
   const workspaces = new Map();
   const agents = new Map();
   const calls = { workspace: [], agent: [], send: [], cursor: [], permissions: [] };
-  // The actual public SDK performs all high-level -> wire option mapping.
-  // Only its daemon I/O driver is replaced, and every request hits the real
-  // pinned protocol schema, rather than a copied regular expression.
   const driver = {
     supportsBackgroundWorkspaces: () => true,
     createWorkspace: async (options) => {

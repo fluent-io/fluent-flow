@@ -9,10 +9,6 @@ import type { MeResponse, Priority, Project, Task } from '@/lib/collab/types';
 
 const PRIORITIES: Priority[] = ['low', 'normal', 'high', 'urgent'];
 
-/**
- * Backlog capture needs no repository, host, run or session prerequisite —
- * a task is created directly on the project.
- */
 export function CreateTaskDialog({
   projects,
   me,
@@ -37,6 +33,10 @@ export function CreateTaskDialog({
   async function submit(event: React.FormEvent) {
     event.preventDefault();
     if (!projectId || title.trim().length === 0) return;
+    if (!writable.some((p) => p.id === projectId)) {
+      setError('Choose a project you can add tasks to.');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -50,8 +50,6 @@ export function CreateTaskDialog({
       });
       let task = result.data;
       if (defaultStatus !== 'backlog') {
-        // Capture stays in backlog unless the operator explicitly readied it;
-        // moving lanes is a separate, human decision.
         const moved = await collabFetch<{ task: Task; boardVersion: number }>(`/tasks/${task.id}/moves`, {
           method: 'POST',
           body: {

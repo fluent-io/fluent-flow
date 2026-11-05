@@ -75,7 +75,7 @@ From the repository root, run `npm ci`, copy this package's `.env.example` to `.
 npm run dev          # API on 3847 and dashboard on 3000
 ```
 
-The root dev command builds the shared database package first and forwards exported environment variables. The server's existing dev command also loads `packages/fluent-flow/.env.local`. PostgreSQL and the database must already exist; normal server startup applies pending migrations. To run only the API, first run `npm run build -w @fluent-flow/db`, then `npm run dev -w fluent-flow` from the root.
+The root dev command ensures the existing project demo database at `127.0.0.1:55432/ff_demo` is running, then builds the shared database package and forwards exported environment variables. It reuses `.local/postgres-data` without resetting it; custom databases must be started separately. The server's existing dev command also loads `packages/fluent-flow/.env.local`. PostgreSQL and the database must already exist; normal server startup applies pending migrations. To run only the API, first run `npm run build -w @fluent-flow/db`, then `npm run dev -w fluent-flow` from the root. The per-workspace command does not run the root database-start hook.
 
 ### Run with Docker
 

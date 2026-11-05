@@ -11,6 +11,11 @@ surface; `identity.ts` preserves the shared import facade.
 - `workspaces.ts`, `memberships.ts`, `invitations.ts`, `authorize.ts`,
   `capabilities.ts`: current scoped roles, invitations, assignment choices and
   administrative controls. No implicit empty-scope administrator access.
+- `project-overviews.ts`: member-readable project overview (name, description,
+  run and test instructions) and project.admin edits. Rows live in
+  `collab_project_overviews` (migration 0021); a missing row reads as empty.
+  Edits lock the project row and share `collab_projects.version` with
+  execution defaults.
 - `tasks.ts`, `comments.ts`, `events.ts`, `schemas.ts`: independent backlog,
   versioned edits/moves, client/internal discussion, safe execution cards,
   current attention and monotonic read cursors. Event cursors preserve database
@@ -19,6 +24,12 @@ surface; `identity.ts` preserves the shared import facade.
   context, task-level continuation reservation, host leases, same-command
   redelivery, accepted grants and truthful uncertainty/failure projections.
   Native observations and trusted evidence projections share one transaction.
+  `pollConnectorCommands` is a long-poll: with no deliverable work it rechecks
+  every 500 ms until work arrives, `waitMs` (0–25000, default 25000) expires or
+  the optional internal `signal` aborts. `waitMs: 0` is one non-blocking
+  attempt. Each recheck is its own short fenced transaction (token, session
+  and epoch re-checked), so no connection, transaction or lock is held while
+  waiting and a revoked or superseded host fails on the next recheck.
 - `tokens.ts`: hashed human project tokens and session-bound agent context;
   reporting credentials never grant membership, Start or acceptance powers.
 - `evidence.ts`: workpad criteria/checks/plans/questions, artifacts, ideas,

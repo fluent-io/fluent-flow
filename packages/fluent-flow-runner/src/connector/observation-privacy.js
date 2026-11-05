@@ -1,5 +1,4 @@
-/** Display-only redaction of local context already known to this connector.
- * Native SDK inputs are never passed through this transform.
+/**
  * @param {{sourceRoots?: string[], paseoHome?: string, secrets?: string[]}} [options]
  */
 export function createObservationPrivacy({ sourceRoots = [], paseoHome, secrets = [] } = {}) {

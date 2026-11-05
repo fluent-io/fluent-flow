@@ -28,8 +28,6 @@ type SignInArgs = Parameters<NonNullable<NextAuthCallbacks['signIn']>>[0];
 type JwtArgs = Parameters<NonNullable<NextAuthCallbacks['jwt']>>[0];
 type SessionArgs = Parameters<NonNullable<NextAuthCallbacks['session']>>[0];
 
-// Test doubles for NextAuth callback payloads: NextAuth constructs these
-// internally, so the shapes cannot be produced without a seam cast.
 function asSignInArgs(args: Record<string, unknown>): SignInArgs {
   return args as unknown as SignInArgs;
 }
@@ -42,11 +40,6 @@ function asSessionArgs(args: Record<string, unknown>): SessionArgs {
   return args as unknown as SessionArgs;
 }
 
-// Mirrors next-auth/core/lib/providers.js parseProviders for non-oauth
-// providers (deep import is blocked by the package exports map): the factory
-// output carries the user config in `options` and NextAuth merges it over the
-// rest at request time. Testing authorize through this normalization is what
-// the library actually executes.
 function normalizeCredentialsProvider(provider: { options?: Record<string, unknown> } & Record<string, unknown>) {
   return { ...provider, ...(provider.options ?? {}) } as {
     id: string;
@@ -60,8 +53,6 @@ function normalizeCredentialsProvider(provider: { options?: Record<string, unkno
 function findProvider(providerId: string) {
   const raw = authOptions.providers.find((p) => p.id === providerId);
   if (!raw) throw new Error(`provider ${providerId} missing`);
-  // Provider is a library union without an index signature; the normalized
-  // surface below is asserted once at this test seam.
   const provider = normalizeCredentialsProvider(raw as unknown as { options?: Record<string, unknown> } & Record<string, unknown>);
   if (!provider.authorize) throw new Error(`provider ${providerId} has no authorize after normalization`);
   return provider;

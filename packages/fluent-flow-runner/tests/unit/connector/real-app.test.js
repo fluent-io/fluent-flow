@@ -11,8 +11,6 @@ import { fakePaseoSdk } from './helpers/fake-paseo.js';
 import { createObserver } from '../../../src/connector/observer.js';
 import { createPaseoAdapter } from '../../../src/connector/paseo-adapter.js';
 
-// This suite deliberately uses a third database: Turbo runs DB/server/runner
-// concurrently. Never inherit their destructive-reset database variables.
 const databaseUrl = process.env.COLLAB_CONNECTOR_TEST_DATABASE_URL;
 if (!databaseUrl) throw new Error('COLLAB_CONNECTOR_TEST_DATABASE_URL must name a dedicated loopback ff_connector_* database.');
 const parsed = new URL(databaseUrl);
@@ -297,7 +295,7 @@ it('projects native idle snapshot lastUsage into real project insights and updat
   expect(samples.rows).toHaveLength(1);
   expect(Number(samples.rows[0].tokens_in)).toBe(132);
   expect(Number(samples.rows[0].tokens_out)).toBe(4681);
-  expect(Number(samples.rows[0].cost_usd)).toBeCloseTo(0.1666354, 6); // Existing numeric(…,6) projection; raw observation stays exact.
+  expect(Number(samples.rows[0].cost_usd)).toBeCloseTo(0.1666354, 6);
   const adapter = createPaseoAdapter({ paseo, journal: runtime.journal });
   const restored = createObserver({ paseo, journal: runtime.journal, adapter, onObservations: (events) => runtime.loop.enqueueObservations(events) });
   await restored.sync();
@@ -320,7 +318,6 @@ it('projects native idle snapshot lastUsage into real project insights and updat
 }, 15_000);
 
 it('retains confirmed archive HEAD as historical across sampling and runtime restart while an unconfirmed missing workspace stays unknown', async () => {
-  // Only this suite's disposable fixture is removed; no native daemon/CLI I/O.
   rmSync(join(worktree, 'generated.md'));
   const remote = join(temp, 'archive-remote.git');
   await exec('git', ['clone', '--bare', worktree, remote]);

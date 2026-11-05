@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { LatestRequest,pollResource } from '@/lib/collab/live';
 import { ApiError, collabFetch } from '@/lib/collab/api';
 import type { AttentionItem } from '@/lib/collab/types';
+import { useCurrentProject } from '@/lib/collab/current-project';
 
 const KIND_LABEL: Record<string, string> = {
   question: 'Agent question',
@@ -17,6 +18,8 @@ const KIND_LABEL: Record<string, string> = {
 const PAGES_PER_LOAD = 20;
 
 export function AttentionView() {
+  const { ready, projectId, catalogError, retryCatalog } = useCurrentProject();
+  const scopeRef = useRef(projectId);
   const [items, setItems] = useState<AttentionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -25,6 +28,7 @@ export function AttentionView() {
   const requests=useRef(new LatestRequest());
   const pageBudget=useRef(PAGES_PER_LOAD);
   const load=useCallback(async(parent?:AbortSignal)=>{
+    if(!ready)return;
     const signal=requests.current.begin(parent);
     setLoading(true);
     try{
@@ -35,6 +39,7 @@ export function AttentionView() {
       for(let page=0;page<pageBudget.current;page++){
         seenCursors.add(cursor??'');
         const params=new URLSearchParams({limit:'100'});
+        if(projectId)params.set('projectId',projectId);
         if(cursor)params.set('cursor',cursor);
         const result=await collabFetch<AttentionItem[]>(`/attention?${params}`,{signal});
         if(!requests.current.current(signal))return;
@@ -56,21 +61,21 @@ export function AttentionView() {
       }
     }
     finally{if(requests.current.current(signal))setLoading(false);}
-  },[]);
+  },[ready,projectId]);
+  useEffect(()=>{scopeRef.current=projectId;setItems([]);setHasMore(false);setError(null);setLoading(true);pageBudget.current=PAGES_PER_LOAD;},[projectId]);
   useEffect(()=>{const stop=pollResource(load);return()=>{stop();requests.current.dispose();};},[load]);
 
   async function markRead(item: AttentionItem) {
+    const scope = scopeRef.current;
     try {
       await collabFetch(`/tasks/${item.taskId}/read-cursor`, {
         method: 'POST',
         body: { eventId: item.id },
       });
-      await load();
     } catch {
-      // Unresolved approvals/errors cannot be cleared by the read cursor; the
-      // server rejects that and the item stays.
-      await load();
     }
+    if (scopeRef.current !== scope) return;
+    await load();
   }
 
   return (
@@ -81,8 +86,14 @@ export function AttentionView() {
           Refresh
         </Button>
       </div>
+      {!ready && catalogError ? (
+        <div role="alert" className="flex flex-wrap items-center gap-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm">
+          <span className="min-w-0 flex-1">Could not load your projects. Check your connection and try again.</span>
+          <Button size="sm" variant="outline" onClick={retryCatalog}>Try again</Button>
+        </div>
+      ) : null}
       {error ? <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm">{error}</p> : null}
-      {loading && items.length === 0 ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
+      {loading && items.length === 0 && !(!ready && catalogError) ? <p className="text-sm text-muted-foreground">Loading…</p> : null}
       {items.length === 0 && !loading && !error ? (
         <p className="py-12 text-center text-sm text-muted-foreground">Nothing needs your attention right now.</p>
       ) : null}

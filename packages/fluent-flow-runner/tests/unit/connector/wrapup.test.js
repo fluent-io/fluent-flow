@@ -9,11 +9,6 @@ import { createJournal } from '../../../src/connector/journal.js';
 
 const execFile = promisify(execFileCb);
 
-/**
- * Wrap-up safety against REAL worktrees and the REAL 0.12.0 descriptor shape
- * (workspaceKind / workspaceDirectory / archivingAt are TOP-LEVEL fields of
- * WorkspaceDescriptorPayload).
- */
 
 let tmp;
 
@@ -103,8 +98,8 @@ describe('wrap-up preflight (real descriptor, real worktree)', () => {
 
   it('blocks on uncommitted REAL changes; the dirty file survives every attempt', async () => {
     const wt = await initRepoWithWorktree('ff/run-2/s-1');
-    writeFileSync(join(wt, 'dirty.txt'), 'must survive'); // untracked
-    writeFileSync(join(wt, 'a.txt'), 'modified tracked file\n'); // uncommitted
+    writeFileSync(join(wt, 'dirty.txt'), 'must survive');
+    writeFileSync(join(wt, 'a.txt'), 'modified tracked file\n');
     const journal = await journalWith('run-2', 's-1', 'ag-1', 'ffws-run-2');
     const paseo = fakePaseo(
       { id: 'ffws-run-2', workspaceKind: 'worktree', workspaceDirectory: wt, archivingAt: null },
@@ -189,8 +184,6 @@ describe('wrap-up preflight (real descriptor, real worktree)', () => {
         { id: 'ag-other', workspaceId: 'ffws-run-8', status: 'idle', archivedAt: null },
       ],
     );
-    // remove the foreign session blocker for this scenario: the foreign agent
-    // lives in ANOTHER workspace, ours is alone here.
     paseo.agents.list = async () => ({ entries: [{ agent: { id: 'ag-mine', workspaceId: 'ffws-run-8', status: 'idle', archivedAt: null } }], pageInfo: {} });
     paseo.agents.ref = (id) => ({ archive: async () => { agentArchives.push(id); return { archivedAt: 't' }; } });
     const wrapup = createWrapup({ paseo, journal });

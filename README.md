@@ -77,7 +77,7 @@ Both paths produce claims that flow through the same dispatch pipeline. The pipe
 
 ### For developers
 
-Use Node 22 and a running PostgreSQL database. From the repository root, install dependencies and prepare each app's local environment once:
+Use Node 22 and a configured PostgreSQL database. From the repository root, install dependencies and prepare each app's local environment once:
 
 ```bash
 npm ci
@@ -94,6 +94,16 @@ npm run dev         # server (3847) + dashboard (3000); Ctrl+C stops both
 ```
 
 Turbo builds the shared database package before starting the apps. Each app loads its own `.env.local`; exported shell variables also reach the dev processes. The server applies pending migrations to the configured database during normal startup. Database creation and optional fixture seeding are separate setup steps.
+
+For the project-local demo at `127.0.0.1:55432/ff_demo`, `npm run dev` first starts the existing `.local/postgres-data` cluster if stopped and checks that PostgreSQL is accepting connections before launching the apps. It reuses a running cluster and leaves it running when the apps stop. PostgreSQL tools must match the cluster version; standard Linux versioned installs and tools on `PATH` are supported. It never recreates data or passwords. Custom development databases still need to be running separately. See the [development scripts](scripts/README.md).
+
+To test task execution, keep `npm run dev` running and open another terminal:
+
+```bash
+npm run runner
+```
+
+With the local demo seeded to `.local/ff-demo-users.json` and Paseo already running, this connects a real local execution host, prepares a disposable Git repository, and configures Project A1. It prefers your existing OMP AI3 `ai3/qwen38-flash` coding profile; choose another with `npm run runner -- --profile <paseo-profile-id>`. Enrollment and journal state stay private in `.local/runner/` and are reused on restart. No AI task starts automatically. In Project A1, create a task asking the agent to fix `add` so `npm test` passes, then open Execution and click Start. See the [runner guide](packages/fluent-flow-runner/README.md#local-browser-testing).
 
 Other root commands:
 

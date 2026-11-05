@@ -9,10 +9,6 @@ import {
   listCollabDeliveryLinks,
 } from '@fluent-flow/db';
 
-/**
- * Task backlog routes. Capture has no repository/run/host prerequisite; list
- * and detail reads are actor-scoped before pagination/search.
- */
 export function registerTaskRoutes(router) {
   router.get('/tasks/:id/delivery-links',async(req,res,next)=>{
     try {res.json({data:await listCollabDeliveryLinks({actor:req.collabActor,taskId:req.params.id})});}catch(err){next(err);}

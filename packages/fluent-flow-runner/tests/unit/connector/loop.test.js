@@ -9,7 +9,6 @@ import { createExecutor } from '../../../src/connector/executor.js';
 import { createPaseoAdapter } from '../../../src/connector/paseo-adapter.js';
 import { createConnectorLoop } from '../../../src/connector/loop.js';
 
-/** Minimal scripted control plane on a real loopback socket. */
 function fakeControlPlane(state) {
   state.deliveredIds = new Set();
   state.redeliver = new Set();
@@ -36,9 +35,6 @@ function fakeControlPlane(state) {
         const key = `POST ${req.url}`;
         const override = state.responses[key];
         const reply = (status, payload) => {
-          // Connection: close keeps every request on a fresh socket so
-          // ephemeral-port reuse across tests can never hit a stale pooled
-          // keep-alive socket from a previous (closed) plane.
           res.writeHead(status, { 'Content-Type': 'application/json', Connection: 'close' });
           res.end(JSON.stringify(payload));
           waitersCheck();
@@ -94,11 +90,9 @@ function fakeControlPlane(state) {
       setTimeout(() => reject(new Error('waitFor timeout')), timeoutMs).unref?.();
     });
   }
-  // close(): final teardown of the one shared server.
   function close() {
     return new Promise((resolve) => server.close(resolve));
   }
-  // reset(): fresh state per test on the SAME listening server (one origin).
   function reset() {
     state.registrationActive = false;
     state.rejectSecondRegistration = false;
@@ -225,9 +219,6 @@ describe('connector loop over real loopback HTTP', () => {
   let activeLoops;
 
   beforeAll(async () => {
-    // ONE long-lived plane for the whole file: a single origin means undici's
-    // connection pool can never hold stale sockets to a *reused* ephemeral
-    // port from a previous (closed) plane.
     plane = fakeControlPlane({});
     await plane.start();
   });
@@ -243,8 +234,6 @@ describe('connector loop over real loopback HTTP', () => {
   });
 
   afterEach(async () => {
-    // Stop loops even when an assertion failed mid-test, so runaway pollers
-    // cannot mask the real failure with socket noise.
     for (const loop of activeLoops) {
       try { loop.stop(); } catch {}
     }
@@ -297,8 +286,6 @@ describe('connector loop over real loopback HTTP', () => {
     expect(paseo.state.workspaceCreates).toHaveLength(1);
     expect(paseo.state.sends).toHaveLength(1);
     expect(paseo.state.sends[0].messageId).toBe('cmd-1');
-    // Staged launch: bind acked `accepted` (IDs persisted) BEFORE the prompt,
-    // then `applied` after delivery.
     const acks = plane.state.acks.filter((a) => a.id === 'cmd-1');
     expect(acks.map((a) => a.state)).toEqual(['accepted', 'applied']);
     expect(acks[0].result).toMatchObject({ workspaceId: expect.any(String), paseoAgentId: expect.any(String) });
@@ -307,7 +294,6 @@ describe('connector loop over real loopback HTTP', () => {
     const kinds = (plane.state.observationBatches[0]?.events ?? []).map((e) => e.kind);
     expect(kinds).toContain('workspace_bound');
     expect(kinds).toContain('session_bound');
-    // Heartbeats went out with the session and lease.
     expect(plane.state.heartbeats.length).toBeGreaterThanOrEqual(1);
     expect(plane.state.heartbeats[0].connectorSessionId).toBeTruthy();
     void batch;
@@ -326,8 +312,6 @@ describe('connector loop over real loopback HTTP', () => {
 
   it('superseded lease triggers re-register on the same journal; same command redelivers without duplicate work', async () => {
     const url = await plane.start();
-    // First registration gets stolen: every poll/heartbeat returns 409 once,
-    // then the override clears so the loop re-registers with epoch 2.
     let fenceErrors = 0;
     plane.state.responses['POST /api/connector/v1/poll'] = function ({ reply, state }) {
       if (fenceErrors === 0) {
@@ -341,7 +325,6 @@ describe('connector loop over real loopback HTTP', () => {
       if (cmd) state.deliveredIds.add(cmd.id);
       return reply(200, { commands: cmd ? [cmd] : [] });
     };
-    // After re-registration (epoch 2), the SAME command id is redelivered.
     plane.state.redeliver = new Set(['cmd-1']);
     plane.state.commands = [structuredClone(launchCommand)];
     const journal = createJournal({ dir });
@@ -352,8 +335,6 @@ describe('connector loop over real loopback HTTP', () => {
     loop.stop();
     await runner;
 
-    // Both deliveries ran the SAME command id through the idempotent adapter:
-    // one workspace, one agent, one prompt.
     expect(paseo.state.workspaceCreates).toHaveLength(1);
     expect(paseo.state.agentCreates).toHaveLength(1);
     expect(paseo.state.sends).toHaveLength(1);
@@ -380,8 +361,6 @@ describe('connector loop over real loopback HTTP', () => {
     const url = await plane.start();
     const journal = createJournal({ dir });
     const paseo = fakePaseoState();
-    // Pre-crash state: launch journaled + observations recorded, ack already
-    // applied, but the process died before the observation batch was accepted.
     await journal.append({ type: 'intent', commandId: 'cmd-1', runId: 'run-1', sessionId: 'sess-1', kind: 'launch', payloadDigest: 'd', recordedAt: 't' });
     await journal.append({ type: 'binding', commandId: 'cmd-1', runId: 'run-1', sessionId: 'sess-1', workspaceId: 'ffws-run-1', paseoAgentId: 'ag-1', providerSessionId: null });
     await journal.append({ type: 'acked', commandId: 'cmd-1', state: 'applied', at: 't' });
@@ -390,8 +369,6 @@ describe('connector loop over real loopback HTTP', () => {
     const loop = buildLoop(url, journal, paseo);
     const runner = loop.start();
     await plane.waitFor((s) => s.observationBatches.length > 0);
-    // Wait for the connector to CONSUME the ack and checkpoint the journal —
-    // server-side batches alone do not prove persistence.
     for (let i = 0; i < 100 && journal.pendingObservationIds().length > 0; i++) {
       await new Promise((r) => setTimeout(r, 20));
     }
@@ -401,10 +378,7 @@ describe('connector loop over real loopback HTTP', () => {
     const events = plane.state.observationBatches[0]?.events ?? [];
     expect(events.map((e) => e.eventId)).toEqual(['session_bound:cmd-1']);
     expect(events[0].payload).toEqual({ paseoAgentId: 'ag-1' });
-    // No duplicate launch happened during recovery.
     expect(paseo.state.workspaceCreates).toHaveLength(0);
-    // Server acceptance is checkpointed: a restart does NOT resubmit the
-    // accepted history (journal-level regression for the ACK path).
     expect(journal.pendingObservationIds()).toEqual([]);
     const journalRestart = createJournal({ dir });
     expect(journalRestart.pendingObservationIds()).toEqual([]);
@@ -414,8 +388,6 @@ describe('connector loop over real loopback HTTP', () => {
   it('a lost observations HTTP ack leaves the event pending across restart', async () => {
     const url = await plane.start();
     plane.state.responses['POST /api/connector/v1/observations'] = ({ req, state: planeState }) => {
-      // Server processes the batch but the connector never sees the response:
-      // destroy the socket deterministically (no late reply scheduling).
       planeState.processedBatches = (planeState.processedBatches ?? 0) + 1;
       req.socket.destroy();
     };
@@ -425,11 +397,10 @@ describe('connector loop over real loopback HTTP', () => {
     const loop = buildLoop(url, journal, paseo);
     const runner = loop.start();
     await plane.waitFor((s) => (s.processedBatches ?? 0) >= 1);
-    loop.stop(); // socket destroyed: the connector never learned acceptance
+    loop.stop();
     await runner.catch(() => {});
     const journal2 = createJournal({ dir });
     expect(journal2.pendingObservationIds()).toEqual(['ev-lost']);
-    // Replay on the same journal: now accepted → checkpointed.
     plane.state.responses = {};
     const loop2 = buildLoop(await plane.start(), journal2, fakePaseoState());
     const runner2 = loop2.start();
@@ -444,8 +415,6 @@ describe('connector loop over real loopback HTTP', () => {
   it('bind ack recorded ambiguous (revoked after poll): zero sends, durable hold, no applied', async () => {
     const url = await plane.start();
     plane.state.commands = [structuredClone(launchCommand)];
-    // Server records the bind but re-checks authorization at ack time and
-    // truthfully reports the final state as ambiguous.
     plane.state.responses['POST /api/connector/v1/commands/cmd-1/ack'] = ({ body, reply, state }) => {
       const recorded = body.state === 'accepted' ? 'ambiguous' : body.state;
       state.acks.push({ id: 'cmd-1', ...body, state: recorded });
@@ -460,9 +429,8 @@ describe('connector loop over real loopback HTTP', () => {
     await new Promise((r) => setTimeout(r, 150));
     loop.stop();
     await runner.catch(() => {});
-    expect(paseo.state.sends).toHaveLength(0); // NO grant: no prompt
+    expect(paseo.state.sends).toHaveLength(0);
     expect(plane.state.acks.some((a) => a.id === 'cmd-1' && a.state === 'applied')).toBe(false);
-    // Durable hold: binding journaled; redelivery resumes at bind stage.
     expect(journal.byCommand('cmd-1').binding).toBeTruthy();
     const bare = createConnectorClient({ serverUrl: url, token: 'ffh_test' });
     void bare;

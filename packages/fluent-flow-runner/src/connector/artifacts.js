@@ -1,28 +1,10 @@
 import { createHash } from 'node:crypto';
-import { openSync, readSync, closeSync, fstatSync, realpathSync, statSync } from 'node:fs';
+import { constants, openSync, readSync, closeSync, fstatSync, realpathSync } from 'node:fs';
 import { relative, resolve, sep, isAbsolute, dirname } from 'node:path';
 
-/**
- * Safe artifact reads for `artifact_read` commands.
- *
- * Contract: references are workspace-relative opaque paths chosen by the
- * control plane — never absolute paths, never client text. The workspace root
- * comes from the JOURNALED run binding (executor), never from payload
- * selection.
- *
- * Defense layers (regression-tested against a real temp filesystem):
- * 1. lexical containment: relative-only, resolved inside the root;
- * 2. symlink safety: the REAL resolved path's basename AND every component
- *    below the root are credential-checked — `innocent.md` aliasing `.env`
- *    (in-root or escaped) is refused;
- * 3. credential/config-named files refused outright;
- * 4. active content (html/svg) served as attachment-only media types;
- * 5. bounded reads with a digest over exactly the returned bytes; open fd is
- *    fstat-verified as a regular file.
- */
 
 const MAX_BYTES = 2 * 1024 * 1024;
-const CREDENTIAL_NAME_RE = /(^|[/\\)])(\.env(\..*)?|.*\.pem|.*\.key|id_(rsa|dsa|ecdsa|ed25519)(\..*)?|credentials?(\..*)?|secrets?(\..*)?|\.npmrc|\.netrc|kubeconfig|\.git-credentials)$/i;
+const CREDENTIAL_NAME_RE = /(^|[/\\])(\.env(\..*)?|.*\.pem|.*\.key|id_(rsa|dsa|ecdsa|ed25519)(\..*)?|credentials?(\..*)?|secrets?(\..*)?|\.npmrc|\.netrc|kubeconfig|\.git-credentials)$/i;
 const ACTIVE_CONTENT_TYPES = new Map([
   ['html', 'application/octet-stream'],
   ['htm', 'application/octet-stream'],
@@ -53,6 +35,7 @@ function anyComponentSensitive(realPath, rootReal) {
   return false;
 }
 
+
 /**
  * @param {object} opts
  * @param {Record<string, string>} opts.roots - mapping key -> canonical workspace root
@@ -78,9 +61,6 @@ export function createArtifactReader({ roots, limits = {} }) {
       if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
         return { status: 'unavailable', reason: 'outside_workspace' };
       }
-      // Credential check runs BEFORE media typing so secrets never even get
-      // a media-type decision (`.env` has no extension and would otherwise
-      // fall through as unsupported rather than explicitly refused).
       const candidateBase = candidate.split(sep).pop() ?? candidate;
       if (CREDENTIAL_NAME_RE.test(candidateBase)) {
         return { status: 'unavailable', reason: 'credential_file' };
@@ -106,7 +86,17 @@ export function createArtifactReader({ roots, limits = {} }) {
       }
       let fd;
       try {
-        fd = openSync(real, 'r');
+        fd = openSync(real, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        const descriptorRoot = process.platform === 'linux' ? '/proc/self/fd' : process.platform === 'darwin' ? '/dev/fd' : null;
+        const actual = descriptorRoot ? realpathSync(`${descriptorRoot}/${fd}`) : null;
+        if (!actual) return { status: 'unavailable', reason: 'read_failed' };
+        const actualRel = relative(rootReal, actual);
+        if (actualRel === '' || actualRel.startsWith('..') || isAbsolute(actualRel)) {
+          return { status: 'unavailable', reason: 'symlink_escape' };
+        }
+        if (anyComponentSensitive(actual, rootReal)) {
+          return { status: 'unavailable', reason: 'credential_file' };
+        }
         const st = fstatSync(fd);
         if (!st.isFile()) return { status: 'unavailable', reason: 'not_a_file' };
         if (st.size > maxBytes) return { status: 'unavailable', reason: 'too_large', sizeBytes: st.size };
@@ -131,6 +121,7 @@ export function createArtifactReader({ roots, limits = {} }) {
           truncated: false,
         };
       } catch (err) {
+        if (err?.code === 'ELOOP') return { status: 'unavailable', reason: 'symlink_escape' };
         if (err?.code === 'EACCES') return { status: 'unavailable', reason: 'permission_denied' };
         return { status: 'unavailable', reason: 'read_failed' };
       } finally {

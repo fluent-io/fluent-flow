@@ -5,10 +5,6 @@ import { CollabServiceError } from './errors.js';
 import { requireCurrentPrincipal } from './principals.js';
 import { authorize, getProjectCapabilities } from './authorize.js';
 
-/**
- * Internal admins are real legacy GitHub org admins/superadmins — external
- * collaboration roles alone can never authorize a filesystem root (contract).
- */
 export async function isInternalAdmin(principalId: string): Promise<boolean> {
   const { rows } = await getPool().query<{ ok: boolean }>(
     `SELECT (
@@ -57,15 +53,9 @@ export async function createExecutionHost(input: {
      VALUES ($1, $2, $3) RETURNING id, name`,
     [input2.name, hashHostToken(token), input2.actor.principalId],
   );
-  // The enrollment token lives only in this authorized response.
   return { id: rows[0].id, name: rows[0].name, token };
 }
 
-/**
- * Host authority: the ENROLLING principal or a genuine superadmin. Admin of
- * an unrelated GitHub org grants no host authority — client isolation applies
- * to infrastructure exactly like tasks. Foreign hosts are 404 (invisible).
- */
 async function assertHostAuthority(
   principalId: string,
   hostId: string,
@@ -107,7 +97,6 @@ export type ExecutionHostSummary = {
   reachability: 'online' | 'stale' | 'offline';
 };
 
-/** Hosts visible to the actor: their own enrollments, or all for a superadmin. */
 export async function listExecutionHosts(actor: {
   principalId: string;
   sessionVersion: number;
@@ -173,12 +162,9 @@ export async function createProjectHostMapping(input: {
   defaultProfileId?: string;
 }): Promise<ProjectHostMapping> {
   const input2 = createMappingSchema.parse(input);
-  // Both boundaries required: internal admin AND project admin (contract).
   await requireInternalAdmin(input2.actor);
   await authorize(input2.actor, { projectId: input2.projectId }, ['project.admin']);
 
-  // Mapping grants a project work on this host: requires the host owner (or
-  // genuine superadmin) AND project.admin — never an unrelated org admin.
   await assertHostAuthority(input2.actor.principalId, input2.hostId);
   const host = await getPool().query(`SELECT 1 FROM collab_hosts WHERE id = $1 AND revoked_at IS NULL`, [
     input2.hostId,
@@ -214,12 +200,6 @@ export async function createProjectHostMapping(input: {
   };
 }
 
-/**
- * Start-dialog read: operators (run.start + internal.read) and project admins
- * see THIS project's mappings with safe host truth (name/reachability/lastSeen
- * and the allowlisted profiles). Other projects' mappings and global catalogs
- * are never exposed. Plain collaborators (no run.start) get 404.
- */
 export type ProjectMappingProfile = {
   id: string;
   name: string;
@@ -240,7 +220,6 @@ export type ProjectMappingRead = {
   profileIds: string[];
   defaultProfileId: string | null;
   profiles: ProjectMappingProfile[];
-  /** Server-allowlisted models for overrides; null → hide the override input. */
   allowedModels: string[] | null;
 };
 
@@ -262,8 +241,6 @@ export async function listProjectHostMappings(
      WHERE m.project_id = $1 ORDER BY m.created_at`,
     [projectId],
   );
-  // Sanitized per-mapping profile descriptors: restricted to mapping
-  // profile_ids ∩ host catalog — never notes/env/paths/global catalog.
   return rows.map((row) => {
     const catalogProfiles = Array.isArray((row.catalog as { profiles?: unknown })?.profiles)
       ? ((row.catalog as { profiles: Array<Record<string, unknown>> }).profiles)

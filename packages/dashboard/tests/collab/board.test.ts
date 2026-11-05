@@ -61,12 +61,10 @@ describe('applyBoardMove', () => {
     });
     const moved = updated.find((t) => t.id === 'b');
     expect(moved?.status).toBe('ready');
-    // Lane order is the resulting server array order; no client re-ranking.
     expect(updated.filter((t) => t.status === 'ready').map((t) => t.id)).toEqual(['b', 'x']);
   });
 
   it('preserves the server-provided array order instead of ranking opaque positions numerically', () => {
-    // Opaque ranks: lexicographic or numeric comparisons are both meaningless.
     const tasks = [
       task({ id: 'm', status: 'backlog', position: '900', projectId: 'p1' }),
       task({ id: 's1', status: 'ready', position: 'a.25', projectId: 'p1' }),
@@ -94,7 +92,6 @@ describe('applyBoardMove', () => {
       projectId: 'p1',
     });
     const readyIds = updated.filter((t) => t.status === 'ready').map((t) => t.id);
-    // 'foreign' is another project's card: it must not receive the moved card.
     expect(readyIds).toEqual(['foreign', 'm', 'mine']);
     expect(updated.find((t) => t.id === 'foreign')?.projectId).toBe('p2');
   });

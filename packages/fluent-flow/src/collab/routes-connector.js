@@ -21,11 +21,6 @@ function bearerToken(req) {
   return header.slice(7) || null;
 }
 
-/**
- * Connector protocol routes (/api/connector/v1). Outbound-only from the PC:
- * Bearer host token (hashed at rest, revocable, host-bound — no body hostId).
- * Errors follow the public envelope; token/auth detail never leaves the server.
- */
 const router = Router();
 
 router.use((req, _res, next) => {
@@ -84,6 +79,12 @@ router.post('/heartbeat', async (req, res, next) => {
 });
 
 router.post('/poll', async (req, res, next) => {
+  const disconnect = new AbortController();
+  const onClose = () => {
+    if (!res.writableFinished) disconnect.abort();
+  };
+  res.on('close', onClose);
+  if (res.destroyed && !res.writableFinished) disconnect.abort();
   try {
     const result = await pollConnectorCommands({
       token: bearerToken(req),
@@ -91,10 +92,19 @@ router.post('/poll', async (req, res, next) => {
       leaseEpoch: req.body?.leaseEpoch,
       waitMs: req.body?.waitMs,
       limit: req.body?.limit,
+      signal: disconnect.signal,
     });
+    if (disconnect.signal.aborted) return;
     res.json({ data: result });
   } catch (err) {
+    if (disconnect.signal.aborted) {
+      const serverFault = !(typeof err?.status === 'number' && err.status < 500);
+      logger[serverFault ? 'error' : 'warn']({ msg: 'connector poll failed after client disconnect', error: err.message, ...(serverFault ? { stack: err.stack } : {}) });
+      return;
+    }
     next(err);
+  } finally {
+    res.off('close', onClose);
   }
 });
 
@@ -129,9 +139,6 @@ router.post('/observations', async (req, res, next) => {
   }
 });
 
-// Terminal error mapping (same public envelope as /api/collab/v1). Malformed
-// payloads are a generic 400 with request identity — body fragments are never
-// logged or echoed.
 router.use((err, req, res, _next) => {
   if (err instanceof ZodError) {
     return sendConnectorError(res, 400, 'malformed', 'Invalid request.', req.requestId);

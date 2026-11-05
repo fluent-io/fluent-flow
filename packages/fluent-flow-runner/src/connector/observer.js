@@ -1,6 +1,3 @@
-/** Durable live timeline observation. Initial prompts wait for subscription,
- * complete backfill and current pending permissions; reconnect failures hold
- * the same command for redelivery rather than inventing a terminal failure. */
 export function createObserver({ paseo, journal, adapter, onObservations, log = (_obj) => {}, privacy = null }) {
   const subscriptions = new Map();
   const pending = new Map();
@@ -81,7 +78,7 @@ export function createObserver({ paseo, journal, adapter, onObservations, log = 
       });
     });
     entry.ready = entry.unsub?.ready ?? Promise.resolve();
-    entry.ready.catch(() => {}); // Readiness rejection is consumed by ensureReady.
+    entry.ready.catch(() => {});
     subscriptions.set(binding.paseoAgentId, entry);
     return entry;
   }

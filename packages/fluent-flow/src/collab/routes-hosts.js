@@ -7,12 +7,6 @@ import {
   revokeExecutionHost,
 } from '@fluent-flow/db';
 
-/**
- * Host administration routes (contract: GET/POST /hosts, POST
- * /hosts/:id/revoke, GET/POST /projects/:id/mappings). Authority is the
- * ENROLLING principal or a genuine superadmin — unrelated org admins get 404
- * indistinguishable from missing hosts.
- */
 export function registerHostRoutes(router) {
   router.get('/hosts', async (req, res, next) => {
     try {

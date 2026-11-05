@@ -4,6 +4,28 @@ CLI runner for [Fluent Flow](../fluent-flow/README.md). Connects to a Fluent Flo
 
 ## Collaborative board execution through Paseo
 
+### Local browser testing
+
+For the seeded project-local demo, use two terminals at the repository root:
+
+```bash
+npm run dev
+```
+
+```bash
+npm run runner
+```
+
+The runner command uses the existing local Paseo daemon and real connector. It authenticates the saved demo owner, enrolls one persistent `Local demo runner` host, creates a disposable Git repository and maps Project A1 to an existing coding profile. It prefers your configured OMP AI3 `ai3/qwen38-flash` Coder profile; pass `--profile <id>` to choose another existing profile. No software or provider credentials are installed. AI work starts only when you click Start on a task.
+
+Private credentials, connector config and journal live under `.local/runner/`; keep them across restarts. The original offline fixture host stays offline. Existing repository edits, passwords, project instructions and unrelated execution defaults are preserved. A revoked enrollment or conflicting project configuration needs explicit repair instead of an automatic reset. Ctrl+C stops the connector without deleting agents, worktrees or saved state.
+
+This helper accepts the loopback `ff_demo` database by default and rejects production mode. To use another disposable `ff_*` database with its own matching fixture file, set `FF_LOCAL_RUNNER_DATABASE` to that database's exact name. Concurrent helpers targeting the same project are rejected even from different checkouts. Interrupted one-time enrollment stops for explicit recovery; see [startup errors and recovery](../../scripts/README.md).
+
+In the board, choose Project A1, create a task asking to fix `add` so `npm test` passes, and open its Execution tab to Start. You should see the local host online, the selected profile, and live task output. The demo repository intentionally starts with failing tests. Review and human acceptance remain separate actions.
+
+### Execution host configuration
+
 Use the separate `fluent-flow-connector` command on the Linux execution host for task-linked Paseo work. It requires Node 22+ with native WebSocket support, the existing local Paseo daemon/CLI, and the host-specific enrollment token from Fluent Flow. The review runner described below keeps its Node 20 support.
 
 Copy [connector.example.json](connector.example.json) to a private local config file. Set the Fluent Flow server URL, a private host-token file, a stable instance ID, repository-key to checkout-path mappings, and existing Paseo profile IDs. Only those mappings and profiles can execute. Keep the same instance ID and generated journal directory across restarts; losing the journal removes cleanup authority. A second instance cannot replace an active host lease. Choose profiles in the local Paseo configuration; no provider or model is silently selected.

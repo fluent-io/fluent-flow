@@ -1,12 +1,3 @@
-/**
- * Client-side view of the shared collaboration contract (camelCase wire fields).
- *
- * These mirror the shapes A persists and returns; at integration they must be
- * replaced by type-only imports from `@fluent-flow/db` (A owns the Zod
- * definitions) so drift cannot hide. No runtime values here — types only, so
- * nothing database-adjacent can enter the client bundle.
- */
-
 export type TaskStatus = 'backlog' | 'ready' | 'in_progress' | 'review' | 'done' | 'cancelled';
 export type ExecutionStage = 'design' | 'development' | 'test' | 'in_review';
 export type RunState =
@@ -74,9 +65,7 @@ export interface MeResponse {
   principal: Principal;
   workspaces: (Workspace & { projects: Project[] })[];
   capabilities: MeCapabilities;
-  /** Workspace-scope capabilities only (never inferred from project roles). */
   workspaceCapabilities?: { [workspaceId: string]: Capability[] };
-  /** Authoritative bootstrap eligibility from the legacy DB. */
   bootstrap?: { eligible: boolean; legacyOrgIds: string[] };
 }
 
@@ -103,7 +92,6 @@ export interface Invitation {
   email: string;
   roleId: string;
   expiresAt: string;
-  /** One-time secret; only present in the authorized creation response. */
   url?: string;
 }
 
@@ -115,7 +103,6 @@ export interface Task {
   status: TaskStatus;
   priority: Priority;
   assigneeId: string | null;
-  /** Server-side display projection of the assignee (coordinated with A; absent until shipped). */
   assigneeName?: string | null;
   version: number;
   position: string;
@@ -166,7 +153,6 @@ export interface Run {
   headCommit: string | null;
   retryOfRunId: string | null;
   errorCode: string | null;
-  /** Intended-host display projection (coordinated with A; absent until shipped). */
   hostName?: string | null;
   hostReachability?: HostReachability | null;
   hostLastSeenAt?: string | null;
@@ -235,7 +221,6 @@ export interface CheckEvidence {
   outputArtifactId: string | null;
   provenance: 'human' | 'agent' | 'runner';
   actorId: string;
-  /** Derived server-side: evidence commit differs from deliverable head or the definition changed. */
   stale?: boolean;
   staleReason?: string | null;
 }
@@ -310,7 +295,6 @@ export interface Host {
   revokedAt: string | null;
 }
 
-/** One-time enrollment response; never used as a stored/listed host. */
 export interface CreatedExecutionHost {
   id: string;
   name: string;
@@ -338,7 +322,6 @@ export interface Mapping {
   profileIds: string[];
   defaultProfileId: string;
   baseRef: string | null;
-  /** Operator-authorized catalog projection (coordinated with A; absent until shipped). */
   hostName?: string | null;
   hostReachability?: 'online' | 'stale' | 'offline' | null;
   hostLastSeenAt?: string | null;
@@ -413,7 +396,6 @@ export interface OpenQuestionView {
   createdAt: string;
 }
 
-/** SSE event envelope delivered on GET /events. */
 export interface CollabEvent {
   eventId: string;
   projectId: string;
@@ -423,10 +405,6 @@ export interface CollabEvent {
   createdAt: string;
 }
 
-/**
- * Authoritative pending question/permission request for a session (A-owned
- * shape proposal under coordination; B renders defensively until bound).
- */
 export interface PendingRequest {
   requestId: string;
   kind: 'permission' | 'question';

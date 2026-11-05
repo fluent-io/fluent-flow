@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { LatestRequest, pollResource } from '@/lib/collab/live';
 import { collabFetch, ApiError } from '@/lib/collab/api';
+import { useSyncCurrentProject } from '@/lib/collab/current-project';
 import type { AttentionItem, Comment, Criterion, Priority, Run, Task, Visibility } from '@/lib/collab/types';
 import { ExecutionBadge } from './execution-badge';
 import { ExecutionTab } from './task-execution-tab';
@@ -26,7 +27,6 @@ export interface TaskDetail extends Task {
   } | null;
 }
 
-/** Detail payload loader shared by the task page tabs. */
 export function useTaskDetail(taskId: string) {
   const [detail, setDetail] = useState<TaskDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -73,6 +73,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const { detail, setDetail, error, loading, reload } = useTaskDetail(taskId);
   const [tab, setTab] = useState<'overview' | 'execution' | 'workpad' | 'ideas'>('overview');
   const [attention, setAttention] = useState<AttentionItem[]>([]);
+  useSyncCurrentProject(detail?.projectId ?? null);
 
   const loadAttention = useCallback(async () => {
     try {

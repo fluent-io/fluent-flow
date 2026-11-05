@@ -3,20 +3,6 @@ import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-/**
- * Bounded READ-ONLY inventory of Flowly data at NAMED roots only (C4).
- *
- * Roots (exact, from the upstream source — service.ts dataDirectory()):
- * - $FLOWLY_DATA_DIR / $ULTRA_KANBAN_DATA_DIR when set
- * - <paseoHome>/plugin-data/flowly             (current plugin id)
- * - <paseoHome>/plugin-data/paseo-ultra-kanban  (legacy plugin id)
- * Plus `.flowly/project.json` markers inside configured repository checkouts.
- *
- * Files read: `board.json` per root and bounded `.flowly/project.json`
- * markers — manifest carries hashes, versions and counts ONLY. Nothing is
- * written, moved or deleted. Absence is reported per root with the exact
- * searched path; absence at custom/remote hosts stays explicitly unknown.
- */
 
 const MAX_PROJECT_MARKERS = 50;
 

@@ -1,8 +1,3 @@
-/**
- * Collaboration identity facade — the A/B identity service exports named in
- * docs/plans/2026-10-19-collaborative-contracts.md. Server-only: never import
- * from a client bundle.
- */
 export { signCollaborationActor, verifyCollaborationActor, CollabAssertionError } from './auth.js';
 export type { CollabActor } from './auth.js';
 export { createCollabProjectToken,listCollabProjectTokens,revokeCollabProjectToken,authenticateCollabToken,getAgentReportingTask } from './tokens.js';
@@ -67,6 +62,9 @@ export type {
   MeWorkspace,
   MeProfile,
 } from './workspaces.js';
+
+export { getCollabProjectOverview, updateCollabProjectOverview } from './project-overviews.js';
+export type { CollabProjectOverview } from './project-overviews.js';
 
 export {
   getProjectCapabilities,

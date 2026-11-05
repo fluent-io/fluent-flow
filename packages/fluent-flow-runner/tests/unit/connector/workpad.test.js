@@ -58,7 +58,6 @@ describe('git reader against a REAL disposable repository', () => {
 
   it('counts upstream-behind commits as unpushed even when a LOCAL backup branch points at them', async () => {
     const cwd = await initRealRepo(true);
-    // A local backup branch AT THE NEW COMMIT must NOT count as preservation.
     writeFileSync(join(cwd, 'feature.txt'), 'work');
     await git(cwd, 'add', '.');
     await git(cwd, 'commit', '-m', 'local work only');
@@ -76,7 +75,6 @@ describe('git reader against a REAL disposable repository', () => {
     const state = await createGitReader().state(cwd);
     expect(state.ok).toBe(true);
     expect(state.upstream).toBeNull();
-    // Unknown, never a clean zero — the wrap-up blocks on no_upstream.
     expect(state.unpushed).toBeNull();
   });
 
@@ -93,6 +91,6 @@ describe('git reader against a REAL disposable repository', () => {
     const state = await createGitReader().state(join(tmp, 'not-a-repo'));
     expect(state.ok).toBe(false);
     expect(state.failCode).toBe('git_unreadable');
-    expect(state.reason).toBeUndefined(); // raw git stderr stays local
+    expect(state.reason).toBeUndefined();
   });
 });

@@ -12,12 +12,6 @@ import { createConnectorLoop } from '../../../src/connector/loop.js';
 import { createObserver } from '../../../src/connector/observer.js';
 import { fakePaseoSdk } from './helpers/fake-paseo.js';
 
-/**
- * Slice: the initial (billable) prompt may only be delivered AFTER the live
- * timeline subscription for the bound agent is READY and the initial backfill
- * has been queued to the control plane. A fast turn must never outrun the
- * observer: otherwise the run's whole execution history is invisible.
- */
 
 const catalogProfile = { id: 'p1', name: 'Coder', provider: 'omp', model: 'ai3/x', modeId: null, thinkingOptionId: null, features: {} };
 const config = { instanceId: 'pc-obs', repositories: { 'test-repo': '/repos/test' }, profiles: ['p1'] };
@@ -87,8 +81,6 @@ function fakeControlPlane() {
 
 function shaPrefix(payload) {
   void payload;
-  // eventId = sha256({agentId, epoch, seq, event}) sliced to 32; recompute the
-  // prefix from the payload fields the adapter uses.
   return createHash('sha256').update(JSON.stringify({ agentId: payload.agentId, epoch: payload.epoch, seq: payload.seq !== undefined ? String(payload.seq) : null, event: payload.event })).digest('hex').slice(0, 32);
 }
 
@@ -132,10 +124,9 @@ describe('observer gating: prompt waits for ready subscription + backfill', () =
     plane.state.commands = [structuredClone(launchCommand)];
     const journal = createJournal({ dir });
     const paseo = fakePaseoSdk();
-    // Subscription ready gate: CLOSED until the test opens it.
     let openGate;
     const gate = new Promise((resolve) => (openGate = resolve));
-    paseo.state.subscribeGates = new Map([[/* any agent */ '*', gate]]);
+    paseo.state.subscribeGates = new Map([['*', gate]]);
 
     const adapter = createPaseoAdapter({ paseo, journal });
     const executor = createExecutor({ config, adapter, journal, catalogProfiles: [catalogProfile] });
@@ -154,13 +145,11 @@ describe('observer gating: prompt waits for ready subscription + backfill', () =
     activeLoops.push(loop);
     const runner = loop.start();
 
-    // Bind completes; the deliver stage is now gated behind the closed subscription.
     await plane.waitFor((s) => s.acks.some((a) => a.id === 'cmd-1' && a.state === 'accepted'));
     await new Promise((r) => setTimeout(r, 150));
-    expect(paseo.state.sends).toHaveLength(0); // gate closed: NO billable prompt
+    expect(paseo.state.sends).toHaveLength(0);
     expect(paseo.state.timelineByAgent.size).toBe(1);
 
-    // Timeline history the backfill must recover once the gate opens.
     const agentId = [...paseo.state.timelineByAgent.keys()][0];
     paseo.state.timelineByAgent.get(agentId).items.push({ type: 'user_message', text: 'seed', messageId: 'pre-existing' });
 
@@ -172,7 +161,6 @@ describe('observer gating: prompt waits for ready subscription + backfill', () =
 
     expect(paseo.state.sends).toHaveLength(1);
     expect(paseo.state.sends[0].messageId).toBe('cmd-1');
-    // The backfilled seed event reached the control plane queue before stop.
     const observed = plane.state.observationBatches.flatMap((b) => b.events.map((e) => e.eventId));
     expect(observed.some((id) => id.length > 0)).toBe(true);
     expect(observer.isAttached(agentId)).toBe(true);
@@ -198,7 +186,6 @@ describe('observer gating: prompt waits for ready subscription + backfill', () =
     activeLoops.push(loop);
     const runner = loop.start();
     await new Promise((r) => setTimeout(r, 50));
-    // Bind through the real executor so the subscription attaches.
     await executor.execute(structuredClone(launchCommand));
     await observer.sync();
     const agentId = journal.byCommand('cmd-1').binding.paseoAgentId;
@@ -210,7 +197,6 @@ describe('observer gating: prompt waits for ready subscription + backfill', () =
       seq: 1,
       epoch: 'e1',
     };
-    // Same live payload delivered repeatedly: the loop queue keys by eventId.
     for (let i = 0; i < 3; i++) {
       paseo.state.deliverLive(agentId, payload);
     }
@@ -227,11 +213,9 @@ describe('observer gating: prompt waits for ready subscription + backfill', () =
     plane.state.commands = [structuredClone(launchCommand)];
     const journal = createJournal({ dir });
     const paseo = fakePaseoSdk();
-    // Subscription ready gate: REJECTED immediately. Attach .catch to consume rejection early,
-    // preventing Vitest unhandled rejection warning while preserving the rejection for ensureReady.
     const rejectedReady = Promise.reject(new Error('subscription unavailable'));
-    rejectedReady.catch(() => {}); // Consume rejection to prevent unhandled rejection warning
-    paseo.state.subscribeGates = new Map([[/* any agent */ '*', rejectedReady]]);
+    rejectedReady.catch(() => {});
+    paseo.state.subscribeGates = new Map([['*', rejectedReady]]);
 
     const adapter = createPaseoAdapter({ paseo, journal });
     const executor = createExecutor({ config, adapter, journal, catalogProfiles: [catalogProfile] });
@@ -250,11 +234,10 @@ describe('observer gating: prompt waits for ready subscription + backfill', () =
     activeLoops.push(loop);
     const runner = loop.start();
 
-    // Bind completes; but onBeforeDeliver calls ensureReady which should fail, not send prompt.
     await plane.waitFor((s) => s.acks.some((a) => a.id === 'cmd-1' && a.state === 'accepted'));
     await new Promise((r) => setTimeout(r, 150));
-    expect(paseo.state.sends).toHaveLength(0); // subscription ready failed: NO billable prompt
-    expect(plane.state.acks.some((a) => a.id === 'cmd-1' && a.state === 'applied')).toBe(false); // NO applied grant
+    expect(paseo.state.sends).toHaveLength(0);
+    expect(plane.state.acks.some((a) => a.id === 'cmd-1' && a.state === 'applied')).toBe(false);
     expect(plane.state.acks.some((a) => a.id === 'cmd-1' && a.state === 'failed')).toBe(false);
     const boundAgent = journal.byCommand('cmd-1').binding.paseoAgentId;
     paseo.state.subscribeGates.clear();

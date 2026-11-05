@@ -29,8 +29,6 @@ import {
   CollabRateLimitError,
 } from '../../src/collaboration/identity.js';
 
-// The db package resolves DATABASE_URL at module load (see tests/setup.ts);
-// the dedicated test URL is therefore fixed for the whole suite.
 const DATABASE_URL = resolveCollabTestDatabaseUrl();
 
 const ADMIN = { principalId: '', sessionVersion: 1 };
@@ -199,7 +197,6 @@ describe('collaboration identity (real Postgres)', () => {
       idempotencyKey: 'bootstrap-lifecycle',
     });
 
-    // Stale session version (rotated elsewhere) must fail independently of HTTP.
     await expect(
       createCollabProject({
         actor: { principalId: ADMIN.principalId, sessionVersion: ADMIN.sessionVersion + 5 },
@@ -356,8 +353,6 @@ describe('collaboration identity (real Postgres)', () => {
     });
 
     it('never grants capabilities outside the inviter own delegable set', async () => {
-      // Fixture: a custom role holding ONLY membership.admin (delegable
-      // administration without task/run/delivery powers).
       const limited = await rawQuery(
         `INSERT INTO collab_roles (workspace_id, name, capabilities, is_system)
          VALUES ($1, 'limited-admin', ARRAY['membership.admin']::text[], false) RETURNING id`,
@@ -365,9 +360,6 @@ describe('collaboration identity (real Postgres)', () => {
       );
       const limitedRoleId = limited[0].id;
 
-      // A principal holding ONLY that role must not invite anyone as the
-      // built-in manager (manager carries run.start/internal.read/... which
-      // the limited admin cannot delegate).
       const limitedPrincipal = await rawQuery(
         `INSERT INTO collab_principals (display_name, email) VALUES ('Limited Admin', 'limited@client-a.test') RETURNING id`,
       );
@@ -397,7 +389,6 @@ describe('collaboration identity (real Postgres)', () => {
       );
       expect(leaked).toHaveLength(0);
 
-      // The full manager can still delegate the same role (subset holds).
       const delegated = await createCollabInvitation({
         actor: managerActor(),
         workspaceId,
@@ -432,7 +423,6 @@ describe('collaboration identity (real Postgres)', () => {
       });
       const token = invitation.url.split('token=')[1];
 
-      // Manager is signed in but is not the invited account.
       await expect(
         acceptCollabInvitation({
           token,
@@ -442,7 +432,6 @@ describe('collaboration identity (real Postgres)', () => {
         }),
       ).rejects.toMatchObject({ status: 403, code: 'wrong_account' });
 
-      // Not consumed: the real invitee can still redeem.
       const accepted = await acceptCollabInvitation({
         token,
         displayName: 'Collab Two',
@@ -480,8 +469,6 @@ describe('collaboration identity (real Postgres)', () => {
       expect(passedAsNull).toBe(20);
       expect(throttled).toBe(10);
 
-      // The documented bucket formula (login:<key>:<email>, sha256) lets the
-      // test verify this bucket reserved exactly the capacity, no more.
       const bucket = createHash('sha256')
         .update('login:rl-parallel-bucket:collab1@client-a.test')
         .digest('hex');
@@ -516,7 +503,6 @@ describe('collaboration identity (real Postgres)', () => {
     });
 
     it('re-accepting at the invited scope is idempotent or a typed conflict', async () => {
-      // Same role again for the already-member principal: idempotent grant.
       const sameRole = await createCollabInvitation({
         actor: managerActor(),
         workspaceId,
@@ -536,7 +522,6 @@ describe('collaboration identity (real Postgres)', () => {
       });
       expect(idempotent.principal.id).toBe(global.__collabTwoPrincipalId);
 
-      // A different role at the same scope must conflict, not overwrite.
       const roles = await rawQuery(
         `SELECT id FROM collab_roles WHERE workspace_id = $1 AND name = 'viewer'`,
         [workspaceId],
@@ -588,8 +573,6 @@ describe('A2 boundary hardening (review findings)', () => {
     hardenedWs = ws.id;
     global.__hardeningWorkspaceId = ws.id;
 
-    // Second manager so mutual removal has a survivor candidate. Uses the
-    // collaborator principal created in the earlier describe block.
     const managerRole = await rawQuery(
       `SELECT id FROM collab_roles WHERE workspace_id = $1 AND name = 'manager'`,
       [hardenedWs],
@@ -638,10 +621,6 @@ describe('A2 boundary hardening (review findings)', () => {
   it('never returns a foreign workspace when replaying another actor bootstrap key', async () => {
     const superLegacy = await rawQuery(`SELECT id FROM users WHERE login = 'true-super'`);
     void superLegacy;
-    // A second admin of orgA bootstraps with orgB admin's... simplest leak test:
-    // the collab2 manager (orgA member via membership, but legacy user is an
-    // orgA MEMBER) cannot bootstrap; use the true super (admin of everything)
-    // replaying the orgA key with a DIFFERENT org must not return orgA's ws.
     const superPrincipal = await rawQuery(`SELECT id, session_version FROM collab_principals WHERE legacy_user_id = (SELECT id FROM users WHERE login = 'true-super')`);
     await expect(
       bootstrapCollaborationWorkspace({
@@ -650,9 +629,8 @@ describe('A2 boundary hardening (review findings)', () => {
         name: 'Sneaky Replay',
         idempotencyKey: 'bootstrap-orphan',
       }),
-    ).resolves.toMatchObject({ name: 'Orphan Workspace' }); // same actor+org: idempotent replay OK
+    ).resolves.toMatchObject({ name: 'Orphan Workspace' });
 
-    // Different org, same key: must NOT hand back the first workspace.
     await seedLegacyOrgMembership(DATABASE_URL, (await rawQuery(`SELECT id FROM users WHERE login = 'true-super'`))[0].id, 'orphan-org-2', 'admin');
     await rawQuery(`INSERT INTO orgs (id, name) VALUES ('orphan-org-2', 'Orphan Two') ON CONFLICT DO NOTHING`);
     await expect(
@@ -666,8 +644,6 @@ describe('A2 boundary hardening (review findings)', () => {
   });
 
   it('excludes membership without task.read from task listings and rejects stale actors', async () => {
-    // Custom role holding only comment.write, granted to a fresh principal on
-    // the hardened workspace (project A1 scope would also do).
     const noReadRole = await rawQuery(
       `INSERT INTO collab_roles (workspace_id, name, capabilities, is_system)
        VALUES ($1, 'no-read', ARRAY['comment.write']::text[], false) RETURNING id`,
@@ -704,10 +680,6 @@ describe('A2 boundary hardening (review findings)', () => {
       }),
     ]);
     const outcomes = results.map((r) => (r.status === 'fulfilled' ? 'ok' : r.reason?.status));
-    // Exactly one removal succeeds. The other fails 409 (last-admin guard) or
-    // 404 (its own membership was already revoked by the winner — the service
-    // re-checks authorization at mutation time). Either way the workspace
-    // keeps its last admin: no concurrent mutual removal can drop to zero.
     expect(outcomes.filter((o) => o === 'ok')).toHaveLength(1);
     const admins = await rawQuery(
       `SELECT count(*)::int AS n FROM collab_memberships m
@@ -762,8 +734,6 @@ describe('A2 boundary hardening (review findings)', () => {
 
 describe('A3 host isolation (foreign org admin), real Postgres', () => {
   it('never lets an unrelated org admin revoke, map, or see a foreign host', async () => {
-    // Second independent client org admin (orgB-like) plus a host owned by
-    // the hardening manager (orgA client).
     const foreignLegacy = await seedLegacyUser(DATABASE_URL, { githubId: 9701, login: 'foreign-admin' });
     await seedLegacyOrgMembership(DATABASE_URL, foreignLegacy, 'foreign-org', 'admin');
     const foreignPrincipal = await ensureGithubPrincipal({
@@ -781,7 +751,6 @@ describe('A3 host isolation (foreign org admin), real Postgres', () => {
       name: 'Iso P1',
     });
 
-    // Foreign org admin cannot revoke (404 — invisible), map, or list it.
     await expect(revokeExecutionHost({ actor: foreignActor, hostId: host.id })).rejects.toMatchObject({ status: 404 });
     await expect(
       createProjectHostMapping({
@@ -790,7 +759,6 @@ describe('A3 host isolation (foreign org admin), real Postgres', () => {
       }),
     ).rejects.toMatchObject({ status: 404 });
 
-    // The enrolling owner retains full authority.
     await expect(
       createProjectHostMapping({
         actor: owner, projectId: project.id, hostId: host.id,

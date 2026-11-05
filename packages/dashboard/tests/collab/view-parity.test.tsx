@@ -5,9 +5,6 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-// In-memory stand-in for the rows the auth callbacks read. The callbacks run
-// unmodified; only the data layer is replaced, so the same principal can sign
-// in through both providers and the resulting sessions can be compared.
 type UserRow = { id: number; github_id: number; login: string; email: string | null; avatar_url: string | null; is_superadmin: boolean };
 type PrincipalRow = { id: string; displayName: string; email: string | null; legacyUserId: number | null; disabledAt: string | null; sessionVersion: number; password: string | null };
 const db = { users: [] as UserRow[], orgs: [] as { user_id: number; org_id: string; role: 'admin' | 'member' }[], principals: [] as PrincipalRow[] };
@@ -70,8 +67,6 @@ const callbacks = authOptions.callbacks as Required<Callbacks>;
 const seam = (args: Record<string, unknown>) => args as never;
 
 function credentialsAuthorize() {
-  // NextAuth merges the factory `options` over the provider at request time;
-  // same normalization as auth.test.ts.
   const raw = authOptions.providers.find((p) => p.id === 'credentials') as unknown as Record<string, unknown> & { options: Record<string, unknown> };
   return ({ ...raw, ...raw.options } as unknown as { authorize: (c: Record<string, string>, r: { headers: Record<string, string> }) => Promise<Record<string, unknown> | null> }).authorize;
 }
@@ -80,7 +75,6 @@ async function resolveSession(token: Record<string, unknown>): Promise<Session> 
   return (await callbacks.session(seam({ session: { user: {}, expires: '2099-01-01T00:00:00.000Z' }, token }))) as Session;
 }
 
-/** authorize -> signIn -> jwt -> session, as NextAuth runs a credentials login. */
 async function passwordLogin(email: string, password: string) {
   const user = await credentialsAuthorize()({ email, password }, { headers: {} });
   if (!user) throw new Error('password rejected');
@@ -90,7 +84,6 @@ async function passwordLogin(email: string, password: string) {
   return { token: token as Record<string, unknown>, session: await resolveSession(token as Record<string, unknown>) };
 }
 
-/** signIn -> jwt -> session, as NextAuth runs a GitHub OAuth callback. */
 async function oauthLogin(profile: { id: number; login: string; avatar_url: string | null }, email: string | null) {
   const user = { id: String(profile.id), name: profile.login, email, image: profile.avatar_url };
   const account = { provider: 'github', type: 'oauth' };
@@ -108,8 +101,6 @@ function renderShell(session: Session) {
 function seedLinked(opts: { userId: number; githubId: number; login: string; superadmin?: boolean; orgs?: { org_id: string; role: 'admin' | 'member' }[] }) {
   db.users.push({ id: opts.userId, github_id: opts.githubId, login: opts.login, email: `${opts.login}@example.test`, avatar_url: `https://avatars.example.test/${opts.login}`, is_superadmin: opts.superadmin ?? false });
   for (const o of opts.orgs ?? []) db.orgs.push({ user_id: opts.userId, ...o });
-  // The password was provisioned for the existing linked principal; its display
-  // name/email differ from GitHub on purpose so a projection leak would show.
   db.principals.push({ id: `p-linked-${opts.userId}`, displayName: `${opts.login} (password)`, email: `${opts.login}+pw@example.test`, legacyUserId: opts.userId, disabledAt: null, sessionVersion: 1, password: 'correct horse battery' });
   return { profile: { id: opts.githubId, login: opts.login, avatar_url: `https://avatars.example.test/${opts.login}` }, email: `${opts.login}@example.test`, passwordEmail: `${opts.login}+pw@example.test` };
 }
@@ -150,7 +141,7 @@ describe('password and GitHub sign-in produce the same dashboard view for a link
       const passwordHtml = renderShell(password.session);
       const oauthHtml = renderShell(oauth.session);
       expect(passwordHtml).toBe(oauthHtml);
-      for (const label of ['Board', 'Needs attention', 'Agents', 'Repos', 'Pipelines', 'Settings']) {
+      for (const label of ['Board', 'Projects', 'Needs attention', 'Agents', 'Repos', 'Pipelines', 'Settings']) {
         expect(passwordHtml).toContain(`<span>${label}</span>`);
       }
       expect(passwordHtml).toContain('href="/settings"');
@@ -172,7 +163,6 @@ describe('password and GitHub sign-in produce the same dashboard view for a link
 describe('restricted and fail-closed cases', () => {
   it('an unlinked invited collaborator stays restricted to board views', async () => {
     seedLinked({ userId: 7, githubId: 9001, login: 'owner', orgs: [{ org_id: 'acme', role: 'admin' }] });
-    // Same email as the legacy user: identity must never be linked by email.
     db.principals.push({ id: 'p-ext', displayName: 'External Person', email: 'owner@example.test', legacyUserId: null, disabledAt: null, sessionVersion: 1, password: 'external password' });
 
     const { session } = await passwordLogin('owner@example.test', 'external password');
@@ -182,6 +172,7 @@ describe('restricted and fail-closed cases', () => {
     const html = renderShell(session);
     expect(html).toContain('<span>Board</span>');
     expect(html).toContain('<span>Needs attention</span>');
+    expect(html).toContain('<span>Projects</span>');
     for (const label of ['Agents', 'Repos', 'Pipelines', 'Settings']) expect(html).not.toContain(`<span>${label}</span>`);
     expect(html).not.toContain('Internal page content');
     expect(html).toContain('Redirecting to your board');
@@ -223,9 +214,6 @@ describe('restricted and fail-closed cases', () => {
   });
 
   it('fails closed when the linked legacy user row cannot be read', async () => {
-    // collab_principals.legacy_user_id REFERENCES users(id) without ON DELETE,
-    // so Postgres refuses the delete; this guards a read that still comes back
-    // empty instead of quietly downgrading or keeping stale scope.
     const ids = seedLinked({ userId: 7, githubId: 9001, login: 'owner', orgs: [{ org_id: 'acme', role: 'admin' }] });
     const password = await passwordLogin(ids.passwordEmail, 'correct horse battery');
     db.users = [];
@@ -243,8 +231,6 @@ describe('restricted and fail-closed cases', () => {
 });
 
 describe('view-parity browser script database preflight', () => {
-  // Port 1 has no listener: if the script tried to connect or reset, it would
-  // fail with a connection error instead of the preflight refusal.
   const script = fileURLToPath(new URL('./view-parity.browser.mjs', import.meta.url));
   for (const [name, url] of [
     ['host override', 'postgres://nobody@localhost:1/ff_view_parity_test?host=127.0.0.1&port=1'],

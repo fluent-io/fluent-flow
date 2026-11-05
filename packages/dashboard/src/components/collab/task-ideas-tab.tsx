@@ -12,8 +12,6 @@ export function IdeasTab({ detail }: { detail: TaskDetail }) {
   const [ideas, setIdeas] = useState<Idea[]>([]);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
-  // Creators without internal.read cannot see internal ideas afterwards, so
-  // the default follows their capability.
   const [visibility, setVisibility] = useState<Visibility>(can(detail, 'internal.read') ? 'internal' : 'client');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

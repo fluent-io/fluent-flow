@@ -1,14 +1,5 @@
 import { WorkspaceCreateRequestSchema, AgentCreateRequestSchema, FetchAgentTimelineRequestMessageSchema, SendAgentMessageSchema, AgentPermissionResponseSchema } from '@getpaseo/protocol/messages';
 
-/**
- * Shared schema-faithful fake of the pinned @getpaseo/client 0.12.0 public
- * surface for connector tests. Only EXTERNAL daemon I/O is faked; tests use
- * the REAL journal + executor + adapter on top.
- *
- * The fake enforces the REAL response unions: respondToPermission accepts
- * behavior allow|deny ONLY (the wire-level 'answer' must be translated by the
- * executor before it reaches the SDK), and requires a CURRENT pending request.
- */
 export function fakePaseoSdk() {
   const state = {
     workspaces: new Map(),
@@ -20,15 +11,15 @@ export function fakePaseoSdk() {
     sends: [],
     timelineByAgent: new Map(),
     permissionResponses: [],
-    pendingPermissions: new Map(), // requestId -> AgentPermissionRequest (with input)
+    pendingPermissions: new Map(),
     fail: {
       onSend: null,
       onWorkspaceCreate: null,
       unreachable: false,
     },
     customRefetch: null,
-    subscribeGates: new Map(), // agentId or '*' -> Promise (ready gate)
-    liveHandlers: new Map(), // agentId -> handler
+    subscribeGates: new Map(),
+    liveHandlers: new Map(),
   };
   state.deliverLive = (agentId, payload) => {
     const handler = state.liveHandlers.get(agentId);
@@ -95,7 +86,6 @@ export function fakePaseoSdk() {
       },
       respondToPermission: async (args) => {
         AgentPermissionResponseSchema.parse(args.response);
-        // REAL SDK union: allow | deny only; unknown request rejected.
         if (!args.response || !['allow', 'deny'].includes(args.response.behavior)) {
           throw new Error(`Unsupported permission response behavior: ${args.response?.behavior}`);
         }

@@ -10,8 +10,6 @@ const SECRET = 'collab-test-secret-0123456789abcdef0123456789abcdef';
 const ACTOR = { principalId: 'p-123', sessionVersion: 3 };
 const NOW = 1_700_000_000;
 
-// Craft an assertion with a REAL signature over a custom payload so payload
-// validation (not signature validation) is what the assertion exercises.
 function craftSigned(payload: Record<string, unknown>, secret = SECRET): string {
   const payloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const sig = createHmac('sha256', secret).update(`v1.${payloadB64}`, 'ascii').digest('base64url');
@@ -117,7 +115,6 @@ describe('signCollaborationActor / verifyCollaborationActor', () => {
 
   it('rejects validly signed payloads with invalid schema', () => {
     const cases: Array<[Record<string, unknown>, string]> = [
-      // Missing fields → first failed check.
       [{ iss: 'fluent-flow-dashboard' }, 'bad_audience'],
       [{ ...BASE_PAYLOAD, sub: '' }, 'bad_subject'],
       [{ ...BASE_PAYLOAD, sessionVersion: 0 }, 'bad_session_version'],
@@ -152,7 +149,6 @@ describe('signCollaborationActor / verifyCollaborationActor', () => {
         expect(err).toBeInstanceOf(CollabAssertionError);
       }
     }
-    // Valid structure + real signature over a non-JSON payload → payload parse.
     const payloadB64 = Buffer.from('not json').toString('base64url');
     const sig = createHmac('sha256', SECRET).update(`v1.${payloadB64}`, 'ascii').digest('base64url');
     try {

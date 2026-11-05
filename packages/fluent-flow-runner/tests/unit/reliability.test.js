@@ -339,15 +339,11 @@ describe('cannot-run detection', () => {
       vi.mocked(checkRunnerHealth).mockImplementationOnce(() => new Promise((resolve) => {
         setTimeout(() => resolve({ healthy: true, harness: { ok: true, detail: 'mock' }, gh: { ok: true, detail: 'mock' } }), startupMs);
       }));
-      // The exact production failure: claude exits 0 with
-      // {"type":"result","is_error":true,"result":"Not logged in · Please run /login"}
       const proc = Object.assign(new EventEmitter(), {
         stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn(), pid: 777,
       });
       const client = makeClient();
       const run = runOneWork(client, { settleMs: 250 }, WORK, () => {
-        // Start after spawn returns and listeners attach, preserving native
-        // stdout-before-close ordering regardless of health/startup latency.
         queueMicrotask(() => {
           proc.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login' })));
           proc.emit('close', 0);
@@ -359,7 +355,7 @@ describe('cannot-run detection', () => {
 
       const payload = client.reportClaim.mock.calls[0][0];
       expect(payload.status).toBe('failed');
-      expect(payload.failure_kind).toBeUndefined(); // terminal — auth won't fix itself
+      expect(payload.failure_kind).toBeUndefined();
       expect(sendAlert).toHaveBeenCalledWith('harness-error-result', expect.objectContaining({
         repo: 'org/repo',
         detail: expect.stringContaining('Not logged in'),

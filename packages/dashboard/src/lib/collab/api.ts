@@ -1,9 +1,3 @@
-/**
- * Browser-side client for the collaboration API through the same-origin proxy.
- * Client-safe by design: no database imports, no secrets — identity is carried
- * by the NextAuth session cookie and the proxy's signed actor assertion.
- */
-
 export class ApiError extends Error {
   constructor(
     readonly status: number,
@@ -27,7 +21,6 @@ interface CollabFetchInit {
 export interface CollabResult<T> {
   data: T;
   nextCursor: string | null;
-  /** Stable ingestion watermark for live collections even at the final page. */
   cursor?: string | null;
 }
 
@@ -73,7 +66,6 @@ export async function collabFetch<T>(path: string, init: CollabFetchInit = {}): 
     throw new ApiError(response.status, 'unexpected_response', 'Request failed. Try again.');
   }
 
-  // 204 (revoke/remove) and any success without a body is a successful empty result.
   if (response.status === 204 || payload === null) {
     return { data: null as T, nextCursor: null };
   }
@@ -86,18 +78,12 @@ export async function collabFetch<T>(path: string, init: CollabFetchInit = {}): 
   return { data: data.data, nextCursor: data.nextCursor ?? null, ...(typeof data.cursor === 'string' || data.cursor === null ? {cursor:data.cursor} : {}) };
 }
 
-/** Safety bound for full-list traversal; boards show a truncation notice past it. */
 const MAX_TRAVERSED_PAGES = 20;
 
 export interface CollabListResult<T> extends CollabResult<T[]> {
-  /** True when the safety bound stopped traversal before the server's end. */
   truncated: boolean;
 }
 
-/**
- * Traverses a paginated collection to its end (or the safety bound), so boards
- * and counts never silently hide everything past the first page.
- */
 export async function collabFetchAll<T>(path: string, init: CollabFetchInit = {}): Promise<CollabListResult<T>> {
   const [basePath, existingQuery] = path.split('?');
   const params = new URLSearchParams(existingQuery ?? '');

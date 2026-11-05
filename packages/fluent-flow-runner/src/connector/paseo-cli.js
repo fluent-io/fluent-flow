@@ -5,12 +5,6 @@ import { join } from 'node:path';
 
 const execFile = promisify(execFileCb);
 
-/**
- * Runs the injected/real execFile accepting BOTH styles so tests can inject a
- * promise-returning fake: await a thenable return, otherwise wrap the
- * node-style (err, stdout, stderr) callback. `opts` (timeout etc.) always
- * goes through.
- */
 function runExec(exec, command, args, opts) {
   return new Promise((resolve, reject) => {
     const result = exec(command, args, opts, (error, stdout, stderr) => {
@@ -21,7 +15,6 @@ function runExec(exec, command, args, opts) {
   });
 }
 
-/** Fixed-header read that never pulls in the whole binary. */
 const HEADER_BYTES = 16;
 
 function readHeaderOnly(path, { length }) {
@@ -35,12 +28,6 @@ function readHeaderOnly(path, { length }) {
   }
 }
 
-/**
- * AppImage detection by magic bytes verified against the installed desktop
- * binary: 7f 45 4c 46 02 01 01 00 41 49 02 ... — ELF with the runtime marker
- * 41 49 02 at offset 8..10. Only the fixed header is read (openSync follows a
- * ~/.local/bin symlink to the AppImage transparently).
- */
 export function isAppImagePath(candidate, readHeader = readHeaderOnly) {
   if (!candidate) return false;
   if (candidate.toLowerCase().endsWith('.appimage')) return true;
@@ -58,15 +45,6 @@ export function isAppImagePath(candidate, readHeader = readHeaderOnly) {
 }
 
 /**
- * Resolves the INSTALLED local `paseo` CLI for control operations (cancel via
- * `paseo stop`) without installing or upgrading anything.
- *
- * The desktop install is an AppImage: under sandboxed environments FUSE mounts
- * fail, but the AppImage's own `--appimage-extract` runtime works. We extract
- * ONCE into a private 0700 cache directory and run the inner
- * `resources/bin/paseo` entry from there. An explicit `paseo.cliPath` override
- * or a plain binary is used as-is.
- *
  * @param {object} opts
  * @param {string} [opts.cliPath] - explicit CLI path from connector config
  * @param {string} opts.cacheDir - private writable cache for AppImage extraction
@@ -102,10 +80,6 @@ export async function resolvePaseoCli({ cliPath, cacheDir, io = {} }) {
 }
 
 /**
- * Build the cancel capability: `paseo stop <full-agent-id>` — the supported
- * CLI interruption; NEVER archive-as-cancel, never `--all`. Flag-shaped or
- * empty ids are refused so the stop scope can never widen.
- *
  * @param {object} opts
  * @param {string} opts.cliCommand - resolved CLI path
  * @param {string} opts.home - paseo home directory (daemon selection)

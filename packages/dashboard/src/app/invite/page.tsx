@@ -11,11 +11,6 @@ import type { Principal } from '@/lib/collab/types';
 const INVALID_INVITE = 'This invitation is invalid or no longer available.';
 const RATE_LIMITED = 'Too many attempts. Please wait a moment and try again.';
 
-/**
- * Invitation redemption. The one-time secret travels in the URL fragment only:
- * fragments never reach server access logs, referrers or the proxy. It is read
- * client-side, sent once in the request body, and cleared immediately after.
- */
 function extractInviteToken(): string | null {
   const hash = window.location.hash;
   if (!hash.startsWith('#')) return null;
@@ -62,8 +57,6 @@ function InviteRedemption() {
       const authenticated = status === 'authenticated';
       const body: Record<string, string> = {
         token,
-        // A's accept schema requires a non-empty display name; authenticated
-        // acceptance keeps the current principal's name.
         displayName: authenticated ? (session?.user?.login ?? '') : displayName,
       };
       if (!authenticated) {
@@ -78,7 +71,6 @@ function InviteRedemption() {
         body,
       });
 
-      // Clear the secret from the URL before anything else.
       history.replaceState(null, '', '/invite');
 
       if (authenticated) {
@@ -86,7 +78,6 @@ function InviteRedemption() {
         return;
       }
 
-      // New principal: sign in with the invitation email and chosen password.
       const email = result.data.principal.email;
       if (!email) {
         setToken(null);

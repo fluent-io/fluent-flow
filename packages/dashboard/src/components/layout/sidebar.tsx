@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useSession } from 'next-auth/react';
-import { Bot, FolderGit2, GitBranch, Settings, ChevronLeft, ChevronRight, Kanban, Bell } from 'lucide-react';
+import { Bot, FolderGit2, FolderKanban, GitBranch, Settings, ChevronLeft, ChevronRight, Kanban, Bell } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
@@ -17,6 +17,7 @@ const INTERNAL_NAV = [
 
 const COLLAB_NAV = [
   { label: 'Board', href: '/board', icon: Kanban },
+  { label: 'Projects', href: '/projects', icon: FolderKanban },
   { label: 'Needs attention', href: '/attention', icon: Bell },
 ];
 
@@ -28,6 +29,7 @@ export function Sidebar() {
   useEffect(() => {
     const stored = localStorage.getItem('sidebar-collapsed');
     if (stored !== null) setCollapsed(stored === 'true');
+    else if (window.matchMedia('(max-width: 767px)').matches) setCollapsed(true);
   }, []);
 
   function toggle() {
@@ -36,8 +38,6 @@ export function Sidebar() {
     localStorage.setItem('sidebar-collapsed', String(next));
   }
 
-  // Internal GitHub users keep the legacy admin surfaces; collaboration-only
-  // principals see the board and attention views. Both groups get the board.
   const isInternal = (session?.user.id ?? null) !== null || (session?.user.isSuperadmin ?? false);
   const navItems = isInternal ? [...COLLAB_NAV, ...INTERNAL_NAV] : COLLAB_NAV;
 
@@ -56,6 +56,7 @@ export function Sidebar() {
               <Link
                 key={item.href}
                 href={item.href}
+                aria-label={item.label}
                 className={cn(
                   'flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors',
                   isActive
@@ -82,6 +83,7 @@ export function Sidebar() {
         </nav>
         <button
           onClick={toggle}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           className="flex items-center justify-center gap-1.5 border-t border-border p-2.5 text-xs text-muted-foreground hover:text-foreground"
         >
           {collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : (

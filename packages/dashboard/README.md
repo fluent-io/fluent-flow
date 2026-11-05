@@ -5,11 +5,12 @@ Client/project task board and internal agent, repository and pipeline management
 
 ## Collaborative work
 
-The dashboard owns a client/project/task board alongside existing agent, repository and pipeline screens. Invited collaborators sign in with a password; GitHub OAuth remains available for internal users. The view depends on the signed-in principal, not the sign-in method: a principal linked to a GitHub user gets that user's current login, email, avatar, superadmin flag and orgs either way, so password and GitHub sign-in show the same navigation. A GitHub session whose `github_id` does not match the principal's linked user is rejected. Unlinked invited collaborators stay limited to Board and Needs attention, and nothing is linked by email. Project roles control editing, execution, internal output, delivery acceptance and administration. A task can be created and discussed while the execution PC is offline.
+The dashboard owns a client/project/task board alongside existing agent, repository and pipeline screens. Invited collaborators sign in with a password; GitHub OAuth remains available for internal users. The view depends on the signed-in principal, not the sign-in method: a principal linked to a GitHub user gets that user's current login, email, avatar, superadmin flag and orgs either way, so password and GitHub sign-in show the same navigation. A GitHub session whose `github_id` does not match the principal's linked user is rejected. Unlinked invited collaborators stay limited to Board, Projects and Needs attention, and nothing is linked by email. Project roles control editing, execution, internal output, delivery acceptance and administration. A task can be created and discussed while the execution PC is offline.
 
 Password sign-in for a GitHub-linked principal requires an already provisioned password. Local fixtures provision those credentials directly; this change does not introduce product password enrollment, password reset or account linking for GitHub users.
 
-- [Board](src/app/board/README.md), [task detail](src/app/tasks/README.md), [attention](src/app/attention/README.md), [invitation entry](src/app/invite/README.md) and [settings](src/app/settings/README.md).
+- [Product notes](PRODUCT.md): confirmed user-facing behavior.
+- [Board](src/app/board/README.md), [projects](src/app/projects/README.md), [task detail](src/app/tasks/README.md), [attention](src/app/attention/README.md), [invitation entry](src/app/invite/README.md) and [settings](src/app/settings/README.md).
 - [Collaboration views](src/components/collab/README.md), [browser-safe API helpers](src/lib/collab/README.md), [authenticated proxy](src/app/api/collab/README.md) and [regression tests](tests/collab/README.md).
 - [Shared contracts](../../docs/plans/2026-10-19-collaborative-contracts.md) and [acceptance evidence/UAT](../../docs/plans/2026-10-19-collaborative-status.md).
 
@@ -83,7 +84,7 @@ GitHub OAuth app settings:
 npm run dev     # from repository root: API on 3847 + dashboard on 3000
 ```
 
-The root command builds the shared database package before either app starts and forwards exported environment variables. Next continues to load this package's `.env.local`. To run only Next after building the database package, use `npm run dev -w @fluent-flow/dashboard` from the root.
+The root command first ensures the existing project demo database at `127.0.0.1:55432/ff_demo` is running, then builds the shared database package before either app starts and forwards exported environment variables. Custom databases must be started separately. Next continues to load this package's `.env.local`. To run only Next after building the database package, use `npm run dev -w @fluent-flow/dashboard` from the root; that per-workspace command does not start PostgreSQL.
 
 ### Registering your first agent
 

@@ -1,5 +1,3 @@
-// Actual NextAuth -> signed proxy -> mounted createApp -> private PostgreSQL.
-// Seed using collab-settings-security.test.js and FF_SETTINGS_BROWSER_FIXTURE_PATH.
 import assert from 'node:assert/strict';
 import {existsSync,readFileSync,statSync} from 'node:fs';
 import {chromium,expect} from '@playwright/test';

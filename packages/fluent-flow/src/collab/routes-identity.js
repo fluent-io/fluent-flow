@@ -19,13 +19,10 @@ import {
   revokeCollabProjectToken,
   listCollabMembers,
   listCollabAssignees,
+  getCollabProjectOverview,
+  updateCollabProjectOverview,
 } from '@fluent-flow/db';
 
-/**
- * Authenticated identity/workspace/membership routes. Handlers trust
- * req.collabActor only after requireActor; every service call re-checks the
- * current principal, membership and capabilities in the DB.
- */
 export function registerIdentityRoutes(router) {
   router.get('/projects/:id/assignees',async(req,res,next)=>{
     try {res.json({data:await listCollabAssignees({actor:req.collabActor,projectId:req.params.id})});}catch(err){next(err);}
@@ -43,8 +40,6 @@ export function registerIdentityRoutes(router) {
     try {
       const principal = await requireCurrentPrincipal(req.collabActor);
       const profile = await getPrincipalMeProfile(principal.id);
-      // Authoritative from legacy DB roles (workspace admins' org picker);
-      // non-GitHub principals resolve to {eligible:false, legacyOrgIds:[]}.
       const bootstrap = await getCollabBootstrapEligibility(req.collabActor);
       res.json({
         data: {
@@ -101,8 +96,6 @@ export function registerIdentityRoutes(router) {
           'Choose which organization this workspace belongs to.',
         );
       }
-      // Deterministic default makes operator retries idempotent without a
-      // client-generated key.
       const idempotencyKey =
         typeof req.body?.idempotencyKey === 'string' && req.body.idempotencyKey.length >= 8
           ? req.body.idempotencyKey
@@ -114,6 +107,28 @@ export function registerIdentityRoutes(router) {
         idempotencyKey,
       });
       res.status(201).json({ data: workspace });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get('/projects/:id', async (req, res, next) => {
+    try {
+      res.json({ data: await getCollabProjectOverview({ actor: req.collabActor, projectId: req.params.id }) });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.patch('/projects/:id/overview', async (req, res, next) => {
+    try {
+      const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : { invalid: true };
+      const project = await updateCollabProjectOverview({
+        ...body,
+        actor: req.collabActor,
+        projectId: req.params.id,
+      });
+      res.json({ data: project });
     } catch (err) {
       next(err);
     }

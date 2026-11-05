@@ -1,4 +1,3 @@
-/** Capability vocabulary and system role presets (contract: fixed lists). */
 export const COLLAB_CAPABILITIES = [
   'task.read',
   'task.write',

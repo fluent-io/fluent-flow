@@ -2,24 +2,15 @@ import type { Task, TaskStatus } from './types';
 
 export interface MoveTarget {
   status: TaskStatus;
-  /** The card the moved card sits after; null means lane top. */
   beforeTaskId: string | null;
-  /** The card the moved card sits before; null means lane bottom. */
   afterTaskId: string | null;
-  /** The moved task's project; ordering is always scoped to it. */
   projectId?: string;
 }
 
-/**
- * Drops onto a specific card are only valid within one project: the board can
- * show several projects at once, and a cross-project drop would send a foreign
- * neighbor ID to the server's project-scoped guard.
- */
 export function canDropOnCard(moving: Pick<Task, 'projectId'>, target: Pick<Task, 'projectId'>): boolean {
   return moving.projectId === target.projectId;
 }
 
-/** Derive the wire body for a board move from the visible lane contents. */
 export function buildMoveRequest(
   lane: Task[],
   status: TaskStatus,
@@ -28,7 +19,6 @@ export function buildMoveRequest(
   const scoped = lane.filter((t) => t.projectId === opts.moving.projectId);
   const explicitNeighbors = opts.beforeTaskId !== undefined || opts.afterTaskId !== undefined;
   if (!explicitNeighbors) {
-    // Drop onto the lane itself: top of this project's section of the lane.
     return {
       status,
       beforeTaskId: null,
@@ -44,12 +34,6 @@ export function buildMoveRequest(
   };
 }
 
-/**
- * Optimistic local application of a move. `position` is an opaque server rank —
- * it is never compared or interpolated here; the accepted server array order is
- * preserved and the moved card is spliced relative to its same-project
- * neighbors. The server's authoritative placement replaces this on response.
- */
 export function applyBoardMove(tasks: Task[], movingId: string, move: MoveTarget): Task[] {
   const movingIndex = tasks.findIndex((t) => t.id === movingId);
   if (movingIndex === -1) return tasks;
@@ -59,7 +43,6 @@ export function applyBoardMove(tasks: Task[], movingId: string, move: MoveTarget
   const rest = tasks.filter((t) => t.id !== movingId);
   const scoped = rest.filter((t) => t.status === move.status && t.projectId === projectId);
 
-  // Global insertion index: relative to the same-project neighbor cards.
   let insertAt: number;
   if (move.afterTaskId) {
     const afterGlobal = rest.findIndex((t) => t.id === move.afterTaskId && t.projectId === projectId);
@@ -88,21 +71,10 @@ function globalIndexScopedEnd(rest: Task[], projectId: string, status: TaskStatu
   return last === -1 ? rest.length : last + 1;
 }
 
-/** Render order helper: lanes render in server array order; no client re-ranking. */
 export function tasksInLaneOrder(tasks: Task[], status: TaskStatus, projectId?: string): Task[] {
   return tasks.filter((t) => t.status === status && (projectId === undefined || t.projectId === projectId));
 }
 
-/**
- * Canonical wire target for a drop. The server ranks between the two anchors,
- * so B sends concrete neighbors whenever the visible lane section has any:
- *  - lane drop / menu top: before=null, after=first card
- *  - menu end:             before=last card, after=null
- *  - card-before:          before=predecessor, after=target
- *  - card-after:           before=target, after=successor
- * Both anchors are null only for a currently empty lane section. Anchors are
- * same-project cards; the moving card is never its own anchor.
- */
 export function moveTargetForDrop(
   tasks: Task[],
   moving: Pick<Task, 'id' | 'projectId'>,
@@ -125,7 +97,6 @@ export function moveTargetForDrop(
 
   const targetIndex = scoped.findIndex((t) => t.id === drop.targetId);
   if (targetIndex === -1) {
-    // Target not visible in this project's section: fall back to lane top.
     return { status: drop.status, beforeTaskId: null, afterTaskId: scoped[0]?.id ?? null, projectId: moving.projectId };
   }
 

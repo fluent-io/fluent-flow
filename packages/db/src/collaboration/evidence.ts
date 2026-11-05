@@ -6,13 +6,6 @@ import { withClientTransaction } from './tx.js';
 import { authorize, getProjectCapabilities } from './authorize.js';
 import { CollabServiceError } from './errors.js';
 
-/**
- * A4 evidence services (B-owned slice): acceptance criteria, workpad checks
- * and their append-only evidence, artifacts, ideas, summaries, usage and
- * delivery decisions. Actors are re-authorized per operation; reads are
- * actor-scoped before pagination; agent/runner provenance can never forge a
- * human decision.
- */
 
 const actorSchema = z.object({ principalId: z.string().uuid(), sessionVersion: z.number().int().min(1) });
 
@@ -78,13 +71,11 @@ async function requireTaskProjectId(taskId: string, tx?: PoolClient): Promise<st
     [taskId],
   );
   if (rows.length === 0) {
-    // Inaccessible and missing objects are indistinguishable.
     throw new CollabServiceError(404, 'not_found', 'Not found.');
   }
   return rows[0].project_id;
 }
 
-/** All evidence writers lock the parent before children, matching delivery review. */
 async function withTaskTransaction<T>(taskId: string, fn: (tx: PoolClient) => Promise<T>): Promise<T> {
   return withClientTransaction(async (tx) => {
     await tx.query('SELECT id FROM collab_tasks WHERE id=$1 FOR UPDATE', [taskId]);
@@ -161,7 +152,6 @@ export async function updateCollabCriterion(
       [input2.criterionId, nextText, nextState, nextReason, nextVersion],
     );
 
-    // Append-only history: delivery acknowledgment and audits consume this.
     if (nextState !== row.state || nextText !== row.text) {
       await client.query(
         `INSERT INTO collab_criteria_events
@@ -221,9 +211,6 @@ export async function listCollabCriterionHistory(input: z.infer<typeof criterion
   }));
 }
 
-// ---------------------------------------------------------------------------
-// Named checks and append-only evidence
-// ---------------------------------------------------------------------------
 
 const createCheckSchema = z.object({
   actor: actorSchema,
@@ -309,11 +296,6 @@ interface EvidenceRow {
   check_version: number;
 }
 
-/**
- * Stale derivation (contract): evidence is stale when its commit is unknown,
- * the check definition changed after capture, or the commit differs from the
- * task's current deliverable head (latest known run head commit).
- */
 async function deriveStale(taskId: string, evidence: EvidenceRow[]): Promise<Map<string, { stale: boolean; staleReason: string | null }>> {
   const { rows: headRows } = await getPool().query<{ head_commit: string | null; dirty: boolean | null }>(
     `SELECT head_commit, dirty FROM collab_runs
@@ -329,7 +311,6 @@ async function deriveStale(taskId: string, evidence: EvidenceRow[]): Promise<Map
     } else if (!row.commit_sha) {
       result.set(row.id, { stale: true, staleReason: 'commit unknown' });
     } else if (!currentHead) {
-      // No known deliverable head: the commit cannot be verified against one.
       result.set(row.id, { stale: true, staleReason: 'commit unknown to any run head' });
     } else if (headRows[0].dirty === true || row.dirty === true) {
       result.set(row.id, { stale: true, staleReason: 'worktree is dirty at capture or current head' });
@@ -338,7 +319,6 @@ async function deriveStale(taskId: string, evidence: EvidenceRow[]): Promise<Map
     } else if (row.commit_sha !== currentHead) {
       result.set(row.id, { stale: true, staleReason: 'evidence commit differs from current head' });
     }
-    // check_version comparison happens against the parent check version at read.
     else {
       result.set(row.id, { stale: false, staleReason: null });
     }
@@ -361,7 +341,6 @@ export async function createCollabCheck(input: z.infer<typeof createCheckSchema>
     const row = rows[0];
     return { id: row.id, taskId: row.task_id, name: row.name, command: row.command, visibility: row.visibility, version: row.version, evidence: [] };
   } catch (err) {
-    // UNIQUE (task_id, name): a per-task check name is stable workpad identity.
     if (err && typeof err === 'object' && 'code' in err && err.code === '23505') {
       throw new CollabServiceError(409, 'name_conflict', 'A check with this name already exists.');
     }
@@ -406,10 +385,6 @@ export async function addCollabCheckEvidence(input: z.infer<typeof addEvidenceSc
   const projectId = await requireTaskProjectId(input2.taskId, tx);
   await authorize(input2.actor, { projectId }, ['task.write']);
 
-  // Authority distinction: the HTTP actor path records HUMAN provenance only.
-  // Agent evidence goes through the trusted report-context services and runner
-  // evidence through A's observation sink — connector authority is never
-  // claimable via an authenticated-human POST.
   if (input2.provenance !== 'human') {
     throw new CollabServiceError(403, 'provenance_forbidden', 'You do not have permission to perform this action.');
   }
@@ -547,9 +522,6 @@ export async function listCollabChecks(input: { actor: z.infer<typeof actorSchem
   });
 }
 
-// ---------------------------------------------------------------------------
-// Artifacts (input/output references with ownership)
-// ---------------------------------------------------------------------------
 
 const createArtifactSchema = z.object({
   actor: actorSchema,
@@ -729,7 +701,6 @@ export async function listCollabArtifacts(input: { actor: z.infer<typeof actorSc
   }));
 }
 
-/** Human publication/ownership change creates an audited new version; agents can never broaden. */
 export async function publishCollabArtifact(
   input: z.infer<typeof actorSchema> & {
     taskId: string;
@@ -764,7 +735,6 @@ export async function publishCollabArtifact(
         currentVersion: row.version,
       });
     }
-    // Only a human principal can broaden visibility; provenance never changes.
     await client.query(
       `UPDATE collab_artifacts
          SET visibility = $2, version = version + 1, updated_at = now()
@@ -815,7 +785,6 @@ export type CollabArtifactContent =
   | { name: string; mediaType: string; contentBase64: string; truncated: boolean }
   | { state: 'queued' | 'offline' | 'unavailable'; reason: string };
 
-/** Browser input never chooses a host, run, path or URL to retrieve. */
 export async function getCollabArtifactContent(
   input: { actor: z.infer<typeof actorSchema>; taskId: string; artifactId: string },
 ): Promise<CollabArtifactContent> {
@@ -854,9 +823,6 @@ export async function getCollabArtifactContent(
   return {state:offline?'offline':'queued',reason:offline?'Retrieval is queued until the execution host reconnects.':'Retrieval is pending on the execution host.'};
 }
 
-// ---------------------------------------------------------------------------
-// Ideas (source-linked; conversion idempotent, never launches work)
-// ---------------------------------------------------------------------------
 
 const createIdeaSchema = z.object({
   actor: actorSchema,
@@ -964,11 +930,6 @@ export async function listCollabIdeas(input: { actor: z.infer<typeof actorSchema
   return rows.map(rowToIdea);
 }
 
-/**
- * Idempotent conversion (per idea + idempotency key): kind 'task' creates a
- * backlog task only — never a run; kind 'follow_up' additionally requires
- * run.steer and records the session for an explicit confirmed command.
- */
 export async function convertCollabIdea(
   input: z.infer<typeof convertIdeaSchema>,
 ): Promise<{ idea: CollabIdeaView; createdTaskId: string | null; commandId: string | null; replay: boolean }> {
@@ -1013,9 +974,6 @@ export async function convertCollabIdea(
   });
 }
 
-// ---------------------------------------------------------------------------
-// Summaries (explicit; configurable/disabled upstream), usage, delivery
-// ---------------------------------------------------------------------------
 
 const recordSummarySchema = z.object({
   actor: actorSchema,
@@ -1085,12 +1043,6 @@ export async function recordCollabSummary(input: z.infer<typeof recordSummarySch
   };
 }
 
-/**
- * Trusted report-context variant for A's observation sink: summary content
- * delivered by the summarizer session lands here with its model and source
- * cursor. No actor — the sink is authenticated by the host credential and the
- * run/session binding is enforced.
- */
 export async function recordCollabSummaryReport(input: {
   taskId: string;
   runId: string;
@@ -1118,13 +1070,9 @@ export async function recordCollabSummaryReport(input: {
   const summarySession = await tx.query("SELECT id FROM collab_sessions WHERE id=$1 AND run_id=$2 AND role='summary'", [input2.sessionId, input2.runId]);
   if (!summarySession.rows.length) throw new CollabServiceError(403, 'invalid_summary_source', 'This session cannot report a generated summary.');
   const command=(await tx.query<{payload:{model?:string|null;sourceCursor?:{epoch:string;seq:string}|null}}>("SELECT payload FROM collab_connector_commands WHERE session_id=$1 AND run_id=$2 AND kind='summarize' ORDER BY created_at LIMIT 1",[input2.sessionId,input2.runId])).rows[0];
-  // Generated summary metadata describes the frozen source actually supplied,
-  // independent of metadata claimed by the provider's result event.
   const model=command?command.payload.model??null:input2.model;
   const sourceEpoch=command?command.payload.sourceCursor?.epoch??null:input2.sourceEpoch;
   const sourceSeq=command?command.payload.sourceCursor?.seq??null:input2.sourceSeq;
-  // Authority = the sink's host credential + the exact run/session binding;
-  // authorship is attributed to the run creator.
   const { rows: runRows } = await tx.query<{ created_by_principal_id: string }>(
     'SELECT created_by_principal_id FROM collab_runs WHERE id = $1 AND task_id = $2',
     [input2.runId, input2.taskId],
@@ -1163,7 +1111,6 @@ export async function recordCollabSummaryReport(input: {
   };
 }
 
-/** Explicit generation uses the project's configured summary profile and frozen source. */
 export async function queueCollabSummary(input:{actor:z.infer<typeof actorSchema>;runId:string;idempotencyKey:string}) {
   const parsed=z.object({actor:actorSchema,runId:z.string().uuid(),idempotencyKey:z.string().min(8).max(256)}).parse(input);
   const {rows:runs}=await getPool().query('SELECT task_id,project_id FROM collab_runs WHERE id=$1',[parsed.runId]);
@@ -1239,7 +1186,6 @@ export async function listCollabSummaries(input: { actor: z.infer<typeof actorSc
   }));
 }
 
-// --- Usage -------------------------------------------------------------
 
 const recordUsageSchema = z.object({
   actor: actorSchema,
@@ -1253,14 +1199,6 @@ const recordUsageSchema = z.object({
   unavailableReason: z.string().max(300).nullable().default(null),
 });
 
-/**
- * Deduped by (session, provider turn). Provider usage is cumulative per turn:
- * a newer snapshot for the same identity REPLACES the stored values (10 → 20
- * counts 20 once), it never adds. Native session-cumulative snapshots use the
- * reserved native-session-snapshot identity and replace turn totals in insights.
- * Trusted variant for A's observation sink (no actor; the sink is
- * authenticated by the host credential).
- */
 export async function recordUsageSample(input: {
   runId: string;
   taskId: string;
@@ -1285,8 +1223,6 @@ export async function recordUsageSample(input: {
     .parse(input);
   if (!tx) return withTaskTransaction(input2.taskId, (client) => recordUsageSample(input, client));
   const projectId = await requirePlanContext(input2.taskId, input2.runId, input2.sessionId, tx);
-  // The zero uuid replaces NULL so the unique conflict target works (NULLs
-  // are distinct in PG unique indexes) — matches the migration default.
   const NO_SESSION = '00000000-0000-0000-0000-000000000000';
   const sessionId = input2.sessionId ?? NO_SESSION;
 
@@ -1305,7 +1241,6 @@ export async function recordUsageSample(input: {
   return { created: rowCount === 1, updated: rowCount === 0 };
 }
 
-/** Actor wrapper for the MCP/HTTP reporting surface. */
 export async function recordCollabUsage(
   input: z.infer<typeof recordUsageSchema>,
 ): Promise<{ created: boolean; updated: boolean }> {
@@ -1373,8 +1308,6 @@ export async function getCollabProjectInsights(
     output_samples: string;
     cost_samples: string;
   }>(
-    // Session totals already include their turns. Select one representation
-    // per session; an unavailable snapshot must not hide reported turn usage.
     `WITH scoped_samples AS (
        SELECT *,
               bool_or(provider_turn_id = 'native-session-snapshot' AND
@@ -1400,8 +1333,6 @@ export async function getCollabProjectInsights(
     [input2.projectId, input2.from, input2.to],
   );
   const samples = Number(usageRows[0]?.samples ?? 0);
-  // Providers that expose no usage record null-only samples: those are
-  // 'unavailable with reason', never 'available with zero tokens'.
   const knownSamples = Number(usageRows[0]?.known_samples ?? 0);
   const coverage = { samples, tokensIn: Number(usageRows[0]?.input_samples ?? 0), tokensOut: Number(usageRows[0]?.output_samples ?? 0), costUsd: Number(usageRows[0]?.cost_samples ?? 0) };
   const partial = knownSamples > 0 && Object.values(coverage).some((count) => count < samples);
@@ -1420,7 +1351,6 @@ export async function getCollabProjectInsights(
   };
 }
 
-// --- Delivery snapshot + human-only decisions -----------------------------
 
 const createDeliverySchema = z.object({
   actor: actorSchema,
@@ -1460,14 +1390,6 @@ async function readNativePendingDeliveryItems(taskId: string, tx?: PoolClient) {
   return rows;
 }
 
-/**
- * Open items at decision/delivery time: open criteria, open questions, native
- * pending requests, and
- * per-check latest evidence that is failed, not_run or stale (unknown commit,
- * no known head, head mismatch, definition changed). Reviewers hold
- * delivery.accept without internal.read: internal check names and question
- * text are withheld while their ids still participate in acknowledgment.
- */
 export async function listCollabOpenItems(
   input: { actor: z.infer<typeof actorSchema>; taskId: string },
   tx?: PoolClient,
@@ -1565,7 +1487,6 @@ export async function createCollabDelivery(input: z.infer<typeof createDeliveryS
     }
 
     const openItems = await listCollabOpenItems({ actor: input2.actor, taskId: input2.taskId }, client);
-    // Contract: an explicit delivery submission moves in_progress to review.
     await client.query(
       `UPDATE collab_tasks SET status = CASE WHEN status = 'in_progress' THEN 'review' ELSE status END,
          version = version + 1, updated_at = now()
@@ -1617,7 +1538,6 @@ export async function createCollabDelivery(input: z.infer<typeof createDeliveryS
 export async function listCollabDeliveries(input: { actor: z.infer<typeof actorSchema>; taskId: string }): Promise<CollabDeliveryView[]> {
   const input2 = z.object({ actor: actorSchema, taskId: z.string().uuid() }).parse(input);
   const projectId = await requireTaskProjectId(input2.taskId);
-  // Reviewers (delivery.accept, no internal.read) must see what they judge.
   await authorize(input2.actor, { projectId }, ['task.read']);
   const caps = await getProjectCapabilities(input2.actor.principalId, projectId);
   if (!caps.has('internal.read') && !caps.has('delivery.accept')) {
@@ -1705,7 +1625,6 @@ const listDecisionsSchema = z.object({
   cursor: z.string().uuid().nullish(),
 });
 
-/** Stored human audit only; raw request/evidence payloads stay private. */
 export async function listCollabTaskDecisions(input: z.input<typeof listDecisionsSchema>): Promise<{
   decisions: CollabTaskDecisionView[];
   nextCursor: string | null;
@@ -1754,12 +1673,6 @@ const decideSchema = z.object({
   expectedVersion: z.number().int().min(1),
 });
 
-/**
- * Human-only decision (delivery.accept). Agent provenance can never reach
- * here: the actor must carry the human capability, and acceptance of a
- * reviewed task requires acknowledging the delivery's open items at the
- * current task version. Done is never set by runs, summaries or merges.
- */
 export async function recordCollabTaskDecision(
   input: z.infer<typeof decideSchema>,
 ): Promise<{ decision: string; acknowledged: boolean }> {
@@ -1785,9 +1698,6 @@ export async function recordCollabTaskDecision(
       [input2.taskId],
     );
 
-    // Recompute the outstanding set NOW, inside the transaction: items added
-    // after the last delivery still block acceptance, and the stored snapshot
-    // alone is never trusted.
     const openItems = await listCollabOpenItems({ actor: input2.actor, taskId: input2.taskId }, client);
     const openIds = openItems.map((i) => i.id);
     let acceptedReview: z.infer<typeof reviewSnapshotSchema> | null = null;
@@ -1832,7 +1742,6 @@ export async function recordCollabTaskDecision(
   });
 }
 
-/** Content by artifact id alone: authorization derives from the artifact's task project. */
 export async function getCollabArtifactContentById(
   input: { actor: z.infer<typeof actorSchema>; artifactId: string },
 ): Promise<CollabArtifactContent> {
@@ -1845,9 +1754,6 @@ export async function getCollabArtifactContentById(
   return getCollabArtifactContent({ actor: input2.actor, taskId: rows[0].task_id, artifactId: input2.artifactId });
 }
 
-// ---------------------------------------------------------------------------
-// Workpad plan snapshots and open questions (WORKPAD-SPEC adapted)
-// ---------------------------------------------------------------------------
 
 const planItemSchema = z.object({
   text: z.string().min(1).max(500),
@@ -1905,11 +1811,6 @@ async function requirePlanContext(taskId: string, runId: string | null, sessionI
   return projectId;
 }
 
-/**
- * Trusted report-context variant (A's run-scoped credential / observation
- * sink): provenance is always 'agent' and the run/session must belong to the
- * task. Agents cannot masquerade as human plan edits.
- */
 export async function recordWorkpadPlanReport(input: {
   taskId: string;
   runId: string;
@@ -1939,7 +1840,6 @@ export async function recordWorkpadPlanReport(input: {
   return rowToPlan(rows[0]);
 }
 
-/** Human edit of the plan: new version with provenance 'human'. */
 export async function editWorkpadPlan(
   input: z.infer<typeof actorSchema> & {
     taskId: string;
@@ -2048,7 +1948,6 @@ export async function createCollabOpenQuestion(
   return rowToQuestion(rows[0]);
 }
 
-/** Trusted report-context variant for agent confusion records. */
 export async function recordOpenQuestionReport(input: {
   taskId: string;
   runId: string;
@@ -2172,7 +2071,6 @@ export async function listCollabOpenQuestionHistory(input: {
 
 const reportBindingSchema = z.object({ taskId: z.string().uuid(), runId: z.string().uuid(), sessionId: z.string().uuid().nullable().default(null) });
 
-/** Only credential-bound MCP/connector callers may construct this context. */
 async function resolveEvidenceReportBinding(input: z.infer<typeof reportBindingSchema>, tx: PoolClient) {
   const projectId = await requirePlanContext(input.taskId, input.runId, input.sessionId, tx);
   const { rows } = await tx.query<{ created_by_principal_id: string }>('SELECT created_by_principal_id FROM collab_runs WHERE id=$1 AND task_id=$2', [input.runId, input.taskId]);
@@ -2191,7 +2089,6 @@ export async function recordCollabCheckReport(input: {
   let checkId = parsed.checkId;
   if (!checkId) {
     if (!parsed.name || !parsed.command) throw new CollabServiceError(422, 'check_required', 'A named check and its command are required.');
-    // Agent observations cannot rewrite an existing human definition.
     const existing = await tx.query<{ id: string; command: string }>('SELECT id,command FROM collab_checks WHERE task_id=$1 AND name=$2', [parsed.taskId, parsed.name]);
     if (existing.rows[0]) {
       if (existing.rows[0].command !== parsed.command) throw new CollabServiceError(409, 'check_definition_changed', 'The check definition changed. Review it before reporting evidence.');

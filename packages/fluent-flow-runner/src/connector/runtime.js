@@ -19,8 +19,6 @@ import { nativeWorkspaceId } from './uuid-v5.js';
 import { createObservationPrivacy } from './observation-privacy.js';
 import { createRedactionContext } from './redaction-context.js';
 
-/** The public high-level SDK uses the native WebSocket. The connector has a
- * narrower runtime requirement than the existing Node 20 review runner. */
 export async function connectLocalPaseo(connection) {
   if (typeof globalThis.WebSocket !== 'function') {
     throw new Error('The Paseo connector requires Node 22 or newer with native WebSocket support.');
@@ -30,8 +28,6 @@ export async function connectLocalPaseo(connection) {
   return client;
 }
 
-/** Compose the executable connector. Only the external SDK/CLI boundaries are
- * replaceable for acceptance tests; the journal, protocol and executor remain real. */
 export async function createConnectorRuntime({ file, config: suppliedConfig, journalDir, paseo: suppliedPaseo, stopAgent: suppliedStop, client: suppliedClient, intervals = {}, log = (_obj) => {}, onFatal = (_error) => {} }) {
   const config = suppliedConfig ?? loadConnectorConfig({ file });
   const stateDir = journalDir ?? join(dirname(config.file), `connector-${config.instanceId}`);
@@ -66,8 +62,6 @@ export async function createConnectorRuntime({ file, config: suppliedConfig, jou
     };
     async function sampleGit(binding) {
       async function archivedEvidence() {
-        // An archive may remove the directory before its native response is
-        // delivered. Wait for that attempt's durable receipt or failure.
         await pendingArchives.get(binding.runId)?.catch(() => {});
         const receipt = journal.workspaceArchive(binding.runId, binding.workspaceId);
         if (!receipt) return null;
@@ -83,9 +77,7 @@ export async function createConnectorRuntime({ file, config: suppliedConfig, jou
       try {
         const directory = await workspaceDirectory(binding);
         state = directory ? await git.state(directory) : { ok: false };
-      } catch { state = { ok: false }; } // Disconnection is unknown, never a clean HEAD.
-      // The read can overlap a newly confirmed archive; its receipt supersedes
-      // any now-missing/old working directory result.
+      } catch { state = { ok: false }; }
       const archivedAfterRead = await archivedEvidence();
       if (archivedAfterRead) return archivedAfterRead;
       const payload = { headCommit: state.ok ? state.headCommit : null, dirty: state.ok ? state.uncommitted + state.untracked > 0 : null };

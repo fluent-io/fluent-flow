@@ -1,12 +1,3 @@
-/**
- * Builds the sanitized execution catalog the connector publishes at
- * registration: allowlisted repository keys plus configured Paseo agent
- * profiles (name/provider/model/mode/thinking/features only).
- *
- * Secrets never leave the host: provider env/keys, profile notes and the rest
- * of the daemon config are read here and filtered out. The control plane only
- * ever sees the sanitized projection below.
- */
 
 /**
  * @param {object} opts
@@ -43,11 +34,6 @@ export async function buildCatalog({ config, paseo }) {
   };
 }
 
-/**
- * Resolve a launch mapping locally: repository key -> canonical path and
- * profile id -> sanitized profile snapshot. Anything not allowlisted is
- * rejected; client task text can never widen this.
- */
 export function resolveLaunchTargets({ config, repositoryKey, profileId }) {
   const repoPath = config.repositories[repositoryKey];
   if (!repoPath) {

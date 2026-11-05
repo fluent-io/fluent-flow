@@ -31,7 +31,6 @@ export async function dismissClaim(id: number): Promise<void> {
  * Cancels and archives matching claims. Defaults to 24 hours if olderThanMs not provided.
  */
 export async function dismissStaleClaims(orgIds: string[], olderThanMs = 86_400_000, isSuperadmin = false): Promise<number> {
-  // Empty orgIds without superadmin means no org access, not global scope
   if (orgIds.length === 0 && !isSuperadmin) return 0;
   const isSuper = isSuperadmin && orgIds.length === 0;
   const sql = `
@@ -50,7 +49,6 @@ export async function dismissStaleClaims(orgIds: string[], olderThanMs = 86_400_
  * Dismiss all active (pending or claimed) claims in a pipeline (repo + optional pr_number).
  */
 export async function dismissPipelineClaims(orgIds: string[], repo: string, prNumber?: number | null, isSuperadmin = false): Promise<number> {
-  // Empty orgIds without superadmin means no org access, not global scope
   if (orgIds.length === 0 && !isSuperadmin) return 0;
   const isSuper = isSuperadmin && orgIds.length === 0;
   const params: unknown[] = ['cancelled', repo];

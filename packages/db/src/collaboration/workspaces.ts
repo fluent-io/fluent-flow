@@ -27,10 +27,6 @@ const createProjectSchema = z.object({
   name: z.string().min(1).max(200),
 });
 
-/**
- * Workspace bootstrap eligibility comes from CURRENT legacy roles
- * (user_orgs/superadmin) — never from session-supplied flags.
- */
 export async function getCollabBootstrapEligibility(actor: {
   principalId: string;
   sessionVersion: number;
@@ -51,11 +47,6 @@ export async function getCollabBootstrapEligibility(actor: {
   return { eligible: rows.length > 0, legacyOrgIds: rows.map((r) => r.id) };
 }
 
-/**
- * Atomically create a client workspace with system roles and a manager
- * membership for the acting org admin. Idempotent per idempotencyKey; a
- * replay returns the existing workspace unchanged.
- */
 export async function bootstrapCollaborationWorkspace(input: {
   actor: { principalId: string; sessionVersion: number };
   legacyOrgId: string;
@@ -72,8 +63,6 @@ export async function bootstrapCollaborationWorkspace(input: {
     );
   }
 
-  // Admin for the selected org (or a genuine superadmin with no user_orgs
-  // row) — checked now, in DB, from current legacy state.
   const admin = await getPool().query(
     `SELECT 1
      FROM users u
@@ -105,11 +94,8 @@ export async function bootstrapCollaborationWorkspace(input: {
         [input2.idempotencyKey],
       );
       if (existing.rows.length === 0) {
-        // Only possible under concurrent unique races the ON CONFLICT missed.
         throw new CollabServiceError(409, 'workspace_conflict', 'Workspace bootstrap conflict.');
       }
-      // The idempotency key is bound to (creator, org): a different actor or
-      // org replaying the key must never receive the foreign workspace.
       if (
         existing.rows[0].legacy_org_id !== input2.legacyOrgId ||
         existing.rows[0].created_by_principal_id !== principal.id
@@ -186,22 +172,10 @@ export type MeWorkspace = {
 
 export type MeProfile = {
   workspaces: MeWorkspace[];
-  /** Effective capabilities per project (B's `capabilities[projectId]` map). */
   capabilities: Record<string, CollabCapability[]>;
-  /**
-   * Capabilities from WORKSPACE-scope roles only — never inferred from
-   * project roles — for workspace-admin settings UIs.
-   */
   workspaceCapabilities: Record<string, CollabCapability[]>;
 };
 
-/**
- * Board-entry profile for GET /me. Workspace-scope memberships see ALL of
- * their workspace's projects (inheritance); project-only members see exactly
- * their authorized projects grouped under the REAL parent workspace — never
- * sibling projects, never a fabricated workspace id. Capabilities are
- * per-project only: project roles never confer workspace administration.
- */
 export async function getPrincipalMeProfile(principalId: string): Promise<MeProfile> {
   const workspaces = await getPool().query<{ id: string; name: string }>(
     `SELECT DISTINCT w.id, w.name
@@ -309,7 +283,6 @@ const updateDefaultsSchema = z.object({
   }).strict(),
 });
 
-/** Project.admin settings write (execution defaults: mapping/profiles/summary config). */
 export async function updateProjectExecutionDefaults(input: {
   actor: { principalId: string; sessionVersion: number };
   projectId: string;
@@ -392,12 +365,6 @@ const createRoleSchema = z.object({
     .min(1),
 });
 
-/**
- * Create a custom role: workspace-scope membership.admin only, and the granted
- * capability set must be a subset of the creator's own delegable set. Role
- * definitions are create-only (contract has no role PATCH) — granted
- * privileges can therefore never be silently mutated.
- */
 export async function createWorkspaceRole(input: {
   actor: { principalId: string; sessionVersion: number };
   workspaceId: string;

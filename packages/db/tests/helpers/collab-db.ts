@@ -1,15 +1,5 @@
 import pg from 'pg';
 
-/**
- * Collab suites run against a REAL isolated disposable Postgres. Safety rules
- * (enforced here AND again inside resetCollabSchema):
- * - URL required; missing DB is a hard failure, never a silent skip — these
- *   suites are the persistence evidence.
- * - Loopback hosts only.
- * - Database name must be a dedicated ff_* test database (never `postgres`,
- *   the project default, or any production-shaped name).
- * - Test mode required (vitest/NODE_ENV=test) or an explicit opt-in env.
- */
 export function assertDedicatedCollabTestDatabaseUrl(url) {
   const parsed = new URL(url);
   if (!['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname)) {
@@ -34,7 +24,6 @@ export function assertDedicatedCollabTestDatabaseUrl(url) {
   return url;
 }
 
-/** Package-specific env first so turbo's parallel package runs never share a DB. */
 export function resolveCollabTestDatabaseUrl() {
   const url = process.env.COLLAB_DB_TEST_DATABASE_URL ?? process.env.TEST_DATABASE_URL;
   if (!url) {
@@ -45,11 +34,6 @@ export function resolveCollabTestDatabaseUrl() {
   return assertDedicatedCollabTestDatabaseUrl(url);
 }
 
-/**
- * Fresh schema for deterministic runs: drop public + drizzle tracking, then
- * re-apply all migrations (baseline + additive collab migrations). The
- * dedicated-DB guard runs again here so a caller cannot bypass it.
- */
 export async function resetCollabSchema(databaseUrl) {
   assertDedicatedCollabTestDatabaseUrl(databaseUrl);
   const client = new pg.Client({ connectionString: databaseUrl });
@@ -66,7 +50,6 @@ export async function resetCollabSchema(databaseUrl) {
   }
 }
 
-/** Seed a legacy GitHub user with optional org membership (admin|member). */
 export async function seedLegacyUser(
   databaseUrl: string,
   opts: { githubId: number; login: string; isSuperadmin?: boolean },

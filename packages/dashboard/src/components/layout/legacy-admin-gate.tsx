@@ -5,12 +5,6 @@ import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { DashboardShell } from './dashboard-shell';
 
-/**
- * Wraps legacy internal surfaces (agents/repos/pipelines). Collaboration-only
- * principals have no legacy org identity; these pages would render empty or
- * restricted data, so they are sent to the board instead. The legacy API
- * routes themselves already deny unscoped access server-side.
- */
 export function LegacyAdminGate({ children }: { children: React.ReactNode }) {
   return <DashboardShell><LegacyAccess>{children}</LegacyAccess></DashboardShell>;
 }

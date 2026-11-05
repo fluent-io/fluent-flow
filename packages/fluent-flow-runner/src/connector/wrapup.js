@@ -2,24 +2,6 @@ import { createGitReader } from './workpad.js';
 import { nativeWorkspaceId } from './uuid-v5.js';
 
 /**
- * Wrap-up preflight and strictly-owned archival (C4).
- *
- * STRONGER than the Flowly upstream wrap-up: uncommitted/untracked/unpushed
- * work, missing upstream and unknown workspace state are BLOCKERS, never
- * acknowledgable warnings — an operator can never acknowledge away the
- * destruction of unpushed code. Only the workspace this connector created for
- * the run is archivable, and only sessions JOURNALED as bound
- * to this run's commands are archival candidates; unrecognized manual/foreign
- * sessions inside the owned workspace block workspace archival. No force flags
- * exist on any path; Paseo's archive keeps branches.
- *
- * Public payloads carry STRUCTURED CODES + counts only — physical paths,
- * provider errors and config stay in private logs.
- *
- * Descriptor note: the real 0.12.0 WorkspaceDescriptorPayload carries
- * workspaceKind, workspaceDirectory and archivingAt as TOP-LEVEL fields on
- * the refresh result.
- *
  * @param {object} opts
  * @param {import('@getpaseo/client').PaseoClient} opts.paseo
  * @param {object} [opts.git] - createGitReader() result
@@ -72,17 +54,14 @@ export function createWrapup({ paseo, git = createGitReader(), journal, log = ()
 
     try {
       const handle = paseo.workspaces.ref(workspaceId);
-      const ws = await handle.refresh(); // resolves the descriptor itself (0.12.0)
+      const ws = await handle.refresh();
       if (ws?.id !== workspaceId) blockers.push({ code: 'workspace_identity_mismatch' });
-      // Top-level descriptor fields only — verified against the installed
-      // 0.12.0 types (no `status.kind` fallback: status is a string union).
       const kind = ws?.workspaceKind ?? 'unknown';
       const directory = ws?.workspaceDirectory ?? null;
       const archiving = Boolean(ws?.archivingAt);
       workspace = { id: workspaceId, kind, archiving, directoryKnown: Boolean(directory) };
       if (archiving) blockers.push({ code: 'archiving_in_progress' });
       if (kind !== 'worktree') blockers.push({ code: 'not_owned_worktree' });
-      // A missing directory must never silently skip the git safety check.
       if (!directory) blockers.push({ code: 'directory_unknown' });
       log({ msg: 'wrapup preflight directory', runId, directory: directory ?? null });
       if (kind === 'worktree' && directory) {
@@ -136,8 +115,6 @@ export function createWrapup({ paseo, git = createGitReader(), journal, log = ()
       if (!['archive_sessions', 'archive_owned_workspace'].includes(mode)) {
         return { ok: false, phase: 'archive', blockers: [{ code: 'unknown_mode' }] };
       }
-      // Fresh recheck immediately before any destructive step — a stale
-      // preflight never authorizes cleanup.
       const check = await this.preflight({ runId, workspaceId: owned });
       if (check.blockers.length) {
         log({ msg: 'wrap-up blocked', runId, blockers: check.blockers });
@@ -181,8 +158,6 @@ export function createWrapup({ paseo, git = createGitReader(), journal, log = ()
           : `${archivedSessions} session(s) archived; workspace kept.`,
       };
       if (result.archivedWorkspace) {
-        // Persist before returning to the executor: Git sampling must not
-        // reinterpret expected worktree removal as loss of evidence.
         await journal.append({ type: 'workspace_archived', runId, workspaceId: owned, result, at: archivedAt });
       }
       return result;

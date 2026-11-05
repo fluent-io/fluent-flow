@@ -28,10 +28,6 @@ function requireIdempotencyKey(req) {
   return key;
 }
 
-/**
- * Run/session execution surfaces (A3) behind the actor-assertion boundary.
- * All authorization, idempotency and fencing live in the domain services.
- */
 export function registerRunRoutes(router) {
   router.get('/tasks/:id/runs', async (req, res, next) => {
     try {
@@ -42,7 +38,6 @@ export function registerRunRoutes(router) {
     }
   });
 
-  // Queued command → 202 per contract.
   router.post('/tasks/:id/runs', async (req, res, next) => {
     try {
       const idempotencyKey = requireIdempotencyKey(req);
@@ -100,9 +95,7 @@ export function registerRunRoutes(router) {
         model: req.body?.model,
         instructions: req.body?.instructions ?? '',
       });
-      res.status(result.created ? 202 : 200).json({
-        data: { session: result.session, commandId: result.commandId, created: result.created },
-      });
+      res.status(result.created ? 202 : 200).json({ data: result });
     } catch (err) {
       next(err);
     }
@@ -226,8 +219,6 @@ export function registerRunRoutes(router) {
         const poll = async () => {
           if (closed) return;
           try {
-            // Re-run identity, scope and visibility on every delivery. Never
-            // retain a membership snapshot for a long-lived connection.
             const page = await listTaskEvents(input);
             if (closed) return;
             publish(page);

@@ -11,11 +11,6 @@ import logger from '../logger.js';
 
 const ACTOR_HEADER = 'x-fluent-flow-actor';
 
-/**
- * Public error shape for /api/collab/v1 per
- * docs/plans/2026-10-19-collaborative-contracts.md:
- * `{error:{code,message,requestId}}` — never raw DB/provider/assertion detail.
- */
 export function sendCollabError(res, status, code, message, requestId) {
   res.status(status).json({ error: { code, message, requestId } });
 }
@@ -34,12 +29,6 @@ function actorHeaderCount(req) {
   return count;
 }
 
-/**
- * Shared authentication outcome for boundary and optional paths.
- * - authenticated: valid signature + current enabled principal
- * - anonymous: no header present (public paths may proceed)
- * - rejected: a response (401/503) has already been sent
- */
 async function authenticateActor(req, res) {
   if (actorHeaderCount(req) > 1) {
     logger.warn({ msg: 'collab actor assertion rejected', reason: 'duplicate_headers', requestId: req.requestId });
@@ -54,7 +43,6 @@ async function authenticateActor(req, res) {
 
   const secret = process.env.FF_COLLAB_AUTH_SECRET;
   if (typeof secret !== 'string' || secret.length === 0) {
-    // Configuration error stays generic to the caller; detail is server-side.
     logger.error({ msg: 'collab auth secret is not configured', requestId: req.requestId });
     sendCollabError(res, 503, 'unavailable_configuration', 'Configuration error. Contact support.', req.requestId);
     return { status: 'rejected' };
@@ -70,8 +58,6 @@ async function authenticateActor(req, res) {
     return { status: 'rejected' };
   }
 
-  // Signature validity is not authorization: re-check current principal state
-  // (exists, enabled, sessionVersion current) on every operation.
   const { rows } = await getPool().query(
     `SELECT id FROM collab_principals
      WHERE id = $1 AND disabled_at IS NULL AND session_version = $2`,
@@ -101,12 +87,6 @@ export async function requireActor(req, res, next) {
   }
 }
 
-/**
- * For public routes that OPTIONALLY accept identity (invitation redemption):
- * the actor can ONLY come from the verified header. A present-but-invalid
- * header is rejected; an absent header proceeds anonymously. Body-supplied
- * actor fields are never trusted.
- */
 export async function optionalVerifiedActor(req, res) {
   const outcome = await authenticateActor(req, res);
   if (outcome.status === 'authenticated') return { actor: outcome.actor };
@@ -114,21 +94,11 @@ export async function optionalVerifiedActor(req, res) {
   return { rejected: true };
 }
 
-/**
- * Server-derived throttle key: a hash of the server-observed connection peer
- * (req.ip honors the app's trusted-proxy configuration; B strips caller XFF
- * before proxying). Callers can never choose or spoof this value.
- */
 export function collabRateLimitKey(req) {
   const peer = req.ip ?? req.socket?.remoteAddress ?? 'unknown';
   return rateLimitBucket('conn', peer, '');
 }
 
-/**
- * Terminal error mapping for /api/collab/v1: typed service errors keep their
- * status/code/user-safe message; malformed payloads are 400; anything else is
- * a generic 500 with the detail logged server-side only.
- */
 export function collabErrorHandler(err, req, res, _next) {
   if (err instanceof CollabServiceError) {
     if (err.status >= 500) {

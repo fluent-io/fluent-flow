@@ -1,21 +1,10 @@
-// Password sign-in view parity against a real dashboard, NextAuth, mounted
-// Express createApp() collaboration API and PostgreSQL. No HTTP mocks.
-// Resets and seeds ONLY the dedicated database in FF_VIEW_PARITY_DATABASE_URL,
-// serves the API on FF_VIEW_PARITY_API_PORT, then signs in through the normal
-// login form of an already running dashboard at FF_UI_TEST_ORIGIN.
-// GitHub OAuth is not performed here; OAuth/password equality is covered by
-// view-parity.test.tsx using the real callbacks.
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
-// Preflight runs before any database import or connection. This script drops
-// the schema, so only names that are clearly disposable test databases pass.
 const databaseUrl = process.env.FF_VIEW_PARITY_DATABASE_URL;
 if (!databaseUrl) throw new Error('FF_VIEW_PARITY_DATABASE_URL is required');
 const parsedDatabaseUrl = new URL(databaseUrl);
-// pg accepts target overrides in query parameters and gives socket: a different
-// database meaning. Keep the validated URL identical to the connection target.
 if (!['postgres:', 'postgresql:'].includes(parsedDatabaseUrl.protocol) || databaseUrl.includes('?') || databaseUrl.includes('#')) {
   console.error('view-parity: refusing database URL; use postgres:// or postgresql:// without query parameters or fragments');
   process.exit(2);
@@ -54,10 +43,8 @@ const { rows: [user] } = await pool.query(
   [owner.login],
 );
 await pool.query(`INSERT INTO user_orgs (user_id, org_id, role) VALUES ($1, 'parity-org', 'admin')`, [user.id]);
-// Same principal a GitHub sign-in materializes; the password is provisioned for it directly.
 const linked = await db.ensureGithubPrincipal({ legacyUserId: user.id, displayName: 'Owner via password', email: owner.email });
 await pool.query('INSERT INTO collab_password_credentials (principal_id, password_hash) VALUES ($1, $2)', [linked.id, await db.hashPassword(owner.password)]);
-// FK semantics: a linked legacy user cannot be deleted out from under its principal.
 await assert.rejects(pool.query('DELETE FROM users WHERE id = $1', [user.id]), (e) => e.code === '23503');
 
 const actor = { principalId: linked.id, sessionVersion: linked.sessionVersion };
@@ -76,7 +63,6 @@ async function api(method, path, body) {
   assert.ok(response.ok, `${method} ${path} -> ${response.status}`);
   return json.data;
 }
-// External collaborator joins the project through the real invitation flow.
 const role = await api('POST', `/workspaces/${workspace.id}/roles`, { name: 'Parity viewer', capabilities: ['task.read'] });
 const invitation = await api('POST', `/projects/${project.id}/invitations`, { email: external.email, roleId: role.id, expiresInHours: 1 });
 const accepted = await fetch(`${apiBase}/invitations/accept`, {
@@ -86,7 +72,7 @@ const accepted = await fetch(`${apiBase}/invitations/accept`, {
 });
 assert.equal(accepted.status, 201, 'invitation accept');
 
-const NAV = ['Board', 'Needs attention', 'Agents', 'Repos', 'Pipelines', 'Settings'];
+const NAV = ['Board', 'Projects', 'Needs attention', 'Agents', 'Repos', 'Pipelines', 'Settings'];
 const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
 const results = {};
 
@@ -168,7 +154,7 @@ assert.equal(results.linkedOwner.topBarShowsLoginAndOrg, true);
 assert.deepEqual(results.linkedOwner.settingsFinal, clean);
 assert.deepEqual(results.linkedOwner.pageErrors, []);
 assert.deepEqual(results.linkedOwner.badCollabResponses, []);
-assert.deepEqual(results.external.visibleNav, ['Board', 'Needs attention']);
+assert.deepEqual(results.external.visibleNav, ['Board', 'Projects', 'Needs attention']);
 assert.deepEqual(results.external.scope, { idIsNumber: false, login: external.name, isSuperadmin: false, orgIds: [] });
 assert.equal(results.external.topBarShowsOrg, false);
 assert.deepEqual(results.external.boardFinal, clean);

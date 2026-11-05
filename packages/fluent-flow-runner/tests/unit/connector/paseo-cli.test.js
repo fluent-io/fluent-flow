@@ -6,15 +6,8 @@ import { join } from 'node:path';
 import { isAppImagePath, resolvePaseoCli, createStopAgent } from '../../../src/connector/paseo-cli.js';
 import { resolveLocalDaemon, parseListen } from '../../../src/connector/paseo-local.js';
 
-/**
- * Host-control prerequisites: AppImage header detection (verified magic bytes
- * of the installed binary: 7f 45 4c 46 02 01 01 00 41 49 02), extract-and-run
- * resolution, strict stop invocation, and local daemon discovery — all with
- * REAL temp files, only execFile injected.
- */
 
 function appImageBytes() {
-  // Real installed header: 7f 45 4c 46 02 01 01 00 41 49 02 00...
   return Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00, 0x41, 0x49, 0x02, 0x00]), Buffer.alloc(64)]);
 }
 
@@ -75,11 +68,10 @@ describe('resolvePaseoCli (extract-and-run)', () => {
       const extractions = [];
       const exec = async (command, args, opts) => {
         extractions.push({ command, args, cwd: opts?.cwd });
-        // Simulate the AppImage self-extraction into the cwd.
         const inner = join(opts.cwd, 'squashfs-root', 'resources', 'bin', 'paseo');
         mkdirSync(join(opts.cwd, 'squashfs-root', 'resources', 'bin'), { recursive: true });
         writeFileSync(inner, '#!/bin/sh\nexit 0\n');
-        chmodSync(inner, 0o755); // real extraction yields an executable entry
+        chmodSync(inner, 0o755);
         return { stdout: '', stderr: '' };
       };
       const resolved = await resolvePaseoCli({ cliPath: img, cacheDir, io: { execFile: exec, existsSync: (p) => p === img } });

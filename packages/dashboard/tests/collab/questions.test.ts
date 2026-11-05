@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest';
 
-// Adapted from Flowly shared/permission-question.test.ts (MIT, pinned 13213f4).
-// The cases encode Paseo's provider answer contract and must not drift.
 const {
   allAnswered,
   answerReply,

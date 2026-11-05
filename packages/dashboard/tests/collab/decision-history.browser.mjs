@@ -1,4 +1,3 @@
-// Real delivery panel with HTTP fixtures; no database or native provider calls.
 import assert from 'node:assert/strict';
 import {existsSync} from 'node:fs';
 import {chromium,expect} from '@playwright/test';

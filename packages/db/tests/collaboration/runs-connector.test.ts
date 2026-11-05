@@ -61,7 +61,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
   }
 
   beforeAll(async () => {
-    // Server key for reporting-credential derivation (test-only value).
     process.env.FF_COLLAB_AUTH_SECRET = 'collab-test-secret-0123456789abcdef0123456789abcdef';
     await resetCollabSchema(DATABASE_URL);
     await runMigrations();
@@ -84,7 +83,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     const project = await createCollabProject({ actor: managerActor, workspaceId: ws.id, name: 'Exec P1' });
     projectId = project.id;
 
-    // Operator role membership for run.start capability coverage.
     const operatorRole = await rawQuery(
       `SELECT id FROM collab_roles WHERE workspace_id = $1 AND name = 'operator'`,
       [ws.id],
@@ -195,7 +193,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
       commandId: global.__launchCommandId,
       state: 'accepted',
     });
-    // Replay of the terminal ack is idempotent.
     await ackConnectorCommand({
       token: hostToken,
       connectorSessionId: connector.connectorSessionId,
@@ -232,8 +229,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     });
     expect(accepted.acceptedEventIds).toHaveLength(2);
 
-    // Replay with identical binding consumes the sender's pending entry
-    // (accepted) WITHOUT duplicating the row or re-projecting.
     const replay = await submitConnectorObservations({
       token: hostToken,
       connectorSessionId: connector.connectorSessionId,
@@ -278,8 +273,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
       waitMs: 0,
       limit: 1,
     });
-    // The accepted launch may resume after its settle window; reconcile it by
-    // id (apply) exactly as a real connector would, then continue to the prompt.
     while (polled.commands.length > 0 && polled.commands[0].kind !== 'prompt') {
       await ackConnectorCommand({
         token: hostToken,
@@ -299,7 +292,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     }
     expect(polled.commands[0].kind).toBe('prompt');
 
-    // Process restart: close and reopen the pool.
     await closePool();
     const stillPending = await rawQuery(
       `SELECT state FROM collab_connector_commands WHERE id = $1`,
@@ -323,7 +315,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
 
   it('rejects revoked hosts and wrong-host access', async () => {
     const secondHost = await createExecutionHost({ actor: managerActor, name: 'Other Box' });
-    // Valid token + ANOTHER host's session: fence mismatch, not auth failure.
     await expect(
       pollConnectorCommands({
         token: secondHost.token,
@@ -335,8 +326,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     ).rejects.toMatchObject({ status: 409, code: 'stale_lease' });
 
     await revokeExecutionHost({ actor: managerActor, hostId: secondHost.id });
-    // Revoked token: register AND poll are unauthenticated (indistinguishable
-    // from unknown token).
     await expect(
       registerConnector({
         token: secondHost.token,
@@ -358,7 +347,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
       }),
     ).rejects.toMatchObject({ status: 401 });
 
-    // Unknown token is 401 indistinguishable from revoked.
     await expect(
       pollConnectorCommands({
         token: 'ff-host-unknown-token-value',
@@ -414,7 +402,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     );
     expect(kinds.map((k) => k.kind).sort()).toEqual(['state', 'usage']);
 
-    // Replay of the same eventIds stays deduped.
     const replay = await submitConnectorObservations({
       token: hostToken,
       connectorSessionId: connector.connectorSessionId,
@@ -455,7 +442,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     });
     expect(first.highWatermarks[`${runId}:${sessionA}:ee`]).toBe('10');
 
-    // Session B may legitimately be BEHIND session A on the same epoch.
     const second = await submitConnectorObservations({
       ...base,
       events: [
@@ -476,7 +462,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
       profileId: 'ai3-coder',
       instructions: 'credential flow',
     });
-    // Drain the launch command: delivery carries the reporting credential.
     const polled = await pollConnectorCommands({
       token: hostToken,
       connectorSessionId: connector.connectorSessionId,
@@ -488,15 +473,12 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     expect(launch).toBeDefined();
     expect(launch.payload.reportingCredential).toMatch(/^ffag_/);
 
-    // Stability is structural: the credential is one row per session, and
-    // every (re)delivery attaches that row's prefix — never a fresh mint.
     const mintCount = await rawQuery(
       `SELECT count(*)::int AS n FROM collab_scoped_tokens WHERE session_id = $1`,
       [run.sessionId],
     );
     expect(mintCount[0].n).toBe(1);
 
-    // Idempotent run replay must not mint a second credential either.
     await startCollabRun({
       actor: operatorActor,
       taskId: credTask.id,
@@ -512,7 +494,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     );
     expect(mintCountAfterReplay[0].n).toBe(1);
 
-    // At rest: hash + prefix only — the raw token is nowhere in the DB.
     const stored = await rawQuery(
       `SELECT token_hash, token_prefix, scopes, project_id, run_id, session_id
        FROM collab_scoped_tokens WHERE session_id = $1`,
@@ -520,8 +501,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     );
     expect(stored).toHaveLength(1);
     expect(stored[0].token_prefix).toBe(launch.payload.reportingCredential.slice(0, 12));
-    // At rest: hash + bounded prefix only — there is no column or value that
-    // could reconstruct the raw credential (9-char prefix, 64-char hash).
     expect(stored[0].token_prefix.length).toBeLessThanOrEqual(12);
     expect(stored[0].token_hash).toHaveLength(64);
     expect(stored[0].token_hash).not.toBe(stored[0].token_prefix);
@@ -529,8 +508,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     expect(stored[0].scopes).not.toContain('run.start');
     expect(stored[0].run_id).toBe(run.run.id);
 
-    // FUNCTIONAL: the EXACT credential delivered by poll authenticates and
-    // resolves the narrowed bound context.
     const { authenticateAgentToken } = await import('../../src/collaboration/identity.js');
     const context = await authenticateAgentToken(launch.payload.reportingCredential);
     expect(context.kind).toBe('agent');
@@ -542,7 +519,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
   });
 
   it('never delivers queued work after authorization withdrawal while offline', async () => {
-    // Operator starts a run, then loses membership BEFORE the PC polls.
     const withdrawnTask = await createCollabTask({ actor: managerActor, projectId, title: 'Withdrawn task' });
     const withdrawnRun = await startCollabRun({
       actor: operatorActor,
@@ -579,13 +555,11 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     expect(commandRow[0].state).toBe('cancelled');
     expect(commandRow[0].error_code).toBe('authorization_withdrawn');
 
-    // Truthful history: the queued run is preserved, no fallback run created.
     const runs = await rawQuery(`SELECT count(*)::int AS n FROM collab_runs WHERE task_id = $1`, [
       withdrawnTask.id,
     ]);
     expect(runs[0].n).toBe(1);
     } finally {
-      // Restore the operator so later suites see a stable fixture.
       const role = await rawQuery(
         `SELECT id FROM collab_roles WHERE workspace_id = $1 AND name = 'operator'`,
         [execWorkspaceId],
@@ -599,8 +573,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
   });
 
   it('records ambiguous, never an accepted grant, when authorization dies after delivery', async () => {
-    // Manager (still authorized) queues a prompt on the primary session, PC
-    // claims it, THEN the actor is disabled — the ack must not confirm.
     const runId = global.__launchRunId;
     const sessionId = (
       await rawQuery(`SELECT id FROM collab_sessions WHERE run_id = $1 ORDER BY created_at LIMIT 1`, [runId])
@@ -620,7 +592,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     });
     expect(delivered.commands.find((c) => c.id === queued.commandId)).toBeDefined();
 
-    // Disable the PROMPT ORIGINATOR (operator submitted this command).
     const disabled = await rawQuery(
       `UPDATE collab_principals SET disabled_at = now() WHERE id = $1 AND disabled_at IS NULL RETURNING id`,
       [operatorActor.principalId],
@@ -659,8 +630,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     });
     expect(first.acceptedEventIds).toEqual(['reconnect-1', 'reconnect-2']);
 
-    // Lost ack: the SAME events are resent verbatim → consumed again (pending
-    // set drains) without duplicate rows or re-projection.
     const replay = await submitConnectorObservations({
       ...base,
       events: [
@@ -675,7 +644,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     );
     expect(rows[0].n).toBe(2);
 
-    // A CHANGED payload under the same eventId is rejected, never smuggled.
     const forged = await submitConnectorObservations({
       ...base,
       events: [
@@ -684,7 +652,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     });
     expect(forged.rejectedEventIds).toEqual(['reconnect-1']);
 
-    // New events still flow (pending set was not blocked).
     const fresh = await submitConnectorObservations({
       ...base,
       events: [
@@ -695,8 +662,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
   });
 
   it('merges partial session bindings and never lets a summary session finish the run', async () => {
-    // Fresh task+run: the shared exec task carries older queued sessions that
-    // would poison the work-session aggregate.
     const mergeTask = await createCollabTask({ actor: managerActor, projectId, title: 'Merge isolation task' });
     const run = await startCollabRun({
       actor: operatorActor,
@@ -716,7 +681,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     )[0].id;
     const base = { token: hostToken, connectorSessionId: connector.connectorSessionId, leaseEpoch: connector.leaseEpoch };
 
-    // thread_started: providerSessionId only — must not wipe the agent ID.
     await rawQuery(`UPDATE collab_sessions SET paseo_agent_id = 'agent-full-1' WHERE id = $1`, [workSession]);
     await submitConnectorObservations({
       ...base,
@@ -729,7 +693,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     expect(work[0].paseo_agent_id).toBe('agent-full-1');
     expect(work[0].provider_session_id).toBe('prov-1');
 
-    // Summary session goes idle: the run must STILL be running (primary work).
     await submitConnectorObservations({
       ...base,
       events: [
@@ -739,7 +702,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     const runRow = await rawQuery(`SELECT state FROM collab_runs WHERE id = $1`, [runId]);
     expect(runRow[0].state).toBe('running');
 
-    // Primary work session goes idle → only then the run is idle.
     await submitConnectorObservations({
       ...base,
       events: [
@@ -751,9 +713,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
   });
 
   it('re-delivers an ACCEPTED command whose response was lost (durable resume)', { timeout: 15_000 }, async () => {
-    // Fresh task+run: one launch, delivered, acked accepted — then the HTTP
-    // response is "lost". The next poll re-delivers the SAME command id with
-    // the SAME payload; never a new command or new run.
     const resumeTask = await createCollabTask({ actor: managerActor, projectId, title: 'Resume task' });
     const run = await startCollabRun({
       actor: operatorActor,
@@ -784,8 +743,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     });
     expect(acked.state).toBe('accepted');
 
-    // Response lost → connector polls again after the 5s accepted settle:
-    // same command, same payload (C dedupes by id; never a new run).
     await new Promise((resolve) => setTimeout(resolve, 5_200));
     const resumed = await pollConnectorCommands({
       token: hostToken,
@@ -798,7 +755,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     expect(redelivered).toBeDefined();
     expect(redelivered.payload).toEqual(launch.payload);
 
-    // Still exactly one launch command for this run — never a new one.
     const commandCount = await rawQuery(
       `SELECT count(*)::int AS n FROM collab_connector_commands WHERE run_id = $1 AND kind = 'launch'`,
       [run.run.id],
@@ -813,15 +769,12 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     void runId;
     const task = await createCollabTask({ actor: managerActor, projectId, title: 'Comment task' });
 
-    // Manager (internal.read) posts an internal + a client comment.
     await createCollabComment({ actor: managerActor, taskId: task.id, body: 'internal note', visibility: 'internal' });
     await createCollabComment({ actor: managerActor, taskId: task.id, body: 'client update', visibility: 'client' });
 
-    // Operator sees both (internal.read).
     const operatorView = await listCollabComments({ actor: operatorActor, taskId: task.id });
     expect(operatorView.comments.map((c) => c.visibility).sort()).toEqual(['client', 'internal']);
 
-    // A plain collaborator (task.read only, no internal.read) sees only client.
     const collabRole = await rawQuery(
       `SELECT id FROM collab_roles WHERE workspace_id = (SELECT workspace_id FROM collab_projects WHERE id = $1) AND name = 'collaborator'`,
       [projectId],
@@ -840,7 +793,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     expect(readerView.comments.map((c) => c.visibility)).toEqual(['client']);
     expect(JSON.stringify(readerView)).not.toContain('internal note');
 
-    // A collaborator cannot POST internal comments at all.
     await expect(
       createCollabComment({
         actor: { principalId: reader[0].id, sessionVersion: reader[0].session_version },
@@ -857,10 +809,9 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     await createCollabComment({ actor: managerActor, taskId: task.id, body: 'internal event', visibility: 'internal' });
 
     const operatorEvents = await listTaskEvents({ actor: managerActor, taskId: task.id });
-    expect(operatorEvents.events.length).toBeGreaterThanOrEqual(3); // created + 2 comments
+    expect(operatorEvents.events.length).toBeGreaterThanOrEqual(3);
     expect(operatorEvents.events.some((e) => e.visibility === 'internal')).toBe(true);
 
-    // Plain collaborator: client-only projection.
     const collabRole = await rawQuery(
       `SELECT id FROM collab_roles WHERE workspace_id = (SELECT workspace_id FROM collab_projects WHERE id = $1) AND name = 'collaborator'`,
       [projectId],
@@ -877,7 +828,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     expect(readerEvents.events.some((e) => e.visibility === 'internal')).toBe(false);
     expect(JSON.stringify(readerEvents)).not.toContain('internal event');
 
-    // Read cursor persists.
     const lastEvent = readerEvents.events[readerEvents.events.length - 1];
     await markTaskRead({ actor: readerActor, taskId: task.id, eventId: lastEvent.id });
     const cursor = await rawQuery(
@@ -886,7 +836,6 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     );
     expect(cursor[0].last_event_id).toBe(lastEvent.id);
 
-    // Attention feed: scoped to internal.read projects, unresolved only.
     const attention = await listAttention({ actor: managerActor });
     expect(Array.isArray(attention.attention)).toBe(true);
   });

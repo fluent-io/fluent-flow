@@ -19,22 +19,16 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-/**
- * Schema-faithful fake of the pinned @getpaseo/client 0.12.0 public surface,
- * using the real FetchAgentTimelineResponseMessage payload shape:
- * {entries:[{item,...}], epoch, reset, staleCursor, gap, window,
- *  startCursor, endCursor, hasOlder, hasNewer}.
- */
 function fakePaseo() {
   const state = {
-    workspaces: new Map(), // idempotencyKey -> handle
+    workspaces: new Map(),
     workspacesById: new Map(),
-    agents: new Map(), // agentId -> record
-    agentsByKey: new Map(), // idempotencyKey -> record
+    agents: new Map(),
+    agentsByKey: new Map(),
     createCalls: [],
     agentCreateCalls: [],
     sends: [],
-    timelineByAgent: new Map(), // agentId -> { items: [] }
+    timelineByAgent: new Map(),
     unreachable: false,
   };
   function timelinePayload(agentId, { epoch = 'e1', gap = false, staleCursor = false, reset = false, slice } = {}) {
@@ -101,7 +95,7 @@ function fakePaseo() {
         state.createCalls.push(opts);
         if (state.unreachable) throw Object.assign(new Error('create failed: transport closed'), { cause: { code: 'ECONNRESET' } });
         const existing = state.workspaces.get(opts.idempotencyKey);
-        if (existing) return existing; // daemon-side idempotent replay
+        if (existing) return existing;
         const id = opts.workspaceId ?? `ws-${state.workspaces.size + 1}`;
         if (state.workspacesById.has(id)) throw new Error(`workspace id already in use: ${id}`);
         const handle = {
@@ -169,7 +163,7 @@ const launchIntent = {
   baseRef: 'main',
   title: 'Task title',
   profileSnapshot: { id: 'p1', name: 'Coder', provider: 'omp', model: 'ai3/qwen/qwen3.8-27b', modeId: 'full', thinkingOptionId: null, features: {} },
-  model: null, // use profile default
+  model: null,
   prompt: 'Do the bounded task.',
 };
 
@@ -194,17 +188,12 @@ describe('paseo adapter: idempotent lifecycle', () => {
     });
     expect(state.agentCreateCalls).toHaveLength(1);
     expect(state.agentCreateCalls[0].idempotencyKey).toBe('ff:session:sess-1');
-    // Deterministic UUID agent id (public create option; no labels support in 0.12).
     expect(state.agentCreateCalls[0].agentId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     expect(sessionUuid('sess-1')).toBe(state.agentCreateCalls[0].agentId);
-    // Profile default model applied: omp/ai3/qwen3.8-27b.
     expect(state.agentCreateCalls[0].config.provider).toBe('omp/ai3/qwen/qwen3.8-27b');
     expect(state.agentCreateCalls[0].config.modeId).toBe('full');
-    // Idle creation: no prompt at create time.
     expect(state.agentCreateCalls[0].prompt).toBeUndefined();
-    // Binding persisted BEFORE the prompt left the process.
     expect(journal.byCommand('cmd-1').binding).toMatchObject({ workspaceId: nativeWorkspaceId('run-1'), paseoAgentId: state.agentCreateCalls[0].agentId });
-    // One send, message id = command id.
     expect(state.sends).toHaveLength(1);
     expect(state.sends[0].messageId).toBe('cmd-1');
     expect(result.status).toBe('applied');
@@ -225,15 +214,14 @@ describe('paseo adapter: idempotent lifecycle', () => {
     await journal.append({ type: 'intent', commandId: 'cmd-1', runId: 'run-1', sessionId: 'sess-1', kind: 'launch', payloadDigest: 'd1', recordedAt: 't' });
 
     const first = await adapter.launch(launchIntent);
-    // Crash/restart: new adapter instance over the same journal.
     const journal2 = createJournal({ dir });
     const adapter2 = createPaseoAdapter({ paseo, journal: journal2 });
     const second = await adapter2.launch(launchIntent);
 
     expect(second.workspaceId).toBe(first.workspaceId);
     expect(second.paseoAgentId).toBe(first.paseoAgentId);
-    expect(paseo.state.sends).toHaveLength(1); // timeline proved delivery; no resend
-    expect(paseo.state.createCalls).toHaveLength(1); // binding journaled: no re-create at all
+    expect(paseo.state.sends).toHaveLength(1);
+    expect(paseo.state.createCalls).toHaveLength(1);
     expect(second.status).toBe('applied');
   });
 
@@ -241,21 +229,17 @@ describe('paseo adapter: idempotent lifecycle', () => {
     const paseo = fakePaseo();
     const adapter = createPaseoAdapter({ paseo, journal });
     await journal.append({ type: 'intent', commandId: 'cmd-1', runId: 'run-1', sessionId: 'sess-1', kind: 'launch', payloadDigest: 'd1', recordedAt: 't' });
-    // Simulate lost acknowledgment: the connector crashes right after the
-    // daemon accepted the create, before the response was journaled. Replay
-    // hits the daemon idempotency key and gets the same workspace.
     let guarded = false;
     const realCreate = paseo.workspaces.create;
     paseo.workspaces.create = async (opts) => {
       if (!guarded) {
         guarded = true;
-        return realCreate(opts); // lands daemon-side…
+        return realCreate(opts);
       }
       return realCreate(opts);
     };
     const first = await adapter.launch({ ...launchIntent, prompt: undefined });
     expect(first.workspaceId).toBeTruthy();
-    // Recover: journal restart, same command → same workspace identity.
     const journal2 = createJournal({ dir });
     const adapter2 = createPaseoAdapter({ paseo, journal: journal2 });
     const second = await adapter2.launch(launchIntent);
@@ -269,7 +253,6 @@ describe('paseo adapter: idempotent lifecycle', () => {
     await journal.append({ type: 'intent', commandId: 'cmd-1', runId: 'run-1', sessionId: 'sess-1', kind: 'launch', payloadDigest: 'd1', recordedAt: 't' });
     await adapter.launch({ ...launchIntent, prompt: undefined });
 
-    // Simulate: 'sent' journaled, then crash before the daemon applied it (timeline empty).
     await journal.append({ type: 'sent', commandId: 'cmd-1', messageId: 'cmd-1', at: 't' });
     const journal2 = createJournal({ dir });
     const adapter2 = createPaseoAdapter({ paseo, journal: journal2 });
@@ -286,7 +269,6 @@ describe('paseo adapter: idempotent lifecycle', () => {
     await journal.append({ type: 'intent', commandId: 'cmd-1', runId: 'run-1', sessionId: 'sess-1', kind: 'launch', payloadDigest: 'd1', recordedAt: 't' });
     await adapter.launch({ ...launchIntent, prompt: undefined });
 
-    // 'sent' journaled, daemon now unreachable → delivery can be neither proven nor disproven.
     await journal.append({ type: 'sent', commandId: 'cmd-1', messageId: 'cmd-1', at: 't' });
     paseo.state.unreachable = true;
     const journal2 = createJournal({ dir });
@@ -295,7 +277,7 @@ describe('paseo adapter: idempotent lifecycle', () => {
 
     expect(result.status).toBe('ambiguous');
     expect(result.errorCode).toBe('recover_unconfirmed');
-    expect(paseo.state.sends).toHaveLength(0); // never blindly repeats
+    expect(paseo.state.sends).toHaveLength(0);
   });
 
   it('treats a gapped or stale-cursor timeline as UNKNOWN (hold), never as proof of absence', async () => {
@@ -305,7 +287,6 @@ describe('paseo adapter: idempotent lifecycle', () => {
     await adapter.launch({ ...launchIntent, prompt: undefined });
     await journal.append({ type: 'sent', commandId: 'cmd-1', messageId: 'cmd-1', at: 't' });
 
-    // Timeline reachable but reports a gap: content may exist that we cannot see.
     paseo.state.timelineByAgent.get(journal.byCommand('cmd-1').binding.paseoAgentId);
     const origRefetch = paseo.agents.ref;
     paseo.agents.ref = (id) => {
@@ -343,14 +324,11 @@ describe('paseo adapter: idempotent lifecycle', () => {
       ['cmd-steer', 'steer'],
       ['cmd-interrupt', 'interrupt'],
     ]);
-    // Steer prompt is journaled as its own durable sent intent.
     expect(journal.byCommand('cmd-steer').sent).toHaveLength(1);
   });
 });
 
 describe('paseo adapter: timeline normalization (public subscription payload shapes)', () => {
-  // PaseoAgentTimelineEvent = PaseoAgentStream payload {agentId, event, timestamp, seq?, epoch?}
-  // plus replacement / subscription_restored / error variants.
   function stream(over = {}, seq = 3, epoch = 'e1') {
     const { seq: s, epoch: e, ...event } = { type: 'turn_completed', provider: 'omp', usage: { inputTokens: 10, outputTokens: 5 }, ...over };
     return { agentId: 'ag-1', event, timestamp: '2026-10-19T00:00:00Z', seq: s ?? seq, epoch: e ?? epoch };
@@ -375,7 +353,6 @@ describe('paseo adapter: timeline normalization (public subscription payload sha
     ]);
     expect(obs[0].eventId).not.toBe(obs[1].eventId);
     expect(obs[1].providerCursor).toEqual({ epoch: 'e1', seq: '3' });
-    // Deterministic across replays.
     const again = adapter.normalizeTimelineEvents({ runId: 'run-1', sessionId: 'sess-1', agentId: 'ag-1', events: [stream({ type: 'turn_started', turnId: 't1' }, 1)] });
     expect(again[0].eventId).toBe(obs[0].eventId);
   });

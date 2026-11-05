@@ -1,7 +1,5 @@
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 
-// Real app + real DB + real protocol. Dynamic imports follow the repo's
-// vi.mock hoisting convention and env ordering (db pool resolves at import).
 vi.mock('../../src/tracing.cjs', () => ({}));
 vi.mock('../../src/logger.js', async () => {
   const { createMockLogger } = await import('../helpers/mock-logger.js');
@@ -29,6 +27,10 @@ describe('A3 protocol over real HTTP (run start, connector loop, host truth)', (
   let projectId;
   let hostToken;
   let connector;
+  let steerOnly;
+  let startOnly;
+  let internalStarter;
+  let startOnlyRoleId;
 
   async function collab(method, path, { actor, body, headers } = {}) {
     const h = { 'x-fluent-flow-actor': actorHeader(actor), ...(headers ?? {}) };
@@ -106,6 +108,19 @@ describe('A3 protocol over real HTTP (run start, connector loop, host truth)', (
       server = app.listen(0, '127.0.0.1', resolve);
     });
     baseUrl = `http://127.0.0.1:${server.address().port}`;
+    const enrollActor = async (name, email, capabilities) => {
+      const db = await import('@fluent-flow/db');
+      const role = await db.createWorkspaceRole({ actor: { principalId: manager.id, sessionVersion: manager.sessionVersion }, workspaceId: ws.id, name, capabilities });
+      const inv = await db.createCollabInvitation({ actor: { principalId: manager.id, sessionVersion: manager.sessionVersion }, projectId: project.id, email, roleId: role.id, expiresInHours: 24 });
+      const acc = await fetch(`${baseUrl}/api/collab/v1/invitations/accept`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: inv.url.split('token=')[1], displayName: name, password: 'synthetic-pw' }) });
+      return { principal: (await acc.json()).data.principal, roleId: role.id };
+    };
+    steerOnly = (await enrollActor('steer-only', 'steer-actor@example.test', ['task.read', 'run.steer'])).principal;
+    const startActor = await enrollActor('start-only', 'start-actor@example.test', ['task.read', 'run.start']);
+    startOnly = startActor.principal;
+    startOnlyRoleId = startActor.roleId;
+    internalStarter = (await enrollActor('internal-starter', 'internal-actor@example.test', ['task.read', 'run.start', 'internal.read'])).principal;
+
 
     const registered = await connectorCall('POST', '/register', {
       instanceId: 'proto-1',
@@ -247,8 +262,6 @@ describe('A3 protocol over real HTTP (run start, connector loop, host truth)', (
       body: { title: 'Ready-only task' },
     });
 
-    // Drain any prior queued work (deliver + ack) so the assertion below is
-    // specifically about the Ready move producing nothing new.
     for (;;) {
       const poll = await connectorCall('POST', '/poll', {
         connectorSessionId: connector.connectorSessionId,
@@ -520,7 +533,100 @@ describe('A3 protocol over real HTTP (run start, connector loop, host truth)', (
     expect(linked.body.data[0]).toMatchObject({repo:'proto/repo',prNumber:42,claimId:claim.rows[0].id});
   });
 
-  it('keeps observed cancellation terminal when a late cancellation intent arrives and resumes only on an explicit prompt',async()=>{
+  it('projects the safe run badge on stage mutation for actors without internal.read', async () => {
+    const task = await collab('POST', `/projects/${projectId}/tasks`, {
+      actor: manager,
+      body: { title: 'Stage response privacy' },
+    });
+    expect(task.status).toBe(201);
+    const start = await collab('POST', `/tasks/${task.body.data.id}/runs`, {
+      actor: manager,
+      headers: { 'idempotency-key': 'http-run-badge-key' },
+      body: { expectedVersion: task.body.data.version, instructions: 'INTERNAL_INSTRUCTIONS_DO_NOT_LEAK', profileId: 'ai3-coder' },
+    });
+    expect(start.status).toBe(202);
+    const runId = start.body.data.run.id;
+
+    const patch = await collab('PATCH', `/runs/${runId}`, {
+      actor: steerOnly,
+      body: { expectedVersion: start.body.data.run.version, stage: 'development' },
+    });
+    expect(patch.status).toBe(200);
+    const badgeKeys = ['id', 'taskId', 'state', 'stage', 'hostName', 'hostReachability', 'hostLastSeenAt', 'lastObservedAt'].sort();
+    expect(Object.keys(patch.body.data).sort()).toEqual(badgeKeys);
+    expect(JSON.stringify(patch.body.data)).not.toContain('INTERNAL_INSTRUCTIONS_DO_NOT_LEAK');
+
+    const fullRead = await collab('GET', `/runs/${runId}`, { actor: manager });
+    expect(fullRead.status).toBe(200);
+    expect(fullRead.body.data.run.instructions).toBe('INTERNAL_INSTRUCTIONS_DO_NOT_LEAK');
+
+    const stale = await collab('PATCH', `/runs/${runId}`, {
+      actor: steerOnly,
+      body: { expectedVersion: start.body.data.run.version, stage: 'test' },
+    });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.code).toBe('version_conflict');
+  });
+
+  it('projects session creation and replay from the actors current capabilities', async () => {
+    const task = await collab('POST', `/projects/${projectId}/tasks`, {
+      actor: manager,
+      body: { title: 'Session response privacy' },
+    });
+    expect(task.status).toBe(201);
+    const start = await collab('POST', `/tasks/${task.body.data.id}/runs`, {
+      actor: manager,
+      headers: { 'idempotency-key': 'http-run-session-key' },
+      body: { expectedVersion: task.body.data.version, instructions: 'Build it', profileId: 'ai3-coder' },
+    });
+    expect(start.status).toBe(202);
+    const runId = start.body.data.run.id;
+
+    const full = await collab('POST', `/runs/${runId}/sessions`, {
+      actor: internalStarter,
+      headers: { 'idempotency-key': 'session-downgrade-key-1' },
+      body: { title: 'Downgraded session' },
+    });
+    expect(full.status).toBe(202);
+    expect(full.body.data.created).toBe(true);
+    expect(full.body.data.session.id).toBeDefined();
+    expect(full.body.data.commandId).toBeDefined();
+
+    const members = await collab('GET', `/projects/${projectId}/members`, { actor: manager });
+    const internalMembership = members.body.data.find((member) => member.principalId === internalStarter.id);
+    const downgraded = await collab('PATCH', `/projects/${projectId}/members/${internalStarter.id}`, {
+      actor: manager,
+      body: { roleId: startOnlyRoleId, expectedVersion: internalMembership.version },
+    });
+    expect(downgraded.status).toBe(200);
+
+    const replay = await collab('POST', `/runs/${runId}/sessions`, {
+      actor: internalStarter,
+      headers: { 'idempotency-key': 'session-downgrade-key-1' },
+      body: { title: 'Downgraded session' },
+    });
+    expect(replay.status).toBe(200);
+    expect(replay.body.data).toEqual({ created: false });
+
+    const fresh = await collab('POST', `/runs/${runId}/sessions`, {
+      actor: startOnly,
+      headers: { 'idempotency-key': 'session-fresh-key-1' },
+      body: { title: 'Start-only session' },
+    });
+    expect(fresh.status).toBe(202);
+    expect(fresh.body.data).toEqual({ created: true });
+
+    const { getPool } = await import('@fluent-flow/db');
+    const duplicateCounts = await getPool().query(
+      `SELECT
+         (SELECT count(*)::int FROM collab_sessions WHERE id = $1) AS sessions,
+         (SELECT count(*)::int FROM collab_connector_commands WHERE id = $2) AS commands`,
+      [full.body.data.session.id, full.body.data.commandId],
+    );
+    expect(duplicateCounts.rows[0]).toEqual({ sessions: 1, commands: 1 });
+  });
+
+  it('keeps observed cancellation terminal when a late cancellation intent arrives and resumes only on an explicit prompt', async () => {
     const created=await collab('POST',`/projects/${projectId}/tasks`,{actor:manager,body:{title:'Native cancellation race'}});
     const started=await collab('POST',`/tasks/${created.body.data.id}/runs`,{actor:manager,headers:{'idempotency-key':'native-cancel-race-start'},body:{expectedVersion:created.body.data.version}});
     expect(started.status).toBe(202);

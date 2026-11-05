@@ -1,8 +1,5 @@
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 
-// Standard test silencing only — real app, real DB, real crypto. Dynamic
-// imports are required by the repo's vi.mock hoisting convention and by env
-// ordering: @fluent-flow/db resolves DATABASE_URL at module load.
 vi.mock('../../src/tracing.cjs', () => ({}));
 vi.mock('../../src/logger.js', async () => {
   const { createMockLogger } = await import('../helpers/mock-logger.js');
@@ -51,7 +48,6 @@ describe('A1 backlog acceptance: identity, task capture, client isolation, revoc
       await import('@fluent-flow/db');
     await runMigrations();
 
-    // Fixture: two GitHub org admins (client A and client B), one org each.
     const adminA = await seedLegacyUser(process.env.DATABASE_URL, { githubId: 9101, login: 'owner-a' });
     const adminB = await seedLegacyUser(process.env.DATABASE_URL, { githubId: 9102, login: 'owner-b' });
     await seedLegacyOrgMembership(process.env.DATABASE_URL, adminA, 'org-a', 'admin');
@@ -150,7 +146,6 @@ describe('A1 backlog acceptance: identity, task capture, client isolation, revoc
     const projectIds = res.body.data.workspaces.flatMap((w) => w.projects.map((p) => p.id));
     expect(projectIds).toContain(projectA1Id);
     expect(projectIds).not.toContain(projectB1Id);
-    // Capabilities are a top-level per-project map (B's agreed wire shape).
     expect(res.body.data.capabilities[projectA1Id]).toContain('task.write');
     expect(res.body.data.capabilities[projectA1Id]).not.toContain('run.start');
     expect(res.body.data.capabilities[projectB1Id]).toBeUndefined();
@@ -226,16 +221,12 @@ describe('A1 backlog acceptance: identity, task capture, client isolation, revoc
     });
     const token = inv.body.data.url.split('token=')[1];
 
-    // Forged body.actor claims the manager identity, no header, no password:
-    // if the body were trusted the redeem would succeed as manager. It must
-    // be treated as an anonymous redemption → password required, not consumed.
     const forged = await api(baseUrl, 'POST', '/invitations/accept', {
       body: { token, displayName: 'Forged', actor: managerActor },
     });
     expect(forged.status).toBe(422);
     expect(forged.body.error.code).toBe('password_required');
 
-    // Still redeemable properly: the invitation was not consumed.
     const legit = await api(baseUrl, 'POST', '/invitations/accept', {
       body: { token, displayName: 'Forged Collab', password: 'a real good password' },
     });
@@ -250,8 +241,6 @@ describe('A1 backlog acceptance: identity, task capture, client isolation, revoc
     });
     const token = inv.body.data.url.split('token=')[1];
 
-    // Client B signs the header and also forges body.actor for themselves:
-    // the header-derived identity (email mismatch) is what gets enforced.
     const res = await api(baseUrl, 'POST', '/invitations/accept', {
       actor: clientBActor,
       body: { token, displayName: 'Client B', actor: clientBActor },

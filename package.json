@@ -8,7 +8,9 @@
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
-    "dev": "turbo run dev"
+    "predev": "node scripts/dev-database.mjs",
+    "dev": "turbo run dev",
+    "runner": "node scripts/dev-runner.mjs"
   },
   "devDependencies": {
     "turbo": "^2.5.0",

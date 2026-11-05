@@ -66,10 +66,8 @@ export function createApp() {
   app.use('/api', agentsRouter);
   app.use('/api', runnerRouter);
 
-  // Collaboration API (actor-assertion auth boundary inside the router).
   app.use('/api/collab/v1', collabRouter);
 
-  // Connector protocol (host Bearer-token auth inside the router).
   app.use('/api/connector/v1', connectorRouter);
 
   // MCP endpoint

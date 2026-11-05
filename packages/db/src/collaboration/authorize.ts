@@ -4,7 +4,6 @@ import { CollabServiceError } from './errors.js';
 import { collabActorSchema, requireCurrentPrincipal } from './principals.js';
 import type { CollabCapability } from './capabilities.js';
 
-/** Effective capabilities a principal holds for a project (workspace-scope roles inherit down). */
 export async function getProjectCapabilities(
   principalId: string,
   projectId: string,
@@ -22,7 +21,6 @@ export async function getProjectCapabilities(
   return new Set(rows.map((r) => r.capability));
 }
 
-/** Effective capabilities a principal holds at workspace scope (project-independent). */
 export async function getWorkspaceCapabilities(
   principalId: string,
   workspaceId: string,
@@ -43,7 +41,6 @@ export function requireCapabilities(
   needed: readonly CollabCapability[],
 ): void {
   if (capabilities.size === 0) {
-    // No membership at all: the scope is indistinguishable from a missing one.
     throw new CollabServiceError(404, 'not_found', 'Not found.');
   }
   const missing = needed.filter((capability) => !capabilities.has(capability));
@@ -56,10 +53,8 @@ export function requireCapabilities(
   }
 }
 
-/** Scope for authorization: a project id or a bare workspace id — exactly one. */
 export type CapabilityScope = { workspaceId?: string; projectId?: string | null };
 
-/** Resolve authoritative scope ids; a project implies its workspace (404 else). */
 export async function resolveCapabilityScope(
   scope: CapabilityScope,
 ): Promise<{ workspaceId: string; projectId: string | null }> {
@@ -88,7 +83,6 @@ export async function authorize(
   requireCapabilities(capabilities, needed);
 }
 
-/** Current-principal-checked capability set at a scope (401/404 semantics). */
 export async function resolveScopeCapabilities(
   actor: { principalId: string; sessionVersion: number },
   scope: CapabilityScope,
@@ -104,7 +98,6 @@ export async function resolveScopeCapabilities(
   throw new CollabServiceError(500, 'internal_error', 'Configuration error. Contact support.');
 }
 
-/** Capabilities granted by a role; the role must belong to the workspace. */
 export async function getRoleCapabilities(
   roleId: string,
   workspaceId: string,
@@ -119,12 +112,6 @@ export async function getRoleCapabilities(
   return new Set(rows[0].capabilities);
 }
 
-/**
- * Delegation boundary: a principal may only grant capability sets they hold
- * at that exact scope. A membership-admin-only role cannot invite anyone as a
- * full manager (run.start/internal.read/delivery.accept are not delegable by
- * it). Violations are 403 and nothing is created.
- */
 export function requireCapabilitySubset(
   granted: Set<CollabCapability>,
   delegable: Set<CollabCapability>,

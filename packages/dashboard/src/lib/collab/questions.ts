@@ -1,19 +1,3 @@
-/**
- * Agent questions and permission requests answered from a Fluent Flow session.
- *
- * Adapted from Flowly `shared/permission-question.ts` (MIT License,
- * Copyright (c) 2026 Flowly contributors; pinned revision 13213f4 of
- * JasprW/flowly). The answer encoding mirrors Paseo's shared question form so
- * an answer given here reaches the provider exactly as one given in Paseo:
- * answers are keyed by question header, several choices are joined with ", ",
- * and the provider maps headers back to the full question text. Adaptations:
- * the dashboard consumes A's pending-request DTO (`requestId`, optional
- * `inputSchema`) via `pendingFromSession`, and approvals carry the action id
- * supplied by the host (`selectedActionId`).
- *
- * The full MIT notice is recorded in the repository THIRD_PARTY_NOTICES file.
- */
-
 export interface PendingRequest {
   id: string;
   name?: string;
@@ -39,7 +23,6 @@ export interface FormQuestion {
   dismissLabel?: string;
 }
 
-/** Per question: the chosen option indexes and the typed "Other" text. */
 export interface QuestionDraft {
   selected: number[][];
   other: string[];
@@ -48,7 +31,6 @@ export interface QuestionDraft {
 const record = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const text = (v: unknown) => (typeof v === 'string' ? v : undefined);
 
-/** The questions of a `question` request, or null when it is not a well-formed question form. */
 export function parseQuestions(request: PendingRequest): FormQuestion[] | null {
   if (request.kind !== 'question' || !record(request.input) || !Array.isArray(request.input.questions)) return null;
   const out: FormQuestion[] = [];
@@ -74,7 +56,6 @@ export function parseQuestions(request: PendingRequest): FormQuestion[] | null {
   return out.length ? out : null;
 }
 
-/** Whether the question takes typed text ("Other", or no options at all). */
 export const showsTextInput = (q: FormQuestion) => q.options.length === 0 || q.allowOther;
 
 export const emptyDraft = (questions: readonly FormQuestion[]): QuestionDraft => ({
@@ -82,7 +63,6 @@ export const emptyDraft = (questions: readonly FormQuestion[]): QuestionDraft =>
   other: questions.map(() => ''),
 });
 
-/** Picking an option: multi-select toggles; single select replaces (or clears) and drops typed text. */
 export function choose(draft: QuestionDraft, questions: readonly FormQuestion[], index: number, option: number): QuestionDraft {
   const q = questions[index];
   const current = draft.selected[index] || [];
@@ -98,7 +78,6 @@ export function choose(draft: QuestionDraft, questions: readonly FormQuestion[],
   return { selected, other };
 }
 
-/** Typing "Other" text: a single-select question drops its chosen option. */
 export function typeOther(draft: QuestionDraft, questions: readonly FormQuestion[], index: number, value: string): QuestionDraft {
   const other = draft.other.map((o, i) => (i === index ? value : o));
   const clear = !questions[index].multiSelect && value.length > 0 && (draft.selected[index] || []).length > 0;
@@ -138,7 +117,6 @@ export function answerReply(request: PendingRequest, questions: readonly FormQue
   return { behavior: 'allow', updatedInput: { ...(request.input || {}), answers: buildAnswers(questions, draft) } };
 }
 
-/** Dismissing: free-text-only questions that accept empty answers submit empty; otherwise the request is denied. */
 export function dismissReply(request: PendingRequest, questions: readonly FormQuestion[], draft: QuestionDraft): PermissionReply {
   return questions.length > 0 && questions.every((q) => q.allowEmpty && q.options.length === 0)
     ? answerReply(request, questions, draft)
@@ -147,14 +125,12 @@ export function dismissReply(request: PendingRequest, questions: readonly FormQu
 
 export const dismissLabel = (questions: readonly FormQuestion[]) => questions.find((q) => q.dismissLabel)?.dismissLabel;
 
-/** The pending requests of a session snapshot (defensive: hosts may omit or malform the list). */
 export function pendingRequests(agent: { pendingPermissions?: readonly unknown[] | null } | null | undefined): PendingRequest[] {
   return (agent?.pendingPermissions || []).filter(
     (r): r is PendingRequest => record(r) && typeof r.id === 'string' && r.id.length > 0,
   );
 }
 
-/** Whether a session is waiting on an agent question (as opposed to a tool/plan approval). */
 export const asksQuestion = (agent: { pendingPermissions?: readonly unknown[] | null } | null | undefined) =>
   pendingRequests(agent).some((r) => r.kind === 'question');
 
@@ -169,11 +145,6 @@ interface SessionPendingDto {
 
 const denyActionIds = /deny|reject|no\b/i;
 
-/**
- * Map A's authoritative pending-request DTO onto the shared request shape.
- * Approval choices keep their host-supplied action ids; a choice whose id
- * reads as a denial is marked so the deny branch preserves selectedActionId.
- */
 export function pendingFromSession(dto: SessionPendingDto): PendingRequest {
   return {
     id: dto.requestId,

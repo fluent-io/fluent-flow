@@ -2,13 +2,6 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-/**
- * Resolves the LOCAL Paseo daemon connection the way the desktop app and CLI
- * do: address from `paseo.pid`, credential from `local-credential`. Both stay
- * on this host; the credential is never logged, never sent to the control
- * plane, and never appears in errors (connection verification happens in the
- * runtime via the actual client connect).
- */
 
 export function parseListen(listen) {
   const value = typeof listen === 'string' ? listen.trim().replace(/^tcp:\/\//, '') : '';

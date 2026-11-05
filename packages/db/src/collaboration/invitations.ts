@@ -38,7 +38,6 @@ const acceptInvitationSchema = z.object({
 });
 
 function hashInvitationToken(token: string): string {
-  // Store only the hash: a DB leak must not yield redeemable invitations.
   return createHash('sha256').update(token).digest('hex');
 }
 
@@ -67,9 +66,6 @@ export async function createCollabInvitation(input: {
   const scope = { workspaceId: resolved.workspaceId, projectId: resolved.projectId };
   const actorCapabilities = await resolveScopeCapabilities(parsed.actor, scope);
   requireCapabilities(actorCapabilities, ['membership.admin']);
-  // Delegation boundary: the granted role must be a subset of the inviter's
-  // own effective capabilities at this exact scope — a membership-admin-only
-  // role can never invite anyone as a full manager.
   const roleCapabilities = await getRoleCapabilities(parsed.roleId, resolved.workspaceId);
   requireCapabilitySubset(roleCapabilities, actorCapabilities);
 
@@ -89,8 +85,6 @@ export async function createCollabInvitation(input: {
       parsed.expiresInHours,
     ],
   );
-  // The secret lives only in this authorized response (and the invite link
-  // fragment B renders); never stored in the clear, never logged.
   return { id: rows[0].id, url: `/invite#token=${token}` };
 }
 
@@ -131,9 +125,6 @@ export async function acceptCollabInvitation(input: {
 
     let principal: CollabPrincipal;
     if (input2.actor) {
-      // Existing principal joins by signing in — the signed-in account must BE
-      // the invited account (normalized email match). Never link identities by
-      // email; a wrong account neither consumes nor gains anything.
       const current = await tx.query(
         `SELECT id, display_name, email, legacy_user_id, disabled_at, session_version
          FROM collab_principals WHERE id = $1 AND disabled_at IS NULL AND session_version = $2`,
@@ -171,8 +162,6 @@ export async function acceptCollabInvitation(input: {
         [invitation.email],
       );
       if (existing.rows.length > 0) {
-        // Email already belongs to a password principal: sign in and accept
-        // with the actor instead of silently merging identities.
         throw new CollabServiceError(
           409,
           'email_in_use',
@@ -192,16 +181,11 @@ export async function acceptCollabInvitation(input: {
       );
     }
 
-    // History: the invitation records the principal that actually redeemed it
-    // (both new principals and signed-in existing ones).
     await tx.query(`UPDATE collab_invitations SET accepted_by_principal_id = $2 WHERE id = $1`, [
       invitation.id,
       principal.id,
     ]);
 
-    // Existing membership at the invited scope: same role is an idempotent
-    // grant; a different role must conflict instead of overwriting (role
-    // changes go through membership.admin update paths with their own guards).
     const existingMembership = await tx.query<{ role_id: string }>(
       `SELECT role_id FROM collab_memberships
        WHERE workspace_id = $1 AND principal_id = $2
@@ -236,7 +220,6 @@ const listInvitationsSchema = z.object({
   projectId: z.string().uuid().nullable().default(null),
 });
 
-/** Pending invitations at a scope (membership.admin). Token hash never leaves the DB. */
 export async function listCollabInvitations(input: {
   actor: { principalId: string; sessionVersion: number };
   workspaceId?: string;

@@ -3,24 +3,6 @@ import { homedir } from 'node:os';
 import { isAbsolute } from 'node:path';
 import { assertSafeServerUrl } from './url-guard.js';
 
-/**
- * Local connector configuration (file + host token).
- *
- * The config file maps allowlisted `repositoryKey -> canonical checkout path`.
- * Only the connector resolves absolute paths; server and clients never send
- * or receive local filesystem locations. The profiles allowlist is an explicit
- * allow/deny decision by the host owner: an empty allowlist offers nothing.
- *
- * Shape:
- * {
- *   "serverUrl": "http://127.0.0.1:4000",
- *   "tokenFile": "~/.fluent-flow/connector-token",
- *   "instanceId": "pc-studio",
- *   "repositories": { "fluent-flow": "/home/me/work/fluent-flow" },
- *   "profiles": ["agent_profile_..."],
- *   "paseo": { "home": "~/.paseo", "cliPath": null }   // optional overrides
- * }
- */
 
 const REPO_KEY_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 

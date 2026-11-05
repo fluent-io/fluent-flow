@@ -8,14 +8,11 @@ import { CollabServiceError } from './errors.js';
 import { taskStatusSchema, taskPrioritySchema } from './schemas.js';
 import type { CollabTask } from './schemas.js';
 
-// Positions are fixed-width 18-digit zero-padded decimal strings: JS-string
-// order equals numeric order and BigInt math gives exact, collision-free
-// midpoints. Compaction renumbers a lane with wide spacing when a gap runs out.
 const RANK_WIDTH = 18;
 const RANK_ZERO = '0'.repeat(RANK_WIDTH);
 const RANK_MAX = 10n ** 18n - 1n;
-const APPEND_STEP = 10n ** 15n;      // ~999 tail appends per compaction cycle
-const COMPACT_SPACING = 10n ** 12n;  // ~999,000,000,000 slots per compaction cycle
+const APPEND_STEP = 10n ** 15n;
+const COMPACT_SPACING = 10n ** 12n;
 
 const createTaskSchema = z.object({
   actor: z.object({ principalId: z.string().uuid(), sessionVersion: z.number().int().min(1) }),
@@ -92,7 +89,6 @@ function rowToTask(row: Record<string, unknown>): CollabTask {
         lastObservedAt: row.execution_observed_at ? new Date(row.execution_observed_at as Date).toISOString() : null,
       } : null,
       hostReachability: row.execution_id ? row.execution_reachability as 'online'|'stale'|'offline' : null,
-      // Public progress is derived from observed state, never transcript text.
       progress: row.execution_id ? ({ queued:'Queued', launching:'Connecting', running:'Working', needs_input:'Response needed', idle:'Turn complete', failed:'Execution failed', reconciling:'Execution needs review', cancel_requested:'Cancellation requested', cancelled:'Execution stopped' } as Record<string,string>)[row.execution_state as string] ?? null : null,
       attentionCount: ['needs_input','failed','reconciling'].includes(row.execution_state as string) || row.command_attention === 1 ? 1 : 0,
     },
@@ -103,27 +99,18 @@ function padRank(n: bigint): string {
   return n.toString().padStart(RANK_WIDTH, '0');
 }
 
-/**
- * Tail rank after prev (null = empty lane). Returns null when the lane needs
- * compaction — callers do that in the same transaction and retry once.
- */
 export function nextTailRank(prev: string | null): string | null {
   const n = prev === null ? 0n : BigInt(prev);
   const next = prev === null ? RANK_MAX / 2n : n + APPEND_STEP;
   return next > RANK_MAX ? null : padRank(next);
 }
 
-/** Strictly between a and b (both non-null, a < b); null when no room. */
 export function betweenRanks(a: string, b: string): string | null {
   const gap = BigInt(b) - BigInt(a);
   if (gap <= 1n) return null;
   return padRank(BigInt(a) + gap / 2n);
 }
 
-/**
- * Renumber a lane with wide spacing (000…001×10¹², …). Must run inside the
- * caller's transaction while the project board lock is held.
- */
 export async function compactLane(tx: PoolClient, projectId: string, status: string): Promise<void> {
   const lanes = await tx.query<{ id: string }>(
     `SELECT id FROM collab_tasks WHERE project_id = $1 AND status = $2 ORDER BY position, id FOR UPDATE`,
@@ -142,10 +129,6 @@ export async function compactLane(tx: PoolClient, projectId: string, status: str
   }
 }
 
-/**
- * Create a backlog task. No repository, run, host or mapping prerequisite:
- * capture must work with the execution host offline (contract scenario 2).
- */
 export async function createCollabTask(input: {
   actor: { principalId: string; sessionVersion: number };
   projectId: string;
@@ -169,8 +152,6 @@ export async function createCollabTask(input: {
   }
 
   return withClientTransaction(async (tx) => {
-    // All board mutations for a project share ONE advisory lock + board
-    // version counter (create included — it changes the visible board order).
     await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`board:${input2.projectId}`]);
     const tail = await tx.query(
       `SELECT position FROM collab_tasks
@@ -227,7 +208,6 @@ export async function createCollabTask(input: {
   });
 }
 
-/** Projects where the principal's effective roles include task.read. */
 export async function authorizedProjectIds(principalId: string): Promise<string[]> {
   const { rows } = await getPool().query<{ id: string }>(
     `SELECT DISTINCT p.id
@@ -267,14 +247,9 @@ export async function listCollabTasks(input: {
   limit?: number;
 }): Promise<{ tasks: CollabTask[]; nextCursor: string | null }> {
   const input2 = listTasksSchema.parse(input);
-  // Service-boundary identity check: stale/disabled actors fail here even
-  // when called outside the HTTP middleware (MCP, direct service use).
   const principal = await requireCurrentPrincipal(input2.actor);
-  // Actor-scoped before pagination/search: only authorized project ids feed
-  // the query, so counts and pages can never leak other clients' work.
   let projectIds = await authorizedProjectIds(principal.id);
   if (input2.projectId) {
-    // Unknown/unauthorized project is indistinguishable → empty result, 404-free list.
     projectIds = projectIds.includes(input2.projectId) ? [input2.projectId] : [];
   }
   if (input2.workspaceId) {
@@ -332,7 +307,6 @@ export async function getCollabTask(
   if (!z.string().uuid().safeParse(taskId).success) {
     throw new CollabServiceError(404, 'not_found', 'Not found.');
   }
-  // Unknown and unauthorized tasks are indistinguishable: both 404.
   const projectId = await projectIdForTask(taskId);
   await authorize(actor, { projectId }, ['task.read']);
   const { rows } = await getPool().query(`${TASK_SELECT} WHERE t.id = $1`, [taskId]);
@@ -346,20 +320,11 @@ export async function getCollabTask(
 async function projectIdForTask(taskId: string): Promise<string> {
   const { rows } = await getPool().query(`SELECT project_id FROM collab_tasks WHERE id = $1`, [taskId]);
   if (rows.length === 0) {
-    // Unknown task: the not-found result must be identical for missing vs
-    // unauthorized, so this never leaks existence.
     throw new CollabServiceError(404, 'not_found', 'Not found.');
   }
   return rows[0].project_id;
 }
 
-/**
- * Board move. Locks the project board row, verifies board and task versions,
- * validates neighbors belong to the target lane, and ranks via midpoint in
- * one transaction. Done/Cancelled are decision endpoints and are rejected
- * here. Stale writers get 409 with the current version — never a silent
- * overwrite, never a lost update.
- */
 export async function moveCollabTask(input: {
   actor: { principalId: string; sessionVersion: number };
   taskId: string;
@@ -381,7 +346,6 @@ export async function moveCollabTask(input: {
   await authorize(input2.actor, { projectId }, ['task.write']);
 
   return withClientTransaction(async (tx) => {
-    // Serialize all board mutations for this project (same lock as create).
     await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`board:${projectId}`]);
 
     const board = await tx.query<{ board_version: number }>(
@@ -416,8 +380,6 @@ export async function moveCollabTask(input: {
       );
     }
 
-    // Canonical anchors, resolved against the FULL lane excluding the moving
-    // task (B's filtered view may hide cards; server order is authoritative).
     const resolveAnchor = async (anchorId: string | null | undefined): Promise<{ rank: string | null; existsInProject: boolean; laneOk: boolean }> => {
       if (anchorId === null || anchorId === undefined) return { rank: null, existsInProject: true, laneOk: true };
       if (anchorId === input2.taskId) return { rank: null, existsInProject: true, laneOk: false };
@@ -431,7 +393,6 @@ export async function moveCollabTask(input: {
     const beforeAnchor = await resolveAnchor(input2.beforeTaskId);
     const afterAnchor = await resolveAnchor(input2.afterTaskId);
     if (!beforeAnchor.existsInProject || !afterAnchor.existsInProject) {
-      // Stale view (unknown/gone anchor) → refresh, not best-effort placement.
       throw new CollabServiceError(409, 'board_changed', 'This item changed. Refresh before saving.');
     }
     if (!beforeAnchor.laneOk || !afterAnchor.laneOk) {
@@ -466,7 +427,6 @@ export async function moveCollabTask(input: {
         if (ai === -1) throw new CollabServiceError(409, 'board_changed', 'This item changed. Refresh before saving.');
         return { before: laneRows[ai - 1]?.position ?? null, after: laneRows[ai].position };
       }
-      // End-of-lane drop (empty lane → first card).
       return { before: laneRows.length > 0 ? laneRows[laneRows.length - 1].position : null, after: null };
     };
 
@@ -481,8 +441,6 @@ export async function moveCollabTask(input: {
             ? nextTailRank(bounds.before)
             : betweenRanks(bounds.before, bounds.after);
     if (position === null) {
-      // Gap exhausted: renumber the lane, RE-QUERY fresh ranks (the closed-over
-      // rows are stale after compaction), then derive again.
       await compactLane(tx, projectId, input2.status);
       laneRows = (await loadLane()).rows;
       bounds = deriveBounds(laneRows);
@@ -516,10 +474,6 @@ export async function moveCollabTask(input: {
   });
 }
 
-/**
- * Field edit with optimistic task-version concurrency. The first accepted
- * write wins; stale writers get 409 with the current version attached.
- */
 export async function updateCollabTask(input: {
   actor: { principalId: string; sessionVersion: number };
   taskId: string;

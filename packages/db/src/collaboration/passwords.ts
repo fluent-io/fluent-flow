@@ -18,8 +18,6 @@ const SCRYPT_N = 16384;
 const SCRYPT_R = 8;
 const SCRYPT_P = 1;
 const KEY_LENGTH_BYTES = 64;
-// Non-secret placeholders give ineligible and corrupt credentials the same
-// fixed KDF work; they are never accepted as a stored password encoding.
 const DUMMY_SALT = Buffer.alloc(16);
 const DUMMY_HASH = Buffer.alloc(KEY_LENGTH_BYTES);
 export const MIN_PASSWORD_LENGTH = 8;
@@ -71,12 +69,6 @@ export async function verifyPassword(password: string, stored: string): Promise<
   return validEncoding && matches;
 }
 
-/**
- * Password login for invited principals. Invalid credentials return null
- * (uniform for unknown email / wrong password / disabled principal);
- * throttling throws the typed 429. GitHub-mirrored principals never have
- * password credentials.
- */
 export async function authenticateCollabPassword(input: {
   email: string;
   password: string;
@@ -94,7 +86,6 @@ export async function authenticateCollabPassword(input: {
     [email],
   );
   const row = rows[0];
-  // Do not reveal account existence or disabled status by skipping scrypt.
   const verified = await verifyPassword(password, row?.disabled_at === null ? row.password_hash : '');
   if (!row || row.disabled_at !== null || !verified) return null;
   return rowToPrincipal(row);

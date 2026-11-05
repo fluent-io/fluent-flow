@@ -1,13 +1,5 @@
 import pg from 'pg';
 
-/**
- * Safety rules (enforced here AND again inside resetCollabSchema):
- * - URL required; missing DB is a hard failure, never a silent skip.
- * - Loopback hosts only.
- * - Database name must be a dedicated ff_* test database.
- * - Test mode required (vitest/NODE_ENV=test) or explicit opt-in env.
- * Package-specific env first so turbo's parallel package runs never share a DB.
- */
 export function assertDedicatedCollabTestDatabaseUrl(url) {
   const parsed = new URL(url);
   if (!['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname)) {
@@ -42,10 +34,6 @@ export function resolveCollabTestDatabaseUrl() {
   return assertDedicatedCollabTestDatabaseUrl(url);
 }
 
-/**
- * Fresh schema for deterministic runs. The dedicated-DB guard runs again here
- * so a caller cannot bypass it.
- */
 export async function resetCollabSchema(databaseUrl) {
   assertDedicatedCollabTestDatabaseUrl(databaseUrl);
   const client = new pg.Client({ connectionString: databaseUrl });
@@ -62,7 +50,6 @@ export async function resetCollabSchema(databaseUrl) {
   }
 }
 
-/** Seed a legacy GitHub user with optional org membership (admin|member). */
 export async function seedLegacyUser(databaseUrl, { githubId, login, isSuperadmin = false }) {
   const client = new pg.Client({ connectionString: databaseUrl });
   try {

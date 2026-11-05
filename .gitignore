@@ -11,6 +11,7 @@ coverage/
 *.swp
 *.swo
 tmp/
+.local/
 .turbo/
 .superpowers
 *.tsbuildinfo

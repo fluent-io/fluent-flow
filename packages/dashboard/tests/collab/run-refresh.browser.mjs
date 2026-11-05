@@ -1,5 +1,3 @@
-// UI regression harness: real React/Next surfaces, mocked HTTP only.
-// Run with a dedicated local Next server; no database or provider is contacted.
 import assert from 'node:assert/strict';
 import {existsSync} from 'node:fs';
 import { chromium } from '@playwright/test';
@@ -26,7 +24,6 @@ await page.route('**/api/collab/v1/**',async route=>{
   if(path==='/me') return route.fulfill({json:{data:{principal:{id:ids.principal,displayName:'Fixture operator',email:null,legacyUserId:null,disabledAt:null,sessionVersion:1},workspaces:[{id:ids.workspace,name:'Fixture client',projects:[{id:ids.project,workspaceId:ids.workspace,name:'Fixture project',version:1,boardVersion:1,executionDefaults:null}]}],capabilities:{[ids.project]:capabilities}}}});
   if(mode==='network') return route.abort('failed');
   if(mode==='server'||(mode==='server-runs'&&path===`/tasks/${ids.task}/runs`)) return route.fulfill({status:500,json:{error:{code:'internal_error',message:'Configuration error. Contact support.'}}});
-  // Task remains readable while private execution access is withdrawn.
   if(/^40[134]$/.test(mode)&&path!==`/tasks/${ids.task}`&&path!==`/tasks/${ids.task}/criteria`&&path!=='/attention') return route.fulfill({status:Number(mode),json:{error:{code:'not_found',message:'Not found.'}}});
   let data=[];
   let cursor;

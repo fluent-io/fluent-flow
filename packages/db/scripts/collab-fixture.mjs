@@ -1,18 +1,4 @@
 #!/usr/bin/env node
-// Non-production fixture/bootstrap CLI for isolated collaboration databases.
-// Creates two client workspaces (three projects), collaborator/reviewer/
-// operator principals and a GitHub admin fixture, then writes ALL generated
-// credentials to a mode-0600 local file. Never logs or prints secrets.
-//
-// Usage:
-//   node scripts/collab-fixture.mjs --database postgres://ffuser@127.0.0.1:55432/ff_fixture [--output /tmp/collab-fixture-credentials.json]
-//
-// Idempotent: workspaces (bootstrap keys), projects (workspace+name) and
-// principals (email) are reused on re-run. Credentials are preserved across
-// runs by merging with the existing output file — new credentials are only
-// generated for new principals or demo owners without password credentials.
-//
-// Prerequisite: `npm run build` in packages/db (imports ../dist/index.js).
 
 import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
@@ -48,7 +34,6 @@ function randomPassword() {
   return randomBytes(18).toString('base64url');
 }
 
-// Merge with a previous credentials file so re-runs never destroy working logins.
 let previous = { principals: [] };
 if (existsSync(output)) {
   try {
@@ -93,7 +78,6 @@ async function ensureLegacyAdmin(githubId, login, orgId) {
   }
 }
 
-// Two GitHub org admins (client A and client B).
 const adminALegacy = await ensureLegacyAdmin(41001, 'fixture-owner-a', 'fixture-org-a');
 const adminBLegacy = await ensureLegacyAdmin(41002, 'fixture-owner-b', 'fixture-org-b');
 const adminA = await db.ensureGithubPrincipal({
@@ -152,6 +136,35 @@ const projectA2 = await ensureProject(wsA, adminAActor, 'Project A2');
 const projectB1 = await ensureProject(wsB, adminBActor, 'Project B1');
 fixture.projects.push(projectA1, projectA2, projectB1);
 
+const demoOverviews = [
+  [projectA1, {
+    description:
+      'Disposable Node.js arithmetic demo used to try task execution end to end. It has no web server or UI. ' +
+      'The add function starts out intentionally broken so an execution task has a real bug to fix.',
+    run: 'Nothing to start: this is a library with no web server. Inspect the code in the disposable demo repository prepared by the local runner.',
+    test: 'Run `npm test` in the demo repository. It uses Node\'s built-in test runner; the add tests fail until the intentionally broken add function is fixed.',
+  }],
+  [projectA2, {
+    description:
+      'Permission-isolation example in Fixture Client A. Use it to check that people invited only to Project A1 cannot see this project.',
+    run: 'Nothing to run: no repository or execution host is configured for this project.',
+    test: 'Sign in as the Project A1 collaborator and confirm this project is not listed. No automated tests are configured.',
+  }],
+  [projectB1, {
+    description:
+      'Belongs to the separate client Fixture Client B and demonstrates client isolation: people in Fixture Client A cannot see it.',
+    run: 'Nothing to run: no application is configured for this project.',
+    test: 'Sign in as a Fixture Client A user and confirm this project is not listed. No automated tests are configured.',
+  }],
+];
+for (const [project, text] of demoOverviews) {
+  await db.getPool().query(
+    `INSERT INTO collab_project_overviews (project_id, description, run_instructions, test_instructions)
+     VALUES ($1, $2, $3, $4) ON CONFLICT (project_id) DO NOTHING`,
+    [project.id, text.description, text.run, text.test],
+  );
+}
+
 async function upsertPrincipalCredential(entry) {
   const preserved = previousPasswordByPrincipalId.get(entry.principalId);
   if (preserved && !entry.password) {
@@ -160,11 +173,6 @@ async function upsertPrincipalCredential(entry) {
   fixture.principals.push(entry);
 }
 
-/**
- * Reuse or create an invited principal at the given scope. Returns the
- * principal id; a generated password (new principal only) is reported to the
- * caller so it lands in the credentials file.
- */
 async function ensureInvitedPrincipal({ email, displayName, inviteRoleId, workspaceId, projectId, actor = adminAActor }) {
   const existing = await db.getPool().query(
     `SELECT id FROM collab_principals WHERE lower(email) = lower($1) AND legacy_user_id IS NULL`,
@@ -192,7 +200,6 @@ async function ensureInvitedPrincipal({ email, displayName, inviteRoleId, worksp
   return { principalId: accepted.principal.id, password };
 }
 
-// Collaborator scoped to project A1 only (password login demo account).
 const collaborator = await ensureInvitedPrincipal({
   email: 'fixture-collaborator@client-a.test',
   displayName: 'Fixture Collaborator',
@@ -243,8 +250,6 @@ const clientB = await ensureInvitedPrincipal({
 });
 await upsertPrincipalCredential({email:'fixture-collaborator@client-b.test',password:clientB.password,role:'collaborator (project B1 only)',principalId:clientB.principalId});
 
-// These two trusted local demo owners keep their GitHub identity and roles;
-// only the fixture CLI provisions password login, never a public auth route.
 async function ensureDemoOwnerPassword(admin) {
   let password = previousPasswordByPrincipalId.get(admin.id) ?? null;
   const existing = await db.getPool().query(
@@ -278,7 +283,6 @@ for (const admin of [adminA, adminB]) {
   });
 }
 
-// Offline execution host: enrolled, never heartbeats — stays 'offline' for UAT.
 const existingHost=await db.getPool().query("SELECT id,name FROM collab_hosts WHERE enrolled_by_principal_id=$1 AND name='Fixture PC (offline)' AND revoked_at IS NULL ORDER BY created_at LIMIT 1",[adminA.id]);
 const host = existingHost.rows[0] ?? await db.createExecutionHost({ actor: adminAActor, name: 'Fixture PC (offline)' });
 fixture.hosts.push({ id: host.id, name: host.name, note: 'offline by design (no connector will register)' });

@@ -30,9 +30,6 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     return null;
   }
 
-  // Collaboration-only (invited) principals have no legacy GitHub identity and
-  // enter the board directly — no installation call to action. The GitHub CTA
-  // remains only for legacy GitHub users who have not connected an org.
   const isLegacyUser = session.user.id !== null || session.user.isSuperadmin;
   if (isLegacyUser && session.user.orgs.length === 0 && !session.user.isSuperadmin) {
     return (

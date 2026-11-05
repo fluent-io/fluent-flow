@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 
-// Standard silencing only — real app, real DB, real assertion crypto.
 vi.mock('../../src/tracing.cjs', () => ({}));
 vi.mock('../../src/logger.js', async () => {
   const { createMockLogger } = await import('../helpers/mock-logger.js');
@@ -11,9 +10,6 @@ const { resolveCollabTestDatabaseUrl, resetCollabSchema } = await import(
   '../helpers/collab-db.js'
 );
 
-// The db package resolves DATABASE_URL at module load (eager pool creation),
-// so the URL must be set before the first import of anything that transitively
-// imports @fluent-flow/db.
 process.env.DATABASE_URL = resolveCollabTestDatabaseUrl();
 const { signCollaborationActor } = await import('@fluent-flow/db');
 const { createApp } = await import('../../src/app.js');
@@ -91,7 +87,6 @@ describe('collab actor boundary: principal identity re-check (DB-backed)', () =>
     });
     expect(res.status).toBe(200);
     const body = await res.json();
-    // The principal has no memberships: an empty authorized page, not an error.
     expect(body.data).toEqual([]);
     expect(body.nextCursor).toBeNull();
   });

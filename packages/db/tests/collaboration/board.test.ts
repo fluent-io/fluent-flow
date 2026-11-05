@@ -109,7 +109,6 @@ describe('A2 board: optimistic concurrency and ordering (real Postgres)', () => 
       `SELECT status, position FROM collab_tasks WHERE project_id = $1 ORDER BY status, position`,
       [projectId],
     );
-    // All three tasks accounted for; exactly one sits in ready.
     expect(board).toHaveLength(3);
     expect(board.filter((t) => t.status === 'ready')).toHaveLength(1);
 
@@ -138,7 +137,6 @@ describe('A2 board: optimistic concurrency and ordering (real Postgres)', () => 
 
   it('preserves the winning write when two edits race the same expectedVersion', async () => {
     const task = tasks[0];
-    // Prior moves bumped the version — race from the CURRENT version.
     const current = await getCollabTask(managerActor, task.id);
     const results = await Promise.allSettled([
       updateCollabTask({ actor: managerActor, taskId: task.id, expectedVersion: current.task.version, title: 'First writer' }),
@@ -163,8 +161,6 @@ describe('A2 board: optimistic concurrency and ordering (real Postgres)', () => 
   });
 
   it('rejects neighbors from a different lane with 422', async () => {
-    // tasks[0] is in ready (from the first move) — its position row is invalid
-    // as a neighbor for a backlog insertion.
     const liveBoard = (await rawQuery(`SELECT board_version FROM collab_projects WHERE id = $1`, [projectId]))[0].board_version;
     await expect(
       moveCollabTask({
@@ -205,8 +201,6 @@ describe('A2 board: optimistic concurrency and ordering (real Postgres)', () => 
   });
 
   it('orders a lane deterministically between explicit non-moving anchors', async () => {
-    // Backlog currently holds Task B and Task C. Create Task D, then move
-    // Task C strictly between B and D — the mover is never its own anchor.
     const taskD = await createCollabTask({ actor: managerActor, projectId, title: 'Task D' });
     const lane = await rawQuery(
       `SELECT id, position FROM collab_tasks WHERE project_id = $1 AND status = 'backlog' ORDER BY position`,
@@ -278,7 +272,6 @@ describe('A2 board hardening (rank/lock review findings)', () => {
   }
 
   beforeAll(async () => {
-    // Reuse the fixture created by the suite above (same DB, same file).
     const owner = await rawQuery(`SELECT id, session_version FROM collab_principals WHERE legacy_user_id = (SELECT id FROM users WHERE login = 'board-owner')`);
     managerActor = { principalId: owner[0].id, sessionVersion: owner[0].session_version };
     projectId = (await rawQuery(`SELECT id FROM collab_projects WHERE name = 'Board P1'`))[0].id;
@@ -345,7 +338,6 @@ describe('A2 board hardening (rank/lock review findings)', () => {
       )
     )[0];
 
-    // Self anchor → 422 invalid_neighbor.
     await expect(
       moveCollabTask({
         actor: managerActor, taskId: task.id, expectedVersion: task.version,
@@ -354,7 +346,6 @@ describe('A2 board hardening (rank/lock review findings)', () => {
       }),
     ).rejects.toMatchObject({ status: 422, code: 'invalid_neighbor' });
 
-    // Unknown anchor → 409 board_changed (stale view).
     await expect(
       moveCollabTask({
         actor: managerActor, taskId: task.id, expectedVersion: task.version,
@@ -363,7 +354,6 @@ describe('A2 board hardening (rank/lock review findings)', () => {
       }),
     ).rejects.toMatchObject({ status: 409, code: 'board_changed' });
 
-    // Cross-lane anchor → 422 invalid_neighbor.
     if (readyTask) {
       await expect(
         moveCollabTask({
@@ -387,17 +377,13 @@ describe('A2 board hardening (rank/lock review findings)', () => {
         beforeTaskId: null, afterTaskId: null,
       }),
     ]);
-    // The racer create may land between the move's version read and its
-    // transaction: an optimistic 409 on the move is correct then. What must
-    // hold: every fulfilled mutation bumped board_version exactly once.
     const fulfilledCount = results.filter((r) => r.status === 'fulfilled').length;
-    expect(results[0].status).toBe('fulfilled'); // the create never conflicts
+    expect(results[0].status).toBe('fulfilled');
     const board1 = (await rawQuery(`SELECT board_version FROM collab_projects WHERE id = $1`, [projectId]))[0].board_version;
     expect(board1 - board0).toBe(fulfilledCount);
   });
 
   it('keeps positions unique within each lane and globally ordered per lane', async () => {
-    // Positions are lane-scoped: uniqueness/ordering is per status.
     const all = await rawQuery(
       `SELECT status, position FROM collab_tasks WHERE project_id = $1`,
       [projectId],
@@ -411,7 +397,6 @@ describe('A2 board hardening (rank/lock review findings)', () => {
   });
 
   it('survives repeated head rotation across rank compaction (root repro shape)', async () => {
-    // Fresh project to control the lane exactly.
     const project = await createCollabProject({ actor: managerActor, workspaceId: projectId ? (await rawQuery(`SELECT workspace_id FROM collab_projects WHERE id = $1`, [projectId]))[0].workspace_id : null, name: 'Rotation P1' });
     void project;
     const rotationProjectId = (
@@ -420,11 +405,8 @@ describe('A2 board hardening (rank/lock review findings)', () => {
     const anchor = await createCollabTask({ actor: managerActor, projectId: rotationProjectId, title: 'Anchor' });
     let board = (await rawQuery(`SELECT board_version FROM collab_projects WHERE id = $1`, [rotationProjectId]))[0].board_version;
 
-    // 40 head rotations: each move targets afterTaskId=Anchor — midpoint ranks
-    // shrink geometrically, forcing compaction well within 40 moves.
     for (let i = 0; i < 40; i += 1) {
       const task = await createCollabTask({ actor: managerActor, projectId: rotationProjectId, title: `Rot ${i}` });
-      // Creates bump the board too — always read the live version.
       board = (await rawQuery(`SELECT board_version FROM collab_projects WHERE id = $1`, [rotationProjectId]))[0].board_version;
       const result = await moveCollabTask({
         actor: managerActor,
@@ -445,7 +427,6 @@ describe('A2 board hardening (rank/lock review findings)', () => {
     const positions = lane.map((r) => r.position);
     expect(new Set(positions).size).toBe(positions.length);
     expect(positions).toEqual([...positions].sort());
-    // Anchor ends up after the rotated block.
     expect(positions[39] < positions[40]).toBe(true);
   });
 });

@@ -10,6 +10,7 @@ import { LatestRequest, pollResource } from '@/lib/collab/live';
 import { collabFetch, collabFetchAll, ApiError } from '@/lib/collab/api';
 import { applyBoardMove, canDropOnCard, moveTargetForDrop } from '@/lib/collab/board';
 import { capabilitiesFor, useMe } from '@/lib/collab/use-me';
+import { boardScope, createTaskTarget, useCurrentProject, useSyncCurrentProject } from '@/lib/collab/current-project';
 import type { HostReachability, Project, RunState, Task, TaskStatus } from '@/lib/collab/types';
 import { ExecutionBadge } from './execution-badge';
 import { CreateTaskDialog } from './create-task-dialog';
@@ -44,15 +45,35 @@ export function BoardView() {
   const { me, error: meError, reload: reloadMe } = useMe();
 
   const workspaceId = searchParams.get('workspaceId') ?? '';
-  const projectId = searchParams.get('projectId') ?? '';
+  const linkedProjectId = searchParams.get('projectId') ?? '';
   const q = searchParams.get('q') ?? '';
+  const current = useCurrentProject();
+  useSyncCurrentProject(linkedProjectId || null);
+  const scope = boardScope({ projectId: linkedProjectId, workspaceId }, { ready: current.ready, projectId: current.projectId });
+  const projectId = scope.projectId;
+  const scopeReady = scope.ready;
+  const scopeKey = `${workspaceId}|${projectId}|${q}`;
+  const scopeGen = useRef(0);
+  const movesInFlight = useRef<Set<string>>(new Set());
+
+  const syncedWorkspaceLink = useRef<string | null>(null);
+  const { ready: selectionReady, selectProject } = current;
+  useEffect(() => {
+    if (linkedProjectId || !workspaceId) {
+      syncedWorkspaceLink.current = null;
+      return;
+    }
+    if (!selectionReady || syncedWorkspaceLink.current === workspaceId) return;
+    syncedWorkspaceLink.current = workspaceId;
+    selectProject(null);
+  }, [linkedProjectId, workspaceId, selectionReady, selectProject]);
 
   const [tasks, setTasks] = useState<BoardTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [conflict, setConflict] = useState(false);
   const [truncated, setTruncated] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [createIn, setCreateIn] = useState<{ status: TaskStatus } | null>(null);
+  const [createIn, setCreateIn] = useState<{ status: TaskStatus; gen: number } | null>(null);
   const [showCancelled, setShowCancelled] = useState(false);
   const boardVersions = useRef<Map<string, number>>(new Map());
 
@@ -87,9 +108,8 @@ export function BoardView() {
   const requests = useRef(new LatestRequest());
   const refresh = useCallback(async (parent?: AbortSignal) => {
     if(movesInFlight.current.size>0) return;
+    if (!scopeReady) return;
     const signal = requests.current.begin(parent);
-    // A version-conflict notice must stay visible while the board reloads; only
-    // a completed move or leaving the page clears it.
     try {
       const params = new URLSearchParams();
       if (workspaceId) params.set('workspaceId', workspaceId);
@@ -108,14 +128,20 @@ export function BoardView() {
     } finally {
       if (requests.current.current(signal)) setLoading(false);
     }
-    // Project board versions live on /me; reload them with the tasks so moves
-    // never carry a stale expectedBoardVersion after another writer moved on.
     if (requests.current.current(signal)) await reloadMe();
-  }, [workspaceId, projectId, q, reloadMe]);
+  }, [workspaceId, projectId, q, reloadMe, scopeReady]);
+
+  useEffect(() => {
+    scopeGen.current += 1;
+    movesInFlight.current = new Set();
+    setConflict(false);
+    setCreateIn(null);
+  }, [scopeKey]);
 
   useEffect(() => {
     setTasks([]);
     setLoading(true);
+    setLoadError(null);
     const stop = pollResource(refresh);
     return () => { stop(); requests.current.dispose(); };
   }, [refresh]);
@@ -124,9 +150,6 @@ export function BoardView() {
     boardVersionsFromMe(me);
   }, [me, boardVersionsFromMe]);
 
-  // One in-flight move per project; responses are applied only for the latest
-  // request per task so out-of-order completions cannot regress the board.
-  const movesInFlight = useRef<Set<string>>(new Set());
   const moveSeq = useRef<Map<string, number>>(new Map());
 
   type DropDescriptor =
@@ -146,7 +169,9 @@ export function BoardView() {
     requests.current.dispose();
     const optimistic = applyBoardMove(tasks, task.id, move);
     setTasks(optimistic);
-    movesInFlight.current.add(task.projectId);
+    const genAtStart = scopeGen.current;
+    const inFlight = movesInFlight.current;
+    inFlight.add(task.projectId);
 
     const expectedBoardVersion = boardVersions.current.get(task.projectId) ?? 0;
     try {
@@ -160,13 +185,14 @@ export function BoardView() {
           afterTaskId: move.afterTaskId,
         },
       });
-      if (moveSeq.current.get(task.id) !== seq) return; // a newer move superseded this one
+      if (scopeGen.current !== genAtStart) return;
+      if (moveSeq.current.get(task.id) !== seq) return;
       setConflict(false);
       boardVersions.current.set(task.projectId, result.data.boardVersion);
       setTasks((current) => current.map((t) => (t.id === task.id ? { ...t, ...result.data.task } : t)));
     } catch (err) {
+      if (scopeGen.current !== genAtStart) return;
       if (moveSeq.current.get(task.id) !== seq) return;
-      // Roll back only the moved card; other projects' accepted moves stay put.
       setTasks((current) => {
         const without = current.filter((t) => t.id !== task.id);
         const restored = previousTask ? [...without.slice(0, previousIndex), previousTask, ...without.slice(previousIndex)] : without;
@@ -179,7 +205,7 @@ export function BoardView() {
       }
       setLoadError(err instanceof Error ? err.message : 'Move failed.');
     } finally {
-      movesInFlight.current.delete(task.projectId);
+      inFlight.delete(task.projectId);
     }
   }
 
@@ -210,7 +236,7 @@ export function BoardView() {
   const doneTasks = tasks.filter((t) => t.status === 'done');
   const cancelledTasks = tasks.filter((t) => t.status === 'cancelled' && showCancelled);
 
-  if (meError) {
+  if (meError && !me) {
     return (
       <div className="flex flex-col items-center gap-3 py-24 text-center">
         <AlertTriangle className="h-8 w-8 text-muted-foreground" />
@@ -222,7 +248,8 @@ export function BoardView() {
     );
   }
 
-  const canWriteAnywhere = projects.some((p) => capabilitiesFor(me, p.id).includes('task.write'));
+  const createTarget = createTaskTarget(projects, me, projectId || null);
+  const canWriteAnywhere = createTarget.projectIds.length > 0;
 
   return (
     <div className="flex h-full flex-col gap-4">
@@ -245,7 +272,10 @@ export function BoardView() {
             aria-label="Client workspace"
             className="h-9 rounded-md border border-border bg-background px-2 text-sm"
             value={workspaceId}
-            onChange={(e) => setFilter({ workspaceId: e.target.value, projectId: '' })}
+            onChange={(e) => {
+              current.selectProject(null);
+              setFilter({ workspaceId: e.target.value, projectId: '' });
+            }}
           >
             <option value="">All clients</option>
             {me?.workspaces.map((w) => (
@@ -258,7 +288,10 @@ export function BoardView() {
             aria-label="Project"
             className="h-9 rounded-md border border-border bg-background px-2 text-sm"
             value={projectId}
-            onChange={(e) => setFilter({ projectId: e.target.value })}
+            onChange={(e) => {
+              current.selectProject(e.target.value || null);
+              setFilter({ projectId: e.target.value });
+            }}
           >
             <option value="">All projects</option>
             {projects.map((p) => (
@@ -271,13 +304,18 @@ export function BoardView() {
             <RefreshCw className="mr-1 h-3.5 w-3.5" /> Refresh
           </Button>
           {canWriteAnywhere ? (
-            <Button size="sm" onClick={() => setCreateIn({ status: 'backlog' })}>
+            <Button size="sm" onClick={() => setCreateIn({ status: 'backlog', gen: scopeGen.current })}>
               <Plus className="mr-1 h-3.5 w-3.5" /> New task
             </Button>
           ) : null}
         </div>
       </div>
 
+      {createTarget.refusal && me ? (
+        <div role="status" className="rounded-md border border-border bg-secondary px-3 py-2 text-xs text-muted-foreground">
+          {createTarget.refusal}
+        </div>
+      ) : null}
       {truncated ? (
         <div role="status" className="rounded-md border border-border bg-secondary px-3 py-2 text-xs text-muted-foreground">
           Showing the first {tasks.length} matching tasks. Narrow the filters to see more.
@@ -326,7 +364,7 @@ export function BoardView() {
               {canWriteAnywhere ? (
                 <button
                   className="flex items-center gap-1 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-secondary"
-                  onClick={() => setCreateIn({ status: lane.status })}
+                  onClick={() => setCreateIn({ status: lane.status, gen: scopeGen.current })}
                 >
                   <Plus className="h-3 w-3" /> Add task
                 </button>
@@ -378,11 +416,13 @@ export function BoardView() {
 
       {createIn ? (
         <CreateTaskDialog
-          projects={projects}
+          key={projectId}
+          projects={projects.filter((p) => createTarget.projectIds.includes(p.id))}
           me={me}
           defaultStatus={createIn.status}
           onClose={() => setCreateIn(null)}
           onCreated={(task) => {
+            if (scopeGen.current !== createIn.gen) return;
             setCreateIn(null);
             setTasks((current) => [...current, task as BoardTask]);
             void reloadMe();
@@ -394,7 +434,6 @@ export function BoardView() {
   );
 }
 
-/** Last same-project card in a lane, per server array order; excludes the moving card. */
 function tailOf(tasks: BoardTask[], status: TaskStatus, projectId: string, excludeId: string): string | null {
   const scoped = tasks.filter((t) => t.status === status && t.projectId === projectId && t.id !== excludeId);
   return scoped.at(-1)?.id ?? null;

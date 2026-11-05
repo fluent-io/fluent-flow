@@ -78,7 +78,6 @@ interface PlanItem {
 
 
 
-/** Versioned workpad plan: agent snapshots (read-only) and human edits. */
 function WorkpadPlanPanel({
   detail,
   canInternal,
@@ -218,7 +217,6 @@ function WorkpadPlanPanel({
   );
 }
 
-/** Open questions (agent confusions or human clarifications) resolved by humans. */
 function OpenQuestionsPanel({
   detail,
   canInternal,
@@ -789,8 +787,6 @@ function DeliveryPanel({
     setBusy(true);
     setError(null);
     try {
-      // Server returns {decision, acknowledged}; the authoritative task comes
-      // from the reload below.
       await collabFetch<{ decision: string; acknowledged: boolean }>(`/tasks/${detail.id}/decisions`, {
         method: 'POST',
         body: {

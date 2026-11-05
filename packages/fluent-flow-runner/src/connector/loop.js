@@ -1,27 +1,6 @@
+import { performance } from 'node:perf_hooks';
 import { ConnectorApiError } from './connector-client.js';
 
-/**
- * Connector main loop: register → (heartbeat ‖ poll → execute → ack → observe).
- *
- * Fencing rules:
- * - Every call carries the CURRENT captured lease fence at call time. A 409
- *   with code `stale_lease` (only that code) means the lease was superseded:
- *   drop the session, re-register, continue on the same journal. Other 409s
- *   (permission/idempotency conflicts) are transient errors, NOT fence loss.
- * - Command acks use the fence captured at poll delivery, not a re-read
- *   session, so a concurrent re-registration cannot race the ack. A stale
- *   ack leaves the command journaled-acked; the server redelivers the SAME
- *   command id and execution is idempotent.
- * - An old superseded instance never steals the lease back: registering while
- *   another instance is active returns 409 `connector_session_active`, which
- *   is retried with backoff, not treated as fence loss.
- *
- * Launch is staged with the executor: bind (idle IDs) is journaled and
- * acked `accepted` to the control plane BEFORE the initial prompt is sent.
- *
- * Observations are journaled and flushed in batches; only server-accepted
- * event ids leave the pending set; startup re-queues never-confirmed ones.
- */
 
 const DEFAULTS = {
   heartbeatIntervalMs: 15_000,
@@ -30,6 +9,8 @@ const DEFAULTS = {
   maxConsecutiveFailures: 10,
   baseBackoffMs: 2_000,
   maxBackoffMs: 60_000,
+  minIdlePollCycleMs: 1_000,
+  observationFlushDelayMs: 200,
 };
 
 export function createConnectorLoop({
@@ -50,9 +31,9 @@ export function createConnectorLoop({
   privacy = null,
 }) {
   const cfg = { ...DEFAULTS, ...intervals, instanceId };
-  /** Sleep that wakes early when the loop is stopped; no listener leaks. */
   const sleep = (ms) =>
     new Promise((resolve) => {
+      if (stopController.signal.aborted) return resolve();
       const onAbort = () => {
         timers.clearTimeout(t);
         stopController.signal.removeEventListener('abort', onAbort);
@@ -65,18 +46,32 @@ export function createConnectorLoop({
       stopController.signal.addEventListener('abort', onAbort, { once: true });
     });
 
-  let session = null; // {connectorSessionId, leaseEpoch, heartbeatIntervalMs, staleAfterMs, offlineAfterMs}
+  let session = null;
   let stopped = false;
   const stopController = new AbortController();
-  const runStates = new Map(); // runId -> last observed run state
+  const runStates = new Map();
   const TERMINAL_RUN_STATES = new Set(['idle', 'failed', 'cancelled']);
   const activeRunIds = () => [...runStates.entries()].filter(([, s]) => !TERMINAL_RUN_STATES.has(s)).map(([id]) => id);
-  const pendingObservations = new Map(); // eventId -> observation
+  const pendingObservations = new Map();
   let flushing = false;
+  let flushAgain = false;
+  let flushTimer = null;
 
   function stop() {
     stopped = true;
+    if (flushTimer) timers.clearTimeout(flushTimer);
+    flushTimer = null;
     stopController.abort(new Error('connector loop stopped'));
+  }
+
+  function scheduleFlush() {
+    if (stopped || flushTimer) return;
+    flushTimer = timers.setTimeout(() => {
+      flushTimer = null;
+      flushObservations().catch((err) => {
+        log({ msg: 'observation flush failed', error: err.message });
+      });
+    }, cfg.observationFlushDelayMs);
   }
 
   function currentFence() {
@@ -98,8 +93,6 @@ export function createConnectorLoop({
   }
 
   function isStaleFence(err) {
-    // A3's canonical code is 'stale_fence'; 'stale_lease' kept for the
-    // contract spelling. Any other 409 is NOT fence loss.
     return (
       err instanceof ConnectorApiError &&
       err.status === 409 &&
@@ -107,12 +100,11 @@ export function createConnectorLoop({
     );
   }
 
-  /** Classify an API error for the loop: 'fence' | 'fatal' | 'transient'. */
   function classify(err) {
     if (!(err instanceof ConnectorApiError)) return 'transient';
     if (err.status === 401) return 'fatal';
     if (isStaleFence(err)) return 'fence';
-    return 'transient'; // includes 409 connector_session_active and other conflicts
+    return 'transient';
   }
 
   async function heartbeat() {
@@ -147,11 +139,6 @@ export function createConnectorLoop({
     return 'transient';
   }
 
-  /**
-   * Ensure a live session; returns null while unregistered (retry with
-   * backoff). Registering into an actively-held lease waits its turn — an old
-   * superseded instance must not steal the registration back.
-   */
   async function ensureSession() {
     if (session) return session;
     try {
@@ -164,7 +151,11 @@ export function createConnectorLoop({
   }
 
   async function flushObservations() {
-    if (pendingObservations.size === 0 || flushing) return;
+    if (pendingObservations.size === 0) return;
+    if (flushing) {
+      flushAgain = true;
+      return;
+    }
     const fence = currentFence();
     if (!fence) return;
     const events = [];
@@ -180,18 +171,20 @@ export function createConnectorLoop({
     }
     if (!events.length) return;
     flushing = true;
+    flushAgain = false;
+    let progressed = false;
     try {
       const res = await client.observe({ ...fence, events }, { signal: stopController.signal });
       const accepted = res.acceptedEventIds ?? [];
       for (const id of accepted) pendingObservations.delete(id);
-      // Durably checkpoint confirmations so a restart never resubmits the
-      // accepted history.
       if (accepted.length) await journal.markObservationsAccepted(accepted);
+      progressed = accepted.length > 0;
     } catch (err) {
       handleApiError(err, 'observations');
     } finally {
       flushing = false;
     }
+    if (pendingObservations.size > 0 && (flushAgain || progressed)) scheduleFlush();
   }
 
   function queueObservations(observations) {
@@ -208,14 +201,6 @@ export function createConnectorLoop({
     }
   }
 
-  /**
-   * Recovery at startup: re-queue observations journaled but never confirmed
-   * accepted (server dedupes by eventId). Commands themselves are NOT
-   * re-executed from local state — the server is the source of command
-   * payloads and redelivers the SAME command id under short leases; local
-   * replay would lack the payload. Idempotent execution + stable ids make
-   * that redelivery safe.
-   */
   function recover() {
     for (const eventId of journal.pendingObservationIds()) {
       const rec = journal.observationById(eventId);
@@ -234,25 +219,15 @@ export function createConnectorLoop({
     }
   }
 
-  /**
-   * Ack with the captured fence. Returns true only when the control plane
-   * CONFIRMED the ack; a lost/stale/rejected ack means the server still owns
-   * an unresolved command and will redeliver the SAME id.
-   */
   async function ackCommand(command, fence, state, result, errorCode) {
     await journal.append({ type: 'acked', commandId: command.id, state, errorCode, at: new Date().toISOString() });
     const target = fence ?? currentFence();
     if (!target) return { confirmed: false, recordedState: null };
     try {
-      // HTTP 200 is NOT acceptance: the server records its OWN final state
-      // (re-checking authorization at ack time) and returns it — only an
-      // exact echo of the requested state is a grant.
       const res = await client.ack(command.id, { ...target, state, result: privacy ? privacy.redact(result) : result, errorCode }, { signal: stopController.signal });
       const recordedState = res?.state ?? null;
       return { confirmed: recordedState === state, recordedState };
     } catch (err) {
-      // A stale-fence/lost ack means the server never recorded this state;
-      // the journal has it and the server will redeliver the SAME id.
       handleApiError(err, 'ack');
       return { confirmed: false, recordedState: null };
     }
@@ -266,21 +241,13 @@ export function createConnectorLoop({
       const accepted = await ackCommand(command, fence, outcome.state, outcome.result, outcome.errorCode);
       if (outcome.stage === 'bound' && outcome.state === 'accepted') {
         if (!accepted.confirmed) {
-          // The control plane has NOT confirmed the bound IDs on this fence:
-          // the initial prompt waits. The journaled binding makes the server's
-          // redelivery of the SAME command id resume safely at this point.
           log({ msg: 'bind ack unconfirmed; prompt withheld', commandId: command.id, runId: command.runId });
           return;
         }
-        // IDs persisted AND acknowledged to the control plane. Before the
-        // initial (billable) prompt: the host hook (observer readiness +
-        // backfill) so execution can never outrun its observation.
         if (onBeforeDeliver) {
           try {
             await onBeforeDeliver({ runId: command.runId, sessionId: command.sessionId, ...outcome.result });
           } catch (err) {
-            // Observation transport/readiness cannot prove execution failed.
-            // Preserve accepted binding; retry only on the same server command.
             log({ msg: 'observer unavailable; prompt withheld', commandId: command.id, error: err.message });
             return;
           }
@@ -298,14 +265,13 @@ export function createConnectorLoop({
   }
 
   return {
-    /** Registration material for tests/inspection. */
     get session() {
       return session;
     },
 
-    /** Queue externally produced observations (timeline observer). */
     enqueueObservations(observations) {
       queueObservations(observations);
+      if (pendingObservations.size > 0) scheduleFlush();
     },
     get pendingObservationIds() {
       return [...pendingObservations.keys()];
@@ -313,13 +279,8 @@ export function createConnectorLoop({
 
     register,
 
-    /**
-     * Run the loop until stop(). Startup registers (with retry), recovers
-     * journaled observations, then heartbeats and polls until stopped.
-     */
     async start() {
       let failures = 0;
-      // Initial registration with retry; 401 is fatal, a held lease waits.
       while (!stopped) {
         const s = await ensureSession();
         if (s) break;
@@ -361,6 +322,7 @@ export function createConnectorLoop({
         }
         const fence = currentFence();
         let commands = [];
+        const pollStartedAt = performance.now();
         try {
           const res = await client.poll({ ...fence, waitMs: cfg.pollWaitMs, limit: cfg.pollLimit }, { signal: stopController.signal });
           commands = res.commands ?? [];
@@ -369,7 +331,6 @@ export function createConnectorLoop({
           const kind = handleApiError(err, 'poll');
           if (kind === 'fatal') break;
           if (kind === 'fence') {
-            // Lease superseded: re-register immediately, no failure penalty.
             failures = 0;
             continue;
           }
@@ -387,9 +348,11 @@ export function createConnectorLoop({
           await handleCommand(command, fence);
           await flushObservations();
         }
-        // Keep draining even without commands so a large old-replay backlog
-        // cannot starve fresh events for a whole heartbeat interval.
-        if (commands.length === 0) await flushObservations();
+        if (commands.length === 0) {
+          await flushObservations();
+          const idleMs = cfg.minIdlePollCycleMs - (performance.now() - pollStartedAt);
+          if (idleMs > 0 && !stopped) await sleep(idleMs);
+        }
       }
       stopped = true;
       await heartbeatLoop;

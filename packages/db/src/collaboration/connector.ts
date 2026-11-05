@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { z } from 'zod';
 import type { PoolClient } from 'pg';
 import { getPool } from '../pool.js';
@@ -7,7 +8,6 @@ import { CollabServiceError } from './errors.js';
 import { getProjectCapabilities,authorize } from './authorize.js';
 import { recordWorkpadPlanReport, recordUsageSample, recordCollabSummaryReport } from './evidence.js';
 
-/** Capability that authorized a command kind at creation time. */
 function commandCapability(kind: string): 'run.start' | 'run.steer' | 'run.cancel' | 'task.read' {
   if (kind === 'artifact_read') return 'task.read';
   if (kind === 'cancel') return 'run.cancel';
@@ -15,14 +15,6 @@ function commandCapability(kind: string): 'run.start' | 'run.steer' | 'run.cance
   return 'run.steer';
 }
 
-/**
- * Delivery-time authorization recheck (contract: queued work rechecks actor,
- * mapping and host grant before execution — withdrawal while the PC is
- * offline must not execute previously queued work). Returns 'withdrawn' when
- * the originator is disabled/revoked, the capability is gone, or the
- * mapping/host grant no longer exists. The command payload is NEVER mutated —
- * no rerouting under the same command id.
- */
 async function commandWithdrawnReason(
   client: PoolClient,
   command: { kind: string; created_by_principal_id: string | null; run_id: string; session_id: string | null; payload?:Record<string,unknown> },
@@ -70,12 +62,6 @@ async function commandWithdrawnReason(
   return null;
 }
 
-/**
- * Connector protocol (host-side). The Bearer token is hashed and bound to the
- * route host — there is no hostId body override, ever. Lease fencing rejects
- * stale epochs; command IDs are re-delivered as the SAME command, never
- * re-created.
- */
 
 const HEARTBEAT_ONLINE_MS = 45_000;
 const CLAIM_REDELIVER_AFTER_MS = 30_000;
@@ -95,7 +81,6 @@ export async function authenticateHost(token: string): Promise<AuthenticatedHost
     [hashToken(token)],
   );
   if (rows.length === 0) {
-    // Revoked and unknown tokens are indistinguishable.
     throw new CollabServiceError(401, 'unauthenticated', 'Authentication required.');
   }
   return { id: rows[0].id, leaseEpoch: Number(rows[0].lease_epoch), connectorSessionId: rows[0].connector_session_id };
@@ -103,14 +88,12 @@ export async function authenticateHost(token: string): Promise<AuthenticatedHost
 
 type HostTx = { client: PoolClient; host: { id: string; leaseEpoch: number; connectorSessionId: string | null } };
 
-/** Session + epoch fence inside a transaction; throws 409 stale_lease on mismatch. */
 async function withHostFence<T>(token: string, connectorSessionId: string, leaseEpoch: number, fn: (tx: HostTx) => Promise<T>): Promise<T> {
   const host = await authenticateHost(token);
   if (host.connectorSessionId !== connectorSessionId || host.leaseEpoch !== leaseEpoch) {
     throw new CollabServiceError(409, 'stale_lease', 'This connection is no longer active.');
   }
   return withClientTransaction(async (client) => {
-    // Serialize protocol mutations per host.
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`connector:${host.id}`]);
     const current = await client.query<{ lease_epoch: string; connector_session_id: string | null; revoked_at: Date | null }>(
       `SELECT lease_epoch, connector_session_id, revoked_at FROM collab_hosts WHERE id = $1 FOR UPDATE`,
@@ -184,10 +167,6 @@ export async function registerConnector(input: {
     if (current.rows.length === 0 || current.rows[0].revoked_at !== null) {
       throw new CollabServiceError(401, 'unauthenticated', 'Authentication required.');
     }
-    // An unexpired active session is authoritative: a DIFFERENT instance is
-    // rejected (409, safe waiting); the SAME instance re-registering (lost
-    // response) gets its existing session and epoch back — idempotent, no
-    // fencing ping-pong. A STALE session recovers with a new epoch.
     const row = current.rows[0];
     const lastBeat = row.last_heartbeat_at;
     const sessionLive =
@@ -267,18 +246,46 @@ const pollSchema = z.object({
   limit: z.number().int().min(1).max(10).default(1),
 });
 
+const POLL_RECHECK_MS = 500;
+
+function waitUnlessAborted(ms: number, signal: AbortSignal | undefined): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve(false);
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve(true);
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 export async function pollConnectorCommands(input: {
   token: string;
   connectorSessionId: string;
   leaseEpoch: number;
   waitMs?: number;
   limit?: number;
+  signal?: AbortSignal;
 }): Promise<{ commands: ConnectorCommand[] }> {
-  const input2 = pollSchema.parse(input);
+  const { signal, ...fields } = input;
+  const input2 = pollSchema.parse(fields);
+  const deadline = performance.now() + input2.waitMs;
+  for (;;) {
+    if (signal?.aborted) return { commands: [] };
+    const claimed = await claimConnectorCommands(input2);
+    const remainingMs = deadline - performance.now();
+    if (claimed.commands.length > 0 || remainingMs <= 0) return claimed;
+    if (!(await waitUnlessAborted(Math.min(POLL_RECHECK_MS, remainingMs), signal))) return { commands: [] };
+  }
+}
+
+async function claimConnectorCommands(input2: z.infer<typeof pollSchema>): Promise<{ commands: ConnectorCommand[] }> {
   return (await withHostFence(input2.token, input2.connectorSessionId, input2.leaseEpoch, async ({ client, host }) => {
     await client.query(`UPDATE collab_hosts SET last_heartbeat_at = now(), updated_at = now() WHERE id = $1`, [host.id]);
-    // Atomic claim: pending commands, or claimed ones whose delivery lease
-    // lapsed (re-delivery of the SAME command id, never a new command).
     const { rows } = await client.query(
       `SELECT id, run_id, session_id, kind, payload, created_at, created_by_principal_id FROM collab_connector_commands
        WHERE host_id = $1
@@ -297,9 +304,6 @@ export async function pollConnectorCommands(input: {
     );
     const commands: ConnectorCommand[] = [];
     for (const row of rows) {
-      // Delivery-time recheck: authorization withdrawn while queued (actor
-      // disabled/revoked, mapping/host grant gone) → typed cancellation with
-      // preserved history. Payload is never mutated or rerouted.
       const withdrawn = await commandWithdrawnReason(client, row);
       if (withdrawn !== null) {
         await client.query(
@@ -327,10 +331,6 @@ export async function pollConnectorCommands(input: {
         leaseEpoch: input2.leaseEpoch,
       });
     }
-    // Reporting credentials attach ONLY at delivery — the raw token is never
-    // stored in the command payload. It is deterministically derived from the
-    // server key + session (restart-stable), and re-attached identically on
-    // re-delivery of the SAME command id. create_session gets its own.
     const secret = process.env.FF_COLLAB_AUTH_SECRET;
     for (const command of commands) {
       if (command.sessionId === null) continue;
@@ -377,21 +377,15 @@ export async function ackConnectorCommand(input: {
       [input2.commandId, host.id],
     );
     if (command.rows.length === 0) {
-      // Another host's (or unknown) command is indistinguishable from missing.
       throw new CollabServiceError(404, 'not_found', 'Not found.');
     }
     const commandRow = command.rows[0];
     const terminal = ['applied', 'failed', 'ambiguous'];
     if (terminal.includes(commandRow.state)) {
-      // Terminal replay is idempotent; a DIFFERENT terminal outcome conflicts.
       if (commandRow.state === input2.state) return { state: commandRow.state };
       throw new CollabServiceError(409, 'state_conflict', 'This command already reached a terminal state.');
     }
 
-    // Authorization withdrawal (actor disabled/revoked, mapping/host grant
-    // gone) after queuing: the response reports the RECORDED state — a
-    // claimed-but-unconfirmed command never earns an accepted grant, and an
-    // applied confirmation becomes ambiguous for truthful reconciliation.
     const withdrawn =
       input2.state === 'accepted' || input2.state === 'applied'
         ? await commandWithdrawnReason(client, {
@@ -481,7 +475,6 @@ export async function submitConnectorObservations(input: {
     const projects=await client.query(`SELECT DISTINCT project_id FROM collab_runs WHERE id=ANY($1::uuid[]) AND host_id=$2 ORDER BY project_id`,[input2.events.map(e=>e.runId),host.id]);
     for(const project of projects.rows) await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`board:${project.project_id}`]);
     for (const event of input2.events) {
-      // Every event is bound to a run (and session) owned by THIS host.
       const bound = await client.query(
         `SELECT r.task_id,r.project_id,r.state FROM collab_runs r JOIN collab_tasks t ON t.id=r.task_id
          WHERE r.id = $1 AND r.host_id = $2 FOR UPDATE OF t`,
@@ -521,13 +514,6 @@ export async function submitConnectorObservations(input: {
         ],
       );
       if (inserted.rows.length === 0) {
-        // Replay of an ALREADY-DURABLE event (C resends its pending set after
-        // reconnect until acked): identical binding consumes the pending entry
-        // (accepted) WITHOUT re-projecting. A changed payload or a foreign
-        // binding is rejected so a replay can never smuggle new meaning.
-        // Canonical comparison: jsonb equality ignores key order, so a
-        // structurally identical replay is accepted (consumed) without
-        // re-projection; a changed payload or foreign binding is rejected.
         const existing = await client.query(
           `SELECT 1 FROM collab_connector_observations
            WHERE event_id = $1
@@ -552,8 +538,6 @@ export async function submitConnectorObservations(input: {
         const prior=sessionProjection;
         const late=prior.timeline_epoch===cursor.epoch&&prior.timeline_seq!==null&&BigInt(cursor.seq)<BigInt(prior.timeline_seq);
         const oldEpoch=prior.timeline_epoch!==null&&prior.timeline_epoch!==cursor.epoch&&prior.last_observed_at!==null&&new Date(event.observedAt)<new Date(prior.last_observed_at);
-        // Retain and acknowledge late history without regressing projections.
-        // Distinct fanout events on the SAME cursor remain valid.
         if(late||oldEpoch) continue;
         await client.query(`UPDATE collab_sessions SET timeline_epoch=$1,timeline_seq=$2,
           last_observed_at=GREATEST(last_observed_at,$3::timestamptz),updated_at=now() WHERE id=$4`,[cursor.epoch,cursor.seq,event.observedAt,event.sessionId]);
@@ -562,9 +546,6 @@ export async function submitConnectorObservations(input: {
       const currentState=sessionProjection?.state??bound.rows[0].state;
       if(event.kind==='state'&&['idle','failed','cancelled'].includes(currentState)
         &&typeof event.payload.state==='string'&&event.payload.state!==currentState) {
-        // stopAgent may publish a terminal native event before the executor's
-        // cancellation intent arrives. Retain that late event as history;
-        // only an authorized new prompt can reserve and reopen the session.
         continue;
       }
       if(event.kind==='state'&&event.payload.state==='cancel_requested'&&event.commandId) {
@@ -616,7 +597,6 @@ export async function submitConnectorObservations(input: {
         }
       }
 
-      // Projection: persist observation and state change in one transaction.
       if (event.kind === 'workspace_bound' && typeof event.payload.workspaceId === 'string') {
         await client.query(
           `UPDATE collab_runs SET workspace_id = $1, state = CASE WHEN state = 'queued' THEN 'launching' ELSE state END,
@@ -624,9 +604,6 @@ export async function submitConnectorObservations(input: {
           [event.payload.workspaceId, new Date(event.observedAt), event.runId],
         );
       } else if (event.kind === 'session_bound' && event.sessionId !== null) {
-        // C threads arrive in pieces (agent ID first, providerSessionId later
-        // on thread_started): MERGE partial bindings, never null out a bound
-        // value. Binding alone does not mean running.
         await client.query(
           `UPDATE collab_sessions
            SET paseo_agent_id = COALESCE($1, paseo_agent_id),
@@ -645,23 +622,15 @@ export async function submitConnectorObservations(input: {
         if (allowed.includes(event.payload.state)) {
           const observedAt=new Date(event.observedAt);
           if(event.sessionId!==null) {
-            // Cursor ordering is checked once for every projection above;
-            // uncursored snapshots must not erase that persisted watermark.
             await client.query(`UPDATE collab_sessions SET state=$1,last_observed_at=GREATEST(last_observed_at,$2::timestamptz),updated_at=now() WHERE id=$3`,[event.payload.state,observedAt,event.sessionId]);
           }
           if (event.sessionId === null) {
-            // Run-level state event (no session): apply directly.
             await client.query(
               `UPDATE collab_runs SET state = $1, last_observed_at = $2, updated_at = now() WHERE id = $3`,
               [event.payload.state, observedAt, event.runId],
             );
             continue;
           }
-          // Session-scoped state: the run aggregates CURRENT WORK sessions —
-          // a summary (or second) session going idle never finishes the work.
-          // Run state = truthful aggregate of CURRENT WORK sessions only:
-          // running wins, then needs_input, then cancel_requested; summary
-          // sessions can never finish or steer the primary work.
           const aggregate = await client.query<{ state: string | null }>(
             `SELECT CASE
                WHEN count(*) FILTER (WHERE role = 'work' AND state = 'running') > 0 THEN 'running'
@@ -703,11 +672,6 @@ export async function submitConnectorObservations(input: {
   return { acceptedEventIds: accepted, rejectedEventIds: rejected, highWatermarks };
 }
 
-/**
- * Operator reconciliation for an AMBIGUOUS hold: 'redeliver' re-queues the
- * SAME command (same id/payload/host/session — never a new run; delivery-time
- * authorization is re-checked), 'cancel' closes the hold as cancelled.
- */
 export async function reconcileConnectorCommand(input: {
   actor: { principalId: string; sessionVersion: number }; commandId: string; action: 'redeliver'|'cancel';
 }):Promise<{state:string}> {
@@ -730,8 +694,6 @@ export async function reconcileConnectorCommand(input: {
         await client.query(`UPDATE collab_runs SET state='queued',error_code=NULL,version=version+1,updated_at=now() WHERE id=$1 AND state='reconciling'`,[row.run_id]);
       }
     } else {
-      // Cancelling the delivery request cannot prove a remote native turn
-      // stopped. Keep the uncertainty visible until an observation resolves it.
       await projectCommandOutcome(client,row,'ambiguous','reconciliation_cancelled');
     }
     return {state:next};

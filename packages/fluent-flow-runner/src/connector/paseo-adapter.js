@@ -2,24 +2,6 @@ import { createHash } from 'node:crypto';
 import { sessionUuid, nativeWorkspaceId } from './uuid-v5.js';
 
 /**
- * Paseo lifecycle adapter over the pinned @getpaseo/client 0.12.0 public API.
- *
- * Duplicate-prevention model (no assumed exactly-once create/send):
- * - Explicit stable ids: workspace `wks_<16 hex of run-key hash>` + idempotencyKey
- *   `ff:workspace:<runId>`; agent `sessionUuid(sessionId)` (UUIDv5) +
- *   idempotencyKey `ff:session:<sessionId>`. Agent labels carry task/run/session
- *   metadata; durable bindings, rather than labels, establish ownership.
- * - Workspace and agent are created IDLE first; the binding is journaled
- *   BEFORE the initial prompt leaves the process.
- * - A prompt's daemon message id is the server command id. A lost send
- *   acknowledgment is repaired against the agent timeline (real
- *   FetchAgentTimelineResponse shape): entries scanned for that message id,
- *   `gap`/`staleCursor`/`reset`/`error` make the answer UNKNOWN (hold), never
- *   "absent". Provably absent → send once with the SAME id. Neither →
- *   `ambiguous` reconciliation hold. Never a blind resend.
- * - A Paseo `idle` snapshot is NOT terminal turn evidence; only timeline
- *   turn_completed/turn_failed/turn_canceled drive run state.
- *
  * @param {object} opts
  * @param {import('@getpaseo/client').PaseoClient} opts.paseo - connected client
  * @param {object} opts.journal - durable journal (createJournal({dir}) result)
@@ -83,19 +65,10 @@ export function createPaseoAdapter({ paseo, journal, log = () => {}, now = () =>
         ...(profile.features && Object.keys(profile.features).length ? { featureValues: profile.features } : {}),
       },
       title: title ?? `Fluent Flow session ${sessionId}`,
-      // Deliberately no `prompt`: the agent must exist idle and journaled
-      // before any billable send.
     });
     return { paseoAgentId: handle.id, reused: false };
   }
 
-  /**
-   * Verify whether the prompt with this message id reached the daemon's
-   * timeline, paginating the real FetchAgentTimelineResponse payload in BOTH
-   * directions: start at the tail, then walk OLDER pages before any absence
-   * claim — the initial prompt may sit in history behind a full tail window.
-   * Returns 'present' | 'absent' | null (UNKNOWN: gap/stale/reset/error/transport).
-   */
   async function verifyPromptDelivered(paseoAgentId, messageId) {
     let handle;
     try {
@@ -119,14 +92,12 @@ export function createPaseoAdapter({ paseo, journal, log = () => {}, now = () =>
           (entry.item.messageId === messageId || entry.item.clientMessageId === messageId),
       );
 
-    // Pass 1: from the tail toward newer.
     let cursor;
     let direction = 'tail';
     let sawGap = false;
     for (let page = 0; page < 50; page++) {
       const payload = await scanPage(cursor, direction);
       if (!payload) return null;
-      // Response-level problems make history incomplete: UNKNOWN, never absence.
       if (payload.error || payload.gap || payload.staleCursor || payload.reset) {
         log({ msg: 'timeline verify inconclusive', agentId: paseoAgentId, gap: payload.gap, staleCursor: payload.staleCursor, reset: payload.reset, error: payload.error ?? undefined });
         return null;
@@ -140,7 +111,6 @@ export function createPaseoAdapter({ paseo, journal, log = () => {}, now = () =>
       break;
     }
 
-    // Pass 2: from the oldest cursor we saw toward older history.
     const oldest = await scanPage(undefined, 'before');
     if (!oldest) return null;
     if (oldest.error || oldest.gap || oldest.staleCursor || oldest.reset) {
@@ -178,14 +148,10 @@ export function createPaseoAdapter({ paseo, journal, log = () => {}, now = () =>
       const verdict = await verifyPromptDelivered(paseoAgentId, commandId);
       if (verdict === 'present') return 'applied';
       if (verdict === null) return 'ambiguous';
-      // Provably absent: the recorded send never landed. Send once with the
-      // SAME message id — a daemon-side duplicate would dedupe by id anyway.
     }
     await journal.append({ type: 'sent', commandId, messageId: commandId, at: now() });
     let handle;
     try {
-      // ref() outside the guarded send: an unknown/archived agent is a
-      // DEFINITE failure, safe to report as terminal.
       handle = paseo.agents.ref(paseoAgentId);
       await handle.refresh();
     } catch (err) {
@@ -195,10 +161,6 @@ export function createPaseoAdapter({ paseo, journal, log = () => {}, now = () =>
     try {
       await handle.send(prompt, { messageId: commandId, ...(activeTurnBehavior ? { activeTurnBehavior } : {}) });
     } catch (err) {
-      // The send may or may not have reached the daemon. The 'sent' intent is
-      // durable: recovery redelivery verifies the timeline by message id and
-      // yields ONE prompt or a reconciliation hold — never a terminal failed
-      // state that would invite a duplicate retry of billable work.
       log({ msg: 'prompt send unconfirmed', commandId, agentId: paseoAgentId, error: err.message });
       return 'ambiguous';
     }
@@ -206,9 +168,6 @@ export function createPaseoAdapter({ paseo, journal, log = () => {}, now = () =>
   }
 
   return {
-    /** Native 0.12 snapshots expose lastUsage even when no retained timeline
-     * event carries usage. These are one cumulative sample per agent session,
-     * never a fabricated turn or an inferred sum of cached/input counters. */
     normalizeAgentSnapshot({ runId, sessionId, agentId, snapshot }) {
       const native = snapshot?.lastUsage;
       const counter = (value) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
@@ -223,15 +182,6 @@ export function createPaseoAdapter({ paseo, journal, log = () => {}, now = () =>
       return [{ eventId, runId, sessionId, agentId, observedAt: now(), kind: 'usage', payload }];
     },
 
-    /**
-     * Execute a launch intent end to end. The wire-command intent/digest is
-     * journaled by the EXECUTOR (single authoritative owner); the adapter
-     * assumes it exists. Pass `prompt` only for the deliver stage — the bind
-     * stage creates the idle workspace+agent and journals the binding first.
-     *
-     * Returns {status:'applied'|'ambiguous'|'failed', workspaceId,
-     * paseoAgentId, providerSessionId:null, errorCode?}.
-     */
     async launch(intent) {
       const { commandId, runId, sessionId, repositoryKey, repoPath, branchName, baseRef, title, profileSnapshot, model, prompt, mcpServers, labels } = intent;
       let workspaceId;
@@ -241,8 +191,6 @@ export function createPaseoAdapter({ paseo, journal, log = () => {}, now = () =>
         ({ workspaceId } = await ensureWorkspace({ commandId, runId, sessionId, repoPath, branchName, baseRef, title }));
         ({ paseoAgentId } = await ensureAgent({ commandId, runId, sessionId, workspaceId, profile: profileSnapshot, model, title, mcpServers, labels }));
       } catch (err) {
-        // With a journaled binding the side effects already exist but cannot be
-        // confirmed reachable right now: hold for reconciliation, never relaunch.
         if (binding) {
           return { status: 'ambiguous', workspaceId: binding.workspaceId ?? null, paseoAgentId: binding.paseoAgentId ?? null, providerSessionId: null, errorCode: 'recover_unconfirmed' };
         }
@@ -272,30 +220,18 @@ export function createPaseoAdapter({ paseo, journal, log = () => {}, now = () =>
       return { status: 'applied', workspaceId, paseoAgentId, providerSessionId: null };
     },
 
-    /**
-     * Send a follow-up/steer/interrupt prompt to an existing journaled session.
-     * `activeTurnBehavior` is forwarded verbatim: 'steer' joins the running
-     * turn, 'interrupt' replaces it; omitted lets the daemon decide.
-     */
     async sendPrompt({ commandId, runId, sessionId, paseoAgentId, text, activeTurnBehavior }) {
-      // The wire-command intent is journaled by the executor (single owner).
       const status = await deliverPrompt({ commandId, paseoAgentId, prompt: text, activeTurnBehavior });
       return { status };
     },
 
     /**
-     * Normalize public timeline subscription events (PaseoAgentTimelineEvent:
-     * the agent_stream payload object or the replacement/restored/error
-     * variants) into protocol observations.
-     *
      * @param {{runId: string, sessionId: string, agentId: string, events: Array<object>}} p
      * @returns {Array<{eventId:string, runId:string, sessionId:string, agentId:string, observedAt:string, kind:string, payload:object, providerCursor?:{epoch:string, seq:string}}>}
      */
     normalizeTimelineEvents({ runId, sessionId, agentId, events }) {
       const observations = [];
       for (const payload of events) {
-        // Real subscription delivers {agentId, event, timestamp, seq?, epoch?,
-        // subscriptionId?} — not an {type:'agent_stream'} envelope.
         const event = payload.event;
         if (!event || typeof event !== 'object') continue;
         const seq = payload.seq !== undefined ? String(payload.seq) : null;
@@ -354,7 +290,6 @@ export function createPaseoAdapter({ paseo, journal, log = () => {}, now = () =>
                 permissionKind: event.request.kind,
                 title: event.request.title ?? null,
                 description: event.request.description ?? null,
-                // Safe answer affordances for the dashboard; never credentials.
                 input: sanitizeJson(event.request.input),
                 actions: (event.request.actions ?? []).map((a) => ({ id: a.id, label: a.label, behavior: a.behavior })),
               },
@@ -397,8 +332,6 @@ export function createPaseoAdapter({ paseo, journal, log = () => {}, now = () =>
             break;
           }
           case 'replacement':
-            // Epoch replacement invalidates the cursor; history is preserved
-            // server-side and refetched by the executor's backfill.
             observations.push({ ...base, kind: 'state', payload: { timelineEpochReplaced: { epoch: event.epoch } } });
             break;
           case 'subscription_restored':
@@ -414,12 +347,6 @@ export function createPaseoAdapter({ paseo, journal, log = () => {}, now = () =>
       return observations;
     },
 
-    /**
-     * Create an additional session (work or summary role) inside an existing
-     * journaled run workspace, then deliver its prompt. Reuses the run's
-     * workspace binding instead of creating a new one. The wire-command intent
-     * is journaled by the executor (single digest owner).
-     */
     async createSession({ commandId, runId, sessionId, workspaceId, profile, model, title, prompt, mcpServers, labels, role = 'work', sourceSessionId, sourceCursor }) {
       const { paseoAgentId } = await ensureAgent({ commandId, runId, sessionId, workspaceId, profile, model, title, mcpServers, labels });
       if (!journal.byCommand(commandId)?.binding) {
@@ -447,16 +374,10 @@ export function createPaseoAdapter({ paseo, journal, log = () => {}, now = () =>
       return { status: 'applied', workspaceId, paseoAgentId, providerSessionId: null };
     },
 
-    /** Public handle resolver for control operations (permission answers). */
     resolveAgentHandle(paseoAgentId) {
       return paseo.agents.ref(paseoAgentId);
     },
 
-    /**
-     * Cancel via the supported local CLI `paseo stop` (the public agent handle
-     * has no cancel method). The connector reconciles the observed
-     * turn_canceled event afterwards; this call only requests the interrupt.
-     */
     async cancel({ paseoAgentId, stopCommand }) {
       if (!stopCommand) throw new Error('cancel requires the local paseo stop command');
       await stopCommand(paseoAgentId);
@@ -482,7 +403,6 @@ function normalizeUsage(usage, sampleKey) {
 }
 
 function sanitizeTimelineItem(item) {
-  // Keep client-normalizable content only; provider internals are dropped.
   const { type, text, message, items, name, level } = item;
   if (type === 'todo') return { type, items };
   if (type === 'tool_call') return { type, callId: item.callId, name: item.name, status: item.status, error: item.error ? 'Tool execution failed.' : null, detail: sanitizeJson(item.detail) };
@@ -491,11 +411,6 @@ function sanitizeTimelineItem(item) {
   return { type, name: name ?? null };
 }
 
-/**
- * Bounded JSON-safe copy of permission input metadata: depth/breadth/length
- * caps, credential-named fields stripped, everything else preserved so the
- * dashboard can render the request and answer it.
- */
 const MAX_INPUT_DEPTH = 6;
 const MAX_KEYS_PER_OBJECT = 50;
 const MAX_ARRAY_ITEMS = 100;

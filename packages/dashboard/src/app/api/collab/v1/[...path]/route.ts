@@ -2,22 +2,8 @@ import { signCollaborationActor } from '@fluent-flow/db';
 import { getServerSession } from 'next-auth';
 import { authOptions } from '@/lib/auth';
 
-/**
- * Same-origin browser proxy for the collaboration API.
- *
- * The browser talks to `/api/collab/v1/...` on Next.js; this handler forwards to
- * the Express collaboration prefix with a short-lived HMAC actor assertion. The
- * shared secret and the assertion never reach the browser, and inbound
- * authorization/actor headers are stripped so callers cannot forge identity.
- * The secret is only needed when an actor is signed: protected routes fail
- * authentication before configuration, while public invitation redemption can
- * still be forwarded without one.
- */
-
 const ACTOR_HEADER = 'x-fluent-flow-actor';
-/** Request headers safe to forward unchanged to the collaboration API. */
 const FORWARDED_REQUEST_HEADERS = ['content-type', 'accept', 'idempotency-key', 'last-event-id'] as const;
-/** Response headers that carry meaningful semantics (artifact downloads, SSE, rate limits) and must survive the hop. */
 const FORWARDED_RESPONSE_HEADERS = [
   'content-type',
   'content-disposition',
@@ -45,7 +31,6 @@ function errorResponse(status: number, code: string, message: string): Response 
 }
 
 function logError(event: Record<string, unknown>): void {
-  // Structured server-side log only; never surfaced to the browser.
   console.error(JSON.stringify({ component: 'collab-proxy', ...event }));
 }
 
@@ -54,20 +39,15 @@ async function handle(request: Request, ctx: { params: Promise<{ path: string[] 
   const method = request.method;
   const isMutation = method !== 'GET' && method !== 'HEAD';
 
-  // Every forwarded path must stay under the fixed collab prefix: dot segments
-  // survive encodeURIComponent and fetch-level URL normalization could otherwise
-  // escape into legacy unauthenticated Express routes.
   if (segments.length === 0 || segments.some((s) => s.length === 0 || s === '.' || s === '..')) {
     return errorResponse(400, 'invalid_path', 'Not found.');
   }
 
-  // Cross-origin mutations are rejected before any session or upstream work.
-  // request.url can be rebuilt by the framework with a different host name, so
-  // the verbatim Host header is the site identity the Origin must match.
   if (isMutation) {
     const origin = request.headers.get('origin');
     const host = request.headers.get('host');
-    if (origin && (!host || new URL(origin).host !== host)) {
+    const originHost = origin && URL.canParse(origin) ? new URL(origin).host : null;
+    if (origin && (!host || originHost !== host)) {
       return errorResponse(403, 'cross_origin_forbidden', 'You do not have permission to perform this action.');
     }
   }
@@ -75,8 +55,6 @@ async function handle(request: Request, ctx: { params: Promise<{ path: string[] 
   const session = await getServerSession(authOptions);
   const principalId = session?.user?.principalId;
 
-  // Invitation redemption is the single unauthenticated collaboration mutation
-  // (secret-token bound, rate limited upstream); everything else needs a principal.
   const unauthenticatedAllowed =
     method === 'POST' && segments.length === 2 && segments[0] === 'invitations' && segments[1] === 'accept';
 
@@ -90,8 +68,6 @@ async function handle(request: Request, ctx: { params: Promise<{ path: string[] 
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
-  // Browser-supplied x-forwarded-for is never forwarded: upstream rate limiting
-  // keys on the proxy address plus account/invite identity, not spoofable input.
 
   if (principalId) {
     if (!config.secret) {
@@ -109,9 +85,6 @@ async function handle(request: Request, ctx: { params: Promise<{ path: string[] 
   const encodedPath = segments.map((s) => encodeURIComponent(s)).join('/');
   const upstreamUrl = `${config.baseUrl}/api/collab/v1/${encodedPath}${url.search}`;
 
-  // Browser disconnects must reach the connector-facing upstream: without a
-  // propagated signal an abandoned event stream or slow mutation keeps upstream
-  // work (and connector waits) alive.
   const upstreamSignal = isEventStream
     ? request.signal
     : AbortSignal.any([request.signal, AbortSignal.timeout(30_000)]);
@@ -144,7 +117,6 @@ async function handle(request: Request, ctx: { params: Promise<{ path: string[] 
   if (isEventStream) {
     responseHeaders.set('cache-control', 'no-cache');
   } else if (!responseHeaders.has('cache-control')) {
-    // Collaboration data is session-scoped and mutable; never let it be cached.
     responseHeaders.set('cache-control', 'no-store');
   }
 

@@ -25,11 +25,6 @@ const COMMENT_SELECT = `SELECT c.*, p.display_name AS author_name
   FROM collab_task_comments c
   JOIN collab_principals p ON p.id = c.author_id`;
 
-/**
- * Add a comment. client visibility needs only comment.write; INTERNAL
- * visibility additionally requires internal.read (a collaborator must not
- * publish — or later read — internal discussion).
- */
 export async function createCollabComment(input: {
   actor: { principalId: string; sessionVersion: number };
   taskId: string;
@@ -65,7 +60,6 @@ export async function createCollabComment(input: {
   });
 }
 
-/** Client-safe projection: internal comments are absent, never redacted. */
 export async function listCollabComments(input: {
   actor: { principalId: string; sessionVersion: number };
   taskId: string;
