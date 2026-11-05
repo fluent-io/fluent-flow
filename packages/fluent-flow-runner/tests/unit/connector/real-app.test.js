@@ -376,7 +376,7 @@ it('retains confirmed archive HEAD as historical across sampling and runtime res
   const recovered = await runtime.sampleGit(binding);
   expect(recovered).toMatchObject({ eventId: archived.eventId, observedAt: archived.observedAt, payload: archived.payload });
   running = runtime.start();
-  await until(() => runtime.loop.pendingObservationIds.length === 0);
+  await until(async () => (await db.getPool().query("SELECT 1 FROM collab_connector_observations WHERE run_id=$1 AND kind='state' AND payload->>'workspaceState'='archived'", [binding.runId])).rows.length === 1);
   const review = await request('GET', `/tasks/${task.data.id}/delivery-review`);
   expect(review.status).toBe(200);
   expect(review.data).toMatchObject({ headCommit: head, dirty: false });
