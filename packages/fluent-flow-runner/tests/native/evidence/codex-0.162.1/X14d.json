@@ -1,0 +1,8 @@
+{
+  "heldMs": 360000,
+  "answerOutcome": {
+    "state": "dispatched"
+  },
+  "turnStatus": "completed",
+  "answerReachedModel": true
+}

@@ -61,3 +61,6 @@ For local browser/UAT fixtures run `node scripts/collab-fixture.mjs
 
 Collaboration schema is additive-only (`collab_*` tables; migrations
 `0010`+ forward-only, journal entries appended under `src/migrations/meta`).
+`0022_collab_native_execution` adds only the unused-by-legacy side tables
+`collab_run_execution` and `collab_session_execution` (no foreign keys, no
+change to existing tables); see `src/collaboration/execution.ts`.

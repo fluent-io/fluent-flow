@@ -1,0 +1,86 @@
+{
+  "initialize": {
+    "keys": [
+      "commands",
+      "agents",
+      "output_style",
+      "available_output_styles",
+      "user_output_styles_dir",
+      "models",
+      "account",
+      "pid",
+      "claude_code_version",
+      "current_permission_mode",
+      "hook_on_failure_supported",
+      "feedback_mode",
+      "analytics_disabled",
+      "remote_control_auto_enable",
+      "remote_control_auto_connect_default",
+      "remote_control_available",
+      "remote_control_auto_on_by_default",
+      "ide_rc_auto_enable_gate",
+      "fast_mode_state",
+      "fast_mode_disabled_reason",
+      "session_state",
+      "capabilities"
+    ]
+  },
+  "systemInit": {
+    "type": "system",
+    "subtype": "init",
+    "cwd": "<probe-root>/repo",
+    "session_id": "9333da6a-ea94-4186-a1b1-a16ee5acbdf1",
+    "mcp_servers": [
+      {
+        "name": "ff_reporting",
+        "status": "connected",
+        "source": "dynamic"
+      }
+    ],
+    "model": "ff-probe-model",
+    "permissionMode": "default",
+    "terminal_slash_commands": [
+      "doctor",
+      "color",
+      "focus",
+      "reload-plugins"
+    ],
+    "apiKeySource": "ANTHROPIC_API_KEY",
+    "claude_code_version": "2.1.317",
+    "output_style": "default",
+    "capabilities": [
+      "interrupt_receipt_v1",
+      "interrupt_cancel_queued_v1",
+      "interrupt_send_now_v1",
+      "interrupt_requeue_taken_v1",
+      "msg_lifecycle_v1",
+      "request_marker_lists_v1",
+      "ask_user_question_unanswered_v1",
+      "lifecycle_wakeup_source_v1",
+      "sdk_mcp_tools_list_changed",
+      "sdk_mcp_manifests",
+      "mcp_read_resource_v1",
+      "mcp_tool_ui_meta_v1",
+      "ui_surface_v1",
+      "mcp_call_result_not_for_model_v1"
+    ],
+    "analytics_disabled": true,
+    "product_feedback_disabled": true,
+    "uuid": "bb34634b-7723-4828-83d7-4ff7154316d5",
+    "memory_paths": {
+      "auto": "<probe-root>/context/projects/-tmp-ff-native-claude-code-ZDaF74-repo/memory/"
+    },
+    "original_cwd": "<probe-root>/repo",
+    "additional_directories": [],
+    "messaging_socket_path": "<socket>",
+    "fast_mode_state": "off",
+    "fast_mode_disabled_reason": "sdk_opt_in_required",
+    "per_turn_effort_active": false,
+    "ultrathink_available": false,
+    "ultrathink_typed_raises": false,
+    "view_mode": "default",
+    "user_message_uuids": [
+      "902fc2cf-71c7-4f2e-afc8-48d52cc52264"
+    ]
+  }
+}

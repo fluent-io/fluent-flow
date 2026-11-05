@@ -7,13 +7,16 @@ import { Input } from '@/components/ui/input';
 import { collabFetch, collabFetchAll, ApiError } from '@/lib/collab/api';
 import { LatestRequest } from '@/lib/collab/live';
 import { capabilitiesFor, useMe, workspaceCapabilitiesFor } from '@/lib/collab/use-me';
+import { BACKEND_LABELS, READINESS_COPY, capacityText } from '@/lib/collab/execution-copy';
 import type {
+  ExecutionBackend,
   Host,
   CreatedExecutionHost,
   HostCatalog,
   InsightsResponse,
   Invitation,
   Mapping,
+  MappingProfile,
   Member,
   MeResponse,
   Project,
@@ -763,9 +766,12 @@ function MappingsPanel({ project, mappings, hosts, onChanged }: { project: Proje
           </li>
         ))}
         {mappings.map((m) => (
-          <li key={m.id} className="flex items-center justify-between rounded border border-border bg-background px-2.5 py-1.5">
-            <span className="font-mono text-xs">{m.repositoryKey}</span>
-            <span className="text-xs text-muted-foreground">host {m.hostId.slice(0, 8)}</span>
+          <li key={m.id} className="rounded border border-border bg-background px-2.5 py-1.5">
+            <div className="flex items-center justify-between">
+              <span className="font-mono text-xs">{m.repositoryKey}</span>
+              <span className="text-xs text-muted-foreground">host {m.hostName ?? m.hostId.slice(0, 8)}</span>
+            </div>
+            <ProfileReadinessList mapping={m} />
           </li>
         ))}
       </ul>
@@ -790,10 +796,13 @@ function MappingsPanel({ project, mappings, hosts, onChanged }: { project: Proje
           <Input className="h-8 w-56 text-xs" placeholder="default profile ID" value={defaultProfileId} onChange={(e) => setDefaultProfileId(e.target.value)} />
         </div>
         {catalog ? (
-          <p className="text-xs text-muted-foreground">
-            Host catalog: {catalog.repositories.map((r) => r.key).join(', ') || 'no repositories yet'} · profiles:{' '}
-            {catalog.profiles.map((p) => p.id).join(', ') || 'none'}
-          </p>
+          <div className="text-xs text-muted-foreground">
+            <p>
+              Host catalog: {catalog.repositories.map((r) => r.key).join(', ') || 'no repositories yet'} · profiles:{' '}
+              {catalog.profiles.map((p) => p.id).join(', ') || 'none'}
+            </p>
+            <ProfileReadinessList mapping={catalog} />
+          </div>
         ) : null}
         <Button size="sm" type="submit" disabled={busy} className="self-start">
           Add mapping
@@ -834,19 +843,60 @@ function InsightsPanel({ projectId }: { projectId: string }) {
           <div>Failed runs: <span className="text-foreground">{insights.runs.failedCount}</span></div>
           <div className="col-span-2">
             Token usage:{' '}
-            {insights.usage.available ? (
-              <span className="text-foreground">
-                in {insights.usage.tokensIn ?? '—'} / out {insights.usage.tokensOut ?? '—'}
-                {insights.usage.costUsd !== null ? ` · $${insights.usage.costUsd}` : ' · cost not reported by provider'}
-                {insights.usage.reason?<span className="block text-muted-foreground">{insights.usage.reason}</span>:null}
-                {insights.usage.coverage?<span className="block text-muted-foreground">Coverage: input {insights.usage.coverage.tokensIn}/{insights.usage.coverage.samples}, output {insights.usage.coverage.tokensOut}/{insights.usage.coverage.samples}, cost {insights.usage.coverage.costUsd}/{insights.usage.coverage.samples} samples</span>:null}
-              </span>
-            ) : (
-              <span>not available from this provider{insights.usage.reason ? ` (${insights.usage.reason})` : ''}</span>
-            )}
+            <UsageSummary usage={insights.usage} />
           </div>
         </dl>
       ) : null}
     </section>
+  );
+}
+
+export function ProfileReadinessList({ mapping }: { mapping: Pick<Mapping, 'profiles' | 'capacity'> }) {
+  const groups = new Map<ExecutionBackend, MappingProfile[]>();
+  for (const profile of mapping.profiles ?? []) {
+    const backend = profile.backend ?? 'paseo';
+    groups.set(backend, [...(groups.get(backend) ?? []), profile]);
+  }
+  if (groups.size === 0) return null;
+  return (
+    <div className="mt-1 flex flex-col gap-2">
+      {[...groups].map(([backend, profiles]) => {
+        const capacity = backend === 'paseo' ? null : mapping.capacity?.[backend] ?? null;
+        return (
+          <div key={backend} data-backend={backend} className="rounded border border-border/60 px-2 py-1.5">
+            <div className="flex items-center justify-between text-xs font-medium">
+              <span>{BACKEND_LABELS[backend]}</span>
+              {capacity ? <span className="font-normal text-muted-foreground">{capacityText(capacity)}</span> : null}
+            </div>
+            <ul className="mt-1 flex flex-col gap-1">
+              {profiles.map((profile) => {
+                const copy = profile.readiness ? READINESS_COPY[profile.readiness.state] : null;
+                return (
+                  <li key={profile.id} data-profile-id={profile.id} className="text-xs">
+                    <span>{profile.name}</span>
+                    {profile.model ? <span className="text-muted-foreground"> · {profile.model}</span> : null}
+                    {copy ? <span className={copy.message ? 'text-amber-600' : 'text-muted-foreground'}> · {copy.label}</span> : null}
+                    {copy?.message ? <span className="block text-muted-foreground">{copy.message}</span> : null}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+const usageValue = (value: number | null) => (value === null ? 'Unavailable' : String(value));
+
+export function UsageSummary({ usage }: { usage: InsightsResponse['usage'] }) {
+  if (!usage.available) return <span>Unavailable</span>;
+  return (
+    <span className="text-foreground">
+      in {usageValue(usage.tokensIn)} / out {usageValue(usage.tokensOut)}
+      {' · '}Estimated cost: {usage.costUsd === null ? 'Unavailable' : `$${usage.costUsd}`}
+      {usage.coverage ? <span className="block text-muted-foreground">Coverage: input {usage.coverage.tokensIn}/{usage.coverage.samples}, output {usage.coverage.tokensOut}/{usage.coverage.samples}, cost {usage.coverage.costUsd}/{usage.coverage.samples} samples</span> : null}
+    </span>
   );
 }

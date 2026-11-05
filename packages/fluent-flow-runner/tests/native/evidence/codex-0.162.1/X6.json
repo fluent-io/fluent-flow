@@ -1,0 +1,44 @@
+{
+  "approval": {
+    "id": 0,
+    "method": "item/commandExecution/requestApproval",
+    "params": {
+      "kind": "command",
+      "threadId": "01a1a98b-bee7-7830-95b9-54b4ec5038d9",
+      "turnId": "01a1a98b-bf18-76f0-b688-8944273c1ed3",
+      "itemId": "call_resp_0_0",
+      "startedAtMs": 1793845870425,
+      "environmentId": "local",
+      "reason": "probe",
+      "command": "/bin/bash -lc 'touch <probe-root>/repo/x6-marker'",
+      "cwd": "<probe-root>/repo",
+      "commandActions": [
+        {
+          "type": "unknown",
+          "command": "touch <probe-root>/repo/x6-marker"
+        }
+      ],
+      "proposedExecpolicyAmendment": [
+        "touch",
+        "<probe-root>/repo/x6-marker"
+      ],
+      "availableDecisions": [
+        "accept",
+        {
+          "acceptWithExecpolicyAmendment": {
+            "execpolicy_amendment": [
+              "touch",
+              "<probe-root>/repo/x6-marker"
+            ]
+          }
+        },
+        "cancel"
+      ]
+    }
+  },
+  "resolved": {
+    "threadId": "01a1a98b-bee7-7830-95b9-54b4ec5038d9",
+    "requestId": 0
+  },
+  "turnStatus": "completed"
+}

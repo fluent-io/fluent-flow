@@ -108,6 +108,7 @@ describe('A3 protocol over real HTTP (run start, connector loop, host truth)', (
       server = app.listen(0, '127.0.0.1', resolve);
     });
     baseUrl = `http://127.0.0.1:${server.address().port}`;
+
     const enrollActor = async (name, email, capabilities) => {
       const db = await import('@fluent-flow/db');
       const role = await db.createWorkspaceRole({ actor: { principalId: manager.id, sessionVersion: manager.sessionVersion }, workspaceId: ws.id, name, capabilities });
@@ -120,7 +121,6 @@ describe('A3 protocol over real HTTP (run start, connector loop, host truth)', (
     startOnly = startActor.principal;
     startOnlyRoleId = startActor.roleId;
     internalStarter = (await enrollActor('internal-starter', 'internal-actor@example.test', ['task.read', 'run.start', 'internal.read'])).principal;
-
 
     const registered = await connectorCall('POST', '/register', {
       instanceId: 'proto-1',
@@ -626,7 +626,7 @@ describe('A3 protocol over real HTTP (run start, connector loop, host truth)', (
     expect(duplicateCounts.rows[0]).toEqual({ sessions: 1, commands: 1 });
   });
 
-  it('keeps observed cancellation terminal when a late cancellation intent arrives and resumes only on an explicit prompt', async () => {
+  it('keeps observed cancellation terminal when a late cancellation intent arrives and resumes only on an explicit prompt',async()=>{
     const created=await collab('POST',`/projects/${projectId}/tasks`,{actor:manager,body:{title:'Native cancellation race'}});
     const started=await collab('POST',`/tasks/${created.body.data.id}/runs`,{actor:manager,headers:{'idempotency-key':'native-cancel-race-start'},body:{expectedVersion:created.body.data.version}});
     expect(started.status).toBe(202);

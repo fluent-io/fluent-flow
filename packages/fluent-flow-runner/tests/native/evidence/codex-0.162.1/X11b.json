@@ -1,0 +1,24 @@
+{
+  "policyOutcomes": {
+    "untrusted": {
+      "reporting": "asks"
+    },
+    "never": {
+      "reporting": "refused"
+    }
+  },
+  "details": {
+    "untrusted": {
+      "asked": 1,
+      "executed": 1,
+      "turnStatus": "completed",
+      "otherServerRequests": []
+    },
+    "never": {
+      "asked": 0,
+      "executed": 0,
+      "turnStatus": "completed",
+      "otherServerRequests": []
+    }
+  }
+}

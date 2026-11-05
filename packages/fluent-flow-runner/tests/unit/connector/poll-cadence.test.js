@@ -66,9 +66,9 @@ function observation(id) {
 }
 
 let loops = [];
-function build(client, intervals = {}) {
+function build(client, intervals = {}, capacity = undefined) {
   const loop = createConnectorLoop({
-    client, executor, journal, catalog: {}, instanceId: 'pc', sdkVersion: 'test', daemonVersion: 'test',
+    client, executor, journal, catalog: {}, instanceId: 'pc', sdkVersion: 'test', daemonVersion: 'test', capacity,
     intervals: { heartbeatIntervalMs: 15_000, baseBackoffMs: 200, maxBackoffMs: 1_000, ...intervals },
   });
   loops.push(loop);
@@ -173,6 +173,39 @@ describe('connector poll cadence', () => {
     expect(performance.now() - stoppedAt).toBeLessThan(100);
   });
 
+  it('a freed slot aborts a held poll and re-polls with the new availability after the 1-second floor', async () => {
+    const free = { 'claude-code': 1, codex: 0 };
+    const reserves = [];
+    const releases = [];
+    const capacity = {
+      async reserve() {
+        const granted = { ...free };
+        free['claude-code'] = 0;
+        free.codex = 0;
+        reserves.push({ at: performance.now(), granted });
+        return { availableSlots: granted, grantId: `g-${reserves.length}`, heldBatches: [] };
+      },
+      async release(unused) { releases.push(unused); },
+    };
+    const { client, calls } = fakeClient({ poll: async (_n, signal) => { await abortable(25_000, signal); return { commands: [] }; } });
+    const loop = build(client, {}, capacity);
+    const running = loop.start();
+    await sleep(300);
+    expect(calls.polls).toHaveLength(1);
+    expect(calls.polls[0].body.availableSlots).toEqual({ 'claude-code': 1, codex: 0 });
+    free.codex = 1;
+    await sleep(1500);
+    loop.stop();
+    await running;
+    expect(calls.polls.length).toBeGreaterThanOrEqual(2);
+    const [held, next] = calls.polls;
+    expect(held.endedAt - held.startedAt).toBeLessThan(1600);
+    expect(next.body.availableSlots).toEqual({ 'claude-code': 0, codex: 1 });
+    expect(next.startedAt - held.startedAt).toBeGreaterThanOrEqual(1000);
+    expect(next.startedAt - held.startedAt).toBeLessThan(1600);
+    expect(releases.every((unused) => !unused['claude-code'])).toBe(true);
+  });
+
   it('observations queued during an in-flight flush follow it without overlapping', async () => {
     const { client, calls } = fakeClient({
       poll: async (_n, signal) => { await abortable(25_000, signal); return { commands: [] }; },
@@ -189,5 +222,110 @@ describe('connector poll cadence', () => {
     await running;
     expect(calls.maxObserveInFlight).toBe(1);
     expect(calls.observes.map((o) => o.eventIds)).toEqual([['a'], ['b']]);
+  });
+
+  function grantModel(free) {
+    const batches = new Map();
+    const releases = [];
+    let seq = 0;
+    const total = (k) => [...batches.values()].reduce((n, b) => n + b.counts[k], 0);
+    return {
+      batches,
+      releases,
+      free,
+      total,
+      capacity: {
+        async reserve({ notAfter } = {}) {
+          const heldBatches = [...batches.entries()].filter(([, b]) => total && (b.counts['claude-code'] || b.counts.codex)).map(([grantId, b]) => ({ grantId, counts: { ...b.counts }, notAfter: b.notAfter }));
+          const availableSlots = { ...free };
+          for (const k of Object.keys(free)) free[k] = 0;
+          const grantId = `g${++seq}`;
+          batches.set(grantId, { counts: { ...availableSlots }, notAfter: notAfter ?? null });
+          return { availableSlots, grantId, heldBatches };
+        },
+        async release({ grantId, unused }) {
+          releases.push({ grantId, unused });
+          const b = batches.get(grantId);
+          for (const k of Object.keys(unused)) { const n = Math.min(unused[k], b?.counts[k] ?? 0); if (b) b.counts[k] -= n; free[k] += n; }
+        },
+      },
+      consume(backend) {
+        for (const b of batches.values()) if (b.counts[backend] > 0) { b.counts[backend] -= 1; return true; }
+        return false;
+      },
+    };
+  }
+  const T0 = Date.parse('2026-11-05T12:00:00.000Z');
+  const at = (ms) => new Date(T0 + ms).toISOString();
+  const withClock = (client, serverTime = at(0)) => Object.assign(client, { register: async () => ({ connectorSessionId: 'cs-1', leaseEpoch: 1, serverTime }) });
+
+  it('a lost poll keeps its grants while the server still reports them claimed', async () => {
+    const model = grantModel({ 'claude-code': 0, codex: 1 });
+    let held = 1;
+    let serverMs = 0;
+    const { client, calls } = fakeClient({ poll: async (n) => {
+      if (n === 1) throw new Error('Poll request failed: socket hang up');
+      serverMs += 60_000;
+      return { commands: [], heldClaims: { 'claude-code': 0, codex: held }, serverTime: at(serverMs) };
+    } });
+    const loop = build(withClock(client), { baseBackoffMs: 20, maxBackoffMs: 20, minIdlePollCycleMs: 20 }, model.capacity);
+    const running = loop.start();
+    await sleep(400);
+    expect(calls.polls.length).toBeGreaterThan(4);
+    expect(model.total('codex')).toBe(1);
+    expect(model.releases.some((r) => r.unused.codex > 0)).toBe(false);
+    held = 0;
+    const settledAt = model.releases.length;
+    await sleep(150);
+    loop.stop();
+    await running;
+    expect(model.releases.slice(settledAt).find((r) => r.unused.codex > 0)).toEqual({ grantId: 'g1', unused: { 'claude-code': 0, codex: 1 } });
+    expect(model.total('codex') + model.free.codex).toBe(1);
+  });
+
+  it('a held claim redelivered in a limited batch uses its grant, and an omitted one keeps its own', async () => {
+    const model = grantModel({ 'claude-code': 0, codex: 2 });
+    const launchOf = (id) => ({ id, runId: `run-${id}`, sessionId: `s-${id}`, kind: 'launch', payload: { execution: { backend: 'codex' } }, leaseEpoch: 1, slotHeld: true });
+    const { client } = fakeClient({ poll: async (n) => {
+      if (n === 1) throw new Error('Poll request failed: socket hang up');
+      if (n === 2) return { commands: [launchOf('a')], heldClaims: { 'claude-code': 0, codex: 1 }, serverTime: at(60_000) };
+      if (n === 3) return { commands: [launchOf('b')], heldClaims: { 'claude-code': 0, codex: 0 }, serverTime: at(120_000) };
+      return { commands: [], heldClaims: { 'claude-code': 0, codex: 0 }, serverTime: at(180_000) };
+    } });
+    const executed = [];
+    const consuming = { execute: async (command) => { executed.push([command.id, model.total('codex')]); model.consume('codex'); return { state: 'accepted', stage: 'other', result: {}, observations: [] }; } };
+    const loop = createConnectorLoop({ client: withClock(client), executor: consuming, journal, catalog: {}, instanceId: 'pc', sdkVersion: 'test', daemonVersion: 'test', capacity: model.capacity,
+      intervals: { heartbeatIntervalMs: 15_000, baseBackoffMs: 20, maxBackoffMs: 20, minIdlePollCycleMs: 20 } });
+    loops.push(loop);
+    const running = loop.start();
+    await sleep(300);
+    loop.stop();
+    await running;
+    expect(executed).toEqual([['a', 2], ['b', 1]]);
+    expect(model.releases.some((r) => r.unused.codex > 0)).toBe(false);
+    expect(model.total('codex')).toBe(0);
+  });
+
+  it("a lost poll's grant is released only after an answer's server time passes that poll's own deadline", async () => {
+    const model = grantModel({ 'claude-code': 0, codex: 1 });
+    let serverMs = 1_000;
+    const { client, calls } = fakeClient({ poll: async (n) => {
+      if (n === 1) throw new Error('Poll request failed: socket hang up');
+      return { commands: [], heldClaims: { 'claude-code': 0, codex: 0 }, serverTime: at(serverMs) };
+    } });
+    const loop = build(withClock(client), { baseBackoffMs: 20, maxBackoffMs: 20, minIdlePollCycleMs: 20 }, model.capacity);
+    const running = loop.start();
+    await sleep(250);
+    const deadline = calls.polls[0].body.notAfter;
+    expect(Date.parse(deadline)).toBeGreaterThan(T0 + 25_000);
+    expect(calls.polls.length).toBeGreaterThan(3);
+    expect(model.total('codex')).toBe(1);
+    expect(model.releases.some((r) => r.grantId === 'g1')).toBe(false);
+    serverMs = Date.parse(deadline) - T0 + 1;
+    await sleep(150);
+    loop.stop();
+    await running;
+    expect(model.releases.find((r) => r.grantId === 'g1')).toEqual({ grantId: 'g1', unused: { 'claude-code': 0, codex: 1 } });
+    expect(calls.polls.every((p) => typeof p.body.notAfter === 'string')).toBe(true);
   });
 });

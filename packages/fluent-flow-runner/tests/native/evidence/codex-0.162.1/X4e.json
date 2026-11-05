@@ -1,0 +1,49 @@
+{
+  "layers": [
+    {
+      "type": "sessionFlags",
+      "disabledReason": "<absent: enabled>",
+      "keys": [
+        "analytics",
+        "check_for_update_on_startup",
+        "features",
+        "feedback",
+        "mcp_servers",
+        "model_provider",
+        "model_providers"
+      ],
+      "mcpServers": [
+        "ff_reporting"
+      ]
+    },
+    {
+      "type": "project",
+      "disabledReason": "To load project-local config, hooks, and exec policies, add <probe-root>/repo as a trusted project in <probe-root>/context/config.toml.",
+      "keys": [
+        "mcp_servers",
+        "model"
+      ],
+      "mcpServers": [
+        "ff_planted_codex_toml"
+      ]
+    },
+    {
+      "type": "user",
+      "disabledReason": "<absent: enabled>",
+      "keys": [],
+      "mcpServers": []
+    },
+    {
+      "type": "system",
+      "disabledReason": "<absent: enabled>",
+      "keys": [],
+      "mcpServers": []
+    }
+  ],
+  "resumedCwdIsWorktreeRealpath": true,
+  "modelRequests": 0,
+  "serverRequests": 0,
+  "plantedStatuses": [],
+  "plantedHits": [],
+  "contextConfigUnchanged": true
+}

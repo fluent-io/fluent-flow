@@ -1,0 +1,163 @@
+{
+  "unexpected": [],
+  "counts": [
+    {
+      "id": "C2",
+      "actual": 1,
+      "expected": 1
+    },
+    {
+      "id": "C3",
+      "actual": 1,
+      "expected": 1
+    },
+    {
+      "id": "C4",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "C5",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "C6",
+      "actual": 3,
+      "expected": 3
+    },
+    {
+      "id": "C7",
+      "actual": 1,
+      "expected": 1
+    },
+    {
+      "id": "C8",
+      "actual": 1,
+      "expected": 1
+    },
+    {
+      "id": "C9",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "C10",
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "id": "C12",
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "id": "C12-dup",
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "id": "C13-acceptEdits",
+      "actual": 4,
+      "expected": 4
+    },
+    {
+      "id": "C13-auto",
+      "actual": 4,
+      "expected": 4
+    },
+    {
+      "id": "C13-bypassPermissions",
+      "actual": 4,
+      "expected": 4
+    },
+    {
+      "id": "C13-manual",
+      "actual": 4,
+      "expected": 4
+    },
+    {
+      "id": "C13-dontAsk",
+      "actual": 4,
+      "expected": 4
+    },
+    {
+      "id": "C13-plan",
+      "actual": 4,
+      "expected": 4
+    }
+  ],
+  "proxyAttempts": [],
+  "transcriptUnderContext": true,
+  "derivedProjectDir": "-tmp-ff-native-claude-code-ZDaF74-repo",
+  "sessions": [
+    {
+      "sessionId": "9333da6a-ea94-4186-a1b1-a16ee5acbdf1",
+      "resume": false
+    },
+    {
+      "sessionId": "292c1e00-cd89-4cae-9fb7-6d1382879559",
+      "resume": false
+    },
+    {
+      "sessionId": "537d51e7-40fe-434e-9cf5-30ffdb8e217d",
+      "resume": false
+    },
+    {
+      "sessionId": "184cccb0-ea4b-4917-910a-057c7aeed9ca",
+      "resume": false
+    },
+    {
+      "sessionId": "731e9c7f-a6f9-42ef-869c-cff6d89313bb",
+      "resume": false
+    },
+    {
+      "sessionId": "bd5aa8e0-0db6-4e53-93ff-f3dd4bcb0ca2",
+      "resume": false
+    },
+    {
+      "sessionId": "cd2e73c9-350d-4324-8969-e615bca3c139",
+      "resume": false
+    },
+    {
+      "sessionId": "44b0caf8-91df-4d6c-9cbf-f7ef40fe1499",
+      "resume": false
+    },
+    {
+      "sessionId": "44b0caf8-91df-4d6c-9cbf-f7ef40fe1499",
+      "resume": true
+    },
+    {
+      "sessionId": "f7e4e0c4-2354-4e81-832a-c46825eb4579",
+      "resume": true
+    },
+    {
+      "sessionId": "9333da6a-ea94-4186-a1b1-a16ee5acbdf1",
+      "resume": false
+    },
+    {
+      "sessionId": "93e5b922-dd8d-44bf-bbb6-250e24de0719",
+      "resume": false
+    },
+    {
+      "sessionId": "0bf69e1a-b522-44c3-9d10-2b91787b204e",
+      "resume": false
+    },
+    {
+      "sessionId": "ac596d07-60b4-455d-b03f-f456d40153cf",
+      "resume": false
+    },
+    {
+      "sessionId": "9aace208-58b2-4294-b6da-882acaa1d105",
+      "resume": false
+    },
+    {
+      "sessionId": "ee6c1c83-d642-45fd-ae4c-294c22a2cdd2",
+      "resume": false
+    },
+    {
+      "sessionId": "401779fb-8a23-426a-9d1f-106930308275",
+      "resume": false
+    }
+  ]
+}

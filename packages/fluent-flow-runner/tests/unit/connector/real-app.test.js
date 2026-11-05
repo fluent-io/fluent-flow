@@ -36,6 +36,7 @@ const daemonHome = join(temp, 'private-paseo-home');
 const sourceRoot = join(temp, 'private-source-root');
 const daemonCredential = 'native-local-password-fixture-0123456789';
 const observationBodies = [];
+let dropFromNextObservation = null;
 
 async function until(predicate) {
   for (let count = 0; count < 500; count++) { if (await predicate()) return; await new Promise((resolve) => setTimeout(resolve, 10)); }
@@ -48,7 +49,12 @@ async function request(method, path, body, key) {
 }
 async function makeRuntime() {
   const client = createConnectorClient({ serverUrl: base, token: host.token, fetch: async (url, options) => {
-    const body = JSON.parse(options.body);
+    let body = JSON.parse(options.body);
+    if (url.endsWith('/observations') && dropFromNextObservation && body.events.some((e) => e.eventId === dropFromNextObservation)) {
+      body = { ...body, events: body.events.filter((e) => e.eventId !== dropFromNextObservation) };
+      options = { ...options, body: JSON.stringify(body) };
+      dropFromNextObservation = null;
+    }
     if (url.endsWith('/observations')) observationBodies.push(body);
     capturedFences.push({ path: new URL(url).pathname, connectorSessionId: body.connectorSessionId, leaseEpoch: body.leaseEpoch });
     if (url.includes('/ack') && body.state === 'accepted' && revokeNextAccepted) {
@@ -378,3 +384,69 @@ it('retains confirmed archive HEAD as historical across sampling and runtime res
   expect(historical.rows).toHaveLength(1);
   expect(historical.rows[0].payload).toMatchObject({ headCommit: head, dirty: false, historical: true });
 }, 15_000);
+
+it('a native observation over 1 MiB crosses the actual HTTP app in fragments and reads back exactly once', async () => {
+  const { sessionId } = lastBinding;
+  const text = '界🎉 native output '.repeat(70_000);
+  const eventId = `codex:${sessionId}:1:item:big:completed`;
+  const observation = { eventId, runId: lastRunId, sessionId, observedAt: new Date().toISOString(), kind: 'timeline', payload: { phase: 'completed', item: { type: 'agentMessage', id: 'big', text }, source: { backend: 'codex', generation: 1, nativeEventId: 'item:big:completed', seq: 1 } } };
+  expect(Buffer.byteLength(JSON.stringify(observation), 'utf8')).toBeGreaterThan(1024 * 1024);
+  const sentBefore = observationBodies.length;
+  await runtime.journal.append({ type: 'observation', ...observation, at: observation.observedAt });
+  runtime.loop.enqueueObservations([observation]);
+  await until(async () => (await db.getPool().query('SELECT 1 FROM collab_connector_observations WHERE event_id=$1', [eventId])).rows.length === 1);
+  await until(() => !runtime.journal.pendingObservationIds().includes(eventId));
+  const sent = observationBodies.slice(sentBefore).flatMap((body) => body.events).filter((event) => event.eventId.startsWith(eventId));
+  expect(sent.length).toBeGreaterThan(1);
+  expect(sent.every((event) => event.eventId !== eventId)).toBe(true);
+  expect(observationBodies.slice(sentBefore).every((body) => Buffer.byteLength(JSON.stringify(body.events), 'utf8') <= 1024 * 1024)).toBe(true);
+  let entries = [];
+  let cursor = null;
+  for (;;) {
+    const response = await fetch(`${base}/api/collab/v1/sessions/${sessionId}/timeline?limit=200${cursor ? `&cursor=${cursor}` : ''}`, { headers: { 'x-fluent-flow-actor': db.signCollaborationActor(actor, process.env.FF_COLLAB_AUTH_SECRET) } });
+    expect(response.status).toBe(200);
+    const page = await response.json();
+    entries = entries.concat(page.data);
+    if (!page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+  const matching = entries.filter((entry) => entry.eventId.startsWith(eventId));
+  expect(matching.map((entry) => entry.eventId)).toEqual([eventId]);
+  expect(matching[0].payload.item.text).toBe(text);
+}, 30_000);
+
+it('a native original whose final fragment is lost once still precedes its following event through actual HTTP/PG history', async () => {
+  const { sessionId } = lastBinding;
+  const text = '界🎉 lost final fragment '.repeat(70_000);
+  const eventId = `codex:${sessionId}:1:item:lost-final:completed`;
+  const followingId = `codex:${sessionId}:1:item:lost-final-after:completed`;
+  const observedAt = new Date().toISOString();
+  const original = { eventId, runId: lastRunId, sessionId, observedAt, kind: 'timeline', payload: { phase: 'completed', item: { type: 'agentMessage', id: 'lf', text }, source: { backend: 'codex', generation: 1, nativeEventId: 'item:lost-final:completed', seq: 101 } } };
+  const following = { eventId: followingId, runId: lastRunId, sessionId, observedAt, kind: 'timeline', payload: { phase: 'completed', item: { type: 'agentMessage', id: 'lfa', text: 'after the lost fragment' }, source: { backend: 'codex', generation: 1, nativeEventId: 'item:lost-final-after:completed', seq: 102 } } };
+  const count = Math.ceil(Buffer.byteLength(JSON.stringify(original.payload), 'utf8') / (300 * 1024));
+  dropFromNextObservation = `${eventId}#f${count - 1}/${count}`;
+  const sentBefore = observationBodies.length;
+  for (const o of [original, following]) await runtime.journal.append({ type: 'observation', ...o, at: o.observedAt });
+  runtime.loop.enqueueObservations([original, following]);
+  await until(async () => (await db.getPool().query('SELECT 1 FROM collab_connector_observations WHERE event_id=$1', [followingId])).rows.length === 1);
+  expect(dropFromNextObservation).toBeNull();
+  const bodies = observationBodies.slice(sentBefore).map((b) => b.events.map((e) => e.eventId));
+  const firstFollowing = bodies.findIndex((ids) => ids.includes(followingId));
+  const finalSends = bodies.map((ids, i) => (ids.includes(`${eventId}#f${count - 1}/${count}`) ? i : -1)).filter((i) => i >= 0);
+  expect(finalSends.length).toBeGreaterThan(0);
+  expect(firstFollowing).toBeGreaterThan(finalSends[0]);
+  let entries = [];
+  let cursor = null;
+  for (;;) {
+    const response = await fetch(`${base}/api/collab/v1/sessions/${sessionId}/timeline?limit=1${cursor ? `&cursor=${cursor}` : ''}`, { headers: { 'x-fluent-flow-actor': db.signCollaborationActor(actor, process.env.FF_COLLAB_AUTH_SECRET) } });
+    expect(response.status).toBe(200);
+    const page = await response.json();
+    entries = entries.concat(page.data);
+    if (!page.nextCursor) break;
+    cursor = page.nextCursor;
+  }
+  const ours = entries.filter((e) => e.eventId.startsWith(eventId) || e.eventId === followingId);
+  expect(ours.map((e) => e.eventId)).toEqual([eventId, followingId]);
+  expect(ours[0].payload.item.text).toBe(text);
+  expect(ours.map((e) => e.payload.source.seq)).toEqual([101, 102]);
+}, 30_000);

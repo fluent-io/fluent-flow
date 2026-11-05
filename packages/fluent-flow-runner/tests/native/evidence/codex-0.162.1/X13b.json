@@ -1,0 +1,27 @@
+{
+  "baseline": [],
+  "threadListIds": [],
+  "loadedIncludesBoth": true,
+  "loadedCount": 2,
+  "paginatedWithLimit": 2,
+  "read": {
+    "idMatches": true,
+    "cwdIsWorktree": true,
+    "createdAt": 1793857941,
+    "createdSinceStart": true,
+    "turns": 0,
+    "status": {
+      "type": "idle"
+    }
+  },
+  "unknownRead": {
+    "code": -32600,
+    "message": "thread not loaded: 9852acfa-721d-486a-9376-80304a21efca"
+  },
+  "turnlessRejoin": {
+    "code": -32600,
+    "noRollout": true
+  },
+  "readHasApprovalOrSandbox": false,
+  "modelRequests": 0
+}

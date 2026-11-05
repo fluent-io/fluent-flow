@@ -1,0 +1,21 @@
+{
+  "permission": [
+    "mcp__ff_reporting__ff_probe_report"
+  ],
+  "calls": [
+    {
+      "method": "tools/call",
+      "authorization": "Bearer <dummy>",
+      "params": {
+        "name": "ff_probe_report",
+        "arguments": {
+          "status": "ok"
+        },
+        "_meta": {
+          "claudecode/toolUseId": "toolu_t1_1",
+          "progressToken": 2
+        }
+      }
+    }
+  ]
+}

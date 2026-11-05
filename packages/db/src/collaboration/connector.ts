@@ -7,6 +7,7 @@ import { withClientTransaction } from './tx.js';
 import { CollabServiceError } from './errors.js';
 import { getProjectCapabilities,authorize } from './authorize.js';
 import { recordWorkpadPlanReport, recordUsageSample, recordCollabSummaryReport } from './evidence.js';
+import { catalogV2Schema, commandExecutionCheck, getRunExecution, slotBackendSql, SLOT_BACKENDS, type CommandExecution } from './execution.js';
 
 function commandCapability(kind: string): 'run.start' | 'run.steer' | 'run.cancel' | 'task.read' {
   if (kind === 'artifact_read') return 'task.read';
@@ -118,8 +119,9 @@ const registerSchema = z.object({
   sdkVersion: z.string().min(1).max(100),
   daemonVersion: z.string().max(100).optional(),
   capabilities: z.record(z.unknown()).default({}),
-  catalog: z
+  catalog: catalogV2Schema.or(z
     .object({
+      formatVersion: z.undefined(),
       repositories: z.array(z.object({ key: z.string() })).max(500),
       profiles: z
         .array(
@@ -134,7 +136,7 @@ const registerSchema = z.object({
           }),
         )
         .max(200),
-    })
+    }))
     .default({ repositories: [], profiles: [] }),
 });
 
@@ -145,6 +147,7 @@ export type ConnectorRegistration = {
   heartbeatIntervalMs: number;
   staleAfterMs: number;
   offlineAfterMs: number;
+  serverTime: string;
 };
 
 export async function registerConnector(input: {
@@ -154,7 +157,7 @@ export async function registerConnector(input: {
   sdkVersion: string;
   daemonVersion?: string;
   capabilities?: Record<string, unknown>;
-  catalog?: { repositories: Array<{ key: string }>; profiles: Array<Record<string, unknown>> };
+  catalog?: { formatVersion?: 2; capacity?: Record<string, number | { limit: number; available: number | null; observedAt: string | null }>; repositories: Array<{ key: string }>; profiles: Array<Record<string, unknown>> };
 }): Promise<ConnectorRegistration> {
   const input2 = registerSchema.parse(input);
   const host = await authenticateHost(input2.token);
@@ -182,7 +185,7 @@ export async function registerConnector(input: {
         );
       }
       await client.query(
-        `UPDATE collab_hosts SET last_heartbeat_at = now(), catalog = $1, updated_at = now() WHERE id = $2`,
+        `UPDATE collab_hosts SET last_heartbeat_at = now(), catalog = CASE WHEN catalog ? 'pollAuthority' THEN $1::jsonb || jsonb_build_object('pollAuthority', catalog->'pollAuthority') ELSE $1::jsonb END, updated_at = now() WHERE id = $2`,
         [JSON.stringify(input2.catalog), host.id],
       );
       return {
@@ -192,6 +195,7 @@ export async function registerConnector(input: {
         heartbeatIntervalMs: 15_000,
         staleAfterMs: 45_000,
         offlineAfterMs: 120_000,
+        serverTime: await serverClock(client, host.id),
       };
     }
 
@@ -200,7 +204,7 @@ export async function registerConnector(input: {
     await client.query(
       `UPDATE collab_hosts
        SET connector_session_id = $1, connector_instance_id = $2, lease_epoch = $3,
-           last_heartbeat_at = now(), catalog = $4, updated_at = now()
+           last_heartbeat_at = now(), catalog = CASE WHEN catalog ? 'pollAuthority' THEN $4::jsonb || jsonb_build_object('pollAuthority', catalog->'pollAuthority') ELSE $4::jsonb END, updated_at = now()
        WHERE id = $5`,
       [sessionId, input2.instanceId, nextEpoch, JSON.stringify(input2.catalog), host.id],
     );
@@ -211,8 +215,17 @@ export async function registerConnector(input: {
       heartbeatIntervalMs: 15_000,
       staleAfterMs: 45_000,
       offlineAfterMs: 120_000,
+      serverTime: await serverClock(client, host.id),
     };
   });
+}
+
+async function serverClock(client: Pick<PoolClient, 'query'>, hostId: string): Promise<string> {
+  const { rows } = await client.query<{ t: Date }>(
+    `SELECT GREATEST(clock_timestamp(), (catalog->>'pollAuthority')::timestamptz) AS t FROM collab_hosts WHERE id = $1`,
+    [hostId],
+  );
+  return new Date(rows[0].t).toISOString();
 }
 
 export async function heartbeatConnector(input: {
@@ -236,7 +249,12 @@ export type ConnectorCommand = {
   payload: Record<string, unknown>;
   createdAt: string;
   leaseEpoch: number;
+  slotGranted?: true;
+  slotHeld?: true;
+  nativeBackend?: 'claude-code' | 'codex';
 };
+
+export type HeldClaims = { 'claude-code': number; codex: number };
 
 const pollSchema = z.object({
   token: z.string().min(8),
@@ -244,6 +262,8 @@ const pollSchema = z.object({
   leaseEpoch: z.number().int().min(0),
   waitMs: z.number().int().min(0).max(25_000).default(25_000),
   limit: z.number().int().min(1).max(10).default(1),
+  availableSlots: z.object({ 'claude-code': z.number().int().min(0).max(64).optional(), codex: z.number().int().min(0).max(64).optional() }).strict().optional(),
+  notAfter: z.string().datetime().optional(),
 });
 
 const POLL_RECHECK_MS = 500;
@@ -269,42 +289,51 @@ export async function pollConnectorCommands(input: {
   leaseEpoch: number;
   waitMs?: number;
   limit?: number;
+  availableSlots?: { 'claude-code'?: number; codex?: number };
+  notAfter?: string;
   signal?: AbortSignal;
-}): Promise<{ commands: ConnectorCommand[] }> {
-  const { signal, ...fields } = input;
+  beforeClaim?: () => Promise<void>;
+}): Promise<{ commands: ConnectorCommand[]; heldClaims?: HeldClaims; serverTime?: string }> {
+  const { signal, beforeClaim, ...fields } = input;
   const input2 = pollSchema.parse(fields);
   const deadline = performance.now() + input2.waitMs;
+  let first = true;
   for (;;) {
     if (signal?.aborted) return { commands: [] };
-    const claimed = await claimConnectorCommands(input2);
+    if (beforeClaim) await beforeClaim();
+    const claimed = await claimConnectorCommands(input2, first);
+    first = false;
     const remainingMs = deadline - performance.now();
     if (claimed.commands.length > 0 || remainingMs <= 0) return claimed;
     if (!(await waitUnlessAborted(Math.min(POLL_RECHECK_MS, remainingMs), signal))) return { commands: [] };
   }
 }
 
-async function claimConnectorCommands(input2: z.infer<typeof pollSchema>): Promise<{ commands: ConnectorCommand[] }> {
+async function claimConnectorCommands(input2: z.infer<typeof pollSchema>, validateWaiting: boolean): Promise<{ commands: ConnectorCommand[]; heldClaims: HeldClaims; serverTime: string }> {
   return (await withHostFence(input2.token, input2.connectorSessionId, input2.leaseEpoch, async ({ client, host }) => {
-    await client.query(`UPDATE collab_hosts SET last_heartbeat_at = now(), updated_at = now() WHERE id = $1`, [host.id]);
-    const { rows } = await client.query(
-      `SELECT id, run_id, session_id, kind, payload, created_at, created_by_principal_id FROM collab_connector_commands
-       WHERE host_id = $1
-         AND (
-           state = 'pending'
-           OR (state = 'claimed' AND claimed_at < now() - make_interval(secs => $2))
-           -- Lost-ack resume: an ACCEPTED command whose response never reached
-           -- the connector is re-delivered AS THE SAME COMMAND (C dedupes by
-           -- id; no new run), after a short settle.
-           OR (state = 'accepted' AND acked_at < now() - make_interval(secs => 5))
-         )
-       ORDER BY created_at
-       LIMIT $3
-       FOR UPDATE SKIP LOCKED`,
-      [host.id, CLAIM_REDELIVER_AFTER_MS / 1000, input2.limit],
+    const serverTime = await serverClock(client, host.id);
+    await client.query(
+      `UPDATE collab_hosts SET last_heartbeat_at = now(), updated_at = now(),
+         catalog = jsonb_set(COALESCE(catalog, '{}'::jsonb), '{pollAuthority}', to_jsonb($2::text)) WHERE id = $1`,
+      [host.id, serverTime],
     );
-    const commands: ConnectorCommand[] = [];
-    for (const row of rows) {
-      const withdrawn = await commandWithdrawnReason(client, row);
+    const deliverable = `(c.state = 'pending'
+           OR (c.state = 'claimed' AND c.claimed_at < now() - make_interval(secs => $2))
+           OR (c.state = 'accepted' AND c.acked_at < now() - make_interval(secs => 5)))`;
+    const expired = input2.notAfter !== undefined && Date.parse(serverTime) > Date.parse(input2.notAfter);
+    const slots = expired ? {} : input2.availableSlots ?? {};
+    const hostCatalog = (await client.query<{ catalog: unknown }>(`SELECT catalog FROM collab_hosts WHERE id = $1`, [host.id])).rows[0]?.catalog ?? null;
+    const invalidated = async (row: Record<string, any>, execution: Awaited<ReturnType<typeof getRunExecution>>): Promise<boolean> => {
+      const changed = commandExecutionCheck(execution, (row.payload?.execution as CommandExecution | undefined) ?? null, hostCatalog);
+      if (changed !== null) {
+        await client.query(
+          `UPDATE collab_connector_commands SET state = 'failed', error_code = $1, updated_at = now() WHERE id = $2`,
+          [changed, row.id],
+        );
+        await projectCommandOutcome(client, row, 'failed', changed);
+        return true;
+      }
+      const withdrawn = await commandWithdrawnReason(client, row as Parameters<typeof commandWithdrawnReason>[1]);
       if (withdrawn !== null) {
         await client.query(
           `UPDATE collab_connector_commands
@@ -312,8 +341,50 @@ async function claimConnectorCommands(input2: z.infer<typeof pollSchema>): Promi
           [withdrawn, row.id],
         );
         await projectCommandOutcome(client,row,'failed','authorization_withdrawn');
-        continue;
+        return true;
       }
+      return false;
+    };
+    if (validateWaiting) {
+      const waiting = await client.query(
+        `SELECT c.id, c.run_id, c.session_id, c.kind, c.payload, c.created_by_principal_id
+         FROM collab_connector_commands c LEFT JOIN collab_sessions s ON s.id = c.session_id
+         WHERE c.host_id = $1 AND ${slotBackendSql('c', 's')} IS NOT NULL
+         ORDER BY c.created_at, c.id
+         FOR UPDATE OF c SKIP LOCKED`,
+        [host.id],
+      );
+      for (const row of waiting.rows) await invalidated(row, await getRunExecution(client, row.run_id));
+    }
+    const candidates = await client.query<{ id: string }>(
+      `WITH eligible AS (
+         SELECT c.id, c.created_at, ${slotBackendSql('c', 's')} AS slot_backend
+         FROM collab_connector_commands c LEFT JOIN collab_sessions s ON s.id = c.session_id
+         WHERE c.host_id = $1 AND ${deliverable}
+       ), ranked AS (
+         SELECT id, created_at, slot_backend, row_number() OVER (PARTITION BY slot_backend ORDER BY created_at, id) AS slot_rank FROM eligible
+       )
+       SELECT id FROM ranked
+       WHERE slot_backend IS NULL OR slot_rank <= COALESCE(($4::jsonb ->> slot_backend)::int, 0)
+       ORDER BY created_at, id
+       LIMIT $3`,
+      [host.id, CLAIM_REDELIVER_AFTER_MS / 1000, input2.limit, JSON.stringify(slots)],
+    );
+    const { rows } = await client.query(
+      `SELECT c.id, c.run_id, c.session_id, c.kind, c.payload, c.created_at, c.created_by_principal_id, ${slotBackendSql('c', 's')} AS slot_backend,
+              ${heldBackendSql('c')} AS held_backend
+       FROM collab_connector_commands c LEFT JOIN collab_sessions s ON s.id = c.session_id
+       WHERE c.id = ANY($1::uuid[]) AND ${deliverable}
+       ORDER BY c.created_at, c.id
+       FOR UPDATE OF c SKIP LOCKED`,
+      [candidates.rows.map((r) => r.id), CLAIM_REDELIVER_AFTER_MS / 1000],
+    );
+    const granted: Record<string, number> = {};
+    const commands: ConnectorCommand[] = [];
+    for (const row of rows) {
+      const execution = await getRunExecution(client, row.run_id);
+      if (await invalidated(row, execution)) continue;
+      const wasClaimed = (await client.query<{ state: string }>(`SELECT state FROM collab_connector_commands WHERE id = $1`, [row.id])).rows[0]?.state === 'claimed';
       await client.query(
         `UPDATE collab_connector_commands
          SET state = CASE WHEN state = 'accepted' THEN 'accepted' ELSE 'claimed' END,
@@ -321,6 +392,7 @@ async function claimConnectorCommands(input2: z.infer<typeof pollSchema>): Promi
          WHERE id = $2`,
         [input2.leaseEpoch, row.id],
       );
+      if (row.slot_backend) granted[row.slot_backend] = (granted[row.slot_backend] ?? 0) + 1;
       commands.push({
         id: row.id,
         runId: row.run_id,
@@ -329,12 +401,16 @@ async function claimConnectorCommands(input2: z.infer<typeof pollSchema>): Promi
         payload: row.payload,
         createdAt: new Date(row.created_at).toISOString(),
         leaseEpoch: input2.leaseEpoch,
+        ...(row.slot_backend ? { slotGranted: true as const } : {}),
+        ...(wasClaimed && row.held_backend ? { slotHeld: true as const } : {}),
+        ...(row.payload?.execution === undefined && execution !== null && (SLOT_BACKENDS as readonly string[]).includes(execution.backend) ? { nativeBackend: execution.backend as 'claude-code' | 'codex' } : {}),
       });
     }
     const secret = process.env.FF_COLLAB_AUTH_SECRET;
     for (const command of commands) {
       if (command.sessionId === null) continue;
-      if (!['launch','create_session','summarize'].includes(command.kind)) continue;
+      const nativePrompt = command.kind === 'prompt' && ['claude-code', 'codex'].includes(String((command.payload.execution as CommandExecution | undefined)?.backend));
+      if (!['launch','create_session','summarize'].includes(command.kind) && !nativePrompt) continue;
       const binding = await client.query<{ revoked_at: Date | null }>(
         `SELECT revoked_at FROM collab_scoped_tokens WHERE session_id = $1`,
         [command.sessionId],
@@ -347,8 +423,34 @@ async function claimConnectorCommands(input2: z.infer<typeof pollSchema>): Promi
         reportingCredential: deriveReportingCredential(secret, command.sessionId),
       };
     }
-    return { commands };
-  })) as { commands: ConnectorCommand[] };
+    const observedAt = new Date().toISOString();
+    for (const backend of SLOT_BACKENDS) {
+      const reported = slots[backend];
+      if (reported === undefined) continue;
+      await client.query(
+        `UPDATE collab_hosts SET catalog = jsonb_set(catalog, ARRAY['capacity', $2::text],
+           jsonb_build_object('limit', lim, 'available', LEAST(lim, $3::int), 'observedAt', $4::text))
+         FROM (SELECT CASE jsonb_typeof(catalog->'capacity'->$2::text) WHEN 'number' THEN (catalog->'capacity'->>$2::text)::int
+                 ELSE (catalog->'capacity'->$2::text->>'limit')::int END AS lim FROM collab_hosts WHERE id = $1) cap
+         WHERE id = $1 AND catalog->>'formatVersion' = '2' AND cap.lim IS NOT NULL`,
+        [host.id, backend, Math.max(0, reported - (granted[backend] ?? 0)), observedAt],
+      );
+    }
+    const held = await client.query<{ backend: string; n: number }>(
+      `SELECT ${heldBackendSql('c')} AS backend, count(*)::int AS n FROM collab_connector_commands c
+       WHERE c.host_id = $1 AND c.state = 'claimed' AND ${heldBackendSql('c')} IS NOT NULL AND NOT (c.id = ANY($2::uuid[]))
+       GROUP BY 1`,
+      [host.id, commands.map((command) => command.id)],
+    );
+    const heldClaims: HeldClaims = { 'claude-code': 0, codex: 0 };
+    for (const r of held.rows) heldClaims[r.backend as keyof HeldClaims] = r.n;
+    return { commands, heldClaims, serverTime };
+  })) as { commands: ConnectorCommand[]; heldClaims: HeldClaims; serverTime: string };
+}
+
+function heldBackendSql(c: string): string {
+  return `CASE WHEN ${c}.payload->'execution'->>'backend' IN ('claude-code', 'codex')
+    AND ${c}.kind IN ('launch', 'create_session', 'summarize', 'prompt') THEN ${c}.payload->'execution'->>'backend' END`;
 }
 
 const ackSchema = z.object({
@@ -446,6 +548,69 @@ const observationsSchema = z.object({
     .max(MAX_EVENTS_PER_BATCH),
 });
 
+const NATIVE_BACKENDS = new Set(['claude-code', 'codex']);
+const NATIVE_EVENT_ID = /^(claude-code|codex):/;
+const MAX_FRAGMENTS = 4096;
+const fragmentSchema = z
+  .object({
+    fragmentOf: z.string().min(1).max(190).regex(NATIVE_EVENT_ID),
+    index: z.number().int().min(0),
+    count: z.number().int().min(2).max(MAX_FRAGMENTS),
+    encoding: z.literal('base64'),
+    data: z.string().min(1).regex(/^[A-Za-z0-9+/]+={0,2}$/),
+  })
+  .strict();
+type Fragment = z.infer<typeof fragmentSchema>;
+
+function supervisorWorkerLoss(event: { kind: string; payload: Record<string, unknown> }): { backend: string; generation: number } | null {
+  if (event.kind !== 'state') return null;
+  const { state, errorCode, reason, stop, source } = event.payload;
+  if (state !== 'reconciling' || errorCode !== 'reconciling' || reason !== 'worker_lost') return null;
+  if (stop !== 'quiesced' && stop !== 'uncertain') return null;
+  if (source === null || typeof source !== 'object' || Array.isArray(source)) return null;
+  const backend = (source as Record<string, unknown>).backend;
+  const generation = (source as Record<string, unknown>).generation;
+  const nativeEventId = (source as Record<string, unknown>).nativeEventId;
+  if (typeof backend !== 'string' || !NATIVE_BACKENDS.has(backend)) return null;
+  if (!Number.isSafeInteger(generation) || (generation as number) < 1) return null;
+  if (nativeEventId !== `ff:worker_lost:${generation}`) return null;
+  return { backend, generation: generation as number };
+}
+
+function nativeFragment(event: { eventId: string; payload: Record<string, unknown> }): Fragment | null | 'invalid' {
+  if (!Object.hasOwn(event.payload, 'fragmentOf')) return null;
+  const parsed = fragmentSchema.safeParse(event.payload);
+  if (!parsed.success) return 'invalid';
+  const f = parsed.data;
+  if (f.index >= f.count || event.eventId !== `${f.fragmentOf}#f${f.index}/${f.count}`) return 'invalid';
+  return f;
+}
+
+async function reassembleFragments<E extends { eventId: string; commandId?: string; runId: string; sessionId: string | null; observedAt: string; kind: string; payload: Record<string, unknown>; providerCursor?: unknown }>(
+  client: PoolClient,
+  hostId: string,
+  event: E,
+  fragment: Fragment,
+): Promise<null | (E & { reassembled: true })> {
+  const { rows } = await client.query<{ index: number; data: string }>(
+    `SELECT (payload->>'index')::int AS index, payload->>'data' AS data FROM collab_connector_observations
+     WHERE host_id = $1 AND run_id = $2 AND session_id IS NOT DISTINCT FROM $3 AND kind = $4
+       AND payload->>'fragmentOf' = $5 AND (payload->>'count')::int = $6
+     ORDER BY (payload->>'index')::int`,
+    [hostId, event.runId, event.sessionId, event.kind, fragment.fragmentOf, fragment.count],
+  );
+  if (rows.length !== fragment.count || rows.some((row, i) => row.index !== i)) return null;
+  let payload: Record<string, unknown>;
+  try {
+    const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(rows.map((row) => Buffer.from(row.data, 'base64')))));
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('not an object');
+    payload = value as Record<string, unknown>;
+  } catch {
+    payload = { unavailable: true, reason: 'fragment_reassembly_failed', originalKind: event.kind };
+  }
+  return { ...event, eventId: fragment.fragmentOf, payload, providerCursor: undefined, reassembled: true };
+}
+
 export async function submitConnectorObservations(input: {
   token: string;
   connectorSessionId: string;
@@ -474,7 +639,9 @@ export async function submitConnectorObservations(input: {
   await withHostFence(input2.token, input2.connectorSessionId, input2.leaseEpoch, async ({ client }) => {
     const projects=await client.query(`SELECT DISTINCT project_id FROM collab_runs WHERE id=ANY($1::uuid[]) AND host_id=$2 ORDER BY project_id`,[input2.events.map(e=>e.runId),host.id]);
     for(const project of projects.rows) await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',[`board:${project.project_id}`]);
-    for (const event of input2.events) {
+    const queue: Array<(typeof input2.events)[number] & { reassembled?: true }> = [...input2.events];
+    for (let position = 0; position < queue.length; position += 1) {
+      const event = queue[position];
       const bound = await client.query(
         `SELECT r.task_id,r.project_id,r.state FROM collab_runs r JOIN collab_tasks t ON t.id=r.task_id
          WHERE r.id = $1 AND r.host_id = $2 FOR UPDATE OF t`,
@@ -495,10 +662,18 @@ export async function submitConnectorObservations(input: {
       }
       if (!sessionOk) continue;
 
+      const fragment = event.reassembled ? null : nativeFragment(event);
+      if (fragment === 'invalid') {
+        rejected.push(event.eventId);
+        continue;
+      }
+
       const inserted = await client.query(
         `INSERT INTO collab_connector_observations
-           (event_id, host_id, run_id, session_id, kind, payload, provider_epoch, provider_seq, observed_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+           (event_id, host_id, run_id, session_id, kind, payload, provider_epoch, provider_seq, observed_at, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, GREATEST(clock_timestamp(), COALESCE(
+           (SELECT max(created_at) FROM collab_connector_observations WHERE run_id = $3 AND session_id IS NOT DISTINCT FROM $4),
+           '-infinity'::timestamptz) + interval '1 microsecond'))
          ON CONFLICT (event_id) DO NOTHING
          RETURNING id`,
         [
@@ -525,13 +700,23 @@ export async function submitConnectorObservations(input: {
           [event.eventId, host.id, event.runId, event.sessionId, event.kind, JSON.stringify(event.payload)],
         );
         if (existing.rows.length === 0) {
-          rejected.push(event.eventId);
+          if (!event.reassembled) rejected.push(event.eventId);
           continue;
         }
+        if (event.reassembled) continue;
         accepted.push(event.eventId);
+        if (fragment) {
+          const whole = await reassembleFragments(client, host.id, event, fragment);
+          if (whole) queue.splice(position + 1, 0, whole);
+        }
         continue;
       }
-      accepted.push(event.eventId);
+      if (!event.reassembled) accepted.push(event.eventId);
+      if (fragment) {
+        const whole = await reassembleFragments(client, host.id, event, fragment);
+        if (whole) queue.splice(position + 1, 0, whole);
+        continue;
+      }
 
       if(event.providerCursor&&sessionProjection) {
         const cursor=event.providerCursor;
@@ -546,7 +731,14 @@ export async function submitConnectorObservations(input: {
       const currentState=sessionProjection?.state??bound.rows[0].state;
       if(event.kind==='state'&&['idle','failed','cancelled'].includes(currentState)
         &&typeof event.payload.state==='string'&&event.payload.state!==currentState) {
-        continue;
+        const loss = currentState === 'idle' && event.sessionId !== null ? supervisorWorkerLoss(event) : null;
+        if (loss === null) continue;
+        const currentBinding = await client.query(
+          `SELECT 1 FROM collab_session_execution
+           WHERE session_id = $1 AND run_id = $2 AND backend = $3 AND binding_generation = $4`,
+          [event.sessionId, event.runId, loss.backend, loss.generation],
+        );
+        if (currentBinding.rows.length === 0) continue;
       }
       if(event.kind==='state'&&event.payload.state==='cancel_requested'&&event.commandId) {
         const currentCancel=await client.query(`SELECT cancel.id FROM collab_connector_commands cancel
@@ -597,7 +789,32 @@ export async function submitConnectorObservations(input: {
         }
       }
 
-      if (event.kind === 'workspace_bound' && typeof event.payload.workspaceId === 'string') {
+      const nativeBackend = typeof event.payload.backend === 'string' && NATIVE_BACKENDS.has(event.payload.backend) ? event.payload.backend : null;
+      if (event.kind === 'workspace_bound' && nativeBackend !== null) {
+        const ref = typeof event.payload.workspaceRef === 'string' && /^ffw_[0-9a-f]{16}$/.test(event.payload.workspaceRef) ? event.payload.workspaceRef : null;
+        const owned = ref === null ? { rows: [] } : await client.query(
+          `UPDATE collab_run_execution SET workspace_ref = $1, updated_at = now() WHERE run_id = $2 AND backend = $3 RETURNING run_id`,
+          [ref, event.runId, nativeBackend],
+        );
+        if (owned.rows.length) {
+          await client.query(
+            `UPDATE collab_runs SET workspace_id = $1, state = CASE WHEN state = 'queued' THEN 'launching' ELSE state END,
+               last_observed_at = $2, updated_at = now() WHERE id = $3`,
+            [ref, new Date(event.observedAt), event.runId],
+          );
+        }
+      } else if (event.kind === 'session_bound' && event.sessionId !== null && nativeBackend !== null) {
+        const nativeSessionId = typeof event.payload.nativeSessionId === 'string' && event.payload.nativeSessionId.length > 0 && event.payload.nativeSessionId.length <= 200 ? event.payload.nativeSessionId : null;
+        const generation = Number.isSafeInteger(event.payload.generation) && (event.payload.generation as number) >= 1 ? event.payload.generation : null;
+        if (nativeSessionId !== null && generation !== null) {
+          await client.query(
+            `UPDATE collab_session_execution SET native_session_id = $1, binding_generation = $2, updated_at = now()
+             WHERE session_id = $3 AND run_id = $4 AND backend = $5 AND binding_generation < $2`,
+            [nativeSessionId, generation, event.sessionId, event.runId, nativeBackend],
+          );
+        }
+        await client.query(`UPDATE collab_sessions SET last_observed_at = GREATEST(last_observed_at, $1::timestamptz), updated_at = now() WHERE id = $2`, [event.observedAt, event.sessionId]);
+      } else if (event.kind === 'workspace_bound' && typeof event.payload.workspaceId === 'string') {
         await client.query(
           `UPDATE collab_runs SET workspace_id = $1, state = CASE WHEN state = 'queued' THEN 'launching' ELSE state END,
              last_observed_at = $2, updated_at = now() WHERE id = $3`,
@@ -623,6 +840,7 @@ export async function submitConnectorObservations(input: {
           const observedAt=new Date(event.observedAt);
           if(event.sessionId!==null) {
             await client.query(`UPDATE collab_sessions SET state=$1,last_observed_at=GREATEST(last_observed_at,$2::timestamptz),updated_at=now() WHERE id=$3`,[event.payload.state,observedAt,event.sessionId]);
+            if(event.payload.state==='failed'&&event.payload.errorCode==='account_limited') await client.query(`UPDATE collab_runs SET error_code='account_limited',updated_at=now() WHERE id=$1`,[event.runId]);
           }
           if (event.sessionId === null) {
             await client.query(
@@ -705,7 +923,7 @@ async function projectCommandOutcome(client:PoolClient,command:Record<string,any
   const {rows}=await client.query(`SELECT r.*,t.id AS locked_task_id FROM collab_runs r JOIN collab_tasks t ON t.id=r.task_id WHERE r.id=$1 FOR UPDATE OF t`,[command.run_id]);
   const run=rows[0];
   if(!run) return;
-  const safeError=state==='ambiguous'?'execution_ambiguous':errorCode==='authorization_withdrawn'?'authorization_withdrawn':'command_failed';
+  const safeError=state==='ambiguous'?'execution_ambiguous':errorCode==='authorization_withdrawn'||errorCode==='execution_settings_changed'?errorCode:'command_failed';
   if(['launch','create_session'].includes(command.kind)) {
     await client.query(`UPDATE collab_sessions SET state=$1,updated_at=now() WHERE id=$2 AND state IN ('queued','launching','reconciling')`,[state==='ambiguous'?'reconciling':'failed',command.session_id]);
     const aggregate=await client.query(`SELECT CASE

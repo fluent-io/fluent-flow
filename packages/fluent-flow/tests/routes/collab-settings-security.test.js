@@ -90,6 +90,26 @@ describe('mounted Settings scope and configuration security',()=>{
     expect(internalRead.status).toBe(200);expect(internalRead.body.data.map(item=>item.id)).toEqual([mapping.id]);
   });
 
+  it('Task 12 seam: the enrolling owner reads a safe host catalog; anyone else gets 404, and the token is never echoed',async()=>{
+    const read=await api('GET',`/hosts/${host.id}/catalog`);
+    expect(read.status).toBe(200);
+    expect(read.body.data).toEqual({hostId:host.id,repositories:[{key:'settings/repo'},{key:'sibling/repo'}],profiles:[
+      {id:'work',name:'Work profile',provider:'fixture',model:'work-model',modeId:null,thinkingOptionId:null,backend:'paseo',readiness:null,policy:null},
+      {id:'summary',name:'Summary profile',provider:'fixture',model:'summary-model',modeId:null,thinkingOptionId:null,backend:'paseo',readiness:null,policy:null},
+    ],capacity:null});
+    expect(JSON.stringify(read.body)).not.toContain(host.token);
+    for(const actor of [actors.config,actors.adminOnly,actors.viewer,actors.workspaceAdmin]){
+      const denied=await api('GET',`/hosts/${host.id}/catalog`,{actor});
+      expect(denied.status).toBe(404);
+      expect(JSON.stringify(denied.body)).not.toContain('settings/repo');
+    }
+    expect((await api('GET','/hosts/00000000-0000-4000-8000-000000000000/catalog')).status).toBe(404);
+    expect((await api('GET','/hosts/not-a-uuid/catalog')).status).toBe(404);
+    const mappingRead=await api('GET',`/projects/${project.id}/mappings`,{actor:actors.config});
+    expect(mappingRead.body.data[0].profiles[0]).toMatchObject({id:'work',backend:'paseo',readiness:null,policy:null});
+    expect(mappingRead.body.data[0].capacity).toBeNull();
+  });
+
   it('validates same-project mapping and both profile/model selections while allowing known offline defaults and disabled summaries',async()=>{
     for(const executionDefaults of [
       {...defaults(),mappingId:foreignMapping.id},

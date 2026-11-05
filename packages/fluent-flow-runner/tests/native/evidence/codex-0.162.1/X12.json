@@ -1,0 +1,201 @@
+{
+  "unexpected": [],
+  "counts": [
+    {
+      "id": "X2",
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "id": "X3",
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "id": "X4",
+      "actual": 1,
+      "expected": 1
+    },
+    {
+      "id": "X4b",
+      "actual": 1,
+      "expected": 1
+    },
+    {
+      "id": "X6",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "X7-default",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "X7-plan-options",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "X7-plan-no-options",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "X8",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "X9",
+      "actual": 1,
+      "expected": 1
+    },
+    {
+      "id": "X10",
+      "actual": 1,
+      "expected": 1
+    },
+    {
+      "id": "X11",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "X13",
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "id": "X4c",
+      "actual": 1,
+      "expected": 1
+    },
+    {
+      "id": "X4d",
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "id": "X4e",
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "id": "X6b",
+      "actual": 1,
+      "expected": 1
+    },
+    {
+      "id": "X11b-untrusted",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "X11b-never",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "X11c-decline",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "X11c-cancel",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "X14",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "X14b-untrusted",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "X14b-never",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "X14c",
+      "actual": 1,
+      "expected": 1
+    },
+    {
+      "id": "X14d",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "X13b",
+      "actual": 0,
+      "expected": 0
+    },
+    {
+      "id": "X11d-session",
+      "actual": 5,
+      "expected": 5
+    },
+    {
+      "id": "X11d-session-restart",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "X11d-always",
+      "actual": 5,
+      "expected": 5
+    },
+    {
+      "id": "X11d-always-restart",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "X11d-once",
+      "actual": 5,
+      "expected": 5
+    },
+    {
+      "id": "X11d-once-restart",
+      "actual": 2,
+      "expected": 2
+    },
+    {
+      "id": "X11e-always",
+      "actual": 5,
+      "expected": 5
+    },
+    {
+      "id": "X11e-always-restart",
+      "actual": 2,
+      "expected": 2
+    }
+  ],
+  "proxyAttempts": [],
+  "rolloutPaths": [
+    "<probe-root>/context/sessions/2026/11/05/rollout-2026-11-05T10-58-50-01a1ac6f-326e-7961-a7e2-e0a732d99288.jsonl",
+    "<probe-root>/context/sessions/2026/11/05/rollout-2026-11-05T10-58-51-01a1ac6f-3479-7cb2-895e-2e2c85130fe7.jsonl",
+    "<probe-root>/context/sessions/2026/11/05/rollout-2026-11-05T10-58-51-01a1ac6f-357a-7d30-aca2-77ff6315265c.jsonl",
+    "<probe-root>/context/sessions/2026/11/05/rollout-2026-11-05T10-58-52-01a1ac6f-3665-7d11-81ff-91e1ab7c59cf.jsonl",
+    "<probe-root>/context/sessions/2026/11/05/rollout-2026-11-05T10-58-52-01a1ac6f-3761-7c80-bdad-f370d914a35b.jsonl",
+    "<probe-root>/context/sessions/2026/11/05/rollout-2026-11-05T10-58-52-01a1ac6f-3849-7b80-8acd-56f76dcb40f1.jsonl",
+    "<probe-root>/context/sessions/2026/11/05/rollout-2026-11-05T10-58-52-01a1ac6f-394c-7961-b6d0-24925be07ff4.jsonl",
+    "<probe-root>/context/sessions/2026/11/05/rollout-2026-11-05T10-58-53-01a1ac6f-3a59-7121-9298-7e9f6dc1ed91.jsonl",
+    "<probe-root>/context/sessions/2026/11/05/rollout-2026-11-05T10-58-58-01a1ac6f-4f7b-7fa3-98a0-ec74f0abcbb4.jsonl",
+    "<probe-root>/context/sessions/2026/11/05/rollout-2026-11-05T10-58-58-01a1ac6f-4f7b-7fa3-98a0-ec74f0abcbb4.jsonl",
+    "<probe-root>/context/sessions/2026/11/05/rollout-2026-11-05T10-58-53-01a1ac6f-3a59-7121-9298-7e9f6dc1ed91.jsonl",
+    "<probe-root>/context/sessions/2026/11/05/rollout-2026-11-05T10-58-52-01a1ac6f-394c-7961-b6d0-24925be07ff4.jsonl",
+    "<probe-root>/context/sessions/2026/11/05/rollout-2026-11-05T10-58-52-01a1ac6f-3849-7b80-8acd-56f76dcb40f1.jsonl",
+    "<probe-root>/context/sessions/2026/11/05/rollout-2026-11-05T10-58-52-01a1ac6f-3761-7c80-bdad-f370d914a35b.jsonl",
+    "<probe-root>/context/sessions/2026/11/05/rollout-2026-11-05T10-58-52-01a1ac6f-3665-7d11-81ff-91e1ab7c59cf.jsonl",
+    "<probe-root>/context/sessions/2026/11/05/rollout-2026-11-05T10-58-51-01a1ac6f-357a-7d30-aca2-77ff6315265c.jsonl",
+    "<probe-root>/context/sessions/2026/11/05/rollout-2026-11-05T10-58-51-01a1ac6f-3479-7cb2-895e-2e2c85130fe7.jsonl",
+    "<probe-root>/context/sessions/2026/11/05/rollout-2026-11-05T10-58-50-01a1ac6f-326e-7961-a7e2-e0a732d99288.jsonl"
+  ]
+}

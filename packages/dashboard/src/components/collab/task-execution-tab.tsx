@@ -6,16 +6,20 @@ import { Input } from '@/components/ui/input';
 import { LatestRequest, pollResource } from '@/lib/collab/live';
 import { collabFetch, ApiError } from '@/lib/collab/api';
 import { capabilitiesFor, useMe } from '@/lib/collab/use-me';
-import type { Command, Mapping, Project, Run, Session, Summary, TimelineEntry } from '@/lib/collab/types';
+import type { Command, ExecutionBackend, Mapping, PendingRequestV2, Project, Run, RunExecutionView, RunQueue, RunState, Session, Summary, TimelineEntry } from '@/lib/collab/types';
+import { BACKEND_LABELS, EXECUTION_MESSAGES, READINESS_COPY, executionErrorMessage, policyText } from '@/lib/collab/execution-copy';
 import { can, type TaskDetail } from './task-detail';
 import {
   allAnswered,
   buildAnswers,
+  buildSelections,
   choose,
   dismissLabel,
   emptyDraft,
   parseQuestions,
-  pendingFromSession,
+  loadPendingRequests,
+  pendingFromV2,
+  requestCommand,
   showsTextInput,
   typeOther,
   type PendingRequest,
@@ -172,6 +176,9 @@ function StartRunDialog({
   const idempotencyKey = useRef(crypto.randomUUID());
   const canConfigure = can(detail, 'internal.read');
   const mappingRequests = useRef(new LatestRequest());
+  const selectedProfile = mappings.find((m) => m.id === mappingId)?.profiles?.find((p) => p.id === profileId) ?? null;
+  const readiness = selectedProfile?.readiness ? READINESS_COPY[selectedProfile.readiness.state] : null;
+  const notReady = selectedProfile?.readiness != null && selectedProfile.readiness.state !== 'ready';
 
   useEffect(() => {
     const signal = mappingRequests.current.begin();
@@ -223,7 +230,7 @@ function StartRunDialog({
       if (err instanceof ApiError && err.status === 409) {
         setError('This item changed. Refresh before saving.');
       } else if (err instanceof ApiError && err.status === 422) {
-        setError('Execution is not configured for this project.');
+        setError(executionErrorMessage(err.code) ?? 'Execution is not configured for this project.');
       } else {
         setError(err instanceof Error ? err.message : 'Could not queue the run.');
       }
@@ -284,7 +291,7 @@ function StartRunDialog({
             >
               {(mappings.find((m) => m.id === mappingId)?.profiles ?? []).map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.name} · {p.provider}
+                  {p.name} · {p.backend ? BACKEND_LABELS[p.backend] : p.provider}
                   {p.model ? ` · ${p.model}` : ''}
                 </option>
               ))}
@@ -293,6 +300,12 @@ function StartRunDialog({
               ) : null}
             </select>
           </label>
+          {selectedProfile?.backend ? (
+            <div className="flex flex-col gap-1">
+              <ExecutionProfileSummary execution={{ backend: selectedProfile.backend, model: model || selectedProfile.model, policy: selectedProfile.policy }} />
+              {readiness ? <p className="text-xs">{readiness.label}{readiness.message ? <span className="block text-muted-foreground">{readiness.message}</span> : null}</p> : null}
+            </div>
+          ) : null}
           {(mappings.find((m) => m.id === mappingId)?.allowedModels?.length ?? 0) > 0 ? (
             <label className="flex flex-col gap-1 text-xs">
               Model (host-allowed)
@@ -333,7 +346,7 @@ function StartRunDialog({
             <Button type="button" variant="outline" onClick={onClose}>
               Cancel
             </Button>
-            <Button type="submit" disabled={busy || !mappingsLoaded || canConfigure && mappings.length === 0}>
+            <Button type="submit" disabled={busy || !mappingsLoaded || canConfigure && mappings.length === 0 || notReady}>
               {busy ? 'Queueing…' : 'Queue run'}
             </Button>
           </div>
@@ -380,20 +393,18 @@ function RunDetail({
   }
   const [runError, setRunError] = useState<string | null>(null);
   const [runAccessDenied, setRunAccessDenied] = useState(false);
+  const [execution, setExecution] = useState<RunExecutionView | null>(null);
+  const [queue, setQueue] = useState<RunQueue>(null);
   const runRequests = useRef(new LatestRequest());
   const loadRun = useCallback(async (parent?: AbortSignal) => {
     const signal = runRequests.current.begin(parent);
-    if (!internalRead) {
-      setSessions([]);
-      setUnresolvedCommands([]);
-      setSelectedSessionId(null);
-      return;
-    }
     try {
-      const result = await collabFetch<{run: Run; sessions: Session[]; unresolvedCommands: UnresolvedCommand[]}>(`/runs/${run.id}`, { signal });
+      const result = await collabFetch<{run: Run; execution?: RunExecutionView | null; sessions: Session[]; unresolvedCommands: UnresolvedCommand[]; queue?: RunQueue}>(`/runs/${run.id}`, { signal });
       if (!runRequests.current.current(signal)) return;
-      setSessions(result.data.sessions);
-      setUnresolvedCommands(result.data.unresolvedCommands ?? []);
+      setQueue(result.data.queue ?? null);
+      setExecution(internalRead ? result.data.execution ?? null : null);
+      setSessions(internalRead ? result.data.sessions : []);
+      setUnresolvedCommands(internalRead ? result.data.unresolvedCommands ?? [] : []);
       setSelectedSessionId(current => result.data.sessions.some(session => session.id === current) ? current : result.data.sessions[0]?.id ?? null);
       setRunError(null);
       setRunAccessDenied(false);
@@ -404,6 +415,8 @@ function RunDetail({
         setSessions([]);
         setUnresolvedCommands([]);
         setSelectedSessionId(null);
+        setExecution(null);
+        setQueue(null);
       }
       setRunAccessDenied(denied);
       setRunError(denied
@@ -412,6 +425,8 @@ function RunDetail({
     }
   }, [run.id, internalRead]);
 
+  const integrationDisabled = run.errorCode === 'integration_disabled' || unresolvedCommands.some(command => command.errorCode === 'integration_disabled');
+  const blockedCode = integrationDisabled ? 'integration_disabled' : null;
   const [newSessionTitle,setNewSessionTitle]=useState('');
   const [newSessionInstructions,setNewSessionInstructions]=useState('');
   const [sessionBusy,setSessionBusy]=useState(false);
@@ -502,7 +517,6 @@ function RunDetail({
               <span className="text-muted-foreground"> · last observed {new Date(run.lastObservedAt).toLocaleString()}</span>
             ) : null}
             {run.workspaceId ? <div className="font-mono text-xs text-muted-foreground">workspace {run.workspaceId}</div> : null}
-            {run.errorCode ? <div className="text-xs text-destructive">error: {run.errorCode}</div> : null}
           </div>
           <div className="flex items-center gap-2">
             <label className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -511,7 +525,7 @@ function RunDetail({
                 aria-label="Execution stage"
                 className="h-8 rounded-md border border-border bg-background px-2 text-xs"
                 value={run.stage}
-                disabled={!canSteer || runAccessDenied}
+                disabled={!canSteer || runAccessDenied || integrationDisabled}
                 onChange={(e) => void changeStage(e.target.value)}
               >
                 <option value="design">design</option>
@@ -520,11 +534,13 @@ function RunDetail({
                 <option value="in_review">in review</option>
               </select>
             </label>
-            <Button size="sm" variant="outline" disabled={summaryBusy || !canSteer || runAccessDenied} onClick={() => void requestSummary()}>
+            <Button size="sm" variant="outline" disabled={summaryBusy || !canSteer || runAccessDenied || integrationDisabled} onClick={() => void requestSummary()}>
               Request summary
             </Button>
           </div>
         </div>
+        {internalRead && execution ? <div className="mt-2"><ExecutionProfileSummary execution={execution} /></div> : null}
+        <RunStatusNotices run={run} queue={queue} integrationDisabled={integrationDisabled} />
         {runError ? <p role="status" className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs">{runError}</p> : null}
         {summaryLoadError ? <p role="status" className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs">{summaryLoadError}</p> : null}
         {summaryError ? (
@@ -565,7 +581,7 @@ function RunDetail({
         <p className="text-xs text-muted-foreground">Uses this run's configured profile and workspace.</p>
         <Input aria-label="Session title" placeholder="Session title" required value={newSessionTitle} onChange={e=>setNewSessionTitle(e.target.value)}/>
         <textarea aria-label="Session instructions" placeholder="Initial instructions" className="min-h-20 rounded-md border border-border bg-background p-2 text-sm" value={newSessionInstructions} onChange={e=>setNewSessionInstructions(e.target.value)}/>
-        <Button type="submit" size="sm" disabled={sessionBusy||!newSessionTitle.trim()||!run.workspaceId} className="self-start">Start session</Button>
+        <Button type="submit" size="sm" disabled={sessionBusy||!newSessionTitle.trim()||!run.workspaceId||integrationDisabled} className="self-start">Start session</Button>
       </form>:null}
 
       {sessions.length > 0 ? (
@@ -593,6 +609,8 @@ function RunDetail({
               internalRead={internalRead}
               canSteer={canSteer}
               canCancel={canCancel}
+              blockedCode={blockedCode}
+              recovery={isNativeRecovery(execution, run.state, sessions.find((s) => s.id === selectedSessionId)?.state ?? null)}
               onChanged={async () => {
                 await loadRun();
                 await reloadRuns();
@@ -615,6 +633,8 @@ function SessionPanel({
   internalRead,
   canSteer,
   canCancel,
+  blockedCode,
+  recovery,
   onChanged,
 }: {
   sessionId: string;
@@ -623,30 +643,24 @@ function SessionPanel({
   internalRead: boolean;
   canSteer: boolean;
   canCancel: boolean;
+  blockedCode: string | null;
+  recovery: boolean;
   onChanged: () => Promise<void>;
 }) {
   const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
   const [timelineError, setTimelineError] = useState<string | null>(null);
-  const [pendingRequest, setPendingRequest] = useState<PendingRequest | null>(null);
-  const [draft, setDraft] = useState<QuestionDraft | null>(null);
-  const [prompt, setPrompt] = useState('');
-  const [behavior, setBehavior] = useState<'steer' | 'interrupt'>('steer');
+  const [pendingRequests, setPendingRequests] = useState<PendingRequest[]>([]);
+  const [pendingIncomplete, setPendingIncomplete] = useState(false);
+  const [drafts, setDrafts] = useState<Record<string, QuestionDraft | undefined>>({});
   const [commandError, setCommandError] = useState<string | null>(null);
 
-  const draftRequestId = useRef<string | null>(null);
-  useEffect(() => {
-    if (pendingRequest?.id && pendingRequest.id !== draftRequestId.current) {
-      draftRequestId.current = pendingRequest.id;
-      setDraft(null);
-    }
-  }, [pendingRequest?.id]);
   const active=['queued','launching','running','needs_input','cancel_requested','reconciling'].includes(run.state);
   const timelineRequests=useRef(new LatestRequest());
   const timelineAfter=useRef<string|null>(null);
   const [catchingUp,setCatchingUp]=useState(false);
   const loadTimeline = useCallback(async (parent?:AbortSignal) => {
     const signal=timelineRequests.current.begin(parent);
-    if(!internalRead){setTimeline([]);setPendingRequest(null);return;}
+    if(!internalRead){setTimeline([]);setPendingRequests([]);setDrafts({});return;}
     try {
       const entries:TimelineEntry[]=[];
       let after=timelineAfter.current;
@@ -661,23 +675,29 @@ function SessionPanel({
         after=page.cursor??next??after;
         pages+=1;
       }while(next&&pages<20);
-      const pending=await collabFetch<PendingRequestDto|null>(`/sessions/${sessionId}/pending-request`,{signal});
+      const pending=await loadPendingRequests(async(cursor)=>{
+        const query=new URLSearchParams({limit:'50'});
+        if(cursor)query.set('cursor',cursor);
+        return collabFetch<PendingRequestV2[]>(`/sessions/${sessionId}/pending-requests?${query}`,{signal});
+      });
       if(!timelineRequests.current.current(signal)) return;
       timelineAfter.current=after;
       setTimeline(current=>{const seen=new Set(current.map(entry=>entry.eventId));return [...current,...entries.filter(entry=>!seen.has(entry.eventId))];});
       setCatchingUp(Boolean(next));
-      setPendingRequest(pending.data?pendingFromSession(pending.data):null);
+      const requests=pending.requests.map(pendingFromV2);
+      setPendingRequests(requests);
+      setPendingIncomplete(!pending.complete);
+      setDrafts(current=>Object.fromEntries(requests.filter(r=>current[r.id]).map(r=>[r.id,current[r.id]])));
       setTimelineError(null);
     } catch(err) {
       if(!timelineRequests.current.current(signal)) return;
       const denied = err instanceof ApiError && [401, 403, 404].includes(err.status);
-      setPendingRequest(null);
+      setPendingRequests([]);
+      setPendingIncomplete(false);
       if (denied) {
         setTimeline([]);
         timelineAfter.current = null;
-        setPrompt('');
-        setDraft(null);
-        draftRequestId.current = null;
+        setDrafts({});
       }
       setTimelineError(denied
         ? 'This session is no longer available.'
@@ -687,29 +707,41 @@ function SessionPanel({
 
   useEffect(()=>{
     timelineAfter.current=null;
-    setTimeline([]);setPendingRequest(null);setDraft(null);setCatchingUp(false);
+    setTimeline([]);setPendingRequests([]);setPendingIncomplete(false);setDrafts({});setCatchingUp(false);
     const stop=pollResource(loadTimeline);
     return ()=>{stop();timelineRequests.current.dispose();};
   },[loadTimeline]);
 
-  async function sendCommand(body: Record<string, unknown>) {
+  const recoveryKeys = useRef(createIntentKeys());
+  const [queuedNotice, setQueuedNotice] = useState(false);
+  async function sendCommand(body: Record<string, unknown>): Promise<boolean> {
     setCommandError(null);
+    setQueuedNotice(false);
     try {
+      const recoveryKey = recovery
+        ? recoveryKeys.current.keyFor(body)
+        : body.kind === 'prompt' ? recoveryKeys.current.pending(body) : undefined;
       await collabFetch<Command>(`/sessions/${sessionId}/commands`, {
         method: 'POST',
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: recoveryKey ?? crypto.randomUUID(),
         body,
       });
+      if (recoveryKey !== undefined) {
+        recoveryKeys.current.settled(body);
+        setQueuedNotice(true);
+      }
       await onChanged();
       await loadTimeline();
+      return true;
     } catch (err) {
       setCommandError(
         err instanceof ApiError && err.status === 409
-          ? 'This request is no longer active.'
+          ? err.message || 'This request is no longer active.'
           : err instanceof Error
             ? err.message
             : 'Command failed.',
       );
+      return false;
     }
   }
 
@@ -722,70 +754,27 @@ function SessionPanel({
         </p>
       ) : (
         <>
-          <div aria-label="Session timeline" className="max-h-72 overflow-auto rounded-md border border-border bg-background p-2 font-mono text-xs">
-            {timelineError ? (
-              <p role="alert" className="text-destructive">{timelineError}</p>
-            ) : timeline.length === 0 ? (
-              <p className="text-muted-foreground">No output yet.</p>
-            ) : null}
-            {timeline.map((entry) => (
-              <div key={entry.eventId} className="border-b border-border/40 py-1 last:border-0">
-                <span className="text-muted-foreground">{new Date(entry.observedAt).toLocaleTimeString()} </span>
-                <span className="rounded bg-secondary px-1 text-[10px]">{entry.kind}</span>
-                <pre className="mt-0.5 whitespace-pre-wrap break-words">{safePayloadText(entry.payload)}</pre>
-              </div>
-            ))}
-          </div>
+          <SessionTimeline entries={timeline} error={timelineError} />
 
-          {pendingRequest ? (
-            <PendingRequestCard
-              key={pendingRequest.id}
-              request={pendingRequest}
-              draft={draft}
-              setDraft={setDraft}
-              canRespond={canSteer}
-              onSend={(response) => void sendCommand({ kind: 'permission', requestId: pendingRequest.id, response })}
-            />
-          ) : null}
+          <PendingRequestList
+            requests={pendingRequests}
+            drafts={drafts}
+            setDraft={(requestId, draft) => setDrafts((current) => ({ ...current, [requestId]: draft ?? undefined }))}
+            canRespond={canSteer}
+            onSend={(request, response) => void sendCommand(requestCommand(request, response))}
+          />
+          {pendingIncomplete ? <p role="alert" className="text-xs text-destructive">Some pending requests could not be loaded. Showing the requests loaded so far.</p> : null}
 
-          {canSteer ? (
-            <form
-              className="flex flex-col gap-2"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (!prompt.trim()) return;
-                void sendCommand({ kind: 'prompt', text: prompt.trim(), behavior });
-                setPrompt('');
-              }}
-            >
-              <div className="flex gap-2">
-                <Input placeholder="Send a follow-up instruction…" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
-                <select
-                  aria-label="Prompt behavior"
-                  className="h-9 rounded-md border border-border bg-background px-2 text-xs"
-                  value={behavior}
-                  onChange={(e) => setBehavior(e.target.value as 'steer' | 'interrupt')}
-                >
-                  <option value="steer">steer</option>
-                  <option value="interrupt">interrupt</option>
-                </select>
-                <Button size="sm" type="submit">
-                  Send
-                </Button>
-              </div>
-            </form>
-          ) : null}
-
-          {canCancel && active ? (
-            <Button
-              size="sm"
-              variant="outline"
-              className="self-start"
-              onClick={() => void sendCommand({ kind: 'cancel' })}
-            >
-              Cancel current turn
-            </Button>
-          ) : null}
+          <SessionControls
+            canSteer={canSteer}
+            canCancel={canCancel}
+            active={active}
+            blockedCode={blockedCode}
+            recovery={recovery}
+            onPrompt={(text, behavior) => sendCommand({ kind: 'prompt', text, behavior })}
+            onCancel={() => void sendCommand({ kind: 'cancel' })}
+          />
+          {queuedNotice && !commandError ? <p role="status" className="text-xs text-muted-foreground">Request queued. The execution host has not confirmed it yet.</p> : null}
           {commandError ? <p role="alert" className="text-xs text-destructive">{commandError}</p> : null}
         </>
       )}
@@ -793,58 +782,71 @@ function SessionPanel({
   );
 }
 
-interface RequestLike {
-  requestId: string;
-  promptText: string;
-  kind: 'permission' | 'question';
-  choices?: { id: string; label: string }[];
-}
-
-function extractUnresolvedRequest(entries: TimelineEntry[]): PendingRequest | null {
-  for (let i = entries.length - 1; i >= 0; i -= 1) {
-    const entry = entries[i];
-    const payload = entry.payload as Record<string, unknown>;
-    const isRequest =
-      (entry.kind === 'attention' && typeof payload.permissionKind === 'string') ||
-      entry.kind === 'permission_request';
-    if (!isRequest) continue;
-    const laterResolution = entries.slice(i + 1).some((e) => e.kind === 'permission_resolved' || e.kind === 'attention_resolved');
-    if (laterResolution) return null;
-    const actions = Array.isArray(payload.actions)
-      ? (payload.actions as { id: string; label: string }[]).map((a) => ({
-          id: a.id,
-          label: a.label,
-          behavior: (/deny|reject/i.test(a.id) ? 'deny' : 'allow') as 'allow' | 'deny',
-        }))
-      : undefined;
-    return {
-      id: String(payload.requestId ?? payload.name ?? entry.eventId),
-      kind: payload.permissionKind === 'question' ? 'question' : 'permission',
-      name: String(payload.name ?? payload.summary ?? payload.title ?? 'The agent needs a decision'),
-      title: String(payload.name ?? payload.summary ?? payload.title ?? 'The agent needs a decision'),
-      input: recordish(payload.input),
-      actions,
-    };
-  }
-  return null;
-}
-
-function recordish(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
-}
-
 function safePayloadText(payload: Record<string, unknown>): string {
   const text = JSON.stringify(payload, null, 1) ?? '';
   return text.length > 2000 ? `${text.slice(0, 2000)}…` : text;
 }
 
-interface PendingRequestDto {
-  requestId: string;
-  kind: 'permission' | 'question';
-  promptText: string;
-  choices?: { id: string; label: string }[] | null;
-  inputSchema?: Record<string, unknown> | null;
-  expiresAt?: string | null;
+const CARD = 'rounded-md border border-orange-500/40 bg-orange-500/10 p-2.5 text-sm';
+const NO_PERMISSION = 'Operator permissions required to respond.';
+const isNative = (request: PendingRequest) => request.backend === 'claude-code' || request.backend === 'codex';
+
+export function SessionTimeline({ entries, error }: { entries: readonly TimelineEntry[]; error: string | null }) {
+  return (
+    <div aria-label="Session timeline" className="max-h-72 overflow-auto rounded-md border border-border bg-background p-2 font-mono text-xs">
+      {error ? (
+        <p role="alert" className="text-destructive">{error}</p>
+      ) : entries.length === 0 ? (
+        <p className="text-muted-foreground">No output yet.</p>
+      ) : null}
+      {entries.map((entry) => (
+        <div key={entry.eventId} className="border-b border-border/40 py-1 last:border-0">
+          <span className="text-muted-foreground">{new Date(entry.observedAt).toLocaleTimeString()} </span>
+          <span className="rounded bg-secondary px-1 text-[10px]">{entry.kind}</span>
+          <pre className="mt-0.5 whitespace-pre-wrap break-words">{safePayloadText(entry.payload)}</pre>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function PendingRequestList({
+  requests,
+  drafts,
+  setDraft,
+  canRespond,
+  onSend,
+}: {
+  requests: readonly PendingRequest[];
+  drafts: Record<string, QuestionDraft | undefined>;
+  setDraft: (requestId: string, draft: QuestionDraft | null) => void;
+  canRespond: boolean;
+  onSend: (request: PendingRequest, response: Record<string, unknown>) => void;
+}) {
+  if (requests.length === 0) return null;
+  return (
+    <div aria-label="Pending requests" className="flex flex-col gap-2">
+      {requests.map((request) => (
+        <PendingRequestCard
+          key={request.id}
+          request={request}
+          draft={drafts[request.id] ?? null}
+          setDraft={(draft) => setDraft(request.id, draft)}
+          canRespond={canRespond}
+          onSend={(response) => onSend(request, response)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function HostAnswer({ requestId, lead }: { requestId: string; lead: string }) {
+  return (
+    <p data-host-answer="" className="mt-2 text-xs text-muted-foreground">
+      {lead} run <code className="rounded bg-secondary px-1 font-mono text-[11px] text-foreground">{`answer --local --request ${requestId}`}</code> with
+      the runner on the execution host.
+    </p>
+  );
 }
 
 function PendingRequestCard({
@@ -858,28 +860,54 @@ function PendingRequestCard({
   draft: QuestionDraft | null;
   setDraft: (d: QuestionDraft | null) => void;
   canRespond: boolean;
-  onSend: (response: { behavior: 'allow' | 'deny'; selectedActionId?: string; answers?: Record<string, string> }) => void;
+  onSend: (response: Record<string, unknown>) => void;
 }) {
   const questions = parseQuestions(request);
+  const native = isNative(request);
+  const deny = request.actions?.find((action) => action.behavior === 'deny');
+
+  if (request.hostOnly) {
+    return (
+      <div data-request-id={request.id} className={CARD}>
+        <p className="font-medium">{request.title || 'The agent needs your input'}</p>
+        <p className="mt-1 text-xs">Answer this request on the execution host.</p>
+        {canRespond ? (
+          <>
+            <HostAnswer requestId={request.id} lead="To answer," />
+            {deny ? (
+              <div className="mt-2 flex gap-2">
+                <Button size="sm" variant="outline" onClick={() => onSend({ behavior: 'deny', selectedActionId: deny.id })}>
+                  Cancel
+                </Button>
+              </div>
+            ) : null}
+          </>
+        ) : (
+          <p className="mt-1 text-xs text-muted-foreground">{NO_PERMISSION}</p>
+        )}
+      </div>
+    );
+  }
 
   if (questions) {
     const current = draft && draft.selected.length === questions.length ? draft : emptyDraft(questions);
     const answerable = allAnswered(questions, current);
     return (
-      <div className="rounded-md border border-orange-500/40 bg-orange-500/10 p-2.5 text-sm">
-        <p className="font-medium">{request.name ?? 'The agent needs your input'}</p>
+      <div data-request-id={request.id} className={CARD}>
+        <p className="font-medium">{request.name || 'The agent needs your input'}</p>
         {canRespond ? (
           <>
             <div className="mt-2 flex flex-col gap-3">
               {questions.map((q, qIndex) => (
-                <fieldset key={q.header} className="rounded-md border border-border bg-background p-2">
+                <fieldset key={q.id ?? `${qIndex}-${q.header}`} className="rounded-md border border-border bg-background p-2">
                   <legend className="px-1 text-xs font-medium">{q.question}</legend>
                   <div className="flex flex-col gap-1">
                     {q.options.map((option, oIndex) => (
-                      <label key={option.label} className="flex items-center gap-2 text-xs">
+                      <label key={option.id ?? `${oIndex}-${option.label}`} className="flex items-center gap-2 text-xs">
                         <input
                           type={q.multiSelect ? 'checkbox' : 'radio'}
-                          name={`${request.id}-${q.header}`}
+                          name={`${request.id}-${q.id ?? qIndex}`}
+                          value={option.id ?? String(oIndex)}
                           checked={current.selected[qIndex]?.includes(oIndex) ?? false}
                           onChange={() => setDraft(choose(current, questions, qIndex, oIndex))}
                         />
@@ -906,25 +934,36 @@ function PendingRequestCard({
               <Button
                 size="sm"
                 disabled={!answerable}
-                onClick={() => onSend({ behavior: 'allow', answers: buildAnswers(questions, current) })}
+                onClick={() =>
+                  onSend(native ? { behavior: 'allow', selections: buildSelections(questions, current) } : { behavior: 'allow', answers: buildAnswers(questions, current) })
+                }
               >
                 Submit answers
               </Button>
-              <Button size="sm" variant="outline" onClick={() => onSend({ behavior: 'deny' })}>
-                {dismissLabel(questions) ?? 'Dismiss'}
-              </Button>
+              {native ? (
+                deny ? (
+                  <Button size="sm" variant="outline" onClick={() => onSend({ behavior: 'deny', selectedActionId: deny.id })}>
+                    {deny.label}
+                  </Button>
+                ) : null
+              ) : (
+                <Button size="sm" variant="outline" onClick={() => onSend({ behavior: 'deny' })}>
+                  {dismissLabel(questions) ?? 'Dismiss'}
+                </Button>
+              )}
             </div>
+            {native ? <HostAnswer requestId={request.id} lead="Or, to answer on the execution host," /> : null}
           </>
         ) : (
-          <p className="mt-1 text-xs text-muted-foreground">Operator permissions required to respond.</p>
+          <p className="mt-1 text-xs text-muted-foreground">{NO_PERMISSION}</p>
         )}
       </div>
     );
   }
 
   return (
-    <div className="rounded-md border border-orange-500/40 bg-orange-500/10 p-2.5 text-sm">
-      <p className="font-medium">{request.title ?? request.name ?? 'Permission request'}</p>
+    <div data-request-id={request.id} className={CARD}>
+      <p className="font-medium">{request.title || request.name || 'Permission request'}</p>
       {canRespond ? (
         <div className="mt-2 flex flex-wrap gap-2">
           {(request.actions ?? []).map((action) => (
@@ -932,18 +971,12 @@ function PendingRequestCard({
               key={action.id}
               size="sm"
               variant={action.behavior === 'deny' ? 'outline' : 'default'}
-              onClick={() =>
-                onSend(
-                  action.behavior === 'deny'
-                    ? { behavior: 'deny', selectedActionId: action.id }
-                    : { behavior: 'allow', selectedActionId: action.id },
-                )
-              }
+              onClick={() => onSend({ behavior: action.behavior, selectedActionId: action.id })}
             >
               {action.label}
             </Button>
           ))}
-          {(!request.actions || request.actions.length === 0) && (
+          {!native && (!request.actions || request.actions.length === 0) && (
             <>
               <Button size="sm" onClick={() => onSend({ behavior: 'allow' })}>
                 Allow
@@ -955,8 +988,155 @@ function PendingRequestCard({
           )}
         </div>
       ) : (
-        <p className="mt-1 text-xs text-muted-foreground">Operator permissions required to respond.</p>
+        <p className="mt-1 text-xs text-muted-foreground">{NO_PERMISSION}</p>
       )}
     </div>
+  );
+}
+
+export function ExecutionProfileSummary({ execution }: { execution: { backend: ExecutionBackend | null | undefined; model: string | null; policy?: Record<string, unknown> | null } }) {
+  if (!execution.backend) return null;
+  const policy = policyText(execution.backend, execution.policy);
+  return (
+    <dl aria-label="Execution profile" className="flex flex-col gap-0.5 text-xs text-muted-foreground">
+      <div>{`Backend: ${BACKEND_LABELS[execution.backend]}`}</div>
+      <div>{`Model: ${execution.model ?? 'Selected by the profile'}`}</div>
+      <div>{`Policy: ${policy ?? 'Selected by the profile'}`}</div>
+    </dl>
+  );
+}
+
+const NOTICE = 'mt-2 rounded-md border px-2 py-1 text-xs';
+
+export function RunStatusNotices({ run, queue, integrationDisabled }: { run: { state: RunState; errorCode?: string | null }; queue: RunQueue; integrationDisabled: boolean }) {
+  const failure = run.state === 'failed' && !integrationDisabled ? executionErrorMessage(run.errorCode ?? null) ?? 'Execution failed.' : null;
+  return (
+    <>
+      {queue ? (
+        <p role="status" className={`${NOTICE} border-border bg-background`}>
+          {queue.reason === 'capacity' ? `${EXECUTION_MESSAGES.capacity_wait} ` : queue.reason === 'host_offline' ? 'The execution host is offline. ' : ''}
+          Queued since <time dateTime={queue.queuedAt}>{new Date(queue.queuedAt).toLocaleString()}</time>.
+        </p>
+      ) : null}
+      {run.state === 'reconciling' ? <p role="status" className={`${NOTICE} border-amber-500/40 bg-amber-500/10`}>{EXECUTION_MESSAGES.reconciling}</p> : null}
+      {integrationDisabled ? <p role="status" className={`${NOTICE} border-amber-500/40 bg-amber-500/10`}>{EXECUTION_MESSAGES.integration_disabled}</p> : null}
+      {failure ? <p role="alert" className={`${NOTICE} border-destructive/40 bg-destructive/10 text-destructive`}>{failure}</p> : null}
+    </>
+  );
+}
+
+const RECOVERABLE_RUN_STATES: readonly RunState[] = ['reconciling', 'cancelled', 'idle', 'queued'];
+
+export function isNativeRecovery(execution: { backend: ExecutionBackend } | null, runState: RunState, sessionState: RunState | null): boolean {
+  if (!execution || (execution.backend !== 'claude-code' && execution.backend !== 'codex')) return false;
+  return sessionState === 'reconciling' && RECOVERABLE_RUN_STATES.includes(runState);
+}
+
+export function createIntentKeys(newKey: () => string = () => crypto.randomUUID()) {
+  const keys = new Map<string, string>();
+  const signature = (body: Record<string, unknown>) => JSON.stringify(body);
+  return {
+    keyFor(body: Record<string, unknown>) {
+      const sig = signature(body);
+      const existing = keys.get(sig);
+      if (existing) return existing;
+      const key = newKey();
+      keys.set(sig, key);
+      return key;
+    },
+    settled(body: Record<string, unknown>) {
+      keys.delete(signature(body));
+    },
+    pending(body: Record<string, unknown>) {
+      return keys.get(signature(body));
+    },
+  };
+}
+
+const RECOVERY_COPY = 'Execution status is uncertain. Cancel it, or send new instructions to continue. Earlier instructions are not sent again.';
+
+export function SessionControls({ canSteer, canCancel, active, blockedCode, recovery = false, onPrompt, onCancel }: { canSteer: boolean; canCancel: boolean; active: boolean; blockedCode: string | null; recovery?: boolean; onPrompt: (text: string, behavior: 'steer' | 'interrupt') => void | Promise<boolean>; onCancel: () => void }) {
+  const [prompt, setPrompt] = useState('');
+  const [behavior, setBehavior] = useState<'steer' | 'interrupt'>('steer');
+  const [sending, setSending] = useState(false);
+  const blocked = blockedCode !== null;
+  const reason = blocked ? executionErrorMessage(blockedCode) : null;
+  if (recovery) {
+    return (
+      <>
+        {canSteer || canCancel ? <p className="text-xs text-muted-foreground">{reason ?? RECOVERY_COPY}</p> : null}
+        {canSteer ? (
+          <form
+            className="flex flex-col gap-2"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const text = prompt.trim();
+              if (blocked || sending || !text) return;
+              setBehavior('interrupt');
+              setSending(true);
+              try {
+                if ((await onPrompt(text, 'interrupt')) === true) setPrompt('');
+              } finally {
+                setSending(false);
+              }
+            }}
+          >
+            <div className="flex gap-2">
+              <Input placeholder="New instructions to continue…" value={prompt} disabled={blocked} onChange={(e) => setPrompt(e.target.value)} />
+              <Button size="sm" type="submit" disabled={blocked || sending}>
+                Send new instructions
+              </Button>
+            </div>
+          </form>
+        ) : null}
+        {canCancel ? (
+          <Button size="sm" variant="outline" className="self-start" disabled={blocked || sending} onClick={onCancel}>
+            Cancel uncertain execution
+          </Button>
+        ) : null}
+      </>
+    );
+  }
+  return (
+    <>
+      {reason && (canSteer || canCancel) ? <p className="text-xs text-muted-foreground">{reason}</p> : null}
+      {canSteer ? (
+        <form
+          className="flex flex-col gap-2"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (blocked || sending || !prompt.trim()) return;
+            setSending(true);
+            try {
+              if ((await onPrompt(prompt.trim(), behavior)) === true) setPrompt('');
+            } finally {
+              setSending(false);
+            }
+          }}
+        >
+          <div className="flex gap-2">
+            <Input placeholder="Send a follow-up instruction…" value={prompt} disabled={blocked} onChange={(e) => setPrompt(e.target.value)} />
+            <select
+              aria-label="Prompt behavior"
+              className="h-9 rounded-md border border-border bg-background px-2 text-xs"
+              value={behavior}
+              disabled={blocked}
+              onChange={(e) => setBehavior(e.target.value as 'steer' | 'interrupt')}
+            >
+              <option value="steer">steer</option>
+              <option value="interrupt">interrupt</option>
+            </select>
+            <Button size="sm" type="submit" disabled={blocked || sending}>
+              Send
+            </Button>
+          </div>
+        </form>
+      ) : null}
+      {canCancel && active ? (
+        <Button size="sm" variant="outline" className="self-start" disabled={blocked} onClick={onCancel}>
+          Cancel current turn
+        </Button>
+      ) : null}
+    </>
   );
 }

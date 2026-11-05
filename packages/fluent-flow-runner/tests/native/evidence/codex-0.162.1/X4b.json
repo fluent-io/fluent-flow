@@ -1,0 +1,15 @@
+{
+  "contextConfigBefore": null,
+  "contextConfigAfter": "[projects.\"<probe-root>/repo\"]\ntrust_level = \"trusted\"\n",
+  "plantedStatuses": [
+    "ff_planted_codex_toml:starting",
+    "ff_planted_codex_toml:failed"
+  ],
+  "plantedHits": [
+    {
+      "path": "/ff_planted_codex_toml",
+      "method": "POST"
+    }
+  ],
+  "plantedModelUsed": false
+}

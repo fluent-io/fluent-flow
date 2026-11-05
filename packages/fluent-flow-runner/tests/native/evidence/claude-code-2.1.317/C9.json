@@ -1,0 +1,14 @@
+{
+  "requestsDuringQuietWindow": 0,
+  "requestsAfterMessage": 1,
+  "resumeEvents": [
+    "command_lifecycle",
+    "command_lifecycle",
+    "system/init",
+    "system/status",
+    "user",
+    "assistant",
+    "result/success",
+    "command_lifecycle"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "always": {
+    "advertised": [
+      "session",
+      "always"
+    ],
+    "askedFirstThread": 1,
+    "askedSecondThread": 0,
+    "askedAfterRestart": 0,
+    "executed": 4,
+    "configBefore": "[mcp_servers.ff_reporting]\nurl = \"http://127.0.0.1:36453/mcp\"\nbearer_token_env_var = \"FF_REPORTING_TOKEN\"\n",
+    "configAfter": "[mcp_servers.ff_reporting]\nurl = \"http://127.0.0.1:36453/mcp\"\nbearer_token_env_var = \"FF_REPORTING_TOKEN\"\n\n[mcp_servers.ff_reporting.tools.ff_probe_report]\napproval_mode = \"approve\"\n"
+  }
+}

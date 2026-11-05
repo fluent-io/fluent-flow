@@ -22,7 +22,7 @@ rate-limited secret invitation redemption.
   checks current permissions on every delivery; revocation closes a filtered
   stream with `access_revoked`. `/attention` shares the current safe DTO;
   reading an update does not resolve a pending approval or error.
-- `routes-hosts.js`: owner-scoped host enrollment and allowlisted mappings.
+- `routes-hosts.js`: owner-scoped host enrollment and allowlisted mappings. Task 12 seam: `GET /hosts/:id/catalog` returns the enrolling owner's (or a genuine superadmin's) safe catalog projection `{ hostId, repositories: [{ key }], profiles, capacity }`; anyone else, an unknown host or a malformed id is 404. Mapping profiles and catalog profiles add `backend`, `readiness` and a sanitized `policy`; mappings add `capacity` for the native backends among their allowlisted profiles (see the [collaboration README](../../../db/src/collaboration/README.md)).
   `POST /hosts` returns the one-time `{id,name,token}` enrollment DTO.
   `GET /hosts` returns token-free summaries with nullable `lastHeartbeatAt`;
   consumers must not substitute a different timestamp field or creation DTO.

@@ -1,0 +1,17 @@
+{
+  "receipt": {
+    "still_queued": [],
+    "cancelled": [
+      "3aa412d4-c3ff-4023-92ac-f71fe1063c12"
+    ]
+  },
+  "result": {
+    "subtype": "error_during_execution",
+    "is_error": true,
+    "user_message_uuids": [
+      "d1e7223d-e748-4c04-853c-a9076adefb5a"
+    ]
+  },
+  "aborted": true,
+  "mainRequests": 1
+}

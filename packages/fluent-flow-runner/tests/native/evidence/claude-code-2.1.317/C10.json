@@ -1,0 +1,16 @@
+{
+  "argv": [
+    "auth",
+    "status",
+    "--json"
+  ],
+  "status": {
+    "loggedIn": true,
+    "authMethod": "api_key",
+    "apiProvider": "firstParty",
+    "analyticsDisabled": true,
+    "projectsDirectory": "<probe-root>/context/projects",
+    "configDirectory": "<probe-root>/context",
+    "apiKeySource": "ANTHROPIC_API_KEY"
+  }
+}

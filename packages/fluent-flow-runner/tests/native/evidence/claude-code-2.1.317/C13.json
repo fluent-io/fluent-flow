@@ -1,0 +1,142 @@
+{
+  "initPermissionModes": {
+    "acceptEdits": "acceptEdits",
+    "auto": "auto",
+    "bypassPermissions": "bypassPermissions",
+    "manual": "default",
+    "dontAsk": "dontAsk",
+    "plan": "plan"
+  },
+  "policyOutcomes": {
+    "acceptEdits": {
+      "reporting": "asks",
+      "questions": "asks"
+    },
+    "auto": {
+      "reporting": "unproven",
+      "questions": "asks"
+    },
+    "bypassPermissions": {
+      "reporting": "runs",
+      "questions": "asks"
+    },
+    "manual": {
+      "reporting": "asks",
+      "questions": "asks"
+    },
+    "dontAsk": {
+      "reporting": "refused",
+      "questions": "refused"
+    },
+    "plan": {
+      "reporting": "asks",
+      "questions": "asks"
+    }
+  },
+  "rawObservedOutcomes": {
+    "acceptEdits": {
+      "reporting": "asks",
+      "questions": "asks"
+    },
+    "auto": {
+      "reporting": "refused",
+      "questions": "asks"
+    },
+    "bypassPermissions": {
+      "reporting": "runs",
+      "questions": "asks"
+    },
+    "manual": {
+      "reporting": "asks",
+      "questions": "asks"
+    },
+    "dontAsk": {
+      "reporting": "refused",
+      "questions": "refused"
+    },
+    "plan": {
+      "reporting": "asks",
+      "questions": "asks"
+    }
+  },
+  "details": {
+    "acceptEdits": {
+      "reportingAsked": 1,
+      "reportingCalls": 1,
+      "questionAsked": 1,
+      "askToolResultIsError": null,
+      "answerReached": true,
+      "modelRequests": 4,
+      "sideRequests": 0,
+      "reportingToolResult": {
+        "is_error": null,
+        "content": "[{\"type\":\"text\",\"text\":\"reported\"}]"
+      }
+    },
+    "auto": {
+      "reportingAsked": 0,
+      "reportingCalls": 0,
+      "questionAsked": 1,
+      "askToolResultIsError": null,
+      "answerReached": true,
+      "modelRequests": 4,
+      "sideRequests": 10,
+      "reportingToolResult": {
+        "is_error": true,
+        "content": "\"Auto mode could not evaluate this action and is blocking it for safety — run with --debug for details. This is not a judgment that the action is unsafe. This is usually transient — wait briefly and try this action again as-is; don't rewrite it. If it keeps failing, continue with other tasks that do"
+      }
+    },
+    "bypassPermissions": {
+      "reportingAsked": 0,
+      "reportingCalls": 1,
+      "questionAsked": 1,
+      "askToolResultIsError": null,
+      "answerReached": true,
+      "modelRequests": 4,
+      "sideRequests": 0,
+      "reportingToolResult": {
+        "is_error": null,
+        "content": "[{\"type\":\"text\",\"text\":\"reported\"}]"
+      }
+    },
+    "manual": {
+      "reportingAsked": 1,
+      "reportingCalls": 1,
+      "questionAsked": 1,
+      "askToolResultIsError": null,
+      "answerReached": true,
+      "modelRequests": 4,
+      "sideRequests": 0,
+      "reportingToolResult": {
+        "is_error": null,
+        "content": "[{\"type\":\"text\",\"text\":\"reported\"}]"
+      }
+    },
+    "dontAsk": {
+      "reportingAsked": 0,
+      "reportingCalls": 0,
+      "questionAsked": 0,
+      "askToolResultIsError": true,
+      "answerReached": false,
+      "modelRequests": 4,
+      "sideRequests": 0,
+      "reportingToolResult": {
+        "is_error": true,
+        "content": "\"Permission to use mcp__ff_reporting__ff_probe_report has been denied because Claude Code is running in don't ask mode. IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, e.g. using head instead of cat. But you *should not* "
+      }
+    },
+    "plan": {
+      "reportingAsked": 1,
+      "reportingCalls": 1,
+      "questionAsked": 1,
+      "askToolResultIsError": null,
+      "answerReached": true,
+      "modelRequests": 4,
+      "sideRequests": 0,
+      "reportingToolResult": {
+        "is_error": null,
+        "content": "[{\"type\":\"text\",\"text\":\"reported\"}]"
+      }
+    }
+  }
+}

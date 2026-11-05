@@ -1,0 +1,23 @@
+{
+  "nativeResults": [
+    {
+      "subtype": "error_during_execution",
+      "is_error": true,
+      "terminal_reason": "aborted_streaming"
+    }
+  ],
+  "startedBeforeInterrupt": false,
+  "settled": [
+    {
+      "commandId": "<prompt>",
+      "outcome": "interrupted",
+      "dispatched": true
+    }
+  ],
+  "receipt": {
+    "still_queued": [],
+    "cancelled": []
+  },
+  "terminal": "interrupted",
+  "modelRequests": 0
+}

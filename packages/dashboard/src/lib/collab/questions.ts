@@ -1,5 +1,12 @@
+import type { PendingRequestV2 } from './types';
+
 export interface PendingRequest {
   id: string;
+  backend?: PendingRequestV2['backend'];
+  generation?: number | null;
+  fingerprint?: string | null;
+  hostOnly?: boolean;
+  questions?: readonly FormQuestion[] | null;
   name?: string;
   kind?: string;
   title?: string;
@@ -13,9 +20,10 @@ export type PermissionReply =
   | { behavior: 'deny'; selectedActionId?: string; message?: string };
 
 export interface FormQuestion {
+  id?: string;
   question: string;
   header: string;
-  options: { label: string; description?: string }[];
+  options: { id?: string; label: string; description?: string }[];
   multiSelect: boolean;
   allowOther: boolean;
   allowEmpty: boolean;
@@ -32,6 +40,7 @@ const record = (v: unknown): v is Record<string, unknown> => typeof v === 'objec
 const text = (v: unknown) => (typeof v === 'string' ? v : undefined);
 
 export function parseQuestions(request: PendingRequest): FormQuestion[] | null {
+  if (request.kind === 'question' && request.questions) return request.questions.length ? [...request.questions] : null;
   if (request.kind !== 'question' || !record(request.input) || !Array.isArray(request.input.questions)) return null;
   const out: FormQuestion[] = [];
   for (const item of request.input.questions) {
@@ -158,4 +167,65 @@ export function pendingFromSession(dto: SessionPendingDto): PendingRequest {
       behavior: (denyActionIds.test(choice.id) ? 'deny' : 'allow') as 'allow' | 'deny',
     })),
   };
+}
+
+export type Selections = Record<string, { optionIds: string[]; other?: string }>;
+
+export function pendingFromV2(dto: PendingRequestV2): PendingRequest {
+  return {
+    id: dto.requestId,
+    kind: dto.kind,
+    backend: dto.backend,
+    generation: dto.generation,
+    fingerprint: dto.fingerprint,
+    hostOnly: dto.hostOnly,
+    name: dto.promptText,
+    title: dto.promptText,
+    input: dto.inputSchema ?? undefined,
+    questions: dto.questions?.map((q) => ({
+      id: q.id,
+      question: q.question,
+      header: q.header,
+      options: (q.options ?? []).map((o) => ({ id: o.id, label: o.label, description: o.description ?? undefined })),
+      multiSelect: q.multiSelect,
+      allowOther: q.allowOther,
+      allowEmpty: false,
+    })) ?? null,
+    actions: dto.choices?.map((choice) => ({
+      id: choice.id,
+      label: choice.label,
+      behavior: choice.behavior ?? ((denyActionIds.test(choice.id) ? 'deny' : 'allow') as 'allow' | 'deny'),
+    })),
+  };
+}
+
+export function buildSelections(questions: readonly FormQuestion[], draft: QuestionDraft): Selections {
+  const out: Selections = {};
+  questions.forEach((q, i) => {
+    const optionIds = (draft.selected[i] || []).map((o) => q.options[o]?.id).filter((id): id is string => !!id);
+    const typed = draft.other[i] ?? '';
+    out[q.id ?? String(i)] = showsTextInput(q) && typed.trim() ? { optionIds, other: typed } : { optionIds };
+  });
+  return out;
+}
+
+export function requestCommand(request: PendingRequest, response: Record<string, unknown>): Record<string, unknown> {
+  const native = typeof request.generation === 'number' && typeof request.fingerprint === 'string';
+  return { kind: 'permission', requestId: request.id, ...(native ? { generation: request.generation, fingerprint: request.fingerprint } : {}), response };
+}
+
+export type PendingPage = { data: PendingRequestV2[]; nextCursor: string | null };
+
+export async function loadPendingRequests(fetchPage: (cursor: string | null) => Promise<PendingPage>): Promise<{ requests: PendingRequestV2[]; complete: boolean }> {
+  const requests: PendingRequestV2[] = [];
+  const seen = new Set<string>();
+  let cursor: string | null = null;
+  for (;;) {
+    const page: PendingPage = await fetchPage(cursor);
+    requests.push(...page.data);
+    if (page.nextCursor === null) return { requests, complete: true };
+    if (seen.has(page.nextCursor)) return { requests, complete: false };
+    seen.add(page.nextCursor);
+    cursor = page.nextCursor;
+  }
 }

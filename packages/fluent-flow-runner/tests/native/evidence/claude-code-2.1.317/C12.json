@@ -1,0 +1,27 @@
+{
+  "unknownResume": {
+    "initErr": "stream_closed",
+    "result": {
+      "subtype": "error_during_execution",
+      "is_error": true
+    },
+    "exit": {
+      "code": 1,
+      "signal": null
+    },
+    "stderr": "No conversation found with session ID: f7e4e0c4-2354-4e81-832a-c46825eb4579\n"
+  },
+  "existingSessionId": {
+    "initialize": "stream_closed",
+    "exit": {
+      "code": 1,
+      "signal": null
+    },
+    "modelRequests": 0,
+    "expectedModelRequests": 0,
+    "stderr": "Error: Session ID 9333da6a-ea94-4186-a1b1-a16ee5acbdf1 is already in use.\n",
+    "transcripts": 1,
+    "transcriptUnchanged": true,
+    "transcriptLines": 23
+  }
+}

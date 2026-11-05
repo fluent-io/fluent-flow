@@ -16,6 +16,16 @@ which signs actor assertions server-side.
 - `questions.ts` — question/permission encoding adapted from Flowly
   `shared/permission-question.ts` (MIT, pinned 13213f4; see
   THIRD_PARTY_NOTICES): parseQuestions/buildAnswers/answerReply semantics.
+  Task 9: `pendingFromV2` maps the plural pending-request DTO (each choice keeps
+  its own behavior; the deny/reject id regex applies only to legacy choices
+  without one), `buildSelections` builds native per-question-id selections by
+  option id (`optionIds`, fix 1: a shown label may be a scrubbed local value;
+  typed text separate and sent only with content) and
+  `requestCommand` names the request id plus, for native requests, its
+  generation and fingerprint. `loadPendingRequests` follows the plural API's
+  cursor to its end (no page cap) and reports the list incomplete only when the
+  server repeats a cursor.
+- `execution-copy.ts` — Task 12 public execution copy: `EXECUTION_MESSAGES` (the approved code-to-message table), `READINESS_COPY` (label and message for each of the seven readiness states), `executionErrorMessage` (own-key lookup, null for unknown codes so raw codes and details never render), backend labels, an allowlisted `policyText` mirroring the server's `sanitizePolicy`, and `capacityText` (unknown availability stays unknown).
 - `live.ts` — abortable latest-request guards and serial bounded refresh.
 - `use-me.ts` — /me profile hook (capabilities per project, workspace
   capabilities, bootstrap eligibility). `MeProvider` lets the dashboard shell

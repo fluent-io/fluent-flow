@@ -1,0 +1,211 @@
+{
+  "modelNotFound404": {
+    "turnStatus": "failed",
+    "terminalErrorInfo": {
+      "httpConnectionFailed": {
+        "httpStatusCode": 404
+      }
+    },
+    "terminalMessage": "unexpected status 404 Not Found: The model `ff-probe-model` does not exist or you do not have access to it., url: <endpoint>/responses",
+    "errors": [
+      {
+        "codexErrorInfo": {
+          "responseStreamDisconnected": {
+            "httpStatusCode": 404
+          }
+        },
+        "willRetry": true
+      },
+      {
+        "codexErrorInfo": {
+          "responseStreamDisconnected": {
+            "httpStatusCode": 404
+          }
+        },
+        "willRetry": true
+      },
+      {
+        "codexErrorInfo": {
+          "responseStreamDisconnected": {
+            "httpStatusCode": 404
+          }
+        },
+        "willRetry": true
+      },
+      {
+        "codexErrorInfo": {
+          "responseStreamDisconnected": {
+            "httpStatusCode": 404
+          }
+        },
+        "willRetry": true
+      },
+      {
+        "codexErrorInfo": {
+          "responseStreamDisconnected": {
+            "httpStatusCode": 404
+          }
+        },
+        "willRetry": true
+      },
+      {
+        "codexErrorInfo": {
+          "httpConnectionFailed": {
+            "httpStatusCode": 404
+          }
+        },
+        "willRetry": false
+      }
+    ],
+    "providerCodeAnywhere": false,
+    "endpointHits": 6
+  },
+  "routing404": {
+    "turnStatus": "failed",
+    "terminalErrorInfo": {
+      "httpConnectionFailed": {
+        "httpStatusCode": 404
+      }
+    },
+    "terminalMessage": "unexpected status 404 Not Found: route not found, url: <endpoint>/responses",
+    "errors": [
+      {
+        "codexErrorInfo": {
+          "responseStreamDisconnected": {
+            "httpStatusCode": 404
+          }
+        },
+        "willRetry": true
+      },
+      {
+        "codexErrorInfo": {
+          "responseStreamDisconnected": {
+            "httpStatusCode": 404
+          }
+        },
+        "willRetry": true
+      },
+      {
+        "codexErrorInfo": {
+          "responseStreamDisconnected": {
+            "httpStatusCode": 404
+          }
+        },
+        "willRetry": true
+      },
+      {
+        "codexErrorInfo": {
+          "responseStreamDisconnected": {
+            "httpStatusCode": 404
+          }
+        },
+        "willRetry": true
+      },
+      {
+        "codexErrorInfo": {
+          "responseStreamDisconnected": {
+            "httpStatusCode": 404
+          }
+        },
+        "willRetry": true
+      },
+      {
+        "codexErrorInfo": {
+          "httpConnectionFailed": {
+            "httpStatusCode": 404
+          }
+        },
+        "willRetry": false
+      }
+    ],
+    "providerCodeAnywhere": false,
+    "endpointHits": 6
+  },
+  "plain404": {
+    "turnStatus": "failed",
+    "terminalErrorInfo": {
+      "httpConnectionFailed": {
+        "httpStatusCode": 404
+      }
+    },
+    "terminalMessage": "unexpected status 404 Not Found: Not Found, url: <endpoint>/responses",
+    "errors": [
+      {
+        "codexErrorInfo": {
+          "responseStreamDisconnected": {
+            "httpStatusCode": 404
+          }
+        },
+        "willRetry": true
+      },
+      {
+        "codexErrorInfo": {
+          "responseStreamDisconnected": {
+            "httpStatusCode": 404
+          }
+        },
+        "willRetry": true
+      },
+      {
+        "codexErrorInfo": {
+          "responseStreamDisconnected": {
+            "httpStatusCode": 404
+          }
+        },
+        "willRetry": true
+      },
+      {
+        "codexErrorInfo": {
+          "responseStreamDisconnected": {
+            "httpStatusCode": 404
+          }
+        },
+        "willRetry": true
+      },
+      {
+        "codexErrorInfo": {
+          "responseStreamDisconnected": {
+            "httpStatusCode": 404
+          }
+        },
+        "willRetry": true
+      },
+      {
+        "codexErrorInfo": {
+          "httpConnectionFailed": {
+            "httpStatusCode": 404
+          }
+        },
+        "willRetry": false
+      }
+    ],
+    "providerCodeAnywhere": false,
+    "endpointHits": 6
+  },
+  "modelNotFound400": {
+    "turnStatus": "failed",
+    "terminalErrorInfo": "other",
+    "terminalMessage": "{\"error\":{\"message\":\"The requested model is not supported.\",\"type\":\"invalid_request_error\",\"param\":\"model\",\"code\":\"model_not_found\"}}",
+    "errors": [
+      {
+        "codexErrorInfo": "other",
+        "willRetry": false
+      }
+    ],
+    "providerCodeAnywhere": true,
+    "endpointHits": 1
+  },
+  "invalidValue400": {
+    "turnStatus": "failed",
+    "terminalErrorInfo": "other",
+    "terminalMessage": "{\"error\":{\"message\":\"Invalid value for input.\",\"type\":\"invalid_request_error\",\"param\":\"input\",\"code\":\"invalid_value\"}}",
+    "errors": [
+      {
+        "codexErrorInfo": "other",
+        "willRetry": false
+      }
+    ],
+    "providerCodeAnywhere": true,
+    "endpointHits": 1
+  }
+}

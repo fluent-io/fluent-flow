@@ -1,0 +1,61 @@
+{
+  "canUseTool": {
+    "subtype": "can_use_tool",
+    "tool_name": "Bash",
+    "display_name": "Bash",
+    "input": {
+      "command": "touch <probe-root>/repo/c4-marker",
+      "description": "probe"
+    },
+    "description": "probe",
+    "permission_suggestions": [
+      {
+        "type": "addRules",
+        "rules": [
+          {
+            "toolName": "Bash",
+            "ruleContent": "touch <probe-root>/repo/c4-marker"
+          }
+        ],
+        "behavior": "allow",
+        "destination": "localSettings"
+      },
+      {
+        "type": "addDirectories",
+        "directories": [
+          "<probe-root>/repo"
+        ],
+        "destination": "session"
+      },
+      {
+        "type": "setMode",
+        "mode": "acceptEdits",
+        "destination": "session"
+      }
+    ],
+    "blocked_path": "<probe-root>/repo/c4-marker",
+    "tool_use_id": "toolu_t0_0"
+  },
+  "events": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "run it"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "content": "denied Bash",
+          "is_error": true,
+          "tool_use_id": "toolu_t0_0"
+        }
+      ]
+    }
+  ]
+}

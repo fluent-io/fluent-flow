@@ -1,0 +1,26 @@
+{
+  "policyOutcomes": {
+    "untrusted": {
+      "questions": "asks"
+    },
+    "never": {
+      "questions": "refused"
+    }
+  },
+  "details": {
+    "untrusted": {
+      "asked": 1,
+      "ffRequests": 1,
+      "answer": {
+        "state": "dispatched"
+      },
+      "turnStatus": "completed"
+    },
+    "never": {
+      "asked": 0,
+      "ffRequests": 0,
+      "answer": null,
+      "turnStatus": "completed"
+    }
+  }
+}

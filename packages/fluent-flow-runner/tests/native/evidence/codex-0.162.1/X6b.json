@@ -1,0 +1,17 @@
+{
+  "availableDecisions": [
+    "accept",
+    {
+      "acceptWithExecpolicyAmendment": {
+        "execpolicy_amendment": [
+          "touch",
+          "<probe-root>/worktree/x6b-marker"
+        ]
+      }
+    },
+    "cancel"
+  ],
+  "answered": "cancel",
+  "turnStatus": "interrupted",
+  "modelRequests": 1
+}

@@ -1,0 +1,29 @@
+{
+  "replay": {
+    "type": "user",
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "/login --resume x @README.md"
+        }
+      ]
+    },
+    "session_id": "292c1e00-cd89-4cae-9fb7-6d1382879559",
+    "parent_tool_use_id": null,
+    "uuid": "1d582d9c-8ff9-4be5-9e2e-32093761b68d",
+    "timestamp": "2026-11-05T02:30:58.043Z",
+    "isReplay": true
+  },
+  "events": [
+    "command_lifecycle",
+    "command_lifecycle",
+    "system",
+    "system",
+    "user",
+    "assistant",
+    "result",
+    "command_lifecycle"
+  ]
+}

@@ -2,7 +2,7 @@
 
 CLI runner for [Fluent Flow](../fluent-flow/README.md). Connects to a Fluent Flow server, picks up fix claims (work assignments created when a code review fails), spawns the configured AI coding agent, and reports results.
 
-## Collaborative board execution through Paseo
+## Collaborative board execution
 
 ### Local browser testing
 
@@ -16,7 +16,9 @@ npm run dev
 npm run runner
 ```
 
-The runner command uses the existing local Paseo daemon and real connector. It authenticates the saved demo owner, enrolls one persistent `Local demo runner` host, creates a disposable Git repository and maps Project A1 to an existing coding profile. It prefers your configured OMP AI3 `ai3/qwen38-flash` Coder profile; pass `--profile <id>` to choose another existing profile. No software or provider credentials are installed. AI work starts only when you click Start on a task.
+The runner command uses the real connector. It authenticates the saved demo owner, enrolls one persistent `Local demo runner` host, creates a disposable Git repository and maps Project A1 to the execution profiles you wrote in `.local/runner/profiles.json` (the generated `.local/runner/README.md` documents the format and the one-time sign-in). The first start needs `--profile <id>` to choose the project default; later starts reuse it. Nothing picks a tool, model or policy for you. No software or provider credentials are installed. AI work starts only when you click Start on a task.
+
+Paseo is optional. `npm run runner -- --enable-integration paseo` connects to the local Paseo daemon and also offers the saved Paseo profiles. Without the flag, no Paseo call is made; saved Paseo profiles and a saved Paseo project default are kept unchanged but not offered. Choosing a different project default always requires `--profile`.
 
 Private credentials, connector config and journal live under `.local/runner/`; keep them across restarts. The original offline fixture host stays offline. Existing repository edits, passwords, project instructions and unrelated execution defaults are preserved. A revoked enrollment or conflicting project configuration needs explicit repair instead of an automatic reset. Ctrl+C stops the connector without deleting agents, worktrees or saved state.
 
@@ -26,21 +28,57 @@ In the board, choose Project A1, create a task asking to fix `add` so `npm test`
 
 ### Execution host configuration
 
-Use the separate `fluent-flow-connector` command on the Linux execution host for task-linked Paseo work. It requires Node 22+ with native WebSocket support, the existing local Paseo daemon/CLI, and the host-specific enrollment token from Fluent Flow. The review runner described below keeps its Node 20 support.
+Use the separate `fluent-flow-connector` command on the Linux execution host for task-linked work. It requires Node 22+ and the host-specific enrollment token from Fluent Flow. The review runner described below keeps its Node 20 support.
 
-Copy [connector.example.json](connector.example.json) to a private local config file. Set the Fluent Flow server URL, a private host-token file, a stable instance ID, repository-key to checkout-path mappings, and existing Paseo profile IDs. Only those mappings and profiles can execute. Keep the same instance ID and generated journal directory across restarts; losing the journal removes cleanup authority. A second instance cannot replace an active host lease. Choose profiles in the local Paseo configuration; no provider or model is silently selected.
+`@getpaseo/client@0.12.0` is an optional peer dependency. It is loaded only when the connector starts with `--enable-integration paseo`; then the existing local Paseo daemon/CLI is also required. Without the SDK the flag fails with "The Paseo integration is not installed on this host." A config with saved Paseo profiles and no complete execution profile fails without the flag: "Enable the saved integration explicitly or configure an available execution profile." With neither, it fails with "Configure a complete execution profile before starting the runner." Other startup errors print "Connector startup failed. Check the local configuration and Node 22 runtime." and log the detail to stderr.
+
+Copy [connector.example.json](connector.example.json) to a private local config file. Set the Fluent Flow server URL, a private host-token file, a stable instance ID and repository-key to checkout-path mappings. Execution profiles go in `profiles` as objects (same format as the local runner's `profiles.json`, plus optional `capacity`); saved Paseo profile IDs go in `integrations.paseo.profiles`, with optional `home` and `cliPath`. The older format, a `profiles` list of Paseo IDs plus a `paseo` section, still loads as the saved Paseo list and is not rewritten. Only those mappings and profiles can execute. Keep the same instance ID and generated journal directory across restarts; losing the journal removes cleanup authority. A second instance cannot replace an active host lease. Choose profiles in the local Paseo configuration; no provider or model is silently selected.
 
 ```bash
-node packages/fluent-flow-runner/bin/fluent-flow-connector.js --config /private/path/connector.json
+node packages/fluent-flow-runner/bin/fluent-flow-connector.js --config /private/path/connector.json --enable-integration paseo
 ```
 
-Installed packages also expose `fluent-flow-connector --config /private/path/connector.json`. The connector discovers the local daemon from `paseo.pid` and `local-credential` under the configured Paseo home. Those credentials never go to Fluent Flow. For an AppImage where FUSE is unavailable, set `paseo.cliPath` to an already extracted `resources/bin/paseo`, or allow the connector to extract the installed AppImage into its private state cache. This does not install or upgrade Paseo.
+Installed packages also expose `fluent-flow-connector --config /private/path/connector.json [--enable-integration paseo]`. With Paseo enabled, the connector discovers the local daemon from `paseo.pid` and `local-credential` under the configured Paseo home. Those credentials never go to Fluent Flow. For an AppImage where FUSE is unavailable, set the Paseo `cliPath` to an already extracted `resources/bin/paseo`, or allow the connector to extract the installed AppImage into its private state cache. This does not install or upgrade Paseo.
 
 Observation text replaces known workspace/source/Paseo-home paths and exact known credentials with display placeholders before local journal persistence and upload. Native SDK inputs keep their original values. New session reporting credentials are retained in the private state directory's `redaction-context.json` (0600; directory 0700), separately from the intent journal. For older sessions, optional config `"redactionSecretsFile": "/private/path/redaction-secrets.json"` loads a private 0600 JSON array of credential strings at startup. This file stays local. Redaction covers known values only; it does not detect unknown or encoded secrets, and it does not rewrite acknowledged history. See the [module reference](src/connector/README.md) for seed-file requirements.
 
 The connector polls outbound; the PC needs no public listener. Backlog capture works while it is offline, and a Ready card starts no work. Explicit Start queues execution for the enrolled host. Accepted IDs, a confirmed server grant, and a ready/backfilled observer precede the first prompt. Disconnects retain history and stable bindings; missing history and unconfirmed delivery require reconciliation. Cancellation requests stop only the selected owned agent and await native confirmation. Cleanup preflight refuses uncommitted, untracked, unpushed, foreign or unknown work. Human delivery acceptance remains separate from turn completion.
 
+**Capacity and the executable (Task 10).** `capacity` (`{ "claude-code": n, "codex": n }`, integers of at least 1, default 1) is the number of sessions per standalone backend that may hold an execution slot at once; primary and summary sessions share it, and it is published read-only. A session frees its slot when its turn ends, nothing waits for a person and its containment holds only the worker process itself. The worker process is the profile's exact `executable`, which FF always runs as configured. If that is a launcher that keeps the real tool as a child process (the npm `codex` launcher, a Node script, runs the platform binary as its child), the idle worker always shows a second process and keeps its slot until the session is closed (for example by wrap-up). To let idle Codex sessions free their slot, set `executable` to the platform binary itself: resolve the launcher (`readlink -f "$(command -v codex)"`, then `node_modules/@openai/codex-<platform>/vendor/<target>/bin/codex` beside it, for example `codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex`) and check that `<path> --version` prints `codex-cli 0.162.1`, the pinned version; readiness rejects any other version. The pinned Claude Code `claude` is already a single binary.
+
 See [connector modules and limits](src/connector/README.md) and [test/UAT evidence](tests/unit/connector/README.md). The executable reports generic startup/authorization errors locally; command failures use structured codes such as `request_inactive`, `observer_not_ready`, `reporting_unavailable`, and cleanup blockers. These do not expose provider credentials in browser errors.
+
+### Standalone native execution
+
+[`src/native/`](src/native/README.md) runs Claude Code `2.1.317` and Codex CLI `0.162.1` directly, without Paseo: JSONL framing, the Claude control protocol, the Codex app-server RPC, the native child environment and the pinned argv. The connector composes these backends through the standalone supervisor. Native execution requires a supported Linux host with verified delegated cgroup v2 containment, the exact supported binary and a complete execution profile.
+
+`npm test` covers them with [unit tests](tests/unit/native/README.md) and never spawns a native. `npm run test:native --workspace=@fluent-flow/runner` runs the [pinned protocol probes](tests/native/README.md) against the real binaries. They run inside an unprivileged loopback-only network namespace and fail with `network_isolation_unavailable` if one cannot be created. Results are in the [evidence README](tests/native/evidence/README.md).
+
+### Answering on the execution host (Task 9)
+
+A pending question of a standalone session can be answered on the execution host instead of in the browser. A Codex question the model marked secret can only be answered here.
+
+```bash
+npm run runner -- answer --local [--request <id>]                                 # local demo runner
+fluent-flow-connector answer --local --config <private-local-config.json> [--request <id>]
+```
+
+It needs an interactive terminal (`Local answers require an interactive terminal.`), uses the saved instance's private supervisor IPC and starts nothing. The request id is the one the dashboard shows; without `--request` the only pending question is used. It prints `Your answer is sent to the selected tool and model and may be stored in their conversation history.` before input and reads every value masked. FF stores no answer value or hash; the native tool keeps its own history. See [supervisor answers](src/supervisor/README.md#answers-task-9).
+
+### Status, stop and recovery (Task 11)
+
+```bash
+npm run runner -- status | list | stop                                  # local demo runner
+fluent-flow-connector status | list | stop --config <private-local-config.json>
+```
+
+These use only the saved instance's private supervisor IPC and start nothing. `status` prints the instance, whether its supervisor runs, containment, admission, capacity per backend (`used/limit`) and one line per recorded worker (backend, run, session, state, start time). `list` prints only the worker lines. Neither prints prompts, answers, model output, native ids or paths. Worker states: `active`, `idle`, `running` (an earlier lifetime's worker whose leaf is still populated), `stopped`, `unconfirmed` (cannot be proven empty) and `escaped`. `stop` stops only this instance's standalone workers; it never touches other native sessions, connectors or Paseo.
+
+The supervisor runs detached in its own session, so Ctrl+C reaches only the connector. Its handler sends `stop { scope: 'all', timeoutMs: 30000 }`: active turns are interrupted with receipts, each worker gets SIGTERM (only when its recorded identity still matches) and then `cgroup.kill` on its exact leaf, journals and worktrees stay, and the exit code is 0. A timeout, a leaf still populated or a descendant that left its cgroup prints `Shutdown could not be confirmed. Check the runner's status before continuing.` and exits 1; `status` then shows it.
+
+On start the supervisor recovers before it listens: each recorded worker of the current boot whose exact owned leaf is still populated is stopped the same way; anything it cannot prove (another boot, a foreign or missing leaf with a live process) stays `reconciling` and is never signalled. Uncertain barriers become `reconciling`; FF's own no-write evidence resolves exactly its barrier. Nothing is respawned or replayed. A lost worker expires its requests and its session reconciles. An authorized Cancel on such a session closes it only after its recorded workers are proven quiescent (`closure: operator`); a later explicit prompt can then reopen the exact native session (`--resume <uuid>`, `thread/resume`) without resending earlier prompts. See [supervisor lifecycle](src/supervisor/README.md#lifecycle-and-recovery-task-11).
+
+[`src/supervisor/`](src/supervisor/README.md) provides the `flock` owner lock, durable ledger, owner-only IPC and cgroup v2 containment. Its production entry composes both native backends with their subscription-auth policies; synthetic auth and process-group containment exist only in the test harness. [Unit tests](tests/unit/supervisor/README.md) run in `npm test`. `npm run test:containment --workspace=@fluent-flow/runner` runs the [real-kernel containment tests](tests/native/containment/README.md), which fail with `containment_unavailable` unless a delegated scope is verified. Synthetic protocol and namespace tests do not prove subscription login or ordinary-host worktree cleanup.
 
 ## Preferred: register via the dashboard
 

@@ -1,0 +1,39 @@
+{
+  "encoding": "{ action: 'accept', content: {}, _meta: { persist } }",
+  "session": {
+    "advertised": [
+      "session",
+      "always"
+    ],
+    "askedFirstThread": 1,
+    "askedSecondThread": 1,
+    "askedAfterRestart": 1,
+    "executed": 4,
+    "configBefore": null,
+    "configAfter": null
+  },
+  "always": {
+    "advertised": [
+      "session",
+      "always"
+    ],
+    "askedFirstThread": 1,
+    "askedSecondThread": 1,
+    "askedAfterRestart": 1,
+    "executed": 4,
+    "configBefore": null,
+    "configAfter": null
+  },
+  "none": {
+    "advertised": [
+      "session",
+      "always"
+    ],
+    "askedFirstThread": 2,
+    "askedSecondThread": 1,
+    "askedAfterRestart": 1,
+    "executed": 4,
+    "configBefore": null,
+    "configAfter": null
+  }
+}

@@ -18,6 +18,8 @@
   "main": "src/runner.js",
   "scripts": {
     "test": "vitest run",
+    "test:native": "node tests/native/harness/netns-launcher.js -- vitest run --config vitest.native.config.js",
+    "test:containment": "node tests/native/harness/netns-launcher.js -- vitest run --config vitest.containment.config.js",
     "test:watch": "vitest",
     "typecheck": "tsc -p jsconfig.json"
   },
@@ -27,10 +29,18 @@
   "devDependencies": {
     "@fluent-flow/db": "0.0.1",
     "vitest": "^4.1.0",
-    "@getpaseo/protocol": "0.12.0"
+    "@getpaseo/protocol": "0.12.0",
+    "@getpaseo/client": "0.12.0"
   },
   "dependencies": {
-    "@getpaseo/client": "0.12.0",
     "zod": "4.4.3"
+  },
+  "peerDependencies": {
+    "@getpaseo/client": "0.12.0"
+  },
+  "peerDependenciesMeta": {
+    "@getpaseo/client": {
+      "optional": true
+    }
   }
 }

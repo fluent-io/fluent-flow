@@ -92,6 +92,8 @@ router.post('/poll', async (req, res, next) => {
       leaseEpoch: req.body?.leaseEpoch,
       waitMs: req.body?.waitMs,
       limit: req.body?.limit,
+      availableSlots: req.body?.availableSlots,
+      notAfter: req.body?.notAfter,
       signal: disconnect.signal,
     });
     if (disconnect.signal.aborted) return;

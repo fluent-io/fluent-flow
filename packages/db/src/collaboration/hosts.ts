@@ -4,6 +4,7 @@ import { getPool } from '../pool.js';
 import { CollabServiceError } from './errors.js';
 import { requireCurrentPrincipal } from './principals.js';
 import { authorize, getProjectCapabilities } from './authorize.js';
+import { capacityEntrySchema, catalogProfileV2Schema, SLOT_BACKENDS, type CapacityEntry, type ExecutionBackend, type ReadinessState } from './execution.js';
 
 export async function isInternalAdmin(principalId: string): Promise<boolean> {
   const { rows } = await getPool().query<{ ok: boolean }>(
@@ -200,6 +201,50 @@ export async function createProjectHostMapping(input: {
   };
 }
 
+export type ExecutionHostCatalogRead = {
+  hostId: string;
+  repositories: Array<{ key: string }>;
+  profiles: ProjectMappingProfile[];
+  capacity: Partial<Record<'claude-code' | 'codex', CapacityEntry>> | null;
+};
+
+function catalogEntries(catalog: unknown): Array<Record<string, unknown>> {
+  const profiles = (catalog as { profiles?: unknown } | null)?.profiles;
+  return Array.isArray(profiles) ? profiles.filter((p): p is Record<string, unknown> => p !== null && typeof p === 'object') : [];
+}
+
+function safeMappingProfile(catalog: unknown, profileId: string): ProjectMappingProfile {
+  const v2 = (catalog as { formatVersion?: unknown } | null)?.formatVersion === 2;
+  const matches = catalogEntries(catalog).filter((p) => p.id === profileId);
+  const raw = matches.length === 1 ? matches[0] : {};
+  const text = (v: unknown) => (typeof v === 'string' ? v : null);
+  if (!v2) {
+    return { id: profileId, name: text(raw.name) ?? profileId, provider: text(raw.provider), model: text(raw.model), modeId: text(raw.modeId), thinkingOptionId: text(raw.thinkingOptionId),
+      backend: matches.length === 1 ? 'paseo' : null, readiness: null, policy: null };
+  }
+  const parsed = matches.length === 1 ? catalogProfileV2Schema.safeParse(raw) : null;
+  if (!parsed?.success) return { id: profileId, name: profileId, provider: null, model: null, modeId: null, thinkingOptionId: null, backend: null, readiness: null, policy: null };
+  const entry = parsed.data;
+  const policy = entry.policy as Record<string, string | boolean> | null;
+  return {
+    id: profileId, name: entry.name ?? profileId, provider: null, model: entry.model,
+    modeId: entry.backend === 'paseo' && typeof policy?.modeId === 'string' ? policy.modeId : null,
+    thinkingOptionId: entry.backend === 'paseo' && typeof policy?.thinkingOptionId === 'string' ? policy.thinkingOptionId : null,
+    backend: entry.backend, readiness: { state: entry.readiness.state }, policy,
+  };
+}
+
+function safeCapacity(catalog: unknown, backends: readonly ('claude-code' | 'codex')[]): Partial<Record<'claude-code' | 'codex', CapacityEntry>> | null {
+  if ((catalog as { formatVersion?: unknown } | null)?.formatVersion !== 2) return null;
+  const capacity = (catalog as { capacity?: Record<string, unknown> }).capacity ?? {};
+  const out: Partial<Record<'claude-code' | 'codex', CapacityEntry>> = {};
+  for (const backend of backends) {
+    const parsed = capacityEntrySchema.safeParse(capacity[backend]);
+    if (parsed.success) out[backend] = parsed.data;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 export type ProjectMappingProfile = {
   id: string;
   name: string;
@@ -207,6 +252,9 @@ export type ProjectMappingProfile = {
   model: string | null;
   modeId: string | null;
   thinkingOptionId: string | null;
+  backend: ExecutionBackend | null;
+  readiness: { state: ReadinessState } | null;
+  policy: Record<string, string | boolean> | null;
 };
 
 export type ProjectMappingRead = {
@@ -221,6 +269,7 @@ export type ProjectMappingRead = {
   defaultProfileId: string | null;
   profiles: ProjectMappingProfile[];
   allowedModels: string[] | null;
+  capacity: Partial<Record<'claude-code' | 'codex', CapacityEntry>> | null;
 };
 
 export async function listProjectHostMappings(
@@ -242,20 +291,8 @@ export async function listProjectHostMappings(
     [projectId],
   );
   return rows.map((row) => {
-    const catalogProfiles = Array.isArray((row.catalog as { profiles?: unknown })?.profiles)
-      ? ((row.catalog as { profiles: Array<Record<string, unknown>> }).profiles)
-      : [];
-    const profiles = (row.profile_ids as string[]).map((profileId) => {
-      const entry = catalogProfiles.find((p) => p.id === profileId) ?? {};
-      return {
-        id: profileId,
-        name: typeof entry.name === 'string' ? entry.name : profileId,
-        provider: typeof entry.provider === 'string' ? entry.provider : null,
-        model: typeof entry.model === 'string' ? entry.model : null,
-        modeId: typeof entry.modeId === 'string' ? entry.modeId : null,
-        thinkingOptionId: typeof entry.thinkingOptionId === 'string' ? entry.thinkingOptionId : null,
-      };
-    });
+    const profiles = (row.profile_ids as string[]).map((profileId) => safeMappingProfile(row.catalog, profileId));
+    const backends = SLOT_BACKENDS.filter((backend) => profiles.some((p) => p.backend === backend));
     const lastSeen = row.last_heartbeat_at as Date | null;
     const reachability =
       lastSeen === null
@@ -277,6 +314,21 @@ export async function listProjectHostMappings(
       defaultProfileId: row.default_profile_id,
       profiles,
       allowedModels: profiles[0]?.model ? [profiles[0].model] : null,
+      capacity: safeCapacity(row.catalog, backends),
     };
   });
+}
+
+export async function getExecutionHostCatalog(input: { actor: { principalId: string; sessionVersion: number }; hostId: string }): Promise<ExecutionHostCatalogRead> {
+  if (!z.string().uuid().safeParse(input.hostId).success) throw new CollabServiceError(404, 'not_found', 'Not found.');
+  const principal = await requireCurrentPrincipal(input.actor);
+  await assertHostAuthority(principal.id, input.hostId);
+  const { rows } = await getPool().query('SELECT catalog FROM collab_hosts WHERE id = $1', [input.hostId]);
+  const catalog = rows[0]?.catalog ?? null;
+  const ids = catalogEntries(catalog).map((entry) => entry.id).filter((id): id is string => typeof id === 'string');
+  const profiles = ids.map((id) => safeMappingProfile(catalog, id));
+  const repositories = Array.isArray((catalog as { repositories?: unknown })?.repositories)
+    ? ((catalog as { repositories: Array<{ key?: unknown }> }).repositories).filter((r) => typeof r?.key === 'string').map((r) => ({ key: r.key as string }))
+    : [];
+  return { hostId: input.hostId, repositories, profiles, capacity: safeCapacity(catalog, SLOT_BACKENDS) };
 }

@@ -1,0 +1,33 @@
+{
+  "nativeApproval": [
+    {
+      "mode": "form",
+      "persist": [
+        "session",
+        "always"
+      ],
+      "requestedSchema": {
+        "type": "object",
+        "properties": {}
+      },
+      "answered": "accept"
+    }
+  ],
+  "ffRequests": 1,
+  "correlation": {
+    "threadIdMatches": true,
+    "callIdMatchesItem": true,
+    "itemIdMatchesItem": false,
+    "matchedBy": "callId"
+  },
+  "answerOutcome": {
+    "state": "dispatched"
+  },
+  "itemCompletedStatus": "completed",
+  "turnStatus": "completed",
+  "recordTypes": [
+    "question_pending",
+    "answer_barrier",
+    "answer_written"
+  ]
+}

@@ -119,7 +119,7 @@ describe('connector poll waits for work, wakes on new work, and cancels cleanly'
   it('waitMs 0 with no work answers immediately with an empty batch', async () => {
     const res = await timed(poll({ waitMs: 0 }));
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ data: { commands: [] } });
+    expect(res.body).toEqual({ data: { commands: [], heldClaims: { 'claude-code': 0, codex: 0 }, serverTime: expect.stringMatching(/^\d{4}-\d\d-\d\dT/) } });
     expect(res.elapsedMs).toBeLessThan(400);
   });
 
@@ -128,7 +128,7 @@ describe('connector poll waits for work, wakes on new work, and cancels cleanly'
     expect(await stateAfter(pending, 1000)).toBe(PENDING);
     const res = await pending;
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ data: { commands: [] } });
+    expect(res.body).toEqual({ data: { commands: [], heldClaims: { 'claude-code': 0, codex: 0 }, serverTime: expect.stringMatching(/^\d{4}-\d\d-\d\dT/) } });
     expect(res.elapsedMs).toBeGreaterThanOrEqual(1400);
     expect(res.elapsedMs).toBeLessThan(2500);
   });

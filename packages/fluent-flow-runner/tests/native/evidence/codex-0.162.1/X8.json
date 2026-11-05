@@ -1,0 +1,14 @@
+{
+  "steer": {
+    "turnId": "01a1a98b-c2fd-7da2-9d5c-c3b75fd03b28"
+  },
+  "stale": {
+    "error": {
+      "code": -32600,
+      "message": "expected active turn id `d6782651-468a-4d45-ab20-9acf7cdea085` but found `01a1a98b-c2fd-7da2-9d5c-c3b75fd03b28`"
+    }
+  },
+  "turnStatus": "completed",
+  "modelRequests": 2,
+  "steerReachedModel": true
+}

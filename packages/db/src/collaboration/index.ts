@@ -89,6 +89,7 @@ export {
   createProjectHostMapping,
   listProjectHostMappings,
   listExecutionHosts,
+  getExecutionHostCatalog,
 } from './hosts.js';
 export type { ExecutionHost, ProjectHostMapping, ExecutionHostSummary } from './hosts.js';
 
@@ -101,6 +102,7 @@ export {
   submitSessionCommand,
   getConnectorCommand,
   getSessionPendingRequest,
+  getSessionPendingRequests,
   queueRunCommand,
   queueArtifactRead,
   getSessionTimeline,
@@ -111,7 +113,7 @@ export type { CollabComment } from './comments.js';
 
 export { listTaskEvents, markTaskRead, listAttention } from './events.js';
 export type { TaskEvent } from './events.js';
-export type { Run, CollabSession, StartRunResult, PendingRequest } from './runs.js';
+export type { Run, CollabSession, StartRunResult, PendingRequest, PendingRequestV2 } from './runs.js';
 
 export {
   REPORTING_CAPABILITIES,
@@ -132,6 +134,17 @@ export {
   reconcileConnectorCommand,
 } from './connector.js';
 export type { ConnectorRegistration, ConnectorCommand } from './connector.js';
+
+export {
+  READINESS_STATES,
+  REQUIRED_CAPABILITIES,
+  selectCatalogProfile,
+  recordRunExecution,
+  recordSessionExecution,
+  getRunExecution,
+  deliveryExecutionCheck,
+} from './execution.js';
+export type { ExecutionBackend, ReadinessState, CatalogProfileV2, RunExecution } from './execution.js';
 
 export {
   createCollabTask,

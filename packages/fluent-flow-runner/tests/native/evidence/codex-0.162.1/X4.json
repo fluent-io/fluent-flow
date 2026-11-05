@@ -1,0 +1,75 @@
+{
+  "thread": {
+    "id": "01a1a98b-bcf4-7442-a439-94bbbbc8de0a",
+    "environments": [
+      {
+        "environmentId": "local",
+        "cwd": "<probe-root>/repo",
+        "runtimeWorkspaceRoots": [
+          "<probe-root>/repo"
+        ]
+      }
+    ],
+    "extra": null,
+    "sessionId": "01a1a98b-bcf4-7442-a439-94bbbbc8de0a",
+    "forkedFromId": null,
+    "parentThreadId": null,
+    "preview": "",
+    "ephemeral": false,
+    "section": null,
+    "sectionEnteredAt": null,
+    "projectId": null,
+    "historyMode": "paginated",
+    "modelProvider": "ffprobe",
+    "model": "ff-probe-model",
+    "reasoningEffort": null,
+    "createdAt": 1793845869,
+    "updatedAt": 1793845869,
+    "recencyAt": 1793845869,
+    "status": {
+      "type": "idle"
+    },
+    "path": "<probe-root>/context/sessions/2026/11/04/rollout-2026-11-04T21-31-09-01a1a98b-bcf4-7442-a439-94bbbbc8de0a.jsonl",
+    "cwd": "<probe-root>/repo",
+    "cliVersion": "0.162.1",
+    "originator": "ff-probe",
+    "source": "vscode",
+    "canAcceptDirectInput": true,
+    "threadSource": null,
+    "agentNickname": null,
+    "agentRole": null,
+    "gitInfo": null,
+    "name": null,
+    "daybreakEnabled": null
+  },
+  "model": "ff-probe-model",
+  "approvalPolicy": "on-request",
+  "sandbox": {
+    "type": "workspaceWrite",
+    "writableRoots": [],
+    "networkAccess": false,
+    "excludeTmpdirEnvVar": false,
+    "excludeSlashTmp": false
+  },
+  "instructionSources": [
+    "<probe-root>/repo/AGENTS.md"
+  ],
+  "mcpStartup": [
+    {
+      "name": "ff_planted_codex_toml",
+      "status": "starting"
+    },
+    {
+      "name": "ff_reporting",
+      "status": "starting"
+    },
+    {
+      "name": "ff_planted_codex_toml",
+      "status": "failed"
+    },
+    {
+      "name": "ff_reporting",
+      "status": "ready"
+    }
+  ]
+}

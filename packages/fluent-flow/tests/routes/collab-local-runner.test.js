@@ -1,5 +1,5 @@
 import { beforeAll, afterAll, beforeEach, afterEach, it, expect, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, statSync, rmSync, existsSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -9,6 +9,7 @@ import { EventEmitter } from 'node:events';
 import { resolveCollabTestDatabaseUrl, resetCollabSchema } from '../helpers/collab-db.js';
 import { createConnectorClient } from '../../../fluent-flow-runner/src/connector/connector-client.js';
 import { createConnectorRuntime } from '../../../fluent-flow-runner/src/connector/runtime.js';
+import { servedPaseoProfileIds } from '../../../fluent-flow-runner/src/connector/config.js';
 import { fakePaseoSdk } from '../../../fluent-flow-runner/tests/unit/connector/helpers/fake-paseo.js';
 
 const run = promisify(execFile);
@@ -75,16 +76,109 @@ afterEach(async () => {
 
 async function prepare(options = {}) {
   const { prepareLocalRunner } = await import('../../../../scripts/dev-runner-setup.mjs');
-  const prepared = await prepareLocalRunner({ root, paseo, ...options });
+  const prepared = await prepareLocalRunner({ root, enableIntegrations: ['paseo'], connectPaseo: async () => paseo, profileId: profile.id, ...options });
   preparedRunners.push(prepared);
   return prepared;
 }
-async function register(prepared) {
+async function register(prepared, profiles = [profile]) {
   return createConnectorClient({ serverUrl: url, token: prepared.config.token }).register({
     instanceId: prepared.config.instanceId, protocolVersion: 1, sdkVersion: '0.12.0',
-    capabilities: {}, catalog: { repositories: [{ key: 'demo' }], profiles: [profile] },
+    capabilities: {}, catalog: { repositories: [{ key: 'demo' }], profiles },
   });
 }
+function writeLocalProfiles(edit = entries => entries) {
+  const contexts = mkdtempSync(join(tmpdir(), 'ff-local-runner-ctx-'));
+  extraRoots.push(contexts);
+  const executable = join(contexts, 'tool');
+  writeFileSync(executable, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  for (const name of ['claude', 'codex']) { mkdirSync(join(contexts, name)); chmodSync(join(contexts, name), 0o700); }
+  const entries = [
+    { id: 'claude-a', name: 'Claude A', backend: 'claude-code', executable, contextDir: join(contexts, 'claude'), model: 'model-a', policy: { permissionMode: 'manual' } },
+    { id: 'codex-a', name: 'Codex A', backend: 'codex', executable, contextDir: join(contexts, 'codex'), model: 'model-b', policy: { approvalPolicy: 'on-request', sandbox: 'workspace-write', networkAccess: false } },
+  ];
+  mkdirSync(join(root, '.local/runner'), { recursive: true, mode: 0o700 });
+  writeFileSync(join(root, '.local/runner/profiles.json'), JSON.stringify({ profiles: edit(entries) }), { mode: 0o600 });
+  return edit(entries).map(({ id, name, backend, model }) => ({ id, name, provider: backend, model }));
+}
+
+it('a fresh runner without the flag never calls connectPaseo', async () => {
+  writeLocalProfiles();
+  const connectPaseo = vi.fn(async () => paseo);
+  const prepared = await prepare({ enableIntegrations: [], connectPaseo, profileId: 'claude-a' });
+  expect(connectPaseo).not.toHaveBeenCalled();
+  expect(prepared.paseo).toBeNull();
+  expect(prepared.config.integrations.paseo).toMatchObject({ enabled: false, savedProfileIds: [] });
+  expect(prepared.config.profiles.map(p => [p.id, p.complete])).toEqual([['claude-a', true], ['codex-a', true]]);
+  expect((await db.query('SELECT count(*)::int AS n FROM collab_hosts')).rows[0].n).toBe(2);
+});
+
+it('--profile selects a standalone default', async () => {
+  const catalog = writeLocalProfiles();
+  const connectPaseo = vi.fn(async () => paseo);
+  const prepared = await prepare({ enableIntegrations: [], connectPaseo, profileId: 'codex-a' });
+  expect(prepared.profile).toMatchObject({ id: 'codex-a', name: 'Codex A' });
+  await register(prepared, catalog);
+  await prepared.configureProject();
+  const project = (await db.query("SELECT execution_defaults FROM collab_projects WHERE name='Project A1'")).rows[0];
+  expect(project.execution_defaults.profileId).toBe('codex-a');
+  const mapping = (await db.query('SELECT profile_ids, default_profile_id FROM collab_project_host_mappings WHERE id=$1', [project.execution_defaults.mappingId])).rows[0];
+  expect(mapping).toEqual({ profile_ids: ['claude-a', 'codex-a'], default_profile_id: 'codex-a' });
+  expect(connectPaseo).not.toHaveBeenCalled();
+});
+
+it('a saved Paseo default is preserved and not served without the flag', async () => {
+  const first = await prepare();
+  await register(first); await first.configureProject();
+  const before = (await db.query("SELECT execution_defaults FROM collab_projects WHERE name='Project A1'")).rows[0].execution_defaults;
+  await first.release();
+  const catalog = writeLocalProfiles();
+  const connectPaseo = vi.fn(async () => paseo);
+  const warn = vi.fn();
+  const again = await prepare({ enableIntegrations: [], connectPaseo, profileId: undefined, warn });
+  expect(connectPaseo).not.toHaveBeenCalled();
+  expect(again.profile).toBeNull();
+  expect(warn.mock.calls).toEqual([['The saved project default profile is not advertised in this runner session. Select an available execution profile before Start.']]);
+  expect(again.config.integrations.paseo).toMatchObject({ enabled: false, savedProfileIds: ['local-coder'] });
+  expect(servedPaseoProfileIds(again.config)).toEqual([]);
+  const state = JSON.parse(readFileSync(join(root, '.local/runner/state.json'), 'utf8'));
+  expect([state.profileId, state.profileIds]).toEqual(['local-coder', ['local-coder']]);
+  await register(again, catalog);
+  await again.configureProject();
+  expect((await db.query("SELECT execution_defaults FROM collab_projects WHERE name='Project A1'")).rows[0].execution_defaults).toEqual(before);
+});
+
+const DUPLICATE = 'Execution profile ids must be unique across local profiles and saved integrations. Fix the local configuration.';
+
+it('rejects duplicate standalone profile ids before enrolling', async () => {
+  writeLocalProfiles(entries => [entries[0], { ...entries[1], id: entries[0].id }]);
+  await expect(prepare({ enableIntegrations: [], profileId: 'claude-a' })).rejects.toThrow(DUPLICATE);
+  expect((await db.query('SELECT count(*)::int AS n FROM collab_hosts')).rows[0].n).toBe(1);
+});
+
+it('rejects a standalone id that collides with an enabled Paseo profile before enrolling', async () => {
+  writeLocalProfiles(entries => [{ ...entries[0], id: profile.id }]);
+  await expect(prepare()).rejects.toThrow(DUPLICATE);
+  expect((await db.query('SELECT count(*)::int AS n FROM collab_hosts')).rows[0].n).toBe(1);
+});
+
+it('rejects a standalone id that collides with a saved Paseo id without the flag, leaving state unchanged', async () => {
+  const first = await prepare();
+  await first.release();
+  const stateFile = join(root, '.local/runner/state.json');
+  const saved = readFileSync(stateFile, 'utf8');
+  writeLocalProfiles(entries => [{ ...entries[0], id: profile.id }]);
+  const connectPaseo = vi.fn(async () => paseo);
+  await expect(prepare({ enableIntegrations: [], connectPaseo, profileId: undefined })).rejects.toThrow(DUPLICATE);
+  expect(connectPaseo).not.toHaveBeenCalled();
+  expect(readFileSync(stateFile, 'utf8')).toBe(saved);
+});
+
+it('a fresh runner with neither a complete profile nor the flag is rejected before enrolling', async () => {
+  const connectPaseo = vi.fn(async () => paseo);
+  await expect(prepare({ enableIntegrations: [], connectPaseo })).rejects.toThrow('Configure a complete execution profile before starting the runner.');
+  expect(connectPaseo).not.toHaveBeenCalled();
+  expect((await db.query('SELECT count(*)::int AS n FROM collab_hosts')).rows[0].n).toBe(1);
+});
 
 it('prepares an enrolled private runner and disposable Git repo, then makes Project A1 executable', async () => {
   const prepared = await prepare();
@@ -111,7 +205,8 @@ it('reuses enrollment, mapping and saved passwords without overwriting repositor
   const project = (await db.query("SELECT id,version,execution_defaults FROM collab_projects WHERE name='Project A1'")).rows[0];
   await db.query("UPDATE collab_projects SET execution_defaults=jsonb_set(execution_defaults,'{instructions}','\"Human instructions\"') WHERE id=$1", [project.id]);
   await prepared.release();
-  const again = await prepare(); await register(again); await again.configureProject();
+  const again = await prepare({ profileId: undefined }); await register(again); await again.configureProject();
+  expect(again.profile.id).toBe(profile.id);
   expect(again.config.token).toBe(prepared.config.token);
   expect(again.config.instanceId).toBe(prepared.config.instanceId);
   expect((await db.query('SELECT count(*)::int AS n FROM collab_hosts')).rows[0].n).toBe(2);

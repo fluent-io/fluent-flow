@@ -1,0 +1,27 @@
+{
+  "preCleanup": {
+    "turnStatus": "interrupted",
+    "correlationTurnIdExact": true,
+    "correlationThreadIdExact": true,
+    "withdrawnBeforeCleanup": true,
+    "withdrawalReason": "turn_interrupted",
+    "stillPending": 0,
+    "recordTypes": [
+      "question_pending",
+      "question_withdrawn:turn_interrupted"
+    ]
+  },
+  "lateAnswer": {
+    "state": "failed",
+    "errorCode": "request_unavailable"
+  },
+  "barrierAfterLate": false,
+  "postCleanup": {
+    "recordTypes": [
+      "question_pending",
+      "question_withdrawn:turn_interrupted",
+      "answer_refused"
+    ]
+  },
+  "answerInRecords": false
+}

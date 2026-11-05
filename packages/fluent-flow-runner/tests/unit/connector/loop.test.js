@@ -343,6 +343,22 @@ describe('connector loop over real loopback HTTP', () => {
     expect(epochs).toEqual([1, 2]);
   });
 
+  it('publishes control-plane loss before abandoning a failed poll', async () => {
+    const url = await plane.start();
+    plane.state.responses['POST /api/connector/v1/poll'] = ({ req, state }) => {
+      state.pollRequests += 1;
+      req.socket.destroy();
+    };
+    const statuses = [];
+    const loop = buildLoop(url, createJournal({ dir }), fakePaseoState(), {
+      onControlPlaneStatus: async (online) => statuses.push(online),
+      intervals: { pollWaitMs: 0, heartbeatIntervalMs: 15_000, baseBackoffMs: 1, maxBackoffMs: 1, maxConsecutiveFailures: 1 },
+    });
+    await loop.start();
+    expect(statuses[0]).toBe(true);
+    expect(statuses.at(-1)).toBe(false);
+  });
+
   it('revoked token (401) stops the loop fatally without executing anything', async () => {
     const url = await plane.start();
     plane.state.responses['POST /api/connector/v1/register'] = ({ reply }) =>

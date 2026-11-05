@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["src/connector/**/*.js"]
+  "include": ["src/connector/**/*.js", "src/supervisor/**/*.js", "src/native/**/*.js"]
 }

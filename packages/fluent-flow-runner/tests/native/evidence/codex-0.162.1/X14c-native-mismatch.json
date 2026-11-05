@@ -1,0 +1,10 @@
+{
+  "turnStatus": "interrupted",
+  "withdrawnWithin10s": false,
+  "stillPendingAfterInterrupt": 1,
+  "recordTypesBeforeShutdown": [
+    "question_pending",
+    "question_withdrawn:native_aborted"
+  ],
+  "lateAnswer": "not sent: request still pending"
+}

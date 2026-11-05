@@ -1,0 +1,17 @@
+{
+  "results": {
+    "decline": {
+      "asked": 1,
+      "fixtureCalls": 0,
+      "turnStatus": "completed",
+      "modelRequests": 2
+    },
+    "cancel": {
+      "asked": 1,
+      "fixtureCalls": 0,
+      "turnStatus": "completed",
+      "modelRequests": 2
+    }
+  },
+  "mcpApprovalCancelInterrupts": false
+}

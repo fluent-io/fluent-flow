@@ -1,6 +1,82 @@
 import { createGitReader } from './workpad.js';
 import { nativeWorkspaceId } from './uuid-v5.js';
 
+const NATIVE_BACKENDS = new Set(['claude-code', 'codex']);
+export const NATIVE_BLOCKED_NOTE = 'Worktree cleanup is blocked. Review the outstanding work.';
+
+/**
+ * @param {{ supervisor: { request: (method: string, params?: object) => Promise<any> }, journal: any, log?: (obj: object) => void }} opts
+ */
+export function createNativeWrapup({ supervisor, journal, log = () => {} }) {
+  function nativeRun(runId) {
+    const binding = journal.bindingForRun(runId);
+    return binding && NATIVE_BACKENDS.has(binding.backend) && binding.workspaceRef && binding.repositoryKey ? binding : null;
+  }
+
+  function shaped(runId, workspaceRef, check) {
+    return {
+      runId,
+      workspaceId: workspaceRef,
+      owned: check.owned === true,
+      workspace: { id: workspaceRef, kind: 'worktree', archiving: false, directoryKnown: check.directoryKnown === true },
+      sessions: check.sessions ?? [],
+      git: check.git ?? { ok: false, failCode: 'git_unreadable' },
+      blockers: check.blockers ?? [],
+      checkedAt: new Date().toISOString(),
+    };
+  }
+
+  function receiptPreflight(runId, receipt) {
+    return shaped(runId, receipt.workspaceRef, { owned: true, directoryKnown: false, sessions: [], blockers: [],
+      git: { ok: true, branch: receipt.branch, headCommit: receipt.headCommit, upstream: receipt.upstream, uncommitted: 0, untracked: 0, unpushed: 0 } });
+  }
+
+  const blocked = (preflight, blockers) => ({ ok: false, phase: 'archive', ...(preflight ? { preflight } : {}), blockers, note: NATIVE_BLOCKED_NOTE });
+
+  async function preflight({ runId }) {
+    const binding = nativeRun(runId);
+    if (!binding) return shaped(runId, null, { owned: false, blockers: [{ code: 'ownership_unverified' }] });
+    const check = await supervisor.request('wrapupPreflight', { runId, repositoryKey: binding.repositoryKey, workspaceRef: binding.workspaceRef });
+    return check.archived ? receiptPreflight(runId, check.archived) : shaped(runId, binding.workspaceRef, check);
+  }
+
+  return {
+    preflight,
+
+    async archive({ runId, mode }) {
+      if (!['archive_sessions', 'archive_owned_workspace'].includes(mode)) return { ok: false, phase: 'archive', blockers: [{ code: 'unknown_mode' }] };
+      const binding = nativeRun(runId);
+      if (!binding) return blocked(null, [{ code: 'ownership_unverified' }]);
+      if (mode === 'archive_sessions') {
+        const closed = await supervisor.request('wrapupCloseSessions', { runId });
+        if (!closed.ok) {
+          log({ msg: 'native wrap-up closure blocked', runId, blockers: closed.blockers });
+          return { ...blocked(null, closed.blockers), archivedSessions: closed.closedSessions ?? 0 };
+        }
+        return { ok: true, phase: 'archive', archivedSessions: closed.closedSessions, archivedWorkspace: false, note: `${closed.closedSessions} session(s) closed; worktree kept.` };
+      }
+      const prior = journal.workspaceArchive(runId, binding.workspaceRef);
+      const done = await supervisor.request('wrapupArchive', { runId, repositoryKey: binding.repositoryKey, workspaceRef: binding.workspaceRef });
+      if (!done.ok) {
+        log({ msg: 'native wrap-up blocked', runId, blockers: done.blockers });
+        return blocked(done.preflight ? shaped(runId, binding.workspaceRef, done.preflight) : null, done.blockers);
+      }
+      const archivedAt = done.receipt.at;
+      const result = {
+        ok: true,
+        phase: 'archive',
+        preflight: done.repeated ? receiptPreflight(runId, done.receipt) : shaped(runId, binding.workspaceRef, done.preflight),
+        archivedSessions: 0,
+        archivedWorkspace: true,
+        archivedAt,
+        note: 'Owned worktree archived; the branch and history are kept.',
+      };
+      if (!prior) await journal.append({ type: 'workspace_archived', runId, workspaceId: binding.workspaceRef, result, at: archivedAt });
+      return result;
+    },
+  };
+}
+
 /**
  * @param {object} opts
  * @param {import('@getpaseo/client').PaseoClient} opts.paseo

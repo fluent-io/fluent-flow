@@ -1,0 +1,7 @@
+{
+  "account": {
+    "account": null,
+    "requiresOpenaiAuth": false,
+    "workspaceRouting": null
+  }
+}

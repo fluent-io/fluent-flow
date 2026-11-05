@@ -1,0 +1,1277 @@
+{
+ "_comment": "Codex CLI 0.162.1 app-server traffic captured in the isolated launcher with the synthetic Responses fixture (task-6-capture.log). Notifications and server requests in arrival order; fixture URLs and temp roots scrubbed.",
+ "plain": {
+  "threadStart": {
+   "thread": {
+    "id": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+    "environments": [
+     {
+      "environmentId": "local",
+      "cwd": "<probe-root>/worktree",
+      "runtimeWorkspaceRoots": [
+       "<probe-root>/worktree"
+      ]
+     }
+    ],
+    "extra": null,
+    "sessionId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+    "forkedFromId": null,
+    "parentThreadId": null,
+    "preview": "",
+    "ephemeral": false,
+    "section": null,
+    "sectionEnteredAt": null,
+    "projectId": null,
+    "historyMode": "paginated",
+    "modelProvider": "ffprobe",
+    "model": "ff-probe-model",
+    "reasoningEffort": null,
+    "createdAt": 1793854442,
+    "updatedAt": 1793854442,
+    "recencyAt": 1793854442,
+    "status": {
+     "type": "idle"
+    },
+    "path": "<probe-root>/context/sessions/2026/11/04/rollout-2026-11-04T23-54-02-01a1aa0e-8d26-7a41-8566-8b4c9916741b.jsonl",
+    "cwd": "<probe-root>/worktree",
+    "cliVersion": "0.162.1",
+    "originator": "ff",
+    "source": "vscode",
+    "canAcceptDirectInput": true,
+    "threadSource": null,
+    "agentNickname": null,
+    "agentRole": null,
+    "gitInfo": null,
+    "name": null,
+    "daybreakEnabled": null,
+    "turns": []
+   },
+   "model": "ff-probe-model",
+   "modelProvider": "ffprobe",
+   "serviceTier": null,
+   "disabledPluginIds": [],
+   "cwd": "<probe-root>/worktree",
+   "runtimeWorkspaceRoots": [
+    "<probe-root>/worktree"
+   ],
+   "instructionSources": [
+    "<probe-root>/worktree/AGENTS.md"
+   ],
+   "approvalPolicy": "on-request",
+   "approvalsReviewer": "user",
+   "sandbox": {
+    "type": "workspaceWrite",
+    "writableRoots": [],
+    "networkAccess": false,
+    "excludeTmpdirEnvVar": false,
+    "excludeSlashTmp": false
+   },
+   "activePermissionProfile": null,
+   "reasoningEffort": null,
+   "multiAgentMode": "explicitRequestOnly"
+  },
+  "messages": [
+   {
+    "method": "configWarning",
+    "params": {
+     "summary": "Project-local config, hooks, and exec policies are disabled in the following folders until the project is trusted, but skills still load.\n    1. <probe-root>/worktree/.codex\n       To load project-local config, hooks, and exec policies, add <probe-root>/repo as a trusted project in <probe-root>/context/config.toml.\n",
+     "details": null
+    }
+   },
+   {
+    "method": "remoteControl/status/changed",
+    "params": {
+     "status": "disabled",
+     "serverName": "vpc",
+     "installationId": "d01270c6-3dd5-4ead-9a7e-bd90ff4a285c",
+     "environmentId": null
+    }
+   },
+   {
+    "method": "thread/started",
+    "params": {
+     "thread": {
+      "id": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+      "environments": [
+       {
+        "environmentId": "local",
+        "cwd": "<probe-root>/worktree",
+        "runtimeWorkspaceRoots": [
+         "<probe-root>/worktree"
+        ]
+       }
+      ],
+      "extra": null,
+      "sessionId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+      "forkedFromId": null,
+      "parentThreadId": null,
+      "preview": "",
+      "ephemeral": false,
+      "section": null,
+      "sectionEnteredAt": null,
+      "projectId": null,
+      "historyMode": "paginated",
+      "modelProvider": "ffprobe",
+      "model": "ff-probe-model",
+      "reasoningEffort": null,
+      "createdAt": 1793854442,
+      "updatedAt": 1793854442,
+      "recencyAt": 1793854442,
+      "status": {
+       "type": "idle"
+      },
+      "path": "<probe-root>/context/sessions/2026/11/04/rollout-2026-11-04T23-54-02-01a1aa0e-8d26-7a41-8566-8b4c9916741b.jsonl",
+      "cwd": "<probe-root>/worktree",
+      "cliVersion": "0.162.1",
+      "originator": "ff",
+      "source": "vscode",
+      "canAcceptDirectInput": true,
+      "threadSource": null,
+      "agentNickname": null,
+      "agentRole": null,
+      "gitInfo": null,
+      "name": null,
+      "daybreakEnabled": null,
+      "turns": []
+     }
+    }
+   },
+   {
+    "method": "mcpServer/startupStatus/updated",
+    "params": {
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "name": "ff_reporting",
+     "status": "starting",
+     "error": null,
+     "failureReason": null
+    }
+   },
+   {
+    "method": "warning",
+    "params": {
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "message": "Model metadata for `ff-probe-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+    }
+   },
+   {
+    "method": "mcpServer/startupStatus/updated",
+    "params": {
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "name": "ff_reporting",
+     "status": "ready",
+     "error": null,
+     "failureReason": null
+    }
+   },
+   {
+    "method": "thread/status/changed",
+    "params": {
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "status": {
+      "type": "active",
+      "activeFlags": []
+     }
+    }
+   },
+   {
+    "method": "turn/started",
+    "params": {
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "turn": {
+      "id": "01a1aa0e-8d35-7353-90f8-e5f4aa9317f8",
+      "rootTurnId": "01a1aa0e-8d35-7353-90f8-e5f4aa9317f8",
+      "items": [],
+      "itemsView": "notLoaded",
+      "status": "inProgress",
+      "error": null,
+      "startedAt": 1793854442,
+      "completedAt": null,
+      "durationMs": null
+     }
+    }
+   },
+   {
+    "method": "item/started",
+    "params": {
+     "item": {
+      "type": "userMessage",
+      "id": "01a1aa0e-8d4e-7db2-bf73-93d12ec74d55",
+      "clientId": "f06cb459-c4c4-46fa-9a3e-a6cb0bc98e95",
+      "content": [
+       {
+        "type": "text",
+        "text": "hi",
+        "text_elements": []
+       }
+      ]
+     },
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "turnId": "01a1aa0e-8d35-7353-90f8-e5f4aa9317f8",
+     "startedAtMs": 1793854442830
+    }
+   },
+   {
+    "method": "item/completed",
+    "params": {
+     "item": {
+      "type": "userMessage",
+      "id": "01a1aa0e-8d4e-7db2-bf73-93d12ec74d55",
+      "clientId": "f06cb459-c4c4-46fa-9a3e-a6cb0bc98e95",
+      "content": [
+       {
+        "type": "text",
+        "text": "hi",
+        "text_elements": []
+       }
+      ]
+     },
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "turnId": "01a1aa0e-8d35-7353-90f8-e5f4aa9317f8",
+     "completedAtMs": 1793854442830
+    }
+   },
+   {
+    "method": "item/started",
+    "params": {
+     "item": {
+      "type": "mcpToolCall",
+      "id": "call_resp_0_0",
+      "server": "ff_reporting",
+      "tool": "ff_probe_report",
+      "status": "inProgress",
+      "arguments": {
+       "status": "ok"
+      },
+      "appContext": null,
+      "mcpAppUi": null,
+      "pluginId": null,
+      "readOnlyHint": null,
+      "result": null,
+      "error": null,
+      "durationMs": null
+     },
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "turnId": "01a1aa0e-8d35-7353-90f8-e5f4aa9317f8",
+     "startedAtMs": 1793854442845
+    }
+   },
+   {
+    "method": "thread/status/changed",
+    "params": {
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "status": {
+      "type": "active",
+      "activeFlags": [
+       "waitingOnApproval"
+      ]
+     }
+    }
+   },
+   {
+    "id": 0,
+    "method": "mcpServer/elicitation/request",
+    "params": {
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "turnId": "01a1aa0e-8d35-7353-90f8-e5f4aa9317f8",
+     "serverName": "ff_reporting",
+     "mode": "form",
+     "_meta": {
+      "codex_approval_kind": "mcp_tool_call",
+      "persist": [
+       "session",
+       "always"
+      ],
+      "tool_description": "Report probe status to Fluent Flow.",
+      "tool_params": {
+       "status": "ok"
+      },
+      "tool_params_display": [
+       {
+        "name": "status",
+        "value": "ok",
+        "display_name": "status"
+       }
+      ]
+     },
+     "message": "Allow the ff_reporting MCP server to run tool \"ff_probe_report\"?",
+     "requestedSchema": {
+      "type": "object",
+      "properties": {}
+     }
+    }
+   },
+   {
+    "method": "serverRequest/resolved",
+    "params": {
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "requestId": 0
+    }
+   },
+   {
+    "method": "thread/status/changed",
+    "params": {
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "status": {
+      "type": "active",
+      "activeFlags": []
+     }
+    }
+   },
+   {
+    "method": "item/completed",
+    "params": {
+     "item": {
+      "type": "mcpToolCall",
+      "id": "call_resp_0_0",
+      "server": "ff_reporting",
+      "tool": "ff_probe_report",
+      "status": "completed",
+      "arguments": {
+       "status": "ok"
+      },
+      "appContext": null,
+      "mcpAppUi": null,
+      "pluginId": null,
+      "readOnlyHint": null,
+      "result": {
+       "content": [
+        {
+         "type": "text",
+         "text": "reported"
+        }
+       ],
+       "structuredContent": null,
+       "_meta": null
+      },
+      "error": null,
+      "durationMs": 0
+     },
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "turnId": "01a1aa0e-8d35-7353-90f8-e5f4aa9317f8",
+     "completedAtMs": 1793854442847
+    }
+   },
+   {
+    "method": "thread/tokenUsage/updated",
+    "params": {
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "turnId": "01a1aa0e-8d35-7353-90f8-e5f4aa9317f8",
+     "tokenUsage": {
+      "total": {
+       "totalTokens": 2,
+       "inputTokens": 1,
+       "cachedInputTokens": 0,
+       "cacheWriteInputTokens": 0,
+       "outputTokens": 1,
+       "reasoningOutputTokens": 0
+      },
+      "last": {
+       "totalTokens": 2,
+       "inputTokens": 1,
+       "cachedInputTokens": 0,
+       "cacheWriteInputTokens": 0,
+       "outputTokens": 1,
+       "reasoningOutputTokens": 0
+      },
+      "modelContextWindow": 258400
+     }
+    }
+   },
+   {
+    "method": "account/rateLimits/updated",
+    "params": {
+     "rateLimits": {
+      "limitId": "codex",
+      "limitName": null,
+      "normalModelSlug": null,
+      "primary": null,
+      "secondary": null,
+      "credits": null,
+      "individualLimit": null,
+      "spendControlReached": null,
+      "planType": null,
+      "rateLimitReachedType": null
+     }
+    }
+   },
+   {
+    "method": "item/started",
+    "params": {
+     "item": {
+      "type": "agentMessage",
+      "id": "msg_resp_1_1",
+      "text": "",
+      "phase": null,
+      "memoryCitation": null,
+      "delivery": null,
+      "questions": null
+     },
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "turnId": "01a1aa0e-8d35-7353-90f8-e5f4aa9317f8",
+     "startedAtMs": 1793854442860
+    }
+   },
+   {
+    "method": "item/agentMessage/delta",
+    "params": {
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "turnId": "01a1aa0e-8d35-7353-90f8-e5f4aa9317f8",
+     "itemId": "msg_resp_1_1",
+     "delta": "hello there"
+    }
+   },
+   {
+    "method": "item/completed",
+    "params": {
+     "item": {
+      "type": "agentMessage",
+      "id": "msg_resp_1_1",
+      "text": "hello there",
+      "phase": null,
+      "memoryCitation": null,
+      "delivery": null,
+      "questions": null
+     },
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "turnId": "01a1aa0e-8d35-7353-90f8-e5f4aa9317f8",
+     "completedAtMs": 1793854442860
+    }
+   },
+   {
+    "method": "thread/tokenUsage/updated",
+    "params": {
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "turnId": "01a1aa0e-8d35-7353-90f8-e5f4aa9317f8",
+     "tokenUsage": {
+      "total": {
+       "totalTokens": 4,
+       "inputTokens": 2,
+       "cachedInputTokens": 0,
+       "cacheWriteInputTokens": 0,
+       "outputTokens": 2,
+       "reasoningOutputTokens": 0
+      },
+      "last": {
+       "totalTokens": 2,
+       "inputTokens": 1,
+       "cachedInputTokens": 0,
+       "cacheWriteInputTokens": 0,
+       "outputTokens": 1,
+       "reasoningOutputTokens": 0
+      },
+      "modelContextWindow": 258400
+     }
+    }
+   },
+   {
+    "method": "account/rateLimits/updated",
+    "params": {
+     "rateLimits": {
+      "limitId": "codex",
+      "limitName": null,
+      "normalModelSlug": null,
+      "primary": null,
+      "secondary": null,
+      "credits": null,
+      "individualLimit": null,
+      "spendControlReached": null,
+      "planType": null,
+      "rateLimitReachedType": null
+     }
+    }
+   },
+   {
+    "method": "thread/status/changed",
+    "params": {
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "status": {
+      "type": "idle"
+     }
+    }
+   },
+   {
+    "method": "turn/completed",
+    "params": {
+     "threadId": "01a1aa0e-8d26-7a41-8566-8b4c9916741b",
+     "turn": {
+      "id": "01a1aa0e-8d35-7353-90f8-e5f4aa9317f8",
+      "rootTurnId": "01a1aa0e-8d35-7353-90f8-e5f4aa9317f8",
+      "items": [
+       {
+        "type": "agentMessage",
+        "id": "msg_resp_1_1",
+        "text": "hello there",
+        "phase": null,
+        "memoryCitation": null,
+        "delivery": null,
+        "questions": null
+       }
+      ],
+      "itemsView": "summary",
+      "status": "completed",
+      "error": null,
+      "startedAt": 1793854442,
+      "completedAt": 1793854442,
+      "durationMs": 55
+     }
+    }
+   }
+  ]
+ },
+ "commandApproval": {
+  "messages": [
+   {
+    "method": "configWarning",
+    "params": {
+     "summary": "Project-local config, hooks, and exec policies are disabled in the following folders until the project is trusted, but skills still load.\n    1. <probe-root>/worktree/.codex\n       To load project-local config, hooks, and exec policies, add <probe-root>/repo as a trusted project in <probe-root>/context/config.toml.\n",
+     "details": null
+    }
+   },
+   {
+    "method": "remoteControl/status/changed",
+    "params": {
+     "status": "disabled",
+     "serverName": "vpc",
+     "installationId": "d01270c6-3dd5-4ead-9a7e-bd90ff4a285c",
+     "environmentId": null
+    }
+   },
+   {
+    "method": "thread/started",
+    "params": {
+     "thread": {
+      "id": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+      "environments": [
+       {
+        "environmentId": "local",
+        "cwd": "<probe-root>/worktree",
+        "runtimeWorkspaceRoots": [
+         "<probe-root>/worktree"
+        ]
+       }
+      ],
+      "extra": null,
+      "sessionId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+      "forkedFromId": null,
+      "parentThreadId": null,
+      "preview": "",
+      "ephemeral": false,
+      "section": null,
+      "sectionEnteredAt": null,
+      "projectId": null,
+      "historyMode": "paginated",
+      "modelProvider": "ffprobe",
+      "model": "ff-probe-model",
+      "reasoningEffort": null,
+      "createdAt": 1793854443,
+      "updatedAt": 1793854443,
+      "recencyAt": 1793854443,
+      "status": {
+       "type": "idle"
+      },
+      "path": "<probe-root>/context/sessions/2026/11/04/rollout-2026-11-04T23-54-03-01a1aa0e-900c-7591-b3e8-53700e5d63c2.jsonl",
+      "cwd": "<probe-root>/worktree",
+      "cliVersion": "0.162.1",
+      "originator": "ff",
+      "source": "vscode",
+      "canAcceptDirectInput": true,
+      "threadSource": null,
+      "agentNickname": null,
+      "agentRole": null,
+      "gitInfo": null,
+      "name": null,
+      "daybreakEnabled": null,
+      "turns": []
+     }
+    }
+   },
+   {
+    "method": "mcpServer/startupStatus/updated",
+    "params": {
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "name": "ff_reporting",
+     "status": "starting",
+     "error": null,
+     "failureReason": null
+    }
+   },
+   {
+    "method": "warning",
+    "params": {
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "message": "Model metadata for `ff-probe-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+    }
+   },
+   {
+    "method": "mcpServer/startupStatus/updated",
+    "params": {
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "name": "ff_reporting",
+     "status": "ready",
+     "error": null,
+     "failureReason": null
+    }
+   },
+   {
+    "method": "thread/status/changed",
+    "params": {
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "status": {
+      "type": "active",
+      "activeFlags": []
+     }
+    }
+   },
+   {
+    "method": "turn/started",
+    "params": {
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "turn": {
+      "id": "01a1aa0e-902e-7272-a73a-11bb3681ca1c",
+      "rootTurnId": "01a1aa0e-902e-7272-a73a-11bb3681ca1c",
+      "items": [],
+      "itemsView": "notLoaded",
+      "status": "inProgress",
+      "error": null,
+      "startedAt": 1793854443,
+      "completedAt": null,
+      "durationMs": null
+     }
+    }
+   },
+   {
+    "method": "item/started",
+    "params": {
+     "item": {
+      "type": "userMessage",
+      "id": "01a1aa0e-9040-7283-8298-773de47bb5e1",
+      "clientId": null,
+      "content": [
+       {
+        "type": "text",
+        "text": "run",
+        "text_elements": []
+       }
+      ]
+     },
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "turnId": "01a1aa0e-902e-7272-a73a-11bb3681ca1c",
+     "startedAtMs": 1793854443584
+    }
+   },
+   {
+    "method": "item/completed",
+    "params": {
+     "item": {
+      "type": "userMessage",
+      "id": "01a1aa0e-9040-7283-8298-773de47bb5e1",
+      "clientId": null,
+      "content": [
+       {
+        "type": "text",
+        "text": "run",
+        "text_elements": []
+       }
+      ]
+     },
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "turnId": "01a1aa0e-902e-7272-a73a-11bb3681ca1c",
+     "completedAtMs": 1793854443584
+    }
+   },
+   {
+    "method": "thread/status/changed",
+    "params": {
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "status": {
+      "type": "active",
+      "activeFlags": [
+       "waitingOnApproval"
+      ]
+     }
+    }
+   },
+   {
+    "method": "item/started",
+    "params": {
+     "item": {
+      "type": "commandExecution",
+      "id": "call_resp_0_0",
+      "pluginId": null,
+      "scriptPath": null,
+      "command": "/bin/bash -lc 'touch <probe-root>/worktree/m'",
+      "cwd": "<probe-root>/worktree",
+      "processId": null,
+      "source": "agent",
+      "status": "inProgress",
+      "commandActions": [
+       {
+        "type": "unknown",
+        "command": "touch <probe-root>/worktree/m"
+       }
+      ],
+      "aggregatedOutput": null,
+      "exitCode": null,
+      "durationMs": null
+     },
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "turnId": "01a1aa0e-902e-7272-a73a-11bb3681ca1c",
+     "startedAtMs": 1793854443610
+    }
+   },
+   {
+    "id": 0,
+    "method": "item/commandExecution/requestApproval",
+    "params": {
+     "kind": "command",
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "turnId": "01a1aa0e-902e-7272-a73a-11bb3681ca1c",
+     "itemId": "call_resp_0_0",
+     "startedAtMs": 1793854443609,
+     "environmentId": "local",
+     "reason": "probe",
+     "command": "/bin/bash -lc 'touch <probe-root>/worktree/m'",
+     "cwd": "<probe-root>/worktree",
+     "commandActions": [
+      {
+       "type": "unknown",
+       "command": "touch <probe-root>/worktree/m"
+      }
+     ],
+     "proposedExecpolicyAmendment": [
+      "touch",
+      "<probe-root>/worktree/m"
+     ],
+     "availableDecisions": [
+      "accept",
+      {
+       "acceptWithExecpolicyAmendment": {
+        "execpolicy_amendment": [
+         "touch",
+         "<probe-root>/worktree/m"
+        ]
+       }
+      },
+      "cancel"
+     ]
+    }
+   },
+   {
+    "method": "serverRequest/resolved",
+    "params": {
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "requestId": 0
+    }
+   },
+   {
+    "method": "item/completed",
+    "params": {
+     "item": {
+      "type": "commandExecution",
+      "id": "call_resp_0_0",
+      "pluginId": null,
+      "scriptPath": null,
+      "command": "/bin/bash -lc 'touch <probe-root>/worktree/m'",
+      "cwd": "<probe-root>/worktree",
+      "processId": null,
+      "source": "agent",
+      "status": "declined",
+      "commandActions": [
+       {
+        "type": "unknown",
+        "command": "touch <probe-root>/worktree/m"
+       }
+      ],
+      "aggregatedOutput": null,
+      "exitCode": null,
+      "durationMs": null
+     },
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "turnId": "01a1aa0e-902e-7272-a73a-11bb3681ca1c",
+     "completedAtMs": 1793854443610
+    }
+   },
+   {
+    "method": "thread/status/changed",
+    "params": {
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "status": {
+      "type": "active",
+      "activeFlags": []
+     }
+    }
+   },
+   {
+    "method": "thread/tokenUsage/updated",
+    "params": {
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "turnId": "01a1aa0e-902e-7272-a73a-11bb3681ca1c",
+     "tokenUsage": {
+      "total": {
+       "totalTokens": 2,
+       "inputTokens": 1,
+       "cachedInputTokens": 0,
+       "cacheWriteInputTokens": 0,
+       "outputTokens": 1,
+       "reasoningOutputTokens": 0
+      },
+      "last": {
+       "totalTokens": 2,
+       "inputTokens": 1,
+       "cachedInputTokens": 0,
+       "cacheWriteInputTokens": 0,
+       "outputTokens": 1,
+       "reasoningOutputTokens": 0
+      },
+      "modelContextWindow": 258400
+     }
+    }
+   },
+   {
+    "method": "account/rateLimits/updated",
+    "params": {
+     "rateLimits": {
+      "limitId": "codex",
+      "limitName": null,
+      "normalModelSlug": null,
+      "primary": null,
+      "secondary": null,
+      "credits": null,
+      "individualLimit": null,
+      "spendControlReached": null,
+      "planType": null,
+      "rateLimitReachedType": null
+     }
+    }
+   },
+   {
+    "method": "item/started",
+    "params": {
+     "item": {
+      "type": "agentMessage",
+      "id": "msg_resp_1_1",
+      "text": "",
+      "phase": null,
+      "memoryCitation": null,
+      "delivery": null,
+      "questions": null
+     },
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "turnId": "01a1aa0e-902e-7272-a73a-11bb3681ca1c",
+     "startedAtMs": 1793854443623
+    }
+   },
+   {
+    "method": "item/agentMessage/delta",
+    "params": {
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "turnId": "01a1aa0e-902e-7272-a73a-11bb3681ca1c",
+     "itemId": "msg_resp_1_1",
+     "delta": "ok"
+    }
+   },
+   {
+    "method": "item/completed",
+    "params": {
+     "item": {
+      "type": "agentMessage",
+      "id": "msg_resp_1_1",
+      "text": "ok",
+      "phase": null,
+      "memoryCitation": null,
+      "delivery": null,
+      "questions": null
+     },
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "turnId": "01a1aa0e-902e-7272-a73a-11bb3681ca1c",
+     "completedAtMs": 1793854443623
+    }
+   },
+   {
+    "method": "thread/tokenUsage/updated",
+    "params": {
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "turnId": "01a1aa0e-902e-7272-a73a-11bb3681ca1c",
+     "tokenUsage": {
+      "total": {
+       "totalTokens": 4,
+       "inputTokens": 2,
+       "cachedInputTokens": 0,
+       "cacheWriteInputTokens": 0,
+       "outputTokens": 2,
+       "reasoningOutputTokens": 0
+      },
+      "last": {
+       "totalTokens": 2,
+       "inputTokens": 1,
+       "cachedInputTokens": 0,
+       "cacheWriteInputTokens": 0,
+       "outputTokens": 1,
+       "reasoningOutputTokens": 0
+      },
+      "modelContextWindow": 258400
+     }
+    }
+   },
+   {
+    "method": "account/rateLimits/updated",
+    "params": {
+     "rateLimits": {
+      "limitId": "codex",
+      "limitName": null,
+      "normalModelSlug": null,
+      "primary": null,
+      "secondary": null,
+      "credits": null,
+      "individualLimit": null,
+      "spendControlReached": null,
+      "planType": null,
+      "rateLimitReachedType": null
+     }
+    }
+   },
+   {
+    "method": "thread/status/changed",
+    "params": {
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "status": {
+      "type": "idle"
+     }
+    }
+   },
+   {
+    "method": "turn/completed",
+    "params": {
+     "threadId": "01a1aa0e-900c-7591-b3e8-53700e5d63c2",
+     "turn": {
+      "id": "01a1aa0e-902e-7272-a73a-11bb3681ca1c",
+      "rootTurnId": "01a1aa0e-902e-7272-a73a-11bb3681ca1c",
+      "items": [
+       {
+        "type": "agentMessage",
+        "id": "msg_resp_1_1",
+        "text": "ok",
+        "phase": null,
+        "memoryCitation": null,
+        "delivery": null,
+        "questions": null
+       }
+      ],
+      "itemsView": "summary",
+      "status": "completed",
+      "error": null,
+      "startedAt": 1793854443,
+      "completedAt": 1793854443,
+      "durationMs": 58
+     }
+    }
+   }
+  ]
+ },
+ "missingModel": {
+  "messages": [
+   {
+    "method": "configWarning",
+    "params": {
+     "summary": "Project-local config, hooks, and exec policies are disabled in the following folders until the project is trusted, but skills still load.\n    1. <probe-root>/worktree/.codex\n       To load project-local config, hooks, and exec policies, add <probe-root>/repo as a trusted project in <probe-root>/context/config.toml.\n",
+     "details": null
+    }
+   },
+   {
+    "method": "remoteControl/status/changed",
+    "params": {
+     "status": "disabled",
+     "serverName": "vpc",
+     "installationId": "d01270c6-3dd5-4ead-9a7e-bd90ff4a285c",
+     "environmentId": null
+    }
+   },
+   {
+    "method": "thread/started",
+    "params": {
+     "thread": {
+      "id": "01a1aa0e-9304-7fb2-a1e4-dcfe16f8e659",
+      "environments": [
+       {
+        "environmentId": "local",
+        "cwd": "<probe-root>/worktree",
+        "runtimeWorkspaceRoots": [
+         "<probe-root>/worktree"
+        ]
+       }
+      ],
+      "extra": null,
+      "sessionId": "01a1aa0e-9304-7fb2-a1e4-dcfe16f8e659",
+      "forkedFromId": null,
+      "parentThreadId": null,
+      "preview": "",
+      "ephemeral": false,
+      "section": null,
+      "sectionEnteredAt": null,
+      "projectId": null,
+      "historyMode": "paginated",
+      "modelProvider": "ffprobe",
+      "model": "ff-probe-model",
+      "reasoningEffort": null,
+      "createdAt": 1793854444,
+      "updatedAt": 1793854444,
+      "recencyAt": 1793854444,
+      "status": {
+       "type": "idle"
+      },
+      "path": "<probe-root>/context/sessions/2026/11/04/rollout-2026-11-04T23-54-04-01a1aa0e-9304-7fb2-a1e4-dcfe16f8e659.jsonl",
+      "cwd": "<probe-root>/worktree",
+      "cliVersion": "0.162.1",
+      "originator": "ff",
+      "source": "vscode",
+      "canAcceptDirectInput": true,
+      "threadSource": null,
+      "agentNickname": null,
+      "agentRole": null,
+      "gitInfo": null,
+      "name": null,
+      "daybreakEnabled": null,
+      "turns": []
+     }
+    }
+   },
+   {
+    "method": "mcpServer/startupStatus/updated",
+    "params": {
+     "threadId": "01a1aa0e-9304-7fb2-a1e4-dcfe16f8e659",
+     "name": "ff_reporting",
+     "status": "starting",
+     "error": null,
+     "failureReason": null
+    }
+   },
+   {
+    "method": "warning",
+    "params": {
+     "threadId": "01a1aa0e-9304-7fb2-a1e4-dcfe16f8e659",
+     "message": "Model metadata for `ff-probe-model` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."
+    }
+   },
+   {
+    "method": "mcpServer/startupStatus/updated",
+    "params": {
+     "threadId": "01a1aa0e-9304-7fb2-a1e4-dcfe16f8e659",
+     "name": "ff_reporting",
+     "status": "ready",
+     "error": null,
+     "failureReason": null
+    }
+   },
+   {
+    "method": "thread/status/changed",
+    "params": {
+     "threadId": "01a1aa0e-9304-7fb2-a1e4-dcfe16f8e659",
+     "status": {
+      "type": "active",
+      "activeFlags": []
+     }
+    }
+   },
+   {
+    "method": "turn/started",
+    "params": {
+     "threadId": "01a1aa0e-9304-7fb2-a1e4-dcfe16f8e659",
+     "turn": {
+      "id": "01a1aa0e-9328-79b2-a306-4ec65d1f99d2",
+      "rootTurnId": "01a1aa0e-9328-79b2-a306-4ec65d1f99d2",
+      "items": [],
+      "itemsView": "notLoaded",
+      "status": "inProgress",
+      "error": null,
+      "startedAt": 1793854444,
+      "completedAt": null,
+      "durationMs": null
+     }
+    }
+   },
+   {
+    "method": "item/started",
+    "params": {
+     "item": {
+      "type": "userMessage",
+      "id": "01a1aa0e-933a-7702-8eda-72d9773d7e4d",
+      "clientId": null,
+      "content": [
+       {
+        "type": "text",
+        "text": "hi",
+        "text_elements": []
+       }
+      ]
+     },
+     "threadId": "01a1aa0e-9304-7fb2-a1e4-dcfe16f8e659",
+     "turnId": "01a1aa0e-9328-79b2-a306-4ec65d1f99d2",
+     "startedAtMs": 1793854444347
+    }
+   },
+   {
+    "method": "item/completed",
+    "params": {
+     "item": {
+      "type": "userMessage",
+      "id": "01a1aa0e-933a-7702-8eda-72d9773d7e4d",
+      "clientId": null,
+      "content": [
+       {
+        "type": "text",
+        "text": "hi",
+        "text_elements": []
+       }
+      ]
+     },
+     "threadId": "01a1aa0e-9304-7fb2-a1e4-dcfe16f8e659",
+     "turnId": "01a1aa0e-9328-79b2-a306-4ec65d1f99d2",
+     "completedAtMs": 1793854444347
+    }
+   },
+   {
+    "method": "error",
+    "params": {
+     "error": {
+      "message": "Reconnecting... 1/5",
+      "codexErrorInfo": {
+       "responseStreamDisconnected": {
+        "httpStatusCode": 404
+       }
+      },
+      "additionalDetails": "unexpected status 404 Not Found: not found, url: <fixture-url>/v1/responses",
+      "misalignment": null
+     },
+     "willRetry": true,
+     "threadId": "01a1aa0e-9304-7fb2-a1e4-dcfe16f8e659",
+     "turnId": "01a1aa0e-9328-79b2-a306-4ec65d1f99d2"
+    }
+   },
+   {
+    "method": "error",
+    "params": {
+     "error": {
+      "message": "Reconnecting... 2/5",
+      "codexErrorInfo": {
+       "responseStreamDisconnected": {
+        "httpStatusCode": 404
+       }
+      },
+      "additionalDetails": "unexpected status 404 Not Found: not found, url: <fixture-url>/v1/responses",
+      "misalignment": null
+     },
+     "willRetry": true,
+     "threadId": "01a1aa0e-9304-7fb2-a1e4-dcfe16f8e659",
+     "turnId": "01a1aa0e-9328-79b2-a306-4ec65d1f99d2"
+    }
+   },
+   {
+    "method": "error",
+    "params": {
+     "error": {
+      "message": "Reconnecting... 3/5",
+      "codexErrorInfo": {
+       "responseStreamDisconnected": {
+        "httpStatusCode": 404
+       }
+      },
+      "additionalDetails": "unexpected status 404 Not Found: not found, url: <fixture-url>/v1/responses",
+      "misalignment": null
+     },
+     "willRetry": true,
+     "threadId": "01a1aa0e-9304-7fb2-a1e4-dcfe16f8e659",
+     "turnId": "01a1aa0e-9328-79b2-a306-4ec65d1f99d2"
+    }
+   },
+   {
+    "method": "error",
+    "params": {
+     "error": {
+      "message": "Reconnecting... 4/5",
+      "codexErrorInfo": {
+       "responseStreamDisconnected": {
+        "httpStatusCode": 404
+       }
+      },
+      "additionalDetails": "unexpected status 404 Not Found: not found, url: <fixture-url>/v1/responses",
+      "misalignment": null
+     },
+     "willRetry": true,
+     "threadId": "01a1aa0e-9304-7fb2-a1e4-dcfe16f8e659",
+     "turnId": "01a1aa0e-9328-79b2-a306-4ec65d1f99d2"
+    }
+   },
+   {
+    "method": "error",
+    "params": {
+     "error": {
+      "message": "Reconnecting... 5/5",
+      "codexErrorInfo": {
+       "responseStreamDisconnected": {
+        "httpStatusCode": 404
+       }
+      },
+      "additionalDetails": "unexpected status 404 Not Found: not found, url: <fixture-url>/v1/responses",
+      "misalignment": null
+     },
+     "willRetry": true,
+     "threadId": "01a1aa0e-9304-7fb2-a1e4-dcfe16f8e659",
+     "turnId": "01a1aa0e-9328-79b2-a306-4ec65d1f99d2"
+    }
+   },
+   {
+    "method": "thread/status/changed",
+    "params": {
+     "threadId": "01a1aa0e-9304-7fb2-a1e4-dcfe16f8e659",
+     "status": {
+      "type": "systemError"
+     }
+    }
+   },
+   {
+    "method": "error",
+    "params": {
+     "error": {
+      "message": "unexpected status 404 Not Found: not found, url: <fixture-url>/v1/responses",
+      "codexErrorInfo": {
+       "httpConnectionFailed": {
+        "httpStatusCode": 404
+       }
+      },
+      "additionalDetails": null,
+      "misalignment": null
+     },
+     "willRetry": false,
+     "threadId": "01a1aa0e-9304-7fb2-a1e4-dcfe16f8e659",
+     "turnId": "01a1aa0e-9328-79b2-a306-4ec65d1f99d2"
+    }
+   },
+   {
+    "method": "turn/completed",
+    "params": {
+     "threadId": "01a1aa0e-9304-7fb2-a1e4-dcfe16f8e659",
+     "turn": {
+      "id": "01a1aa0e-9328-79b2-a306-4ec65d1f99d2",
+      "rootTurnId": "01a1aa0e-9328-79b2-a306-4ec65d1f99d2",
+      "items": [],
+      "itemsView": "notLoaded",
+      "status": "failed",
+      "error": {
+       "message": "unexpected status 404 Not Found: not found, url: <fixture-url>/v1/responses",
+       "codexErrorInfo": {
+        "httpConnectionFailed": {
+         "httpStatusCode": 404
+        }
+       },
+       "additionalDetails": null,
+       "misalignment": null
+      },
+      "startedAt": 1793854444,
+      "completedAt": 1793854450,
+      "durationMs": 6390
+     }
+    }
+   }
+  ]
+ }
+}

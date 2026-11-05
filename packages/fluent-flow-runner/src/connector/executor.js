@@ -1,5 +1,14 @@
 import { createHash } from 'node:crypto';
+import { servedPaseoProfileIds } from './config.js';
+import { harnessVersionFor, paseoExecutionProfile, paseoSnapshot, profileRevision } from './catalog.js';
+import { nativeCursorEpoch } from '../supervisor/summary.js';
 
+
+const NATIVE_BACKENDS = new Set(['claude-code', 'codex']);
+const EXECUTION_BACKENDS = new Set(['claude-code', 'codex', 'paseo']);
+const SUPERVISOR_TRANSPORT_ERRORS = new Set(['SupervisorRequestError', 'SupervisorUnavailable', 'SupervisorRefused']);
+const RUN_LEVEL_KINDS = new Set(['artifact_read', 'wrapup_preflight', 'wrapup']);
+const summaryUnavailable = () => new ExecutorError('summary_unavailable', 'Summary generation is disabled or unavailable.');
 
 export class ExecutorError extends Error {
   /**
@@ -30,6 +39,8 @@ export function canonicalDigest(payload) {
  * @param {object} opts.adapter - createPaseoAdapter(...) result
  * @param {object} opts.journal
  * @param {Array<object>} [opts.catalogProfiles] - sanitized local catalog profiles
+ * @param {Array<object>} [opts.paseoProfiles] - the local saved Paseo profiles
+ * @param {{ request: (method: string, params?: object) => Promise<any> } | null} [opts.native] - supervisor client
  * @param {(obj: object, msg?: string) => void} [opts.log]
  * @param {object} [opts.capabilities] - injected host capabilities
  * @param {(agentId: string) => Promise<void>} [opts.capabilities.stopAgent]
@@ -39,7 +50,7 @@ export function canonicalDigest(payload) {
  * @param {(credential: string) => void} [opts.capabilities.rememberReportingCredential]
  * @param {ReturnType<typeof import('./observation-privacy.js').createObservationPrivacy>} [opts.privacy]
  */
-export function createExecutor({ config, adapter, journal, catalogProfiles = [], log = () => {}, capabilities = {}, privacy = null }) {
+export function createExecutor({ config, adapter, native = null, journal, catalogProfiles = [], paseoProfiles = [], log = () => {}, capabilities = {}, privacy = null }) {
   function sessionOptions(payload, command) {
     let mcpServers;
     if (payload.reportingCredential !== undefined) {
@@ -56,7 +67,7 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
 
   function resolveProfile(profileId) {
     if (!profileId) return null;
-    if (!config.profiles.includes(profileId)) {
+    if (!servedPaseoProfileIds(config).includes(profileId)) {
       throw new ExecutorError('profile_not_allowed', 'Profile is not allowlisted on this host.');
     }
     return profileId;
@@ -132,6 +143,120 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
     };
   }
 
+
+  function executionOf(command) {
+    if (!command.payload || !Object.hasOwn(command.payload, 'execution')) return undefined;
+    const e = command.payload.execution;
+    if (!e || typeof e !== 'object' || e.schemaVersion !== 2 || !EXECUTION_BACKENDS.has(e.backend) ||
+        typeof e.profileId !== 'string' || e.profileId === '' || typeof e.profileRevision !== 'string' || e.profileRevision === '') {
+      throw new ExecutorError('profile_unavailable', 'This execution profile is unavailable. Contact the execution host owner.');
+    }
+    return e;
+  }
+
+  const settingsChanged = () => new ExecutorError('execution_settings_changed', 'Execution settings changed. Ask a project administrator to select an available profile.');
+
+  function verifyNativeRevision(execution) {
+    const matches = (config.profiles ?? []).filter((p) => p && typeof p === 'object' && p.id === execution.profileId);
+    const local = matches.length === 1 ? matches[0] : null;
+    if (!local || local.backend !== execution.backend || local.complete !== true ||
+        profileRevision(local, harnessVersionFor(local.backend)) !== execution.profileRevision) {
+      log({ msg: 'execution profile revision differs from the frozen command', profileId: execution.profileId, backend: execution.backend });
+      throw settingsChanged();
+    }
+    return local;
+  }
+
+  function verifyPaseoRevision(execution) {
+    resolveProfile(execution.profileId);
+    const matches = paseoProfiles.filter((p) => p?.id === execution.profileId);
+    const local = matches.length === 1 ? matches[0] : null;
+    if (!local || profileRevision(paseoExecutionProfile(local), harnessVersionFor('paseo')) !== execution.profileRevision) {
+      log({ msg: 'execution profile revision differs from the frozen command', profileId: execution.profileId, backend: 'paseo' });
+      throw settingsChanged();
+    }
+    return paseoSnapshot(local);
+  }
+
+  function paseoView(command, execution) {
+    if (command.kind === 'prompt') {
+      verifyPaseoRevision(execution);
+      return command;
+    }
+    if (!['launch', 'create_session', 'summarize'].includes(command.kind)) return command;
+    const snapshot = verifyPaseoRevision(execution);
+    return { ...command, payload: { ...command.payload, profileSnapshot: snapshot } };
+  }
+
+  function nativeBinding(runId, sessionId) {
+    const binding = journal.bindingForSession(runId, sessionId);
+    return binding && NATIVE_BACKENDS.has(binding.backend) ? binding : null;
+  }
+
+  function nativeRunBinding(runId) {
+    const binding = journal.bindingForRun(runId);
+    return binding && NATIVE_BACKENDS.has(binding.backend) ? binding : null;
+  }
+
+  async function supervise(method, params) {
+    try {
+      return await native.request(method, params);
+    } catch (err) {
+      if (SUPERVISOR_TRANSPORT_ERRORS.has(err?.name)) {
+        log({ msg: 'supervisor request outcome unknown', method, commandId: params.commandId, code: err.code });
+        return { state: 'reconciling', errorCode: 'supervisor_unavailable', transport: true };
+      }
+      throw err;
+    }
+  }
+
+  function unsuccessful(result) {
+    if (result.state === 'deferred') return { state: 'deferred' };
+    if (result.state === 'reconciling') return { state: 'ambiguous', errorCode: result.errorCode ?? 'reconciling' };
+    if (result.state === 'failed') return { state: 'failed', errorCode: result.errorCode ?? 'startup_failed' };
+    return null;
+  }
+
+  /**
+   * @returns {{ sessionId: string, sourceCursor: { epoch: string, seq: number } }}
+   */
+  function nativeSummarySource(command, backend) {
+    const payload = command.payload ?? {};
+    const source = typeof payload.sourceSessionId === 'string' ? nativeBinding(command.runId, payload.sourceSessionId) : null;
+    const cursor = payload.sourceCursor;
+    const valid = source !== null && source.backend === backend && cursor !== null && typeof cursor === 'object' &&
+      cursor.epoch === nativeCursorEpoch(backend) && typeof cursor.seq === 'string' && /^[1-9][0-9]{0,15}$/.test(cursor.seq) && Number.isSafeInteger(Number(cursor.seq));
+    if (!valid) {
+      log({ msg: 'native summary refused', commandId: command.id, reason: source === null ? 'source_session_not_bound' : 'source_cursor_invalid' });
+      throw summaryUnavailable();
+    }
+    return { sessionId: source.sessionId, sourceCursor: { epoch: cursor.epoch, seq: Number(cursor.seq) } };
+  }
+
+  function nativeReporting(payload) {
+    if (typeof payload.reportingCredential !== 'string' || !payload.reportingCredential || !config.serverUrl) {
+      throw new ExecutorError('reporting_unavailable', 'Session reporting is unavailable.');
+    }
+    capabilities.rememberReportingCredential?.(payload.reportingCredential);
+    privacy?.addSecret(payload.reportingCredential);
+    return { url: new URL('/mcp/collab', config.serverUrl).href, credential: payload.reportingCredential };
+  }
+
+  function observation(command, kind, payload, eventId) {
+    return { eventId, commandId: command.id, runId: command.runId, sessionId: command.sessionId, observedAt: new Date().toISOString(), kind, payload };
+  }
+
+  async function operatorClosed(command) {
+    return { state: 'applied', result: { cancelRequested: true, closure: 'operator' }, observations: await observe([observation(command, 'state', { state: 'cancelled', closure: 'operator', cancelCommandId: command.id }, `cancelled:${command.id}`)]) };
+  }
+
+  async function nativeBound(command, binding) {
+    const events = [];
+    if (command.kind === 'launch') events.push(observation(command, 'workspace_bound', { workspaceRef: binding.workspaceRef, backend: binding.backend }, `workspace_bound:${command.id}`));
+    events.push(observation(command, 'session_bound', { backend: binding.backend, nativeSessionId: binding.nativeSessionId, generation: binding.generation }, `session_bound:${command.id}`));
+    return { stage: 'bound', state: 'accepted', result: { workspaceRef: binding.workspaceRef, nativeSessionId: binding.nativeSessionId }, observations: await observe(events) };
+  }
+
   function boundObservations(command, binding) {
     return [
       {
@@ -176,6 +301,19 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
         throw err;
       }
       try {
+        const execution = executionOf(command);
+        if (execution === undefined) {
+          const owned = nativeBinding(command.runId, command.sessionId);
+          if (owned) return await this.executeNativeControl(command, owned);
+          if (command.kind === 'cancel' && NATIVE_BACKENDS.has(command.nativeBackend)) return await this.executeOwnedCancel(command, command.nativeBackend);
+          if (nativeRunBinding(command.runId) && (RUN_LEVEL_KINDS.has(command.kind) || command.kind === 'summarize')) return await this.executeNativeRunCommand(command);
+          if (!adapter) throw new ExecutorError('integration_disabled', 'This run requires an integration that is not enabled.');
+        } else if (execution.backend === 'paseo') {
+          if (!adapter) throw new ExecutorError('integration_disabled', 'This run requires an integration that is not enabled.');
+          command = paseoView(command, execution);
+        } else {
+          return await this.executeNative(command, execution, intent.payloadDigest);
+        }
         switch (command.kind) {
           case 'launch':
             return await this.executeLaunch(command, intent.payloadDigest);
@@ -246,9 +384,19 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
 
 
     async complete(command) {
-      const payload = command.payload ?? {};
+      const digest = intentFor(command).payloadDigest;
       const binding = journal.byCommand(command.id)?.binding;
       if (!binding) return { state: 'failed', errorCode: 'run_not_bound' };
+      if (NATIVE_BACKENDS.has(binding.backend)) return this.completeNative(command, digest);
+      let execution;
+      try {
+        execution = executionOf(command);
+        if (execution?.backend === 'paseo') command = paseoView(command, execution);
+      } catch (err) {
+        if (err instanceof ExecutorError) return { state: 'failed', errorCode: err.code };
+        throw err;
+      }
+      const payload = command.payload ?? {};
       const prompt = typeof payload.prompt === 'string' && payload.prompt.trim().length > 0
         ? payload.prompt : payload.instructions;
       if (['launch', 'create_session', 'summarize'].includes(command.kind)) {
@@ -274,7 +422,7 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
           profileSnapshot: payload.profileSnapshot,
           model: payload.model ?? null,
           prompt,
-          digest: intentFor(command).payloadDigest,
+          digest,
         });
       } else {
         const runBinding = command.kind === 'create_session' ? journal.bindingForRun(command.runId) : binding;
@@ -295,6 +443,141 @@ export function createExecutor({ config, adapter, journal, catalogProfiles = [],
         return { state: 'ambiguous', errorCode: result.errorCode, result: { workspaceId: result.workspaceId, paseoAgentId: result.paseoAgentId } };
       }
       return { state: 'applied', result: { workspaceId: result.workspaceId, paseoAgentId: result.paseoAgentId } };
+    },
+
+    async executeNative(command, execution, digest) {
+      const payload = command.payload ?? {};
+      const { id: commandId, runId, sessionId, kind } = command;
+      if (!['launch', 'create_session', 'summarize', 'prompt'].includes(kind)) {
+        const owned = nativeBinding(runId, sessionId);
+        if (owned) return this.executeNativeControl(command, owned);
+        if (RUN_LEVEL_KINDS.has(kind) && nativeRunBinding(runId)) return this.executeNativeRunCommand(command);
+        throw new ExecutorError('session_not_bound', 'No live session is journaled for this address yet.');
+      }
+      if (kind === 'prompt') {
+        const owned = nativeBinding(runId, sessionId);
+        if (!owned) throw new ExecutorError('session_not_bound', 'No live session is journaled for this address yet.');
+        if (owned.backend !== execution.backend) throw settingsChanged();
+      }
+      const local = verifyNativeRevision(execution);
+      if (!native) {
+        log({ msg: 'native command refused', commandId, reason: 'supervisor_not_composed' });
+        throw new ExecutorError('profile_unavailable', 'This execution profile is unavailable. Contact the execution host owner.');
+      }
+      const base = { commandId, digest, runId, sessionId, backend: execution.backend, kind, profileId: execution.profileId, profileRevision: execution.profileRevision,
+        ...(command.slotGranted === true ? { slotGranted: true } : {}), ...(command.slotHeld === true ? { slotHeld: true } : {}),
+        ...(command.slotGranted === true && typeof command.grantId === 'string' ? { grantId: command.grantId } : {}) };
+      if (kind === 'prompt') {
+        const behavior = payload.behavior ?? payload.activeTurnBehavior;
+        if (behavior !== undefined && behavior !== 'steer' && behavior !== 'interrupt') throw new ExecutorError('invalid_behavior', 'Prompt behavior must be steer or interrupt.');
+        if (typeof payload.text !== 'string' || payload.text.trim() === '') throw new ExecutorError('prompt_required', 'A prompt is required.');
+        if (payload.text.length > 200_000) throw new ExecutorError('prompt_too_large', 'The prompt is too large.');
+        const result = await supervise('submit', { ...base, text: payload.text, ...(behavior ? { behavior } : {}), ...(payload.reportingCredential !== undefined ? { reporting: nativeReporting(payload) } : {}) });
+        const failed = unsuccessful(result);
+        if (failed) return failed;
+        return { state: 'applied', result: { messageId: commandId }, observations: await observe([observation(command, 'state', { state: 'running' }, `prompt_dispatched:${commandId}`)]) };
+      }
+
+      const existing = journal.byCommand(commandId)?.binding;
+      if (existing) return nativeBound(command, existing);
+      let repositoryKey;
+      if (kind === 'launch') {
+        resolveRepo(payload.repositoryKey);
+        repositoryKey = payload.repositoryKey;
+      } else {
+        const runBinding = nativeRunBinding(runId);
+        if (!runBinding) throw new ExecutorError('run_not_bound', 'No launched workspace is journaled for this run yet.');
+        if (runBinding.backend !== execution.backend) throw settingsChanged();
+        repositoryKey = runBinding.repositoryKey;
+        resolveRepo(repositoryKey);
+      }
+      const summarySource = kind === 'summarize' ? nativeSummarySource(command, execution.backend) : null;
+      const result = await supervise('submit', {
+        ...base,
+        repositoryKey,
+        ...(kind === 'launch' ? { branchName: payload.workspace?.branchName, baseRef: payload.workspace?.baseRef } : {}),
+        role: kind === 'summarize' ? 'summary' : 'work',
+        reporting: nativeReporting(payload),
+        ...(summarySource ? { summarySource } : {}),
+      });
+      const failed = unsuccessful(result);
+      if (failed) return failed;
+      const b = result.binding;
+      if (!b || typeof b.nativeSessionId !== 'string' || typeof b.workspaceRef !== 'string' || !Number.isSafeInteger(b.generation)) {
+        log({ msg: 'supervisor bind result incomplete', commandId });
+        return { state: 'ambiguous', errorCode: 'reconciling' };
+      }
+      const binding = { type: 'binding', commandId, runId, sessionId, backend: execution.backend, nativeSessionId: b.nativeSessionId, workspaceRef: b.workspaceRef, generation: b.generation, repositoryKey, role: kind === 'summarize' ? 'summary' : 'work',
+        model: local.model, ...(kind === 'summarize' ? { sourceCursor: payload.sourceCursor ?? null } : {}) };
+      await journal.append(binding);
+      return nativeBound(command, binding);
+    },
+
+    async completeNative(command, digest) {
+      const payload = command.payload ?? {};
+      const prompt = typeof payload.prompt === 'string' && payload.prompt.trim().length > 0 ? payload.prompt : payload.instructions;
+      if (typeof prompt !== 'string' || prompt.trim().length === 0) return { state: 'failed', errorCode: 'prompt_required' };
+      if (prompt.length > 200_000) return { state: 'failed', errorCode: 'prompt_too_large' };
+      if (!native) return { state: 'failed', errorCode: 'profile_unavailable' };
+      const result = await supervise('deliver', { commandId: command.id, digest, text: prompt });
+      const failed = unsuccessful(result);
+      if (failed) return failed;
+      return { state: 'applied', result: { messageId: command.id }, observations: await observe([observation(command, 'state', { state: 'running' }, `prompt_dispatched:${command.id}`)]) };
+    },
+
+    async executeNativeControl(command, binding) {
+      const payload = command.payload ?? {};
+      const { id: commandId, runId, sessionId } = command;
+      if (RUN_LEVEL_KINDS.has(command.kind)) return this.executeNativeRunCommand(command);
+      if (command.kind !== 'cancel' && command.kind !== 'permission') throw settingsChanged();
+      if (!native) throw new ExecutorError('profile_unavailable', 'This execution profile is unavailable. Contact the execution host owner.');
+      const base = { commandId, digest: intentFor(command).payloadDigest, runId, sessionId, backend: binding.backend, kind: command.kind };
+      if (command.kind === 'permission') {
+        if (typeof payload.requestId !== 'string' || payload.requestId === '' || !payload.response || typeof payload.response !== 'object' || Array.isArray(payload.response)) {
+          throw new ExecutorError('invalid_response', 'Permission response behavior must be allow or deny.');
+        }
+        const nativeRequestId = typeof payload.nativeRequestId === 'string' && payload.nativeRequestId !== '' ? payload.nativeRequestId : payload.requestId;
+        const identity = {
+          ...(Number.isSafeInteger(payload.generation) ? { generation: payload.generation } : {}),
+          ...(typeof payload.fingerprint === 'string' ? { fingerprint: payload.fingerprint } : {}),
+        };
+        const result = await supervise('submit', { ...base, nativeRequestId, ...identity, response: payload.response });
+        const failed = unsuccessful(result);
+        if (failed) return failed;
+        return { state: 'applied', result: { requestId: payload.requestId }, observations: await observe([observation(command, 'attention', { attention: 'permission_resolved', requestId: payload.requestId }, `permission_resolved:${commandId}`)]) };
+      }
+      const result = await supervise('submit', base);
+      const failed = unsuccessful(result);
+      if (failed) return failed;
+      if (result.closure === 'operator') return operatorClosed(command);
+      return { state: 'applied', result: { cancelRequested: true }, observations: await observe([observation(command, 'state', { state: 'cancel_requested', cancelRequested: true }, `cancel_requested:${commandId}`)]) };
+    },
+
+    async executeOwnedCancel(command, backend) {
+      const { id: commandId, runId, sessionId } = command;
+      const result = await supervise('submit', { commandId, digest: intentFor(command).payloadDigest, runId, sessionId, backend, kind: 'cancel' });
+      const failed = unsuccessful(result);
+      if (failed) return failed;
+      if (result.dispatched === false) {
+        return { state: 'applied', result: { cancelRequested: true, dispatched: false }, observations: await observe([observation(command, 'state', { state: 'cancelled', dispatched: false, cancelCommandId: commandId }, `cancelled:${commandId}`)]) };
+      }
+      if (result.closure === 'operator') return operatorClosed(command);
+      return { state: 'applied', result: { cancelRequested: true }, observations: await observe([observation(command, 'state', { state: 'cancel_requested', cancelRequested: true }, `cancel_requested:${commandId}`)]) };
+    },
+
+    async executeNativeRunCommand(command) {
+      switch (command.kind) {
+        case 'artifact_read':
+          return this.executeArtifactRead(command);
+        case 'wrapup_preflight':
+          return this.executeWrapupPreflight(command);
+        case 'wrapup':
+          return this.executeWrapup(command, command.payload ?? {});
+        case 'summarize':
+          throw new ExecutorError('summary_disabled', 'Summary generation is disabled or unavailable.');
+        default:
+          throw settingsChanged();
+      }
     },
 
     async executeCreateSession(command) {

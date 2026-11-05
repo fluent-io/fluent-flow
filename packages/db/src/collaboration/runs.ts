@@ -7,6 +7,18 @@ import { authorize, getProjectCapabilities } from './authorize.js';
 import { requireCurrentPrincipal } from './principals.js';
 import { CollabServiceError } from './errors.js';
 import type { CollabTask, RunState, ExecutionStage } from './schemas.js';
+import {
+  assertStartable,
+  commandExecution,
+  executionView,
+  getRunExecution,
+  recordRunExecution,
+  recordSessionExecution,
+  selectCatalogProfile,
+  slotBackendSql,
+  type CatalogProfileV2,
+  type ExecutionBackend,
+} from './execution.js';
 
 export type Run = {
   id: string;
@@ -280,7 +292,7 @@ export async function startCollabRun(input: {
     const project = await tx.query<{ execution_defaults: Record<string, unknown> | null }>('SELECT execution_defaults FROM collab_projects WHERE id=$1', [projectId]);
     const defaults = project.rows[0]?.execution_defaults ?? {};
     const instructions = input2.instructions ?? (typeof defaults.instructions === 'string' ? defaults.instructions : '');
-    const model = input2.model !== undefined ? input2.model : typeof defaults.model === 'string' ? defaults.model : null;
+    let model = input2.model !== undefined ? input2.model : typeof defaults.model === 'string' ? defaults.model : null;
 
     const mappingRows = input2.mappingId
       ? await tx.query(
@@ -339,14 +351,39 @@ export async function startCollabRun(input: {
     const hostCatalog = (catalog.rows[0]?.catalog ?? {}) as {
       profiles?: Array<{ id: string; name?: string; provider?: string; model?: string | null }>;
     };
-    const profileSnapshot: { id: string; model?: string | null } =
-      (hostCatalog.profiles ?? []).find((p) => p.id === profileId) ?? { id: profileId, model: null };
-    if (model && profileSnapshot.model && model !== profileSnapshot.model) {
-      throw new CollabServiceError(
-        422,
-        'model_not_allowed',
-        'The selected model is not allowed for this profile.',
-      );
+    const selected = selectCatalogProfile(hostCatalog, profileId);
+    let native: { entry: CatalogProfileV2; summaryEntry: CatalogProfileV2 | null } | null = null;
+    let profileSnapshot: { id: string; model?: string | null };
+    if (selected.format === 'v2') {
+      assertStartable(selected.entry);
+      if (input2.model !== undefined && input2.model !== null && input2.model !== selected.entry.model) {
+        throw new CollabServiceError(422, 'model_not_allowed', 'The selected model is not allowed for this profile.');
+      }
+      if (input2.model === undefined && model !== null && model !== selected.entry.model) {
+        throw new CollabServiceError(422, 'execution_settings_changed', 'Execution settings changed. Ask a project administrator to select an available profile.');
+      }
+      let summaryEntry: CatalogProfileV2 | null = null;
+      const summary = defaults.summary as { enabled?: unknown; profileId?: unknown } | undefined;
+      if (summary?.enabled === true && typeof summary.profileId === 'string') {
+        const summarySelected = selectCatalogProfile(hostCatalog, summary.profileId);
+        if (summarySelected.format !== 'v2' || summarySelected.entry.backend !== selected.entry.backend || !mapping.profile_ids.includes(summary.profileId)) {
+          throw new CollabServiceError(422, 'execution_settings_changed', 'Execution settings changed. Ask a project administrator to select an available profile.');
+        }
+        assertStartable(summarySelected.entry);
+        summaryEntry = summarySelected.entry;
+      }
+      native = { entry: selected.entry, summaryEntry };
+      model = selected.entry.model;
+      profileSnapshot = selected.entry;
+    } else {
+      profileSnapshot = (hostCatalog.profiles ?? []).find((p) => p.id === profileId) ?? { id: profileId, model: null };
+      if (model && profileSnapshot.model && model !== profileSnapshot.model) {
+        throw new CollabServiceError(
+          422,
+          'model_not_allowed',
+          'The selected model is not allowed for this profile.',
+        );
+      }
     }
 
     if (input2.retryOfRunId) {
@@ -439,6 +476,10 @@ export async function startCollabRun(input: {
       sessionId,
       principalId: principal.id,
     });
+    if (native !== null) {
+      await recordRunExecution(tx, { runId, hostId: mapping.host_id, entry: native.entry, summaryEntry: native.summaryEntry });
+      await recordSessionExecution(tx, { sessionId, runId, backend: native.entry.backend });
+    }
 
     const branchName = `ff/run-${runId}`;
     await tx.query(
@@ -458,6 +499,7 @@ export async function startCollabRun(input: {
           promptTruncated,
           workspace: { mode: 'worktree', branchName, baseRef: mapping.base_ref },
           labels: { 'fluent-flow.run': runId, 'fluent-flow.session': sessionId },
+          ...(native !== null ? { execution: commandExecution(native.entry) } : {}),
         }),
         principal.id,
       ],
@@ -520,10 +562,29 @@ function runBadge(row: Record<string, unknown>): RunBadge {
   };
 }
 
+export type RunQueue = { queuedAt: string; reason: 'capacity' | 'host_offline' | null } | null;
+
+async function runQueue(runId: string): Promise<RunQueue> {
+  const { rows } = await getPool().query(
+    `SELECT c.created_at, ${slotBackendSql('c', 's')} AS backend, h.last_heartbeat_at, h.catalog->'capacity' AS capacity
+     FROM collab_connector_commands c
+     LEFT JOIN collab_sessions s ON s.id = c.session_id
+     JOIN collab_hosts h ON h.id = c.host_id
+     WHERE c.run_id = $1 AND c.state = 'pending' AND ${slotBackendSql('c', 's')} IS NOT NULL
+     ORDER BY c.created_at, c.id LIMIT 1`,
+    [runId],
+  );
+  if (!rows.length) return null;
+  const row = rows[0];
+  const entry = row.capacity?.[row.backend];
+  const reason = hostReachability(row.last_heartbeat_at) === 'offline' ? 'host_offline' : entry && typeof entry === 'object' && entry.available === 0 ? 'capacity' : null;
+  return { queuedAt: new Date(row.created_at).toISOString(), reason };
+}
+
 export async function getCollabRun(
   actor: { principalId: string; sessionVersion: number },
   runId: string,
-): Promise<{ run: Run | RunBadge; sessions: CollabSession[];unresolvedCommands:Array<{id:string;kind:string;state:string;errorCode:string|null;createdAt:string;safeActions:Array<'redeliver'|'cancel'>}> }> {
+): Promise<{ run: Run | RunBadge; execution: ReturnType<typeof executionView>; sessions: CollabSession[];unresolvedCommands:Array<{id:string;kind:string;state:string;errorCode:string|null;createdAt:string;safeActions:Array<'redeliver'|'cancel'>}>;queue:RunQueue }> {
   if (!z.string().uuid().safeParse(runId).success) {
     throw new CollabServiceError(404, 'not_found', 'Not found.');
   }
@@ -534,7 +595,7 @@ export async function getCollabRun(
   await authorizeRunRead(actor, rows[0].project_id);
   const capabilities = await getProjectCapabilities(actor.principalId, rows[0].project_id);
   if (!capabilities.has('internal.read')) {
-    return { run: runBadge(rows[0]), sessions: [],unresolvedCommands:[] };
+    return { run: runBadge(rows[0]), execution: null, sessions: [],unresolvedCommands:[],queue:await runQueue(runId) };
   }
   const sessions = await getPool().query(
     `SELECT * FROM collab_sessions WHERE run_id = $1 ORDER BY created_at`,
@@ -544,6 +605,8 @@ export async function getCollabRun(
     WHERE run_id=$1 AND state IN ('pending','claimed','accepted','ambiguous','failed') ORDER BY created_at DESC,id DESC LIMIT 100`,[runId]);
   return {
     run: rowToRun(rows[0]),
+    execution: executionView(await getRunExecution(getPool(), runId)),
+    queue: await runQueue(runId),
     unresolvedCommands:commands.rows.map(command=>({id:command.id,kind:command.kind,state:command.state,
       errorCode:typeof command.error_code==='string'&&/^[a-z][a-z0-9_]{0,99}$/.test(command.error_code)?command.error_code:command.error_code?'execution_error':null,
       createdAt:new Date(command.created_at).toISOString(),safeActions:command.state==='ambiguous'&&capabilities.has('run.steer')?['redeliver','cancel']:[]})),
@@ -686,6 +749,8 @@ export async function createRunSession(input: {
       sessionId: session.rows[0].id,
       principalId: principal.id,
     });
+    const frozenExecution = frozen.execution as { backend: ExecutionBackend } | undefined;
+    if (frozenExecution) await recordSessionExecution(tx, { sessionId: session.rows[0].id, runId: input.runId, backend: frozenExecution.backend });
     frozen.labels={...(frozen.labels as Record<string,string>),'fluent-flow.session':session.rows[0].id};
     const command = await tx.query<{ id: string }>(
       `INSERT INTO collab_connector_commands (host_id, run_id, session_id, kind, payload, created_by_principal_id)
@@ -727,10 +792,14 @@ const sessionCommandSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('permission'),
     requestId: z.string().min(1).max(200),
+    fingerprint: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+    generation: z.number().int().min(1).optional(),
+    behavior: z.enum(['allow', 'deny']).optional(),
     response: z.object({
       behavior: z.enum(['allow', 'deny']),
       selectedActionId: z.string().max(200).optional(),
       answers: z.record(z.string()).optional(),
+      selections: z.record(z.string().max(200), z.object({ selected: z.array(z.string().max(2000)).max(50).optional(), optionIds: z.array(z.string().max(16)).max(50).optional(), other: z.string().max(20000).optional() }).strict()).optional(),
     }),
   }),
   z.object({ kind: z.literal('cancel') }),
@@ -743,7 +812,10 @@ export async function submitSessionCommand(input: {
   command: { kind: 'prompt'; text: string; behavior: 'steer' | 'interrupt' } | {
     kind: 'permission';
     requestId: string;
-    response: { behavior: 'allow' | 'deny'; selectedActionId?: string; answers?: Record<string, string> };
+    fingerprint?: string;
+    generation?: number;
+    behavior?: 'allow' | 'deny';
+    response: { behavior: 'allow' | 'deny'; selectedActionId?: string; answers?: Record<string, string>; selections?: Record<string, { selected?: string[]; optionIds?: string[]; other?: string }> };
   } | { kind: 'cancel' };
 },existingTx?:PoolClient): Promise<{ commandId: string; created: boolean }> {
   if (!z.string().uuid().safeParse(input.sessionId).success) {
@@ -752,7 +824,7 @@ export async function submitSessionCommand(input: {
   const command = sessionCommandSchema.parse(input.command);
   const principal = await requireCurrentPrincipal(input.actor);
   const sessionRows = await getPool().query(
-    `SELECT s.run_id, r.project_id,r.task_id FROM collab_sessions s JOIN collab_runs r ON r.id = s.run_id WHERE s.id = $1`,
+    `SELECT s.run_id, r.project_id,r.task_id,r.host_id FROM collab_sessions s JOIN collab_runs r ON r.id = s.run_id WHERE s.id = $1`,
     [input.sessionId],
   );
   if (sessionRows.rows.length === 0) {
@@ -764,6 +836,7 @@ export async function submitSessionCommand(input: {
 
   const hash = requestHash(command);
   const queue=async(tx:PoolClient)=>{
+    if(command.kind==='cancel') await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`connector:${sessionRows.rows[0].host_id}`]);
     await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`run-start:${sessionRows.rows[0].task_id}`]);
     await tx.query('SELECT id FROM collab_tasks WHERE id=$1 FOR UPDATE',[sessionRows.rows[0].task_id]);
     await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`run-cmds:${sessionRows.rows[0].run_id}`]);
@@ -786,12 +859,29 @@ export async function submitSessionCommand(input: {
       sessionRows.rows[0].run_id,
     ]);
     if(command.kind==='prompt') {
-      await reserveRunContinuation(tx,run.rows[0],true);
+      const native=(await tx.query(`SELECT 1 FROM collab_run_execution WHERE run_id=$1 AND backend IN ('claude-code','codex')`,[run.rows[0].id])).rows.length>0;
       const session=await tx.query('SELECT state FROM collab_sessions WHERE id=$1 AND run_id=$2 FOR UPDATE',[input.sessionId,run.rows[0].id]);
-      if(!session.rows.length||['failed','reconciling','cancel_requested'].includes(session.rows[0].state)) throw new CollabServiceError(409,'session_not_active','This session is not available for a follow-up.');
-      await tx.query("UPDATE collab_sessions SET state='queued',updated_at=now() WHERE id=$1 AND state IN ('idle','cancelled')",[input.sessionId]);
+      const continuation=native&&session.rows[0]?.state==='reconciling'&&['reconciling','cancelled','idle','queued'].includes(run.rows[0].state);
+      await reserveRunContinuation(tx,run.rows[0],true,continuation);
+      if(!session.rows.length||['failed','cancel_requested'].includes(session.rows[0].state)||(session.rows[0].state==='reconciling'&&!continuation)) throw new CollabServiceError(409,'session_not_active','This session is not available for a follow-up.');
+      await tx.query(`UPDATE collab_sessions SET state='queued',updated_at=now() WHERE id=$1 AND state IN ('idle','cancelled'${continuation?",'reconciling'":''})`,[input.sessionId]);
     }
-    else if(!['queued','launching','running','needs_input','idle','cancel_requested'].includes(run.rows[0].state)) throw new CollabServiceError(409,'run_not_active','This run is no longer active.');
+    else if(!['queued','launching','running','needs_input','idle','cancel_requested'].includes(run.rows[0].state)) {
+      const closable=command.kind==='cancel'&&run.rows[0].state==='reconciling'&&(await tx.query(`SELECT 1 FROM collab_run_execution
+        WHERE run_id=$1 AND backend IN ('claude-code','codex')`,[run.rows[0].id])).rows.length>0;
+      if(!closable) throw new CollabServiceError(409,'run_not_active','This run is no longer active.');
+    }
+    let payload:Record<string,unknown>=command;
+    if(command.kind==='permission') payload=await validatedAnswer(tx,input.sessionId,command);
+    if(command.kind==='prompt') {
+      const origin=await tx.query(`SELECT payload->'execution' AS execution FROM collab_connector_commands
+        WHERE session_id=$1 AND kind IN ('launch','create_session','summarize') ORDER BY created_at LIMIT 1`,[input.sessionId]);
+      if(origin.rows[0]?.execution) payload={...command,execution:origin.rows[0].execution};
+    }
+    const unclaimed=command.kind==='cancel'?(await tx.query<{id:string;kind:string}>(`SELECT id,kind FROM collab_connector_commands
+      WHERE session_id=$1 AND kind IN ('launch','create_session','summarize') AND state='pending'
+        AND error_code IS NULL AND claimed_at IS NULL AND lease_epoch IS NULL AND acked_at IS NULL
+      ORDER BY created_at,id LIMIT 1 FOR UPDATE`,[input.sessionId])).rows[0]:undefined;
     const inserted = await tx.query<{ id: string }>(
       `INSERT INTO collab_connector_commands (host_id, run_id, session_id, kind, payload, created_by_principal_id, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, clock_timestamp()) RETURNING id`,
@@ -800,7 +890,7 @@ export async function submitSessionCommand(input: {
         sessionRows.rows[0].run_id,
         input.sessionId,
         command.kind,
-        JSON.stringify(command),
+        JSON.stringify(payload),
         principal.id,
       ],
     );
@@ -809,9 +899,83 @@ export async function submitSessionCommand(input: {
        VALUES ($1, $2, $3, $4, $5)`,
       [principal.id, `command:${input.sessionId}`, input.idempotencyKey, hash, inserted.rows[0].id],
     );
+    if(command.kind==='cancel'&&!unclaimed) {
+      const requeued=(await tx.query<{id:string}>(`SELECT id FROM collab_connector_commands
+        WHERE session_id=$1 AND kind IN ('launch','create_session','summarize') AND state='pending' AND error_code='reconciliation_redelivery'
+        FOR UPDATE`,[input.sessionId])).rows;
+      for(const row of requeued) {
+        await tx.query(`UPDATE collab_connector_commands SET state='ambiguous',error_code='redelivery_withdrawn_by_cancel',updated_at=now() WHERE id=$1`,[row.id]);
+      }
+      if(requeued.length) {
+        await tx.query(`UPDATE collab_sessions SET state='reconciling',updated_at=now() WHERE id=$1 AND state IN ('queued','launching')`,[input.sessionId]);
+        const moved=await tx.query(`UPDATE collab_runs SET state='reconciling',version=version+1,updated_at=now() WHERE id=$1 AND state='queued' RETURNING id`,[run.rows[0].id]);
+        if(moved.rows.length) await tx.query(`INSERT INTO collab_task_events(task_id,project_id,kind,payload,visibility,created_at)
+          VALUES($1,$2,'run_state',$3,'client',clock_timestamp())`,[run.rows[0].task_id,run.rows[0].project_id,JSON.stringify({runId:run.rows[0].id,state:'reconciling'})]);
+      }
+    }
+    if(unclaimed) {
+      await tx.query(`UPDATE collab_connector_commands SET state='cancelled',error_code='cancelled_before_delivery',updated_at=now() WHERE id=$1`,[unclaimed.id]);
+      await tx.query(`UPDATE collab_connector_commands SET state='applied',result=$2,acked_at=now(),updated_at=now() WHERE id=$1`,
+        [inserted.rows[0].id,JSON.stringify({dispatched:false,cancelledCommandId:unclaimed.id})]);
+      await tx.query(`UPDATE collab_sessions SET state='cancelled',updated_at=now() WHERE id=$1`,[input.sessionId]);
+      if(unclaimed.kind==='launch') {
+        await tx.query(`UPDATE collab_runs SET state='cancelled',version=version+1,updated_at=now() WHERE id=$1`,[run.rows[0].id]);
+        await tx.query(`INSERT INTO collab_task_events(task_id,project_id,kind,payload,visibility,created_at)
+          VALUES($1,$2,'run_state',$3,'client',clock_timestamp())`,[run.rows[0].task_id,run.rows[0].project_id,JSON.stringify({runId:run.rows[0].id,state:'cancelled'})]);
+      }
+    }
     return { commandId: inserted.rows[0].id, created: true };
   };
   return existingTx?queue(existingTx):withClientTransaction(queue);
+}
+
+type PermissionCommand = Extract<z.infer<typeof sessionCommandSchema>, { kind: 'permission' }>;
+const requestUnavailable = () => new CollabServiceError(409, 'request_unavailable', 'This request is no longer available. Refresh the session.');
+const invalidAnswer = () => new CollabServiceError(400, 'invalid_response', 'This request does not accept these answers.');
+
+function selectionsFit(questions: NonNullable<PendingRequestV2['questions']>, selections: NonNullable<PermissionCommand['response']['selections']>) {
+  const ids = questions.map((q) => q.id);
+  if (Object.keys(selections).length !== ids.length || !ids.every((id) => Object.hasOwn(selections, id))) return false;
+  return questions.every((q) => {
+    const s = selections[q.id];
+    if (s.selected !== undefined || s.optionIds === undefined) return false;
+    const offered = new Set((q.options ?? []).map((o) => o.id));
+    if (!s.optionIds.every((id) => offered.has(id))) return false;
+    if (new Set(s.optionIds).size !== s.optionIds.length) return false;
+    if (!q.multiSelect && s.optionIds.length > 1) return false;
+    return s.other === undefined || q.allowOther;
+  });
+}
+
+async function validatedAnswer(tx: PoolClient, sessionId: string, command: PermissionCommand): Promise<Record<string, unknown>> {
+  const [row] = await outstandingRequestRows(tx, sessionId, { order: 'ASC', limit: 1, requestId: command.requestId });
+  if (!row) throw requestUnavailable();
+  const request = pendingV2(row, 'paseo');
+  const { response } = command;
+  if (command.behavior !== undefined && command.behavior !== response.behavior) throw requestUnavailable();
+  const native = row.native_backend !== null;
+  if (native && (command.fingerprint !== request.fingerprint || command.generation !== request.generation)) throw requestUnavailable();
+  if (request.hostOnly && response.behavior === 'allow') throw new CollabServiceError(409, 'answer_on_host', 'Answer this request on the execution host.');
+  const earlier = await tx.query(
+    `SELECT 1 FROM collab_connector_commands WHERE session_id = $1 AND kind = 'permission' AND payload->>'requestId' = $2 AND state NOT IN ('failed', 'cancelled') LIMIT 1`,
+    [sessionId, command.requestId],
+  );
+  if (earlier.rows.length) throw requestUnavailable();
+  const choice = response.selectedActionId === undefined ? undefined : request.choices?.find((c) => c.id === response.selectedActionId);
+  if (!native) {
+    if (response.selections !== undefined) throw invalidAnswer();
+    if (choice?.behavior && choice.behavior !== response.behavior) throw requestUnavailable();
+    return command;
+  }
+  if (response.answers !== undefined) throw invalidAnswer();
+  if (request.kind === 'question' && response.behavior === 'allow' && response.selectedActionId === undefined) {
+    if (response.selections === undefined || !request.questions || !selectionsFit(request.questions, response.selections)) throw invalidAnswer();
+  } else {
+    if (response.selections !== undefined) throw invalidAnswer();
+    if (!choice || choice.behavior !== response.behavior) throw requestUnavailable();
+  }
+  const { behavior: _behavior, ...rest } = command;
+  return { ...rest, nativeRequestId: String(row.payload.nativeRequestId), fingerprint: request.fingerprint, generation: request.generation };
 }
 
 export async function getConnectorCommand(
@@ -856,44 +1020,203 @@ export type PendingRequest = {
   expiresAt: string | null;
 };
 
-export async function getSessionPendingRequest(
-  actor: { principalId: string; sessionVersion: number },
+export type PendingRequestV2 = {
+  requestId: string;
+  kind: 'permission' | 'question';
+  backend: ExecutionBackend;
+  generation: number | null;
+  fingerprint: string | null;
+  promptText: string;
+  choices: Array<{ id: string; label: string; scope: 'once' | 'session' | null; behavior: 'allow' | 'deny' | null }> | null;
+  questions: Array<{ id: string; header: string; question: string; options: Array<{ id: string; label: string; description: string | null }> | null;
+    multiSelect: boolean; allowOther: boolean; secret: boolean }> | null;
+  hostOnly: boolean;
+  inputSchema: Record<string, unknown> | null;
+  expiresAt: string | null;
+  observedAt: string;
+};
+
+const PENDING_PAGE_MAX = 50;
+const NATIVE_REQUEST_BACKENDS = ['claude-code', 'codex'];
+
+async function outstandingRequestRows(
+  db: { query: PoolClient['query'] },
   sessionId: string,
-): Promise<PendingRequest | null> {
+  page: { order: 'ASC' | 'DESC'; limit: number; after?: { t: string; c: string; i: string } | null; requestId?: string },
+) {
+  const params: unknown[] = [sessionId, NATIVE_REQUEST_BACKENDS, page.limit];
+  let filter = '';
+  if (page.after) {
+    params.push(page.after.t, page.after.c, page.after.i);
+    filter += ` AND (k.observed_at, k.created_at, k.id) > ($4::timestamptz, $5::timestamptz, $6::uuid)`;
+  }
+  if (page.requestId !== undefined) {
+    params.push(page.requestId);
+    filter += ` AND k.request_id = $${params.length}`;
+  }
+  const { rows } = await db.query(
+    `WITH candidates AS (
+       SELECT o.id, o.payload, o.observed_at, o.created_at,
+         CASE WHEN o.payload->'source'->>'backend' = ANY($2::text[]) THEN o.payload->'source'->>'backend' END AS native_backend,
+         CASE WHEN jsonb_typeof(o.payload->'source'->'generation') = 'number' THEN (o.payload->'source'->>'generation')::numeric END AS generation
+       FROM collab_connector_observations o
+       WHERE o.session_id = $1 AND o.kind = 'attention' AND o.payload->>'attention' = 'permission'
+         AND COALESCE(o.payload->>'requestId', '') <> ''
+         AND (o.payload->>'expiresAt' IS NULL OR (o.payload->>'expiresAt')::timestamptz > now())
+     ), keyed AS (
+       SELECT c.*,
+         CASE WHEN c.native_backend IS NULL THEN c.payload->>'requestId'
+           ELSE substr(encode(sha256(convert_to($1::text || '|' || c.native_backend || '|' || c.generation::text || '|' || COALESCE(c.payload->>'nativeRequestId', ''), 'UTF8')), 'hex'), 1, 32)
+         END AS request_id
+       FROM candidates c
+     )
+     SELECT k.id, k.payload, k.native_backend, k.generation::int AS generation, k.request_id,
+       to_char(k.observed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at,
+       to_char(k.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_created
+     FROM keyed k
+     WHERE (k.native_backend IS NULL OR (
+         k.generation IS NOT NULL AND COALESCE(k.payload->>'nativeRequestId', '') <> ''
+         AND EXISTS (SELECT 1 FROM collab_session_execution e
+           WHERE e.session_id = $1 AND e.backend = k.native_backend AND e.binding_generation = k.generation)))
+       AND NOT EXISTS (SELECT 1 FROM collab_connector_observations r
+         WHERE r.session_id = $1 AND r.kind = 'attention'
+           AND (r.payload->>'attention' = 'permission_resolved' OR r.payload->>'resolved' = 'true')
+           AND CASE WHEN k.native_backend IS NULL THEN r.payload->>'requestId' = k.payload->>'requestId'
+             ELSE (r.payload->>'requestId' = k.payload->>'requestId' AND r.payload->'source'->>'backend' = k.native_backend
+                     AND r.payload->'source'->>'generation' = k.generation::text)
+                  OR r.payload->>'requestId' = k.request_id
+           END)${filter}
+     ORDER BY k.observed_at ${page.order}, k.created_at ${page.order}, k.id ${page.order}
+     LIMIT $3`,
+    params,
+  );
+  return rows as Array<{ id: string; payload: Record<string, any>; native_backend: string | null; generation: number | null; request_id: string; cursor_at: string; cursor_created: string }>;
+}
+
+const str = (v: unknown) => (typeof v === 'string' ? v : null);
+const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+
+function pendingV2(row: Awaited<ReturnType<typeof outstandingRequestRows>>[number], sessionBackend: ExecutionBackend): PendingRequestV2 {
+  const p = row.payload;
+  const observedAt = new Date(row.cursor_at).toISOString();
+  const expiresAt = typeof p.expiresAt === 'string' ? p.expiresAt : null;
+  if (row.native_backend === null) {
+    return {
+      requestId: String(p.requestId),
+      kind: p.permissionKind === 'question' ? 'question' : 'permission',
+      backend: sessionBackend,
+      generation: null,
+      fingerprint: null,
+      promptText: typeof p.promptText === 'string' ? p.promptText : '',
+      choices: Array.isArray(p.actions)
+        ? p.actions.map((a: any) => ({ id: String(a?.id ?? ''), label: String(a?.label ?? a?.id ?? ''), scope: null, behavior: a?.behavior === 'allow' || a?.behavior === 'deny' ? a.behavior : null }))
+        : null,
+      questions: null,
+      hostOnly: false,
+      inputSchema: (p.input as Record<string, unknown> | undefined) ?? null,
+      expiresAt,
+      observedAt,
+    };
+  }
+  const kind = p.kind === 'question' ? 'question' : 'permission';
+  const questions = Array.isArray(p.questions)
+    ? p.questions.map((q: any) => ({
+        id: String(q?.id ?? ''),
+        header: String(q?.header ?? ''),
+        question: String(q?.question ?? ''),
+        options: Array.isArray(q?.options) ? q.options.map((o: any, i: number) => ({ id: `o${i}`, label: String(o?.label ?? ''), description: str(o?.description) })) : null,
+        multiSelect: q?.multiSelect === true,
+        allowOther: q?.allowOther === true,
+        secret: q?.secret === true,
+      }))
+    : null;
+  const tool = isRecord(p.tool) ? p.tool : null;
+  const detail = isRecord(p.detail) ? p.detail : null;
+  const promptText = kind === 'question'
+    ? (questions ?? []).map((q: { question: string }) => q.question).join('\n')
+    : str(tool?.description) ?? str(tool?.displayName) ?? str(tool?.name) ?? str(detail?.reason) ?? str(detail?.command) ?? str(detail?.message) ?? '';
+  const input = kind === 'question' ? null : isRecord(tool?.input) ? tool.input : detail;
+  return {
+    requestId: row.request_id,
+    kind,
+    backend: row.native_backend as ExecutionBackend,
+    generation: row.generation,
+    fingerprint: str(p.fingerprint),
+    promptText,
+    choices: Array.isArray(p.choices)
+      ? p.choices.map((c: any) => ({
+          id: String(c?.id ?? ''),
+          label: String(c?.label ?? c?.id ?? ''),
+          scope: c?.scope === 'once' || c?.scope === 'session' ? c.scope : null,
+          behavior: c?.behavior === 'allow' || c?.behavior === 'deny' ? c.behavior : null,
+        }))
+      : null,
+    questions,
+    hostOnly: p.hostOnly === true || p.secret === true || (questions ?? []).some((q: { secret: boolean }) => q.secret),
+    inputSchema: input,
+    expiresAt,
+    observedAt,
+  };
+}
+
+function decodePendingCursor(cursor: string | undefined): { t: string; c: string; i: string } | null {
+  if (!cursor) return null;
+  try {
+    return z.object({ t: z.string().datetime(), c: z.string().datetime(), i: z.string().uuid() }).parse(JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')));
+  } catch {
+    throw new CollabServiceError(400, 'invalid_cursor', 'The update cursor is invalid. Refresh and try again.');
+  }
+}
+
+async function pendingRequestSession(actor: { principalId: string; sessionVersion: number }, sessionId: string): Promise<ExecutionBackend> {
   if (!z.string().uuid().safeParse(sessionId).success) {
     throw new CollabServiceError(404, 'not_found', 'Not found.');
   }
   const { rows } = await getPool().query(
-    `SELECT r.project_id FROM collab_sessions s JOIN collab_runs r ON r.id = s.run_id WHERE s.id = $1`,
+    `SELECT r.project_id, e.backend FROM collab_sessions s JOIN collab_runs r ON r.id = s.run_id
+     LEFT JOIN collab_session_execution e ON e.session_id = s.id WHERE s.id = $1`,
     [sessionId],
   );
   if (rows.length === 0) {
     throw new CollabServiceError(404, 'not_found', 'Not found.');
   }
   await authorize(actor, { projectId: rows[0].project_id }, ['internal.read']);
-  const { rows: attention } = await getPool().query(
-    `SELECT o.payload,o.observed_at FROM collab_connector_observations o
-     WHERE o.session_id=$1 AND o.kind='attention' AND o.payload->>'attention'='permission'
-       AND COALESCE(o.payload->>'requestId','')<>''
-       AND (o.payload->>'expiresAt' IS NULL OR (o.payload->>'expiresAt')::timestamptz>now())
-       AND NOT EXISTS (SELECT 1 FROM collab_connector_observations resolved
-         WHERE resolved.session_id=o.session_id AND resolved.kind='attention'
-           AND resolved.payload->>'requestId'=o.payload->>'requestId'
-           AND (resolved.payload->>'attention'='permission_resolved' OR resolved.payload->>'resolved'='true'))
-     ORDER BY o.observed_at DESC,o.created_at DESC LIMIT 1`, [sessionId],
-  );
-  const payload = attention[0]?.payload as Record<string, unknown> | undefined;
-  if (payload) {
-    return {
-      requestId: String(payload.requestId),
-      kind: payload.permissionKind === 'question' ? 'question' : 'permission',
-      promptText: typeof payload.promptText === 'string' ? payload.promptText : '',
-      choices: Array.isArray(payload.actions) ? payload.actions.map((a) => ({ id:String(a.id ?? ''), label:String(a.label ?? a.id ?? '') })) : null,
-      inputSchema: (payload.input as Record<string,unknown> | undefined) ?? null,
-      expiresAt: typeof payload.expiresAt === 'string' ? payload.expiresAt : null,
-    };
-  }
-  return null;
+  return (rows[0].backend as ExecutionBackend | null) ?? 'paseo';
+}
+
+export async function getSessionPendingRequests(
+  actor: { principalId: string; sessionVersion: number },
+  sessionId: string,
+  opts: { cursor?: string; limit?: number } = {},
+): Promise<{ requests: PendingRequestV2[]; nextCursor: string | null }> {
+  const backend = await pendingRequestSession(actor, sessionId);
+  const limit = Math.min(PENDING_PAGE_MAX, Number.isSafeInteger(opts.limit) && (opts.limit as number) > 0 ? (opts.limit as number) : PENDING_PAGE_MAX);
+  const after = decodePendingCursor(opts.cursor);
+  const rows = await outstandingRequestRows(getPool(), sessionId, { order: 'ASC', limit: limit + 1, after });
+  const page = rows.slice(0, limit);
+  const last = page.at(-1);
+  return {
+    requests: page.map((row) => pendingV2(row, backend)),
+    nextCursor: rows.length > limit && last ? Buffer.from(JSON.stringify({ t: last.cursor_at, c: last.cursor_created, i: last.id })).toString('base64url') : null,
+  };
+}
+
+export async function getSessionPendingRequest(
+  actor: { principalId: string; sessionVersion: number },
+  sessionId: string,
+): Promise<PendingRequest | null> {
+  const backend = await pendingRequestSession(actor, sessionId);
+  const [row] = await outstandingRequestRows(getPool(), sessionId, { order: 'DESC', limit: 1 });
+  if (!row) return null;
+  const v2 = pendingV2(row, backend);
+  return {
+    requestId: v2.requestId,
+    kind: v2.kind,
+    promptText: v2.promptText,
+    choices: v2.choices ? v2.choices.map(({ id, label }) => ({ id, label })) : null,
+    inputSchema: v2.inputSchema,
+    expiresAt: v2.expiresAt,
+  };
 }
 
 export async function queueRunCommand(input: {
@@ -1014,7 +1337,7 @@ export async function getSessionTimeline(input: {
     `SELECT id,event_id,kind,payload,observed_at,provider_epoch,provider_seq,
        to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at
      FROM collab_connector_observations
-     WHERE session_id = $1 AND kind IN ('timeline','attention') ${cursorClause}
+     WHERE session_id = $1 AND kind IN ('timeline','attention') AND NOT (payload ? 'fragmentOf') ${cursorClause}
      ORDER BY created_at, id
      LIMIT $${limitIdx}`,
     params,
@@ -1075,19 +1398,21 @@ export async function queueArtifactRead(input:{actor:{principalId:string;session
 }
 
 
-async function reserveRunContinuation(tx:PoolClient,run:Record<string,any>,allowCancelled=false):Promise<void> {
-  if(!['queued','launching','running','needs_input','idle',...(allowCancelled?['cancelled']:[])].includes(run.state)) throw new CollabServiceError(409,'run_not_active','This run is no longer active.');
+async function reserveRunContinuation(tx:PoolClient,run:Record<string,any>,allowCancelled=false,allowReconciling=false):Promise<void> {
+  if(!['queued','launching','running','needs_input','idle',...(allowCancelled?['cancelled']:[]),...(allowReconciling?['reconciling']:[])].includes(run.state)) throw new CollabServiceError(409,'run_not_active','This run is no longer active.');
   const task=await tx.query('SELECT status FROM collab_tasks WHERE id=$1',[run.task_id]);
   if(!task.rows.length||['done','cancelled'].includes(task.rows[0].status)) throw new CollabServiceError(409,'task_closed','Reopen the task before requesting more work.');
   const active=await tx.query('SELECT id FROM collab_runs WHERE task_id=$1 AND id<>$2 AND state=ANY($3)',[run.task_id,run.id,ACTIVE_RUN_STATES]);
   if(active.rows.length) throw new CollabServiceError(409,'active_run_exists','This task already has an active execution run.');
-  if(run.state==='idle'||(allowCancelled&&run.state==='cancelled')) await tx.query("UPDATE collab_runs SET state='queued',version=version+1,updated_at=now() WHERE id=$1",[run.id]);
+  if(run.state==='idle'||(allowCancelled&&run.state==='cancelled')||(allowReconciling&&run.state==='reconciling')) await tx.query("UPDATE collab_runs SET state='queued',version=version+1,updated_at=now() WHERE id=$1",[run.id]);
 }
 
 async function sessionLaunchPayload(tx:PoolClient,run:Record<string,any>,input:{title:string;profileId?:string;model?:string|null;instructions:string}):Promise<Record<string,unknown>> {
   const mapping=await tx.query(`SELECT m.*,h.catalog,h.revoked_at FROM collab_project_host_mappings m JOIN collab_hosts h ON h.id=m.host_id WHERE m.id=$1 AND m.project_id=$2`,[run.mapping_id,run.project_id]);
   const m=mapping.rows[0];
   const profileId=input.profileId??run.profile_id;
+  const execution=await getRunExecution(tx,run.id);
+  if(execution!==null) return nativeSessionLaunchPayload(tx,run,m,execution.backend,profileId,input);
   const profileSnapshot=m?.catalog?.profiles?.find((p:{id:string})=>p.id===profileId);
   if(!m||m.revoked_at||!m.profile_ids.includes(profileId)||!profileSnapshot||!m.catalog.repositories?.some((r:{key:string})=>r.key===m.repository_key)) throw new CollabServiceError(422,'profile_not_allowed','The selected execution profile is not available.');
   const model=input.model??run.model??profileSnapshot.model??null;
@@ -1096,4 +1421,16 @@ async function sessionLaunchPayload(tx:PoolClient,run:Record<string,any>,input:{
   const initial=launch.rows[0]?.payload;
   const prompt=[initial?.prompt??`Task ${run.task_id}`,`--- additional session: ${input.title} ---`,input.instructions||'(continue the task using the frozen context above)'].join('\n').slice(0,60000);
   return {repositoryKey:m.repository_key,profileId,profileSnapshot,model,title:input.title,instructions:input.instructions,prompt,workspace:initial?.workspace??{mode:'worktree'},labels:{'fluent-flow.run':run.id,'fluent-flow.task':run.task_id}};
+}
+
+async function nativeSessionLaunchPayload(tx:PoolClient,run:Record<string,any>,m:Record<string,any>|undefined,backend:ExecutionBackend,profileId:string,input:{title:string;model?:string|null;instructions:string}):Promise<Record<string,unknown>> {
+  if(!m||m.revoked_at||!m.profile_ids.includes(profileId)||!m.catalog?.repositories?.some((r:{key:string})=>r.key===m.repository_key)) throw new CollabServiceError(422,'profile_not_allowed','The selected execution profile is not available.');
+  const selected=selectCatalogProfile(m.catalog,profileId);
+  if(selected.format!=='v2'||selected.entry.backend!==backend) throw new CollabServiceError(422,'execution_settings_changed','Execution settings changed. Ask a project administrator to select an available profile.');
+  assertStartable(selected.entry);
+  if(input.model!==undefined&&input.model!==null&&input.model!==selected.entry.model) throw new CollabServiceError(422,'model_not_allowed','The selected model is not allowed for this profile.');
+  const launch=await tx.query("SELECT payload FROM collab_connector_commands WHERE run_id=$1 AND kind='launch' ORDER BY created_at LIMIT 1",[run.id]);
+  const initial=launch.rows[0]?.payload;
+  const prompt=[initial?.prompt??`Task ${run.task_id}`,`--- additional session: ${input.title} ---`,input.instructions||'(continue the task using the frozen context above)'].join('\n').slice(0,60000);
+  return {repositoryKey:m.repository_key,profileId,profileSnapshot:selected.entry,model:selected.entry.model,title:input.title,instructions:input.instructions,prompt,workspace:initial?.workspace??{mode:'worktree'},labels:{'fluent-flow.run':run.id,'fluent-flow.task':run.task_id},execution:commandExecution(selected.entry)};
 }

@@ -1,0 +1,52 @@
+{
+  "layers": [
+    {
+      "type": "sessionFlags",
+      "disabledReason": "<absent: enabled>",
+      "keys": [
+        "analytics",
+        "check_for_update_on_startup",
+        "features",
+        "feedback",
+        "mcp_servers",
+        "model_provider",
+        "model_providers"
+      ],
+      "mcpServers": [
+        "ff_reporting"
+      ]
+    },
+    {
+      "type": "project",
+      "disabledReason": "<absent: enabled>",
+      "keys": [
+        "mcp_servers",
+        "model"
+      ],
+      "mcpServers": [
+        "ff_planted_codex_toml"
+      ]
+    },
+    {
+      "type": "user",
+      "disabledReason": "<absent: enabled>",
+      "keys": [
+        "projects"
+      ],
+      "mcpServers": []
+    },
+    {
+      "type": "system",
+      "disabledReason": "<absent: enabled>",
+      "keys": [],
+      "mcpServers": []
+    }
+  ],
+  "verdict": {
+    "ok": false,
+    "reason": "project_layer_enabled"
+  },
+  "threadStarted": false,
+  "plantedStatuses": [],
+  "plantedHits": []
+}

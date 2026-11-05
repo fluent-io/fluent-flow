@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   createExecutionHost,
   createProjectHostMapping,
+  getExecutionHostCatalog,
   listExecutionHosts,
   listProjectHostMappings,
   revokeExecutionHost,
@@ -20,6 +21,14 @@ export function registerHostRoutes(router) {
     try {
       const host = await createExecutionHost({ actor: req.collabActor, name: req.body?.name });
       res.status(201).json({ data: host });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get('/hosts/:id/catalog', async (req, res, next) => {
+    try {
+      res.json({ data: await getExecutionHostCatalog({ actor: req.collabActor, hostId: req.params.id }) });
     } catch (err) {
       next(err);
     }

@@ -1,0 +1,10 @@
+{
+  "resumedThreadStatus": {
+    "type": "idle"
+  },
+  "resumedTurnStatuses": [
+    "interrupted"
+  ],
+  "modelRequests": 0,
+  "serverRequests": 0
+}

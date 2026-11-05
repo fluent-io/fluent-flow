@@ -1,0 +1,17 @@
+{
+  "defaultModeOffersRequestUserInput": true,
+  "defaultToolDescription": "Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.",
+  "defaultCallToolOutput": "request_user_input is unavailable in Default mode",
+  "defaultCallServerRequests": 0,
+  "planWithOptions": [
+    [
+      {
+        "isSecret": false,
+        "isOther": true,
+        "options": 2
+      }
+    ]
+  ],
+  "planWithoutOptionsServerRequests": 0,
+  "planWithoutOptionsToolOutput": "request_user_input requires non-empty options for every question"
+}

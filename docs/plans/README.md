@@ -2,6 +2,10 @@
 
 [Documentation](../README.md) | [Project](../../README.md) | [Architecture specifications](../specs/)
 
+## Approved designs in implementation
+
+- [Optional Paseo integration and subscription-native execution](2026-11-04-optional-paseo-design.md): **APPROVED BEHAVIOR** (2026-11-04). Direct Claude Code and Codex subscription-backed execution, opt-in Paseo, durable ownership and recovery. [Implementation plan](2026-11-04-optional-paseo-implementation.md): thirteen test-first tasks (1, 1b and 2 to 12) starting with pinned native protocol probes; authenticated native UAT still needs separate owner authorization.
+
 ## Collaborative Kanban and Paseo execution
 
 The approved task-first expansion retains Fluent Flow delivery controls and Flowly execution features. Implementers start with the shared contracts and their ownership slice.

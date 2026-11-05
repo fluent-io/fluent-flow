@@ -1,0 +1,23 @@
+{
+  "method": "thread/list",
+  "params": {
+    "cwd": "<repo>",
+    "limit": 50
+  },
+  "ids": [
+    "01a1a98b-d9e1-71f2-ac8a-eb6aeb1731f8",
+    "01a1a98b-c4ca-7240-aa80-4c1d3fdf522d",
+    "01a1a98b-c3bd-76a0-b207-b291e6204dee",
+    "01a1a98b-c2d4-77c2-8cda-aa029f333e7a",
+    "01a1a98b-c1e9-7eb2-a3c7-d4a8afdffdec",
+    "01a1a98b-c0ec-75f2-881a-93e51eb20d40",
+    "01a1a98b-c007-7643-a15c-eac86b7b5e14",
+    "01a1a98b-bee7-7830-95b9-54b4ec5038d9",
+    "01a1a98b-bcf4-7442-a439-94bbbbc8de0a"
+  ],
+  "x4": {
+    "id": "01a1a98b-bcf4-7442-a439-94bbbbc8de0a",
+    "cwd": "<probe-root>/repo",
+    "path": "<probe-root>/context/sessions/2026/11/04/rollout-2026-11-04T21-31-09-01a1a98b-bcf4-7442-a439-94bbbbc8de0a.jsonl"
+  }
+}

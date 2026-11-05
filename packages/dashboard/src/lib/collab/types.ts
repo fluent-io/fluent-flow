@@ -10,6 +10,15 @@ export type RunState =
   | 'cancel_requested'
   | 'cancelled'
   | 'reconciling';
+export type ReadinessState =
+  | 'ready'
+  | 'incomplete'
+  | 'not_installed'
+  | 'incompatible'
+  | 'invalid_config'
+  | 'sign_in_required'
+  | 'platform_unsupported';
+export type ExecutionBackend = 'claude-code' | 'codex' | 'paseo';
 export type HostReachability = 'online' | 'stale' | 'offline';
 export type Visibility = 'client' | 'internal';
 export type Priority = 'low' | 'normal' | 'high' | 'urgent';
@@ -304,14 +313,8 @@ export interface CreatedExecutionHost {
 export interface HostCatalog {
   hostId: string;
   repositories: { key: string }[];
-  profiles: {
-    id: string;
-    name: string;
-    provider: string;
-    model: string | null;
-    modeId: string | null;
-    thinkingOptionId: string | null;
-  }[];
+  profiles: MappingProfile[];
+  capacity?: Partial<Record<'claude-code' | 'codex', CapacityEntry>> | null;
 }
 
 export interface Mapping {
@@ -325,9 +328,38 @@ export interface Mapping {
   hostName?: string | null;
   hostReachability?: 'online' | 'stale' | 'offline' | null;
   hostLastSeenAt?: string | null;
-  profiles?: { id: string; name: string; provider: string; model: string | null }[];
+  profiles?: MappingProfile[];
   allowedModels?: string[] | null;
+  capacity?: Partial<Record<'claude-code' | 'codex', CapacityEntry>> | null;
 }
+
+export interface MappingProfile {
+  id: string;
+  name: string;
+  provider: string | null;
+  model: string | null;
+  modeId?: string | null;
+  thinkingOptionId?: string | null;
+  backend?: ExecutionBackend | null;
+  readiness?: { state: ReadinessState } | null;
+  policy?: Record<string, string | boolean> | null;
+}
+
+export interface CapacityEntry {
+  limit: number;
+  available: number | null;
+  observedAt: string | null;
+}
+
+export interface RunExecutionView {
+  backend: ExecutionBackend;
+  profileId: string;
+  model: string | null;
+  harness: { name: string; version: string } | null;
+  policy: Record<string, unknown> | null;
+}
+
+export type RunQueue = { queuedAt: string; reason: 'capacity' | 'host_offline' | null } | null;
 
 export interface DeliverySnapshot {
   id: string;
@@ -411,4 +443,27 @@ export interface PendingRequest {
   promptText: string;
   choices?: { id: string; label: string }[];
   expiresAt: string | null;
+}
+
+export interface PendingRequestV2 {
+  requestId: string;
+  kind: 'permission' | 'question';
+  backend: 'claude-code' | 'codex' | 'paseo';
+  generation: number | null;
+  fingerprint: string | null;
+  promptText: string;
+  choices: { id: string; label: string; scope: 'once' | 'session' | null; behavior: 'allow' | 'deny' | null }[] | null;
+  questions: {
+    id: string;
+    header: string;
+    question: string;
+    options: { id: string; label: string; description: string | null }[] | null;
+    multiSelect: boolean;
+    allowOther: boolean;
+    secret: boolean;
+  }[] | null;
+  hostOnly: boolean;
+  inputSchema: Record<string, unknown> | null;
+  expiresAt: string | null;
+  observedAt: string;
 }

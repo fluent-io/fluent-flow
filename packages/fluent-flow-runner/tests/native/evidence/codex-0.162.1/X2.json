@@ -1,0 +1,32 @@
+{
+  "initialize": {
+    "userAgent": "ff-probe/0.162.1 (Ubuntu 24.4.0; x86_64) unknown (ff-probe; 0.0.0)",
+    "codexHome": "<probe-root>/context",
+    "platformFamily": "unix",
+    "platformOs": "linux"
+  },
+  "argv": [
+    "app-server",
+    "--listen",
+    "stdio://",
+    "--strict-config",
+    "-c",
+    "<key>=<toml value>",
+    "..."
+  ],
+  "overrideKeys": [
+    "model_provider",
+    "model_providers.ffprobe.name",
+    "model_providers.ffprobe.base_url",
+    "model_providers.ffprobe.env_key",
+    "model_providers.ffprobe.wire_api",
+    "model_providers.ffprobe.requires_openai_auth",
+    "check_for_update_on_startup",
+    "analytics.enabled",
+    "feedback.enabled",
+    "features.plugins",
+    "features.apps",
+    "mcp_servers.ff_reporting.url",
+    "mcp_servers.ff_reporting.bearer_token_env_var"
+  ]
+}

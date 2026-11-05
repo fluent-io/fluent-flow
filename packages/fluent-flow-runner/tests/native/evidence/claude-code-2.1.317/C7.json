@@ -1,0 +1,14 @@
+{
+  "argvAddDir": true,
+  "hookRan": false,
+  "mcpServers": [
+    {
+      "name": "ff_reporting",
+      "status": "connected",
+      "source": "dynamic"
+    }
+  ],
+  "plantedEndpointHits": [],
+  "additionalDirectories": [],
+  "claudeMdInModelRequest": true
+}

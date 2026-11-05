@@ -1,0 +1,48 @@
+{
+  "approvals": [
+    {
+      "method": "mcpServer/elicitation/request",
+      "kind": "mcp_tool_call"
+    }
+  ],
+  "calls": [
+    {
+      "method": "tools/call",
+      "authorization": "Bearer <dummy>",
+      "params": {
+        "_meta": {
+          "callId": "call_resp_0_0",
+          "x-codex-turn-metadata": {
+            "session_id": "01a1a98b-d9e1-71f2-ac8a-eb6aeb1731f8",
+            "thread_id": "01a1a98b-d9e1-71f2-ac8a-eb6aeb1731f8",
+            "model": "ff-probe-model",
+            "turn_id": "01a1a98b-da0c-72a3-8d92-5d382ed793ad",
+            "turn_started_at_unix_ms": 1793845877263,
+            "sandbox": "seccomp",
+            "sandbox_mode": "workspace-write",
+            "auto_review_enabled": false,
+            "node_repl_auto_review_required": false,
+            "node_repl_disabled": false,
+            "workspaces": {
+              "<probe-root>/repo": {
+                "latest_git_commit_hash": "aeb8937eaa8b89bd58eab264dbac51d7d7a51218",
+                "has_changes": false
+              }
+            },
+            "codex_version": "0.162.1",
+            "user_input_requested_during_turn": true
+          },
+          "threadId": "01a1a98b-d9e1-71f2-ac8a-eb6aeb1731f8",
+          "sessionId": "01a1a98b-d9e1-71f2-ac8a-eb6aeb1731f8",
+          "windowId": "01a1a98b-d9e1-71f2-ac8a-eb6aeb1731f8:0",
+          "itemId": "fc_resp_0_0",
+          "progressToken": 1
+        },
+        "name": "ff_probe_report",
+        "arguments": {
+          "status": "ok"
+        }
+      }
+    }
+  ]
+}

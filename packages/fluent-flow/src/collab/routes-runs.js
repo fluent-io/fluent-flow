@@ -9,6 +9,7 @@ import {
   submitSessionCommand,
   getConnectorCommand,
   getSessionPendingRequest,
+  getSessionPendingRequests,
   queueRunCommand,
   getSessionTimeline,
   reconcileConnectorCommand,
@@ -291,6 +292,19 @@ export function registerRunRoutes(router) {
         limit: Number.parseInt(String(req.query.limit ?? ''), 10) || 50,
       });
       res.json({ data: result.comments, nextCursor: result.nextCursor });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get('/sessions/:id/pending-requests', async (req, res, next) => {
+    try {
+      const limit = Number.parseInt(String(req.query.limit ?? ''), 10);
+      const result = await getSessionPendingRequests(req.collabActor, req.params.id, {
+        cursor: typeof req.query.cursor === 'string' ? req.query.cursor : undefined,
+        limit: Number.isSafeInteger(limit) ? limit : undefined,
+      });
+      res.json({ data: result.requests, nextCursor: result.nextCursor });
     } catch (err) {
       next(err);
     }
