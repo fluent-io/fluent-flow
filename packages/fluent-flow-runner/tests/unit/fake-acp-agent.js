@@ -1,4 +1,5 @@
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import {
   AGENT_METHODS,
@@ -53,6 +54,16 @@ async function update(client, value) {
   await client.notify(CLIENT_METHODS.session_update, { sessionId, update: value });
 }
 
+async function waitForClaimBrowserMarker(timeoutMs = 30_000) {
+  const marker = join(process.cwd(), '.claim-browser-follow-up-queued');
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(marker)) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error('Timed out waiting for browser follow-up marker');
+}
+
 function response() {
   return {
     protocolVersion: PROTOCOL_VERSION,
@@ -85,6 +96,7 @@ const app = agent()
   .onRequest(AGENT_METHODS.session_prompt, ({ params, client }) => {
     promptCalls += 1;
     const messageId = `fake-user-message-${promptCalls}`;
+    const promptOrdinal = promptCalls;
     trace('session_prompt', { params });
     if (scenario === 'ambiguous-prompt') {
       exitSoon(33);
@@ -115,6 +127,66 @@ const app = agent()
 
     setTimeout(async () => {
       await update(client, { sessionUpdate: 'state_update', state: 'running' });
+      if (scenario === 'claim-browser-uat') {
+        if (promptOrdinal === 1) {
+          await update(client, {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: 'uat-agent-message-1',
+            content: { type: 'text', text: 'Deterministic claim execution started.' },
+          });
+          await update(client, {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'uat-tool-1',
+            name: 'inspect',
+            title: 'Inspect deterministic fixture',
+            kind: 'read',
+            status: 'in_progress',
+          });
+          await update(client, {
+            sessionUpdate: 'plan_update',
+            plan: {
+              type: 'items',
+              planId: 'uat-plan-1',
+              entries: [
+                { content: 'Inspect deterministic fixture', priority: 'high', status: 'completed' },
+                { content: 'Wait for operator approval', priority: 'high', status: 'in_progress' },
+              ],
+            },
+          });
+          await update(client, {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'uat-tool-1',
+            status: 'completed',
+          });
+          await update(client, { sessionUpdate: 'state_update', state: 'requires_action' });
+          const answer = await client.request(CLIENT_METHODS.session_request_permission, {
+            sessionId,
+            title: 'Allow deterministic UAT action?',
+            description: 'Approve the disposable browser fixture action.',
+            subject: { type: 'command', command: 'printf browser-uat', cwd: process.cwd() },
+            options: [
+              { optionId: 'allow-uat', name: 'Allow once', kind: 'allow_once' },
+              { optionId: 'deny-uat', name: 'Deny', kind: 'reject_once' },
+            ],
+          });
+          trace('permission_answer', { answer });
+          await update(client, { sessionUpdate: 'state_update', state: 'running' });
+          await update(client, {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: 'uat-agent-message-1',
+            content: { type: 'text', text: ' Permission accepted.' },
+          });
+          await waitForClaimBrowserMarker();
+          await update(client, { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' });
+          return;
+        }
+        await update(client, {
+          sessionUpdate: 'agent_message_chunk',
+          messageId: 'uat-agent-message-2',
+          content: { type: 'text', text: 'Follow-up ACP turn is running.' },
+        });
+        return;
+      }
       if (scenario === 'permission') {
         await update(client, { sessionUpdate: 'state_update', state: 'requires_action' });
         const answer = await client.request(CLIENT_METHODS.session_request_permission, {
