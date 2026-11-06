@@ -1,4 +1,7 @@
 import { expireClaims, redispatchClaim } from '../agents/claim-manager.js';
+import { installationCtxForRepo } from '../config/loader.js';
+import { getProvider } from '../providers/index.js';
+import { onClaimDispatched } from '../engine/check-run.js';
 import logger from '../logger.js';
 
 const SLEEP_MS = 60_000;
@@ -22,6 +25,14 @@ export async function expireClaimsTick() {
             newAttempt: claim.attempt + 1,
             claimId: newClaim.id,
           });
+          if (newClaim.head_sha) {
+            const [owner, repoName] = newClaim.repo.split('/');
+            const ctx = await installationCtxForRepo(owner, repoName);
+            if (ctx?.installation_id) {
+              const providerClient = getProvider({ installation_id: ctx.installation_id });
+              await onClaimDispatched(providerClient, { ...newClaim, installation_id: ctx.installation_id });
+            }
+          }
         } else {
           logger.warn({
             msg: 'Failed to re-dispatch expired claim (conflict or max attempts)',
