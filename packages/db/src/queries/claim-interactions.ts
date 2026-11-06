@@ -232,23 +232,6 @@ export async function leaseClaimCommands(input: {
   limit: number;
 }, executor?: QueryExecutor): Promise<ClaimCommand[]> {
   return atomic(executor, async (client) => {
-    const expired = await client.query(
-      `UPDATE agent_claim_commands
-       SET status = 'uncertain', acked_at = now()
-       WHERE org_id = $1 AND claim_id = $2 AND status = 'delivered'
-         AND delivered_at < now() - interval '30 seconds'
-       RETURNING request_key, result`,
-      [input.orgId, input.claimId],
-    );
-    for (const row of expired.rows) {
-      await client.query(
-        `UPDATE agent_claim_requests
-         SET status = 'uncertain', response = $4, resolved_at = now()
-         WHERE org_id = $1 AND claim_id = $2 AND status = 'answer_queued'
-           AND request_key = $3`,
-        [input.orgId, input.claimId, row.request_key, JSON.stringify(row.result)],
-      );
-    }
     const result = await client.query(
       `WITH selected AS (
          SELECT id FROM agent_claim_commands
@@ -306,6 +289,23 @@ export async function cancelOpenClaimInteractions(input: {
   claimId: number;
 }, executor?: QueryExecutor): Promise<void> {
   await atomic(executor, async (client) => {
+    await client.query(
+      `WITH uncertain_commands AS (
+         UPDATE agent_claim_commands
+         SET status = 'uncertain',
+             result = COALESCE(result, '{"reason":"claim_ended_before_ack"}'::jsonb),
+             acked_at = now()
+         WHERE org_id = $1 AND claim_id = $2 AND status = 'delivered'
+         RETURNING request_key, result
+       )
+       UPDATE agent_claim_requests AS request
+       SET status = 'uncertain', response = command.result, resolved_at = now()
+       FROM uncertain_commands AS command
+       WHERE request.org_id = $1 AND request.claim_id = $2
+         AND request.status = 'answer_queued'
+         AND request.request_key = command.request_key`,
+      [input.orgId, input.claimId],
+    );
     await client.query(
       `UPDATE agent_claim_requests
        SET status = 'cancelled', resolved_at = now()

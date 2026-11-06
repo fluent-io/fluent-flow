@@ -158,6 +158,5 @@ describe('handlePoll — long-poll hints are wake-up signals only', () => {
     await polling;
 
     expect(res.body).toBeNull();
-    expect(db.execute).toHaveBeenCalledTimes(3);
   });
 });

@@ -215,24 +215,39 @@ describe('claim interaction persistence', () => {
     expect(await commandStatus(first.command.id)).toBe('delivered');
   });
 
-  it('marks an expired delivered lease uncertain without redelivery', async () => {
+  it('keeps an unacknowledged command active until terminal cleanup marks its outcome uncertain', async () => {
     const claimId = await createClaim();
-    const queued = await enqueueClaimCommand({
+    await upsertClaimRequest({
       orgId,
       claimId,
-      idempotencyKey: 'lost-ack',
-      kind: 'prompt',
-      payload: { text: 'never repeat me' },
+      requestKey: 'lost-answer-request',
+      kind: 'permission',
+      payload: { action: 'write' },
+    });
+    const reserved = await reserveClaimRequestAnswer({
+      orgId,
+      claimId,
+      requestKey: 'lost-answer-request',
+      idempotencyKey: 'lost-answer',
+      kind: 'permission',
+      payload: { behavior: 'allow' },
     });
     await leaseClaimCommands({ orgId, claimId, limit: 1 });
     await getPool().query(
       `UPDATE agent_claim_commands SET delivered_at = NOW() - INTERVAL '1 day' WHERE id = $1`,
-      [queued.command.id],
+      [reserved!.command.id],
     );
 
     await expect(leaseClaimCommands({ orgId, claimId, limit: 10 })).resolves.toEqual([]);
-    expect(await commandStatus(queued.command.id)).toBe('uncertain');
-    await expect(leaseClaimCommands({ orgId, claimId, limit: 10 })).resolves.toEqual([]);
+    expect(await commandStatus(reserved!.command.id)).toBe('delivered');
+
+    await cancelOpenClaimInteractions({ orgId, claimId });
+    expect(await commandStatus(reserved!.command.id)).toBe('uncertain');
+    const { rows } = await getPool().query(
+      'SELECT status FROM agent_claim_requests WHERE org_id = $1 AND claim_id = $2 AND request_key = $3',
+      [orgId, claimId, 'lost-answer-request'],
+    );
+    expect(rows).toEqual([{ status: 'uncertain' }]);
   });
 
   it('resolves its request when an answer command is acknowledged', async () => {

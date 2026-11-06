@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { validateToken } from '../agents/token-manager.js';
-import { registerSession, touchSession, setSessionStatus } from '../agents/session-manager.js';
+import { registerSession, touchSession } from '../agents/session-manager.js';
 import {
   assertClaimOwner,
   cancelClaimById,
@@ -235,6 +235,8 @@ export async function releaseUndeliveredClaim(orgId, agentId, sessionId, claimId
     WHERE session.id = ${sessionId}
       AND session.org_id = ${orgId}
       AND session.agent_id = ${agentId}
+      AND session.status = 'busy'
+      AND session.expires_at > NOW()
       AND EXISTS (SELECT 1 FROM released)
     RETURNING session.id
   `);
@@ -297,6 +299,32 @@ export async function handlePoll(req, res, opts = {}) {
     res.json(data);
     return true;
   };
+  const deliverClaim = async (claim, refreshSession = false) => {
+    let delivered = false;
+    try {
+      if (refreshSession && !(await touchSession(org_id, agent_id, sessionId))) {
+        throw new Error('Runner session expired during claim delivery');
+      }
+      const payload = typeof claim.payload === 'string' ? JSON.parse(claim.payload) : claim.payload;
+      const githubToken = await resolveGitHubToken(claim.repo);
+      delivered = respond({
+        work: {
+          repo: claim.repo,
+          pr_number: claim.pr_number,
+          attempt: claim.attempt,
+          claim_id: claim.id,
+          claim_type: claim.claim_type,
+          agentType,
+          ...(githubToken ? { githubToken } : {}),
+          ...payload,
+        },
+      });
+    } finally {
+      if (!delivered) {
+        await releaseUndeliveredClaim(org_id, agent_id, sessionId, claim.id);
+      }
+    }
+  };
 
   try {
     const sessionAlive = await touchSession(org_id, agent_id, sessionId);
@@ -314,27 +342,7 @@ export async function handlePoll(req, res, opts = {}) {
     // Check for unassigned pending claims in the DB
     const pendingClaim = await claimPendingWork(org_id, agent_id, sessionId);
     if (pendingClaim) {
-      const payload = typeof pendingClaim.payload === 'string'
-        ? JSON.parse(pendingClaim.payload)
-        : pendingClaim.payload;
-
-      const githubToken = await resolveGitHubToken(pendingClaim.repo);
-
-      const delivered = respond({
-        work: {
-          repo: pendingClaim.repo,
-          pr_number: pendingClaim.pr_number,
-          attempt: pendingClaim.attempt,
-          claim_id: pendingClaim.id,
-          claim_type: pendingClaim.claim_type,
-          agentType,
-          ...(githubToken ? { githubToken } : {}),
-          ...payload,
-        },
-      });
-      if (!delivered) {
-        await releaseUndeliveredClaim(org_id, agent_id, sessionId, pendingClaim.id);
-      }
+      await deliverClaim(pendingClaim);
       return;
     }
 
@@ -350,24 +358,7 @@ export async function handlePoll(req, res, opts = {}) {
       }
       const loopClaim = await claimPendingWork(org_id, agent_id, sessionId);
       if (loopClaim) {
-        await touchSession(org_id, agent_id, sessionId);
-        const lp = typeof loopClaim.payload === 'string' ? JSON.parse(loopClaim.payload) : loopClaim.payload;
-        const githubToken = await resolveGitHubToken(loopClaim.repo);
-        const delivered = respond({
-          work: {
-            repo: loopClaim.repo,
-            pr_number: loopClaim.pr_number,
-            attempt: loopClaim.attempt,
-            claim_id: loopClaim.id,
-            claim_type: loopClaim.claim_type,
-            agentType,
-            ...(githubToken ? { githubToken } : {}),
-            ...lp,
-          },
-        });
-        if (!delivered) {
-          await releaseUndeliveredClaim(org_id, agent_id, sessionId, loopClaim.id);
-        }
+        await deliverClaim(loopClaim, true);
         return;
       }
       if (Date.now() - start >= pollTimeoutMs) {

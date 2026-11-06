@@ -1,8 +1,10 @@
 import { beforeAll, beforeEach, expect, it } from 'vitest';
-import { db, schema } from '@fluent-flow/db';
+import { EventEmitter } from 'node:events';
+import { db, enqueueClaimCommand, schema, upsertClaimRequest } from '@fluent-flow/db';
 import { sql } from 'drizzle-orm';
 import { integrationDescribe, resetDb } from '../helpers/integration-db.js';
-import { claimPendingWork, releaseUndeliveredClaim } from '../../src/routes/runner.js';
+import { claimPendingWork, handlePoll, releaseUndeliveredClaim } from '../../src/routes/runner.js';
+import { completeClaim } from '../../src/agents/claim-manager.js';
 
 /**
  * Integration coverage for the `FOR UPDATE SKIP LOCKED` atomic claim path in
@@ -52,6 +54,27 @@ describeDb('claimPendingWork (integration)', () => {
       })
       .returning({ id: schema.agentClaims.id });
     return row.id;
+  }
+
+  function makeResponse() {
+    const response = new EventEmitter();
+    return Object.assign(response, {
+      body: null,
+      destroyed: false,
+      headersSent: false,
+      statusCode: 200,
+      writableFinished: false,
+      status(code) {
+        this.statusCode = code;
+        return this;
+      },
+      json(body) {
+        this.body = body;
+        this.headersSent = true;
+        this.writableFinished = true;
+        return this;
+      },
+    });
   }
 
   beforeAll(async () => {
@@ -115,6 +138,47 @@ describeDb('claimPendingWork (integration)', () => {
     expect(sessionState.rows[0]).toEqual({ status: 'online' });
   });
 
+  it('does not revive an expired session while releasing its undelivered claim', async () => {
+    await seed();
+    const session = await makeSession(AGENT_A);
+    const claimId = await makePendingClaim('ff-test-org/repo-a', 153);
+    await claimPendingWork(ORG, AGENT_A, session);
+    await db.execute(sql`UPDATE agent_sessions SET expires_at = NOW() - INTERVAL '1 second' WHERE id = ${session}`);
+
+    await expect(releaseUndeliveredClaim(ORG, AGENT_A, session, claimId)).resolves.toBe(false);
+    const stored = await db.execute(sql`SELECT status, session_id FROM agent_claims WHERE id = ${claimId}`);
+    expect(stored.rows[0]).toEqual({ status: 'pending', session_id: null });
+    const sessionState = await db.execute(sql`SELECT status FROM agent_sessions WHERE id = ${session}`);
+    expect(sessionState.rows[0]).toEqual({ status: 'busy' });
+  });
+
+  it('closes open interactions when repo-keyed completion makes a claim terminal', async () => {
+    await seed();
+    const session = await makeSession(AGENT_A);
+    const claimId = await makePendingClaim('ff-test-org/repo-a', 154);
+    await claimPendingWork(ORG, AGENT_A, session);
+    await upsertClaimRequest({
+      orgId: ORG,
+      claimId,
+      requestKey: 'terminal-request',
+      kind: 'permission',
+      payload: { action: 'write' },
+    });
+    const command = await enqueueClaimCommand({
+      orgId: ORG,
+      claimId,
+      idempotencyKey: 'terminal-command',
+      kind: 'cancel',
+      payload: {},
+    });
+
+    await completeClaim(ORG, 'ff-test-org/repo-a', 154, 1);
+    const requestState = await db.execute(sql`SELECT status FROM agent_claim_requests WHERE org_id = ${ORG} AND claim_id = ${claimId}`);
+    expect(requestState.rows).toEqual([{ status: 'cancelled' }]);
+    const commandState = await db.execute(sql`SELECT status FROM agent_claim_commands WHERE id = ${command.command.id}`);
+    expect(commandState.rows).toEqual([{ status: 'cancelled' }]);
+  });
+
   it('repo-scoped agent skips claims outside its repos[]', async () => {
     await seed({ repos: ['ff-test-org/repo-a'] });
     const sessionA = await makeSession(AGENT_A);
@@ -134,5 +198,25 @@ describeDb('claimPendingWork (integration)', () => {
     expect(res).not.toBeNull();
     expect(res.id).toBe(claimId);
     expect(res.status).toBe('claimed');
+  });
+
+  it('returns a claim to pending when its payload cannot be delivered', async () => {
+    await seed();
+    const session = await makeSession(AGENT_A);
+    const claimId = await makePendingClaim('ff-test-org/repo-a', 304);
+    await db.execute(sql`UPDATE agent_claims SET payload = to_jsonb(${'{'}::text) WHERE id = ${claimId}`);
+    const response = makeResponse();
+
+    await handlePoll(
+      { body: { session_id: session }, tokenInfo: { org_id: ORG, agent_id: AGENT_A } },
+      response,
+      { pollTimeoutMs: 0 },
+    );
+
+    expect(response.statusCode).toBe(500);
+    const stored = await db.execute(sql`SELECT status, session_id FROM agent_claims WHERE id = ${claimId}`);
+    expect(stored.rows[0]).toEqual({ status: 'pending', session_id: null });
+    const sessionState = await db.execute(sql`SELECT status FROM agent_sessions WHERE id = ${session}`);
+    expect(sessionState.rows[0]).toEqual({ status: 'online' });
   });
 });

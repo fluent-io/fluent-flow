@@ -1,10 +1,10 @@
-import { and, desc, eq, getTableColumns, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import { cancelOpenClaimInteractions, db, getPool, insertPendingClaim, schema } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 import { setSessionStatus } from './session-manager.js';
 import logger from '../logger.js';
 
-const { agentClaims, agentSessions } = schema;
+const { agentClaims } = schema;
 
 const DEFAULT_CLAIM_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
@@ -144,33 +144,38 @@ export async function createFollowOnClaim({
 }
 
 async function finalizeClaim(orgId, repo, prNumber, attempt, finalStatus, claimType = null) {
-  // Fold the session-agent lookup into the UPDATE's RETURNING so the hot
-  // path (claim completion/failure) stays a single round-trip.
-  // claimType is optional: when provided, it narrows the update to a specific
-  // claim type so that the per-type unique constraint (org_id, repo, pr_number,
-  // claim_type, attempt) doesn't cause ambiguity.
-  const conditions = [
-    eq(agentClaims.orgId, orgId),
-    eq(agentClaims.repo, repo),
-    prNumber != null ? eq(agentClaims.prNumber, prNumber) : sql`${agentClaims.prNumber} IS NULL`,
-    eq(agentClaims.attempt, attempt),
-    inArray(agentClaims.status, ['claimed', 'pending']),
-  ];
-  if (claimType) {
-    conditions.push(eq(agentClaims.claimType, claimType));
+  const client = await getPool().connect();
+  let row;
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `UPDATE agent_claims claim
+       SET status = $5, completed_at = NOW()
+       WHERE claim.org_id = $1
+         AND claim.repo = $2
+         AND claim.pr_number IS NOT DISTINCT FROM $3
+         AND claim.attempt = $4
+         AND claim.status IN ('claimed', 'pending')
+         AND ($6::text IS NULL OR claim.claim_type = $6)
+       RETURNING claim.*,
+         (SELECT session.agent_id
+            FROM agent_sessions session
+           WHERE session.id = claim.session_id
+             AND session.org_id = claim.org_id) AS session_agent_id`,
+      [orgId, repo, prNumber, attempt, finalStatus, claimType],
+    );
+    row = result.rows[0] ?? null;
+    if (row) await cancelOpenClaimInteractions({ orgId, claimId: row.id }, client);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
   }
-  const [row] = await db
-    .update(agentClaims)
-    .set({ status: finalStatus, completedAt: sql`NOW()` })
-    .where(and(...conditions))
-    .returning({
-      ...getTableColumns(agentClaims),
-      sessionAgentId: sql`(SELECT ${agentSessions.agentId} FROM ${agentSessions} WHERE ${agentSessions.id} = ${agentClaims.sessionId})`.as('session_agent_id'),
-    });
   if (!row) return null;
-  const { sessionAgentId, ...claim } = row;
-  await freeSession(orgId, claim.sessionId, sessionAgentId, 'online');
-  return toSnakeClaim(claim);
+  await freeSession(orgId, row.session_id, row.session_agent_id, 'online');
+  return toSnakeClaim(row);
 }
 
 /**
