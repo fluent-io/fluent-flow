@@ -158,47 +158,6 @@ export interface Run {
   hostLastSeenAt?: string | null;
 }
 
-export interface Session {
-  id: string;
-  runId: string;
-  paseoAgentId: string | null;
-  providerSessionId: string | null;
-  title: string;
-  role: 'work' | 'summary';
-  state: RunState;
-  lastObservedAt: string | null;
-  timelineEpoch: string | null;
-  timelineSeq: string | null;
-  capabilities: Record<string, boolean>;
-}
-
-export interface TimelineEntry {
-  eventId: string;
-  kind: string;
-  payload: Record<string, unknown>;
-  observedAt: string;
-}
-
-export interface Command {
-  id: string;
-  runId: string;
-  sessionId: string | null;
-  kind:
-    | 'launch'
-    | 'create_session'
-    | 'prompt'
-    | 'permission'
-    | 'cancel'
-    | 'summarize'
-    | 'artifact_read'
-    | 'wrapup_preflight'
-    | 'wrapup';
-  state: string;
-  payload: Record<string, unknown>;
-  errorCode: string | null;
-  createdAt: string;
-}
-
 export interface Check {
   id: string;
   taskId: string;
@@ -260,19 +219,6 @@ export interface Idea {
   visibility: Visibility;
   authorId: string;
   createdAt: string;
-}
-
-export interface Summary {
-  id: string;
-  provenance: 'human' | 'agent' | 'runner';
-  runId: string;
-  sessionId: string | null;
-  body: string;
-  visibility: Visibility;
-  model: string | null;
-  sourceCursor: string | null;
-  createdAt: string;
-  authorId: string;
 }
 
 export interface AttentionItem {

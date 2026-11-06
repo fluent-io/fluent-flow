@@ -13,9 +13,6 @@ which signs actor assertions server-side.
 - `board.ts` — pure board logic: canonical move targets (project-scoped
   anchors, no client-side rank math), optimistic splice in server array order,
   cross-project drop rejection.
-- `questions.ts` — question/permission encoding adapted from Flowly
-  `shared/permission-question.ts` (MIT, pinned 13213f4; see
-  THIRD_PARTY_NOTICES): parseQuestions/buildAnswers/answerReply semantics.
 - `live.ts` — abortable latest-request guards and serial bounded refresh.
 - `use-me.ts` — /me profile hook (capabilities per project, workspace
   capabilities, bootstrap eligibility). `MeProvider` lets the dashboard shell

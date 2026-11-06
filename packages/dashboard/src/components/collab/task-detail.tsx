@@ -10,7 +10,6 @@ import { collabFetch, ApiError } from '@/lib/collab/api';
 import { useSyncCurrentProject } from '@/lib/collab/current-project';
 import type { AttentionItem, Comment, Criterion, Priority, Run, Task, Visibility } from '@/lib/collab/types';
 import { ExecutionBadge } from './execution-badge';
-import { ExecutionTab } from './task-execution-tab';
 import { WorkpadTab } from './task-workpad-tab';
 import { IdeasTab } from './task-ideas-tab';
 
@@ -71,7 +70,7 @@ export function can(detail: TaskDetail | null, capability: string): boolean {
 
 export function TaskDetailPage({ taskId }: { taskId: string }) {
   const { detail, setDetail, error, loading, reload } = useTaskDetail(taskId);
-  const [tab, setTab] = useState<'overview' | 'execution' | 'workpad' | 'ideas'>('overview');
+  const [tab, setTab] = useState<'overview' | 'workpad' | 'ideas'>('overview');
   const [attention, setAttention] = useState<AttentionItem[]>([]);
   useSyncCurrentProject(detail?.projectId ?? null);
 
@@ -105,7 +104,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   const tabs = [
     { id: 'overview' as const, label: 'Overview' },
-    { id: 'execution' as const, label: 'Execution' },
     { id: 'workpad' as const, label: 'Workpad' },
     { id: 'ideas' as const, label: 'Ideas' },
   ];
@@ -174,7 +172,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       </nav>
 
       {tab === 'overview' ? <OverviewTab detail={detail} setDetail={setDetail} reload={reload} /> : null}
-      {tab === 'execution' ? <ExecutionTab detail={detail} reload={reload} /> : null}
       {tab === 'workpad' ? <WorkpadTab detail={detail} setDetail={setDetail} reload={reload} /> : null}
       {tab === 'ideas' ? <IdeasTab detail={detail} /> : null}
     </div>

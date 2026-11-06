@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { LatestRequest, pollResource } from '@/lib/collab/live';
 import { collabFetch, ApiError } from '@/lib/collab/api';
-import type { Artifact, Check, CheckEvidence, Command, DeliverySnapshot, TaskDecision, Visibility } from '@/lib/collab/types';
+import type { Artifact, Check, CheckEvidence, DeliverySnapshot, TaskDecision, Visibility } from '@/lib/collab/types';
 import type { OpenQuestionView, WorkpadPlanView } from '@/lib/collab/types';
 import { can, type TaskDetail } from './task-detail';
 
@@ -66,7 +66,6 @@ export function WorkpadTab({
           await reload();
         }}
       />
-      <WrapupPanel detail={detail} canInternal={canInternal} />
     </div>
   );
 }
@@ -928,73 +927,4 @@ function DeliveryPanel({
       ) : null}
     </section>
   );
-}
-
-function WrapupPanel({ detail, canInternal }: { detail: TaskDetail; canInternal: boolean }) {
-  type ResultCommand=Command & {result?:{owned?:boolean;git?:{ok?:boolean;uncommitted?:number;untracked?:number;unpushed?:number};sessions?:{status:string}[];blockers?:{code:string;count?:number}[];checkedAt?:string;ok?:boolean;phase?:string;archivedSessionIds?:string[]}|null};
-  const [preflight,setPreflight]=useState<ResultCommand|null>(null);
-  const [wrapup,setWrapup]=useState<ResultCommand|null>(null);
-  const [commandId,setCommandId]=useState<string|null>(null);
-  const [currentCommand,setCurrentCommand]=useState<ResultCommand|null>(null);
-  const [busy,setBusy]=useState(false);
-  const [error,setError]=useState<string|null>(null);
-  const commandRequests=useRef(new LatestRequest());
-  const runId=detail.execution?.latestRun?.id??null;
-  const allowed=canInternal&&can(detail,'run.steer');
-
-  useEffect(()=>{
-    if(!commandId||!allowed) return;
-    const stop=pollResource(async parent=>{
-      const signal=commandRequests.current.begin(parent);
-      try{
-        const result=await collabFetch<ResultCommand>(`/commands/${commandId}`,{signal});
-        if(!commandRequests.current.current(signal)) return;
-        setCurrentCommand(result.data);
-        if(result.data.kind==='wrapup_preflight') setPreflight(result.data); else setWrapup(result.data);
-      }catch(err){
-        if(!commandRequests.current.current(signal)) return;
-        setPreflight(null);setWrapup(null);setCurrentCommand(null);
-        setError(err instanceof ApiError?err.message:'Could not load the cleanup result.');
-      }
-    });
-    return ()=>{stop();commandRequests.current.dispose();};
-  },[commandId,allowed]);
-
-  async function queue(mode?:'archive_sessions'|'archive_owned_workspace'){
-    if(!runId) return;
-    setBusy(true);setError(null);setCurrentCommand(null);
-    try{
-      const response=await collabFetch<{commandId:string}>(`/runs/${runId}/${mode?'wrap-ups':'wrap-up-preflights'}`,{method:'POST',idempotencyKey:crypto.randomUUID(),body:mode?{preflightId:preflight?.id,mode}:{}});
-      setCommandId(response.data.commandId);
-      if(!mode){setPreflight(null);setWrapup(null);}
-    }catch(err){setError(err instanceof ApiError?err.message:'Could not queue the cleanup request.');}
-    finally{setBusy(false);}
-  }
-
-  if(!allowed||!runId) return null;
-  const report=preflight?.result;
-  const fresh=!!report?.checkedAt&&Date.now()-new Date(report.checkedAt).getTime()<60000;
-  const safe=preflight?.state==='applied'&&report?.owned===true&&report.git?.ok===true&&Array.isArray(report.blockers)&&report.blockers.length===0&&fresh&&detail.execution?.hostReachability==='online';
-  const pending=!!commandId&&(!currentCommand||!['applied','failed','ambiguous','cancelled'].includes(currentCommand.state));
-  const labels:Record<string,string>={uncommitted_changes:'Uncommitted changes',untracked_files:'Untracked files',unpushed_commits:'Unpushed commits',sessions_running:'Active sessions',unrecognized_sessions:'Sessions owned elsewhere',not_owned:'Workspace is not owned by this run',workspace_not_owned:'Workspace is not owned by this run',git_unreadable:'Worktree state is unavailable',session_listing_failed:'Session state is unavailable',unknown_mode:'Unsupported cleanup action'};
-  return <section aria-label="Wrap-up" className="rounded-lg border border-border bg-card p-4">
-    <h2 className="text-sm font-medium">Session wrap-up</h2>
-    <p className="mt-1 text-xs text-muted-foreground">Check the workspace before archiving. Uncommitted, untracked, unpushed or shared work blocks cleanup.</p>
-    <Button size="sm" className="mt-2" variant="outline" disabled={busy||pending} onClick={()=>void queue()}>Run preflight</Button>
-    {pending?<p aria-live="polite" className="mt-2 text-xs text-muted-foreground">{detail.execution?.hostReachability==='online'?'Waiting for the execution host.':'Queued until the execution host reconnects.'}</p>:null}
-    {report?<div className="mt-2 rounded-md border border-border bg-background p-2 text-xs">
-      <div>Uncommitted files: {report.git?.ok?report.git.uncommitted??'unknown':'unknown'}</div>
-      <div>Untracked files: {report.git?.ok?report.git.untracked??'unknown':'unknown'}</div>
-      <div>Unpushed commits: {report.git?.ok?report.git.unpushed??'unknown':'unknown'}</div>
-      <div>Active sessions: {report.sessions?report.sessions.filter(s=>['running','initializing','pending'].includes(s.status)).length:'unknown'}</div>
-      {report.blockers?.length?<ul className="mt-1 list-inside list-disc">{report.blockers.map((blocker,i)=><li key={i}>{labels[blocker.code]??'The host could not confirm safe cleanup.'}{blocker.count!==undefined?` (${blocker.count})`:''}</li>)}</ul>:null}
-      {!fresh?<p className="mt-1 text-amber-600">Preflight expired. Run it again before archiving.</p>:null}
-      <div className="mt-2 flex gap-2">
-        <Button size="sm" variant="outline" disabled={busy||pending||!safe} onClick={()=>void queue('archive_sessions')}>Archive terminal sessions</Button>
-        <Button size="sm" variant="outline" disabled={busy||pending||!safe} onClick={()=>void queue('archive_owned_workspace')}>Archive owned workspace</Button>
-      </div>
-    </div>:null}
-    {wrapup?<p aria-live="polite" className="mt-2 text-xs">{wrapup.state==='applied'&&wrapup.result?.ok===true?'Archival confirmed. Work history is retained.':wrapup.state==='failed'?'Cleanup was blocked. Review the preflight and try again.':wrapup.state==='ambiguous'?'Cleanup outcome is uncertain. Reconcile it before retrying.':'Archival is pending.'}</p>:null}
-    {error?<p role="alert" className="mt-2 text-xs text-destructive">{error}</p>:null}
-  </section>;
 }

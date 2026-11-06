@@ -8,7 +8,7 @@ The collaborative Kanban and task execution expansion uses the following source 
 
 Source: [JasprW/flowly](https://github.com/JasprW/flowly/tree/13213f4e7a39eeefb887bf2d26843873a6c777f3), revision `13213f4e7a39eeefb887bf2d26843873a6c777f3`.
 
-Reference areas: task-linked workspaces and sessions, workpad evidence, artifacts, summaries, ideas, attention and resource ownership during wrap-up.
+Reference areas: workpad evidence, artifacts, ideas and attention.
 
 ```text
 MIT License
