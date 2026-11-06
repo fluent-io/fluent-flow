@@ -527,7 +527,9 @@ function createSession({ log, auth, profile, sessionId, generation, worktree, st
     closed = true;
     const child = proc?.child;
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
-    child.stdin.end();
+    if (child.stdin && !child.stdin.destroyed) {
+      try { child.stdin.end(); } catch { /* stdin already torn down; proceed to SIGKILL below */ }
+    }
     const done = await Promise.race([exited, new Promise((r) => setTimeout(() => r(null), EXIT_WAIT_MS).unref())]);
     if (done === null) {
       child.kill('SIGKILL');

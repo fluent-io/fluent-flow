@@ -369,7 +369,11 @@ export function createSupervisorHandlers({ ledger, profiles, backends, containme
     try {
       for await (const event of entry.worker.events) spool(entry, event);
     } catch (err) {
-      log({ msg: 'native event spool stopped', sessionId: entry.sessionId, generation: entry.generation, error: err?.message });
+      // Safe to swallow: pump() is fire-and-forget; worker exit is already recorded via
+      // child.once('exit') on line 392 and workerLost() below. Rethrowing here would just
+      // become an unhandledRejection with no live caller. We log err.name/code only —
+      // err.message can contain native CLI output and internals we must not surface.
+      log({ msg: 'native event spool stopped', sessionId: entry.sessionId, generation: entry.generation, errorName: err?.name, code: err?.code });
     }
   }
 

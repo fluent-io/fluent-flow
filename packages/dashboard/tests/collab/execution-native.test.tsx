@@ -6,7 +6,9 @@ import {
   EXECUTION_MESSAGES,
   READINESS_COPY,
   executionErrorMessage,
+  safeDialogError,
 } from '../../src/lib/collab/execution-copy';
+import { ApiError } from '../../src/lib/collab/api';
 import type { Mapping } from '../../src/lib/collab/types';
 
 vi.mock('next-auth/react', () => ({ useSession: () => ({ data: null, status: 'unauthenticated' }), signOut: vi.fn() }));
@@ -55,6 +57,33 @@ describe('execution copy', () => {
     expect(executionErrorMessage('ENOENT /home/user/.codex/auth.json')).toBeNull();
     expect(executionErrorMessage('toString')).toBeNull();
     expect(executionErrorMessage(null)).toBeNull();
+  });
+
+  it('safeDialogError never surfaces raw server messages, only approved copy or the fallback', () => {
+    const leaky = new ApiError(
+      500,
+      'unexpected_response',
+      'connect ECONNREFUSED 10.0.0.42:5432 while loading /opt/fluent-flow/.env secret FF_COLLAB_AUTH_SECRET=0123deadbeef',
+      'req-42',
+      null,
+    );
+    expect(safeDialogError(leaky, 'Could not queue the run.')).toBe('Could not queue the run.');
+    expect(safeDialogError(leaky, 'Could not queue the run.')).not.toContain('ECONNREFUSED');
+    expect(safeDialogError(leaky, 'Could not queue the run.')).not.toContain('FF_COLLAB_AUTH_SECRET');
+    expect(safeDialogError(leaky, 'Could not queue the run.')).not.toContain('.env');
+
+    const mapped = new ApiError(422, 'integration_disabled', 'something internal /tmp/.ff/private', null, null);
+    expect(safeDialogError(mapped, 'fallback')).toBe(EXECUTION_MESSAGES.integration_disabled);
+    expect(safeDialogError(mapped, 'fallback')).not.toContain('/tmp/.ff/private');
+
+    const thrown = new Error('postgres: duplicate key value violates unique constraint "collab_session_execution_pkey"');
+    expect(safeDialogError(thrown, 'Command failed.')).toBe('Command failed.');
+    expect(safeDialogError(thrown, 'Command failed.')).not.toContain('postgres');
+    expect(safeDialogError(thrown, 'Command failed.')).not.toContain('collab_session_execution_pkey');
+
+    expect(safeDialogError(null, 'fallback')).toBe('fallback');
+    expect(safeDialogError(undefined, 'fallback')).toBe('fallback');
+    expect(safeDialogError('a string', 'fallback')).toBe('fallback');
   });
 });
 

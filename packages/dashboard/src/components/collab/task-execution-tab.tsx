@@ -7,7 +7,7 @@ import { LatestRequest, pollResource } from '@/lib/collab/live';
 import { collabFetch, ApiError } from '@/lib/collab/api';
 import { capabilitiesFor, useMe } from '@/lib/collab/use-me';
 import type { Command, ExecutionBackend, Mapping, PendingRequestV2, Project, Run, RunExecutionView, RunQueue, RunState, Session, Summary, TimelineEntry } from '@/lib/collab/types';
-import { BACKEND_LABELS, EXECUTION_MESSAGES, READINESS_COPY, executionErrorMessage, policyText } from '@/lib/collab/execution-copy';
+import { BACKEND_LABELS, EXECUTION_MESSAGES, READINESS_COPY, executionErrorMessage, policyText, safeDialogError } from '@/lib/collab/execution-copy';
 import { can, type TaskDetail } from './task-detail';
 import {
   allAnswered,
@@ -234,7 +234,7 @@ function StartRunDialog({
       } else if (err instanceof ApiError && err.status === 422) {
         setError(executionErrorMessage(err.code) ?? 'Execution is not configured for this project.');
       } else {
-        setError(err instanceof Error ? err.message : 'Could not queue the run.');
+        setError(safeDialogError(err, 'Could not queue the run.'));
       }
     } finally {
       setBusy(false);
@@ -388,7 +388,7 @@ function RunDetail({
     try{
       await collabFetch(`/commands/${command.id}/reconcile`,{method:'POST',body:{action}});
       await loadRun();await reloadRuns();await reload();
-    }catch(err){setSummaryError(err instanceof ApiError?err.message:'Could not reconcile this request.');}
+    }catch(err){setSummaryError(safeDialogError(err,'Could not reconcile this request.'));}
     finally{setReconcilingCommand(null);}
   }
   const [runError, setRunError] = useState<string | null>(null);
@@ -437,7 +437,7 @@ function RunDetail({
       const result=await collabFetch<{session:Session}>(`/runs/${run.id}/sessions`,{method:'POST',idempotencyKey:sessionRequestKey.current??(sessionRequestKey.current=crypto.randomUUID()),body:{title:newSessionTitle.trim(),instructions:newSessionInstructions}});
       sessionRequestKey.current=null;setNewSessionTitle('');setNewSessionInstructions('');
       await loadRun();setSelectedSessionId(result.data.session.id);await reloadRuns();
-    }catch(err){setSummaryError(err instanceof ApiError?err.message:'Could not queue the session.');}
+    }catch(err){setSummaryError(safeDialogError(err,'Could not queue the session.'));}
     finally{setSessionBusy(false);}
   }
 
@@ -736,10 +736,8 @@ function SessionPanel({
     } catch (err) {
       setCommandError(
         err instanceof ApiError && err.status === 409
-          ? err.message || 'This request is no longer active.'
-          : err instanceof Error
-            ? err.message
-            : 'Command failed.',
+          ? 'This request is no longer active.'
+          : safeDialogError(err, 'Command failed.'),
       );
       return false;
     }

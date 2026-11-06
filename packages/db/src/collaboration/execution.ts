@@ -239,7 +239,15 @@ export async function recordSessionExecution(
   );
   if (parent.rows.length === 0) throw new CollabServiceError(404, 'not_found', 'Not found.');
   if (parent.rows[0].backend !== input.backend) throw settingsChanged();
-  await tx.query(`INSERT INTO collab_session_execution (session_id, run_id, backend) VALUES ($1, $2, $3)`, [input.sessionId, input.runId, input.backend]);
+  // ON CONFLICT DO NOTHING keeps the operation idempotent across retries. The row's
+  // (run_id, backend) are covered by the parent SELECT above (session.run_id is immutable
+  // and the run's backend is frozen in collab_run_execution), so a prior row for this
+  // session_id already carries the same (run_id, backend) — nothing to reconcile.
+  await tx.query(
+    `INSERT INTO collab_session_execution (session_id, run_id, backend) VALUES ($1, $2, $3)
+     ON CONFLICT (session_id) DO NOTHING`,
+    [input.sessionId, input.runId, input.backend],
+  );
 }
 
 export async function getRunExecution(q: Pick<PoolClient, 'query'>, runId: string): Promise<RunExecution | null> {

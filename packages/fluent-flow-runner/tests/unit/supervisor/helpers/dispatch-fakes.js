@@ -72,12 +72,15 @@ export function queue() {
   const items = [];
   let wake = null;
   let ended = false;
+  let thrown = null;
   return {
     push(item) { items.push(item); wake?.(); },
     end() { ended = true; wake?.(); },
+    fail(err) { thrown = err; wake?.(); },
     async *[Symbol.asyncIterator]() {
       for (;;) {
         if (items.length) { yield items.shift(); continue; }
+        if (thrown) throw thrown;
         if (ended) return;
         await new Promise((r) => (wake = r));
         wake = null;

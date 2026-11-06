@@ -261,6 +261,31 @@ describe('supervisor native dispatch (Task 7)', () => {
     expect(await stops(proven)).toBe(1);
   }, 20_000);
 
+  it('pump() keeps native CLI internals out of the log and does not crash the supervisor', async () => {
+    const t = setup();
+    await t.handlers.submit(launch());
+    const w = t.backend.workers[0];
+    // Simulate the native stream iterator throwing with a message that carries CLI internals.
+    const leaky = Object.assign(
+      new Error(`spawn /opt/codex/vendor/x86_64-unknown-linux-musl/codex ENOENT; home=/home/owner/.codex token=sk-live-abcdef012345`),
+      { code: 'ENOENT' },
+    );
+    w.events.fail(leaky);
+    await flush(40);
+    const entry = t.logs.find((l) => l.msg === 'native event spool stopped');
+    expect(entry).toBeDefined();
+    expect(entry.sessionId).toBe(S1);
+    expect(entry.code).toBe('ENOENT');
+    // No path, token, or free-form message content leaks to logs.
+    expect(entry.error).toBeUndefined();
+    expect(JSON.stringify(entry)).not.toContain('/opt/codex');
+    expect(JSON.stringify(entry)).not.toContain('sk-live-');
+    expect(JSON.stringify(entry)).not.toContain('/home/owner/.codex');
+    // The supervisor stays usable: further submissions do not throw.
+    const next = await t.handlers.submit({ commandId: 'cancel-after-pump-fail', digest: 'd-cpf', runId: RUN, sessionId: S1, backend: 'claude-code', kind: 'cancel' });
+    expect(next.state).toBeDefined();
+  });
+
   it('explicit question answers and registered local values are removed before the first spool write', async () => {
     const privacy = createSpoolPrivacy();
     const t = setup({ privacy });

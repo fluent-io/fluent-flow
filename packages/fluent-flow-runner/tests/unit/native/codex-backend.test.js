@@ -259,6 +259,26 @@ describe('codex backend ordering (in-memory child)', () => {
     expect(await outcome).toEqual({ code: 'reconciling', reason: 'interrupt_unsettled' });
   });
 
+  it('close() tolerates a torn-down stdin during error teardown, without masking the earlier failure', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const log = recordingLog();
+      const { worker, fake } = await openFake({ log });
+      // The native stream has already been torn down — e.g. an earlier IO error nulled
+      // the pipe. Previously kill() dereferenced child.stdin unconditionally and masked
+      // whatever failed earlier with a TypeError from .end() on a missing stream.
+      fake.child.stdin = null;
+      fake.child.kill = () => { fake.child.exitCode = 0; fake.child.emit('exit', 0, null); };
+      const closing = worker.close({ reason: 'test-teardown' });
+      // Fast-forward the EXIT_WAIT_MS fallback so the SIGKILL path runs.
+      await vi.advanceTimersByTimeAsync(10_000);
+      await expect(closing).resolves.toBeUndefined();
+      expect(log.lines.some((l) => l.level === 'error')).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('a thrown owned stop leaves the session reconciling and never reports quiescence', async () => {
     const log = recordingLog();
     const { worker, fake, events } = await openFake({ log, stopOwned: async () => Promise.reject(new Error('cgroup gone')) });

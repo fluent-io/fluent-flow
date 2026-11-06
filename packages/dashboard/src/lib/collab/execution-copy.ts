@@ -32,6 +32,17 @@ export function executionErrorMessage(code: string | null): string | null {
   return EXECUTION_MESSAGES[code];
 }
 
+// Surfaces for a failed request error, choosing from the approved copy table by error code
+// and falling back to a generic string. Raw `err.message` is never returned — server-side
+// payloads can carry stack traces, env var names, or DB error strings, and dialog copy
+// is part of the public UI (see CLAUDE.md Security).
+export function safeDialogError(err: unknown, fallback: string): string {
+  if (err !== null && typeof err === 'object' && 'code' in err && typeof (err as { code: unknown }).code === 'string') {
+    return executionErrorMessage((err as { code: string }).code) ?? fallback;
+  }
+  return fallback;
+}
+
 export const BACKEND_LABELS: Record<ExecutionBackend, string> = Object.freeze({
   'claude-code': 'Claude Code',
   codex: 'Codex',

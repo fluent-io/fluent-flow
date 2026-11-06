@@ -32,7 +32,8 @@ import {
   getSessionPendingRequests,
 } from '../../src/collaboration/identity.js';
 import { queueCollabSummary, recordCollabSummaryReport } from '../../src/collaboration/evidence.js';
-import { READINESS_STATES, REQUIRED_CAPABILITIES, selectCatalogProfile, deliveryExecutionCheck } from '../../src/collaboration/execution.js';
+import { READINESS_STATES, REQUIRED_CAPABILITIES, selectCatalogProfile, deliveryExecutionCheck, recordSessionExecution } from '../../src/collaboration/execution.js';
+import { withClientTransaction } from '../../src/collaboration/tx.js';
 
 process.env.DATABASE_URL = resolveCollabTestDatabaseUrl();
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -629,6 +630,22 @@ describe('native execution ownership and catalog-exact Start (real Postgres)', (
     ]);
     const command = await rawQuery(`SELECT payload FROM collab_connector_commands WHERE id = $1`, [same.commandId]);
     expect(command[0].payload.execution).toEqual({ schemaVersion: 2, backend: 'claude-code', profileId: 'cc-alt', profileRevision: 'rev-alt' });
+  });
+
+  it('recordSessionExecution is idempotent: a retry on the same (session_id, run_id, backend) does not raise a PK violation', async () => {
+    const started = await (await start('alpha', 'cc-main')).result;
+    const [{ id: sessionId }] = await rawQuery(`SELECT id FROM collab_sessions WHERE run_id = $1`, [started.run.id]);
+    const before = await rawQuery(`SELECT session_id, run_id, backend FROM collab_session_execution WHERE session_id = $1`, [sessionId]);
+    expect(before).toEqual([{ session_id: sessionId, run_id: started.run.id, backend: 'claude-code' }]);
+
+    await expect(
+      withClientTransaction(async (tx) => {
+        await recordSessionExecution(tx, { sessionId, runId: started.run.id, backend: 'claude-code' });
+      }),
+    ).resolves.toBeUndefined();
+
+    const after = await rawQuery(`SELECT session_id, run_id, backend FROM collab_session_execution WHERE session_id = $1`, [sessionId]);
+    expect(after).toEqual(before);
   });
 
   it('registration preserves v2 catalog fields', async () => {
