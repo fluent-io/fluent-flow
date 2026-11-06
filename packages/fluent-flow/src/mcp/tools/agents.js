@@ -15,7 +15,7 @@ export function registerAgentTools(server) {
     {
       id: z.string().describe('Unique agent identifier'),
       org_id: z.string().default('self-hosted').describe('Organization ID'),
-      agent_type: z.enum(['claude-code', 'codex', 'devin', 'openclaw', 'aider', 'custom']),
+      agent_type: z.enum(['claude-code', 'claude-agent-acp', 'codex', 'codex-acp', 'opencode', 'devin', 'openclaw', 'aider', 'custom']),
       transport: z.enum(['webhook', 'workflow_dispatch', 'long_poll', 'api']),
       transport_meta: z.record(z.any()).optional(),
       repos: z.array(z.string()).optional(),

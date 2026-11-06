@@ -25,7 +25,7 @@ A claim is a unit of work for an agent. When a review fails, the server creates 
 
 ### Agents
 
-An agent is a registered identity (e.g. `claude-code`, `codex`, `aider`) with a transport configuration. Agents are stored in the database and authenticated via tokens. Each agent can be scoped to specific repos.
+An agent is a registered identity with a transport configuration. Named ACP identities include `claude-code`, `claude-agent-acp`, `codex`, `codex-acp`, and `opencode`; existing non-long-poll transports can also use `devin`, `openclaw`, `aider`, or `custom`. Agents are stored in the database, authenticated via tokens, and can be scoped to specific repos.
 
 The agent that created a PR is resolved in this order:
 1. PR body marker: `<!-- fluent-flow-agent: agent-id -->`
@@ -42,6 +42,8 @@ Transports define how agents receive work:
 | `webhook` | Server POSTs to agent's URL | External agents with HTTP endpoints |
 | `workflow_dispatch` | Server triggers a GitHub Actions workflow | CI-based agents |
 | `api` | Server calls an external API | Cloud agents (Devin, OpenAI Agents) |
+
+Long-poll runners choose and launch their ACP v2 adapter locally. Agent registration does not provide an executable, argument list, environment, or command template to the runner.
 
 ### MCP (Model Context Protocol)
 

@@ -13,14 +13,14 @@ const router = Router();
 
 const CreateAgentSchema = z.object({
   id: z.string().min(1),
-  agent_type: z.enum(['claude-code', 'codex', 'devin', 'openclaw', 'aider', 'custom']),
+  agent_type: z.enum(['claude-code', 'claude-agent-acp', 'codex', 'codex-acp', 'opencode', 'devin', 'openclaw', 'aider', 'custom']),
   transport: z.enum(['webhook', 'workflow_dispatch', 'long_poll', 'api']),
   transport_meta: z.record(z.any()).optional(),
   repos: z.array(z.string()).max(20).optional(),
 });
 
 const UpdateAgentSchema = z.object({
-  agent_type: z.enum(['claude-code', 'codex', 'devin', 'openclaw', 'aider', 'custom']).optional(),
+  agent_type: z.enum(['claude-code', 'claude-agent-acp', 'codex', 'codex-acp', 'opencode', 'devin', 'openclaw', 'aider', 'custom']).optional(),
   transport: z.enum(['webhook', 'workflow_dispatch', 'long_poll', 'api']).optional(),
   transport_meta: z.record(z.any()).optional(),
   repos: z.array(z.string()).optional(),

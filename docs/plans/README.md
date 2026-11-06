@@ -5,7 +5,7 @@
 ## ACP claim execution
 
 - [Specification](../specs/2026-11-06-acp-claim-runner.md): cross-platform claim execution over ACP v2, direct-child ownership, streamed interactions and bounded recovery.
-- [Implementation plan](2026-11-06-acp-claim-runner-implementation.md): test-first persistence, runner, API, dashboard, UAT and release slices for PR #127.
+- [Implementation plan](2026-11-06-acp-claim-runner-implementation.md): test-first persistence, runner, API, dashboard, UAT, public setup documentation and cross-platform release hardening for PR #127.
 
 ## Collaborative Kanban and Paseo execution
 

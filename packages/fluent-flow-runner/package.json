@@ -27,6 +27,7 @@
   "devDependencies": {
     "@fluent-flow/db": "0.0.1",
     "@getpaseo/protocol": "0.12.0",
+    "@types/punycode": "^2.1.4",
     "vitest": "^4.1.0"
   },
   "dependencies": {

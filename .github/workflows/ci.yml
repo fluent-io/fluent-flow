@@ -76,3 +76,28 @@ jobs:
         run: |
           node --input-type=module -e "import { runMigrations,closePool } from '@fluent-flow/db'; await runMigrations(); await closePool();"
           npm test -w fluent-flow -- tests/integration/claim-pending-work.test.js
+
+  acp-runner:
+    name: ACP runner (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies from committed lockfile
+        run: npm ci
+
+      - name: Run ACP runner tests
+        run: npm test -w @fluent-flow/runner -- tests/unit/acp-command.test.js tests/unit/acp-process.test.js tests/unit/acp-runtime.test.js tests/unit/runner.test.js
+
+      - name: Typecheck runner
+        run: npm run typecheck -w @fluent-flow/runner

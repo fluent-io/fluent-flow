@@ -2,7 +2,10 @@ import { Badge } from '@/components/ui/badge';
 
 const typeColors: Record<string, string> = {
   'claude-code': 'border-indigo-800 bg-indigo-950 text-indigo-400',
+  'claude-agent-acp': 'border-indigo-800 bg-indigo-950 text-indigo-400',
   'codex': 'border-violet-800 bg-violet-950 text-violet-400',
+  'codex-acp': 'border-violet-800 bg-violet-950 text-violet-400',
+  'opencode': 'border-teal-800 bg-teal-950 text-teal-400',
   'aider': 'border-amber-800 bg-amber-950 text-amber-400',
   'devin': 'border-cyan-800 bg-cyan-950 text-cyan-400',
   'openclaw': 'border-emerald-800 bg-emerald-950 text-emerald-400',

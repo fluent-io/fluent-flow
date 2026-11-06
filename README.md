@@ -33,7 +33,7 @@ Two paths into the same engine:
 **Reactive** — GitHub events trigger claims automatically:
 ```
 Push → CI completes → check_run.completed webhook → server
-  → creates a pending review claim → runner claims via poll → harness posts review
+  → creates a pending review claim → runner claims via poll → local ACP adapter posts review
   → on failure, creates a pending fix claim → runner claims it → pushes a fix → loop continues
   → on claim expiry, auto-re-dispatches at attempt + 1 (cap at 10)
 ```
@@ -50,7 +50,7 @@ The verifier will bind evidence to the reviewed commit, prove new tests fail bef
 ```
 Pick a repo → choose type (Feature / Fix / Review / Spec) → describe the task
   → server creates a pending claim (spec / build / review / fix / test)
-  → runner claims it via poll → harness does the work → result flows back
+  → runner claims it via poll → local ACP adapter does the work → result flows back
   → on claim expiry, auto-re-dispatches at attempt + 1 (cap at 10)
 ```
 Feature claims auto-chain spec → build. Spec claims produce a plan for the user to create a PR. Fix and Review require an existing PR number.
@@ -62,7 +62,7 @@ Both paths produce claims that flow through the same dispatch pipeline. The pipe
 | Package | Description |
 |---------|-------------|
 | [fluent-flow](packages/fluent-flow/) | Server — claim dispatch, agent registry, webhook handler, MCP server |
-| [fluent-flow-runner](packages/fluent-flow-runner/) | CLI runner — connects to server, picks up claims, spawns harness locally |
+| [fluent-flow-runner](packages/fluent-flow-runner/) | CLI runner — connects to server, picks up claims, launches a local ACP adapter |
 | [dashboard](packages/dashboard/) | Admin UI — Next.js dashboard for repos, agents, and pipeline monitoring |
 | [db](packages/db/) | Shared data access — pg pool, Zod schemas, org-scoped queries |
 
@@ -71,8 +71,8 @@ Both paths produce claims that flow through the same dispatch pipeline. The pipe
 ### For org admins
 
 1. **Install the GitHub App** on your org via the dashboard install CTA.
-2. **Create an agent** on the Agents page. Name it, pick a harness (e.g. `claude-code`). Copy the runner command.
-3. **Run the command** on the machine where your AI CLI lives. The dashboard shows "Connected" when the runner registers.
+2. **Create an agent** on the Agents page. Name it and choose `claude-code`, `codex`, or `opencode`.
+3. **Install and authenticate the matching ACP adapter locally**, then run the generated command. The dashboard shows "Connected" when the runner registers.
 4. **Do work** — open a PR for an automatic review, or start a workflow from the Repos page.
 
 ### For developers
