@@ -268,7 +268,6 @@ export type ProjectMappingRead = {
   profileIds: string[];
   defaultProfileId: string | null;
   profiles: ProjectMappingProfile[];
-  allowedModels: string[] | null;
   capacity: Partial<Record<'claude-code' | 'codex', CapacityEntry>> | null;
 };
 
@@ -313,7 +312,6 @@ export async function listProjectHostMappings(
       profileIds: row.profile_ids,
       defaultProfileId: row.default_profile_id,
       profiles,
-      allowedModels: profiles[0]?.model ? [profiles[0].model] : null,
       capacity: safeCapacity(row.catalog, backends),
     };
   });

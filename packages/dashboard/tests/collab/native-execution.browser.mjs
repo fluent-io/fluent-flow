@@ -7,6 +7,7 @@ const ids = {
   task: '11111111-1111-4111-8111-111111111111', project: '22222222-2222-4222-8222-222222222222', workspace: '33333333-3333-4333-8333-333333333333',
   principal: '44444444-4444-4444-8444-444444444444', run: '55555555-5555-4555-8555-555555555555', session: '66666666-6666-4666-8666-666666666666',
   host: '77777777-7777-4777-8777-777777777777', mapping: '88888888-8888-4888-8888-888888888888',
+  preflight: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
 };
 const now = new Date().toISOString();
 const queuedAt = new Date(Date.now() - 90_000).toISOString();
@@ -31,7 +32,7 @@ const profiles = [
 ];
 const mapping = {
   id: ids.mapping, projectId: ids.project, hostId: ids.host, repositoryKey: 'org/repo', baseRef: null, profileIds: profiles.map((p) => p.id), defaultProfileId: 'cc-main',
-  hostName: 'Build box', hostReachability: 'online', hostLastSeenAt: now, profiles, allowedModels: null,
+  hostName: 'Build box', hostReachability: 'online', hostLastSeenAt: now, profiles,
   capacity: { 'claude-code': { limit: 1, available: 0, observedAt: now }, codex: { limit: 1, available: null, observedAt: null } },
 };
 const fullRun = () => ({
@@ -64,6 +65,7 @@ const startPosts = [];
 const storedRecoveryCommands = new Map();
 let queueRecoveryPrompts = false;
 const seenPaths = new Set();
+let meRequests = 0;
 
 const executablePath = process.env.FF_UI_TEST_CHROMIUM_PATH ?? (existsSync('/opt/google/chrome/chrome') ? '/opt/google/chrome/chrome' : undefined);
 const browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
@@ -81,6 +83,7 @@ async function openPage() {
     const internal = state.caps.includes('internal.read');
     const json = (data, extra = {}) => route.fulfill({ json: { data, nextCursor: null, ...extra } });
     if (path === '/me') {
+      meRequests += 1;
       return json({
         principal: { id: ids.principal, displayName: 'Fixture operator', email: null, legacyUserId: null, disabledAt: null, sessionVersion: 1 },
         workspaces: [{ id: ids.workspace, name: 'Fixture client', projects: [{ id: ids.project, workspaceId: ids.workspace, name: 'Fixture project', version: 1, boardVersion: 1, executionDefaults: internal ? { mappingId: ids.mapping, profileId: 'cc-main', model: null, instructions: '' } : null }] }],
@@ -108,6 +111,27 @@ async function openPage() {
     if (path === `/projects/${ids.project}/mappings`) return json([mapping]);
     if (path === '/hosts') return json([{ id: ids.host, name: 'Build box', reachability: 'online', lastHeartbeatAt: now, revokedAt: null }]);
     if (path === `/hosts/${ids.host}/catalog`) return json({ hostId: ids.host, repositories: [{ key: 'org/repo' }], profiles, capacity: mapping.capacity });
+    if (path === `/tasks/${ids.task}/plan`) return json({ plan: null });
+    if ([`/tasks/${ids.task}/checks`, `/tasks/${ids.task}/artifacts`, `/tasks/${ids.task}/deliveries`, `/tasks/${ids.task}/questions`].includes(path)) return json([]);
+    if (path === `/runs/${ids.run}/wrap-up-preflights` && method === 'POST') {
+      return route.fulfill({ status: 202, json: { data: { commandId: ids.preflight, created: true } } });
+    }
+    if (path === `/commands/${ids.preflight}`) {
+      return json({
+        id: ids.preflight,
+        runId: ids.run,
+        sessionId: null,
+        kind: 'wrapup_preflight',
+        state: 'applied',
+        result: {
+          owned: true,
+          checkedAt: new Date().toISOString(),
+          git: { ok: true, uncommitted: 0, untracked: 0, unpushed: 0 },
+          sessions: [{ state: 'idle' }],
+          blockers: [{ code: 'owned_activity', count: 1 }, { code: 'worktree_in_use', count: 1 }],
+        },
+      });
+    }
     if (path === `/projects/${ids.project}/insights`) {
       return json({ range: { from: now, to: now }, tasks: { createdCount: 1, acceptedCount: 0 }, runs: { totalCount: 1, failedCount: 0 }, usage: { available: true, reason: null, tokensIn: null, tokensOut: 1200, costUsd: null, coverage: { samples: 1, tokensIn: 0, tokensOut: 1, costUsd: 0 } } });
     }
@@ -181,6 +205,13 @@ try {
     await visible(dialog.getByText('Backend: Claude Code'));
     assert.match(await dialog.innerText(), /Model: claude-opus-5-5/);
     assert.match(await dialog.innerText(), /Policy: permission mode default/);
+    const pollsBeforeSelection = meRequests;
+    await dialog.getByLabel('Agent profile').selectOption('cx-main');
+    await dialog.getByLabel('Instructions').fill('Keep this selected through polling');
+    await until(() => meRequests > pollsBeforeSelection, 'shared project polling did not refresh');
+    assert.equal(await dialog.getByLabel('Agent profile').inputValue(), 'cx-main', 'project polling reset the selected execution profile');
+    assert.equal(await dialog.getByLabel('Instructions').inputValue(), 'Keep this selected through polling', 'project polling reset the Start instructions');
+    assert.deepEqual(await dialog.getByLabel('Model').locator('option').allTextContents(), ['profile default', 'gpt-codex'], 'the model choices did not follow the selected execution profile');
     await dialog.getByLabel('Agent profile').selectOption('cc-login');
     await visible(dialog.getByText('Sign-in needed'));
     assert.ok((await dialog.innerText()).includes(COPY.signIn));
@@ -366,6 +397,24 @@ try {
   }
 
   {
+    state.caps = INTERNAL;
+    state.runState = 'idle';
+    state.runError = null;
+    const { page, unhandled } = await openPage();
+    await page.goto(`${origin}/tasks/${ids.task}`);
+    await page.getByRole('button', { name: 'Workpad', exact: true }).click();
+    const wrapup = page.getByLabel('Wrap-up');
+    await visible(wrapup);
+    await wrapup.getByRole('button', { name: 'Run preflight', exact: true }).click();
+    await visible(wrapup.getByText('Uncommitted files: 0', { exact: true }));
+    assert.equal(await wrapup.getByRole('button', { name: 'Archive terminal sessions', exact: true }).isEnabled(), true, 'idle owned sessions could not be closed before workspace archive');
+    assert.equal(await wrapup.getByRole('button', { name: 'Archive owned workspace', exact: true }).isDisabled(), true, 'blocked workspace archive became available');
+    assert.equal(unhandled.length, 0, unhandled.join(';'));
+    await page.close();
+    scenarios.push('wrap-up: preparatory owned-session closure enabled while destructive workspace archive stays blocked');
+  }
+
+  {
     state.caps = START_ONLY;
     state.runState = 'queued';
     state.runError = null;
@@ -384,6 +433,7 @@ try {
     for (const leak of ['Backend:', 'Model:', 'Policy:', 'cc-main', 'cx-main', 'claude-opus-5-5', 'gpt-codex', ids.session, 'Work session']) {
       assert.ok(!text.includes(leak), `start-only reader sees ${leak}`);
     }
+    assert.doesNotMatch(text, /Invalid Date/, 'safe run badge rendered a missing internal timestamp');
     assert.ok(![...seenPaths].some((p) => p.includes('/mappings') || p.includes('/sessions/')), `start-only reader requested ${[...seenPaths].join(',')}`);
     assert.equal(unhandled.length, 0, unhandled.join(';'));
     await page.close();

@@ -3,7 +3,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import http from 'node:http';
-import { createCodexBackend, routeAnswerBarrier } from '../../../src/native/codex-backend.js';
+import { createCodexBackend, isCodexRetainedProcess, routeAnswerBarrier } from '../../../src/native/codex-backend.js';
 import { BackendContractError, createCommandBarrier } from '../../../src/supervisor/backend-contract.js';
 import { createLedger } from '../../../src/supervisor/ledger.js';
 import { createFakeCodexChild } from './fixtures/fake-codex-child.js';
@@ -93,6 +93,38 @@ function held(barrier) {
     },
   };
 }
+
+describe('isCodexRetainedProcess', () => {
+  const worker = { pid: 100, startTicks: 1, bootId: 'boot' };
+  const candidate = { pid: 101, ppid: 100, startTicks: 2, bootId: 'boot', cgroup: '/ff/worker' };
+  const processes = {
+    100: { ...worker, ppid: 1, cgroup: '/ff/worker' },
+    101: candidate,
+    102: { pid: 102, ppid: 100, startTicks: 3, bootId: 'boot', cgroup: '/ff/worker' },
+  };
+  const detailsFor = async (pid) => processes[pid] ?? null;
+  const executableFor = (pid) => ({
+    100: '/opt/codex/vendor/x86_64-unknown-linux-musl/codex',
+    101: '/opt/codex/vendor/x86_64-unknown-linux-musl/codex-code-mode-host',
+    102: '/opt/codex/vendor/x86_64-unknown-linux-musl/other',
+  })[pid];
+
+  it('recognizes only the same-lifetime sibling helper parented by the Codex worker', async () => {
+    expect(await isCodexRetainedProcess({ worker, candidate, detailsFor, executableFor })).toBe(true);
+    expect(await isCodexRetainedProcess({ worker, candidate: { ...candidate, ppid: 99 }, detailsFor, executableFor })).toBe(false);
+    expect(await isCodexRetainedProcess({ worker, candidate: processes[102], detailsFor, executableFor })).toBe(false);
+  });
+
+  it('rejects a process whose identity changes around executable inspection', async () => {
+    let candidateReads = 0;
+    const changedDetails = async (pid) => {
+      if (pid !== candidate.pid) return processes[pid] ?? null;
+      candidateReads += 1;
+      return candidateReads === 1 ? candidate : { ...candidate, startTicks: candidate.startTicks + 1 };
+    };
+    expect(await isCodexRetainedProcess({ worker, candidate, detailsFor: changedDetails, executableFor })).toBe(false);
+  });
+});
 
 describe('codex backend ordering (in-memory child)', () => {
   it('open without the supervisor-bound stopOwned fails before spawn', async () => {

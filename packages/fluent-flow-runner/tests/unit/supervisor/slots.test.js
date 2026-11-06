@@ -182,11 +182,39 @@ describe('execution slots (Task 10)', () => {
     const t = setup();
     const worker = await admit(t);
     const leaf = [...t.mem.leaves.values()][0];
+
     leaf.pids.push(999_999);
     worker.active = false;
     expect((await freeSlots(t))['claude-code']).toBe(0);
     leaf.pids.pop();
     expect((await freeSlots(t))['claude-code']).toBe(1);
+  });
+  it('ignores only retained backend helpers for idle slot occupancy', () => {
+    expect(holdsSlot({ activeTurn: false, pendingRequests: 0, cgroupPids: [100, 101], workerPid: 100, retainedPids: [101] })).toBe(false);
+    expect(holdsSlot({ activeTurn: false, pendingRequests: 0, cgroupPids: [100, 101, 102], workerPid: 100, retainedPids: [101] })).toBe(true);
+  });
+
+  it('releases an idle slot when every remaining descendant is retained infrastructure', async () => {
+    const t = setup();
+    const worker = await admit(t);
+    const leaf = [...t.mem.leaves.values()][0];
+    leaf.pids.push(999_999);
+    worker.retainsProcess = ({ pid }) => pid === 999_999;
+    worker.active = false;
+    expect((await freeSlots(t))['claude-code']).toBe(1);
+  });
+
+  it('keeps the slot when retained-process identity is unreadable', async () => {
+    const t = setup();
+    const worker = await admit(t);
+    const leaf = [...t.mem.leaves.values()][0];
+    leaf.pids.push(999_999);
+    worker.retainsProcess = () => {
+      throw Object.assign(new Error('denied'), { code: 'EACCES' });
+    };
+    worker.active = false;
+    expect((await freeSlots(t))['claude-code']).toBe(0);
+    expect(t.logs).toContainEqual(expect.objectContaining({ msg: 'execution slot activity unreadable', sessionId: S1, code: 'EACCES' }));
   });
 
   it('an idle worker whose cgroup holds only its own pid frees its slot', async () => {

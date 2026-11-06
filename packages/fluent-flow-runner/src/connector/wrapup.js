@@ -192,9 +192,11 @@ export function createWrapup({ paseo, git = createGitReader(), journal, log = ()
         return { ok: false, phase: 'archive', blockers: [{ code: 'unknown_mode' }] };
       }
       const check = await this.preflight({ runId, workspaceId: owned });
-      if (check.blockers.length) {
-        log({ msg: 'wrap-up blocked', runId, blockers: check.blockers });
-        return { ok: false, phase: 'archive', preflight: check, blockers: check.blockers, note: 'Workspace cleanup is blocked to protect your work.' };
+      const sessionOnlyBlockers = new Set(['not_owned_worktree', 'directory_unknown', 'git_unreadable', 'uncommitted_changes', 'untracked_files', 'unpushed_commits', 'no_upstream', 'sessions_running']);
+      const blockers = mode === 'archive_sessions' ? check.blockers.filter((blocker) => !sessionOnlyBlockers.has(blocker.code)) : check.blockers;
+      if (blockers.length) {
+        log({ msg: 'wrap-up blocked', runId, blockers });
+        return { ok: false, phase: 'archive', preflight: check, blockers, note: 'Workspace cleanup is blocked to protect your work.' };
       }
       const failures = [];
       let archivedSessions = 0;

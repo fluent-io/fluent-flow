@@ -115,6 +115,41 @@ describe('wrap-up preflight (real descriptor, real worktree)', () => {
     expect(paseo.archived).toHaveLength(0);
   });
 
+  it('archives owned sessions without touching a dirty worktree', async () => {
+    const wt = await initRepoWithWorktree('ff/run-2-close/s-1');
+    writeFileSync(join(wt, 'dirty.txt'), 'must survive');
+    const journal = await journalWith('run-2-close', 's-1', 'ag-1', 'ffws-run-2-close');
+    const agentArchives = [];
+    const paseo = fakePaseo(
+      { id: 'ffws-run-2-close', workspaceKind: 'worktree', workspaceDirectory: wt, archivingAt: null },
+      [{ id: 'ag-1', workspaceId: 'ffws-run-2-close', status: 'idle', archivedAt: null }],
+    );
+    paseo.agents.ref = (id) => ({ archive: async () => { agentArchives.push(id); return { archivedAt: 't' }; } });
+    const wrapup = createWrapup({ paseo, journal });
+    const result = await wrapup.archive({ runId: 'run-2-close', mode: 'archive_sessions' });
+    expect(result.ok).toBe(true);
+    expect(agentArchives).toEqual(['ag-1']);
+    expect(readFileSync(join(wt, 'dirty.txt'), 'utf8')).toBe('must survive');
+    expect(paseo.archived).toEqual([]);
+  });
+
+  it('does not archive sessions when workspace identity cannot be inspected', async () => {
+    const wt = await initRepoWithWorktree('ff/run-2-unreadable/s-1');
+    const journal = await journalWith('run-2-unreadable', 's-1', 'ag-1', 'ffws-run-2-unreadable');
+    const agentArchives = [];
+    const paseo = fakePaseo(
+      { id: 'ffws-run-2-unreadable', workspaceKind: 'worktree', workspaceDirectory: wt, archivingAt: null },
+      [{ id: 'ag-1', workspaceId: 'ffws-run-2-unreadable', status: 'idle', archivedAt: null }],
+    );
+    paseo.workspaces.ref = () => ({ refresh: async () => { throw new Error('unavailable'); } });
+    paseo.agents.ref = (id) => ({ archive: async () => { agentArchives.push(id); return { archivedAt: 't' }; } });
+    const wrapup = createWrapup({ paseo, journal });
+    const result = await wrapup.archive({ runId: 'run-2-unreadable', mode: 'archive_sessions' });
+    expect(result.ok).toBe(false);
+    expect(result.blockers).toEqual([{ code: 'workspace_inspection_failed' }]);
+    expect(agentArchives).toEqual([]);
+  });
+
   it('blocks on unpushed commits and missing upstream', async () => {
     const wt = await initRepoWithWorktree('ff/run-3/s-1');
     writeFileSync(join(wt, 'local.txt'), 'only local');

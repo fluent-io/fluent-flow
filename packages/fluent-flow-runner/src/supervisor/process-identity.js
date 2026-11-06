@@ -34,7 +34,7 @@ export async function readProcessDetails(pid, { procRoot = '/proc' } = {}) {
   if (!stat) return null;
   const cgroupRaw = await readOptional(`${procRoot}/${pid}/cgroup`);
   const cgroup = cgroupRaw?.split('\n').find((line) => line.startsWith('0::'))?.slice(3) ?? null;
-  return { pid, startTicks: stat.startTicks, bootId: await readBootId({ procRoot }), pgid: stat.pgid, cgroup };
+  return { pid, ppid: stat.ppid, startTicks: stat.startTicks, bootId: await readBootId({ procRoot }), pgid: stat.pgid, cgroup };
 }
 
 /** @returns {Promise<{ pid: number, startTicks: number, bootId: string } | null>} */

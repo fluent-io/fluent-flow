@@ -2,13 +2,14 @@
 export const SLOT_BACKENDS = Object.freeze(['claude-code', 'codex']);
 
 /**
- * @param {{ activeTurn: boolean, pendingRequests: number, workerPid: number | null, cgroupPids: number[] | null, escaped: boolean, unverifiable: boolean }} activity
+ * @param {{ activeTurn: boolean, pendingRequests: number, workerPid: number | null, cgroupPids: number[] | null, retainedPids?: number[], escaped: boolean, unverifiable: boolean }} activity
  * @returns {boolean}
  */
-export function holdsSlot({ activeTurn, pendingRequests, workerPid, cgroupPids, escaped, unverifiable }) {
+export function holdsSlot({ activeTurn, pendingRequests, workerPid, cgroupPids, retainedPids = [], escaped, unverifiable }) {
   if (activeTurn || pendingRequests > 0 || escaped || unverifiable) return true;
   if (!Array.isArray(cgroupPids)) return true;
-  return cgroupPids.some((pid) => pid !== workerPid);
+  const retained = new Set(retainedPids);
+  return cgroupPids.some((pid) => pid !== workerPid && !retained.has(pid));
 }
 
 /**

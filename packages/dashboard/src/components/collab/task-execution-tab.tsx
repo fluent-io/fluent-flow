@@ -120,7 +120,7 @@ export function ExecutionTab({ detail, reload }: { detail: TaskDetail; reload: (
               <span className="text-xs text-muted-foreground">{run.state}</span>
             </div>
             <div className="mt-0.5 text-xs text-muted-foreground">
-              {run.stage} · {new Date(run.createdAt).toLocaleString()}
+              {run.stage}{run.createdAt ? ` · ${new Date(run.createdAt).toLocaleString()}` : ''}
               {run.errorCode ? ` · ${run.errorCode}` : ''}
             </div>
           </button>
@@ -176,7 +176,9 @@ function StartRunDialog({
   const idempotencyKey = useRef(crypto.randomUUID());
   const canConfigure = can(detail, 'internal.read');
   const mappingRequests = useRef(new LatestRequest());
+  const initialDefaults = useRef(project?.executionDefaults ?? null);
   const selectedProfile = mappings.find((m) => m.id === mappingId)?.profiles?.find((p) => p.id === profileId) ?? null;
+  const modelOptions = selectedProfile?.model ? [selectedProfile.model] : [];
   const readiness = selectedProfile?.readiness ? READINESS_COPY[selectedProfile.readiness.state] : null;
   const notReady = selectedProfile?.readiness != null && selectedProfile.readiness.state !== 'ready';
 
@@ -192,7 +194,7 @@ function StartRunDialog({
         const result = await collabFetch<Mapping[]>(`/projects/${detail.projectId}/mappings`,{signal});
         if (!mappingRequests.current.current(signal)) return;
         setMappings(result.data);
-        const defaults = project?.executionDefaults ?? null;
+        const defaults = initialDefaults.current;
         setMappingId(defaults?.mappingId ?? result.data[0]?.id ?? '');
         setProfileId(defaults?.profileId ?? result.data[0]?.defaultProfileId ?? '');
         setModel(defaults?.model ?? '');
@@ -204,7 +206,7 @@ function StartRunDialog({
       }
     })();
     return () => mappingRequests.current.dispose();
-  }, [detail.projectId, project, canConfigure]);
+  }, [detail.projectId, canConfigure]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -266,6 +268,7 @@ function StartRunDialog({
                 setMappingId(e.target.value);
                 const mapping = mappings.find((m) => m.id === e.target.value);
                 setProfileId(mapping?.defaultProfileId ?? '');
+                setModel('');
               }}
               required
             >
@@ -285,7 +288,6 @@ function StartRunDialog({
               value={profileId}
               onChange={(e) => {
                 setProfileId(e.target.value);
-                const mapping = mappings.find((m) => m.id === mappingId);
                 setModel('');
               }}
             >
@@ -306,7 +308,7 @@ function StartRunDialog({
               {readiness ? <p className="text-xs">{readiness.label}{readiness.message ? <span className="block text-muted-foreground">{readiness.message}</span> : null}</p> : null}
             </div>
           ) : null}
-          {(mappings.find((m) => m.id === mappingId)?.allowedModels?.length ?? 0) > 0 ? (
+          {modelOptions.length > 0 ? (
             <label className="flex flex-col gap-1 text-xs">
               Model (host-allowed)
               <select
@@ -316,13 +318,11 @@ function StartRunDialog({
                 onChange={(e) => setModel(e.target.value)}
               >
                 <option value="">profile default</option>
-                {mappings
-                  .find((m) => m.id === mappingId)
-                  ?.allowedModels!.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
+                {modelOptions.map((allowedModel) => (
+                  <option key={allowedModel} value={allowedModel}>
+                    {allowedModel}
+                  </option>
+                ))}
               </select>
             </label>
           ) : (

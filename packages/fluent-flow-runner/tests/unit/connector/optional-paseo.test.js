@@ -32,7 +32,7 @@ function writeConfig(extra) {
 async function node(args, { transitive = false } = {}) {
   const hook = pathToFileURL(denyHook).href + (transitive ? '?transitive=1' : '');
   try {
-    const { stdout, stderr } = await run(process.execPath, ['--import', hook, ...args], { cwd: pkg, env: { PATH: process.env.PATH, HOME: join(dir, 'home') }, timeout: 15_000 });
+    const { stdout, stderr } = await run(process.execPath, ['--import', hook, ...args], { cwd: pkg, env: { PATH: process.env.PATH, HOME: join(dir, 'home'), NODE_OPTIONS: '--disable-warning=DEP0205' }, timeout: 15_000 });
     return { code: 0, stdout, stderr };
   } catch (error) {
     if (typeof error.code !== 'number') throw error;

@@ -974,7 +974,8 @@ function WrapupPanel({ detail, canInternal }: { detail: TaskDetail; canInternal:
   if(!allowed||!runId) return null;
   const report=preflight?.result;
   const fresh=!!report?.checkedAt&&Date.now()-new Date(report.checkedAt).getTime()<60000;
-  const safe=preflight?.state==='applied'&&report?.owned===true&&report.git?.ok===true&&Array.isArray(report.blockers)&&report.blockers.length===0&&fresh&&detail.execution?.hostReachability==='online';
+  const canCloseSessions=preflight?.state==='applied'&&report?.owned===true&&fresh&&detail.execution?.hostReachability==='online';
+  const safe=canCloseSessions&&report.git?.ok===true&&Array.isArray(report.blockers)&&report.blockers.length===0;
   const pending=!!commandId&&(!currentCommand||!['applied','failed','ambiguous','cancelled'].includes(currentCommand.state));
   const labels:Record<string,string>={uncommitted_changes:'Uncommitted changes',untracked_files:'Untracked files',unpushed_commits:'Unpushed commits',sessions_running:'Active sessions',unrecognized_sessions:'Sessions owned elsewhere',not_owned:'Workspace is not owned by this run',workspace_not_owned:'Workspace is not owned by this run',git_unreadable:'Worktree state is unavailable',session_listing_failed:'Session state is unavailable',unknown_mode:'Unsupported cleanup action'};
   return <section aria-label="Wrap-up" className="rounded-lg border border-border bg-card p-4">
@@ -990,7 +991,7 @@ function WrapupPanel({ detail, canInternal }: { detail: TaskDetail; canInternal:
       {report.blockers?.length?<ul className="mt-1 list-inside list-disc">{report.blockers.map((blocker,i)=><li key={i}>{labels[blocker.code]??'The host could not confirm safe cleanup.'}{blocker.count!==undefined?` (${blocker.count})`:''}</li>)}</ul>:null}
       {!fresh?<p className="mt-1 text-amber-600">Preflight expired. Run it again before archiving.</p>:null}
       <div className="mt-2 flex gap-2">
-        <Button size="sm" variant="outline" disabled={busy||pending||!safe} onClick={()=>void queue('archive_sessions')}>Archive terminal sessions</Button>
+        <Button size="sm" variant="outline" disabled={busy||pending||!canCloseSessions} onClick={()=>void queue('archive_sessions')}>Archive terminal sessions</Button>
         <Button size="sm" variant="outline" disabled={busy||pending||!safe} onClick={()=>void queue('archive_owned_workspace')}>Archive owned workspace</Button>
       </div>
     </div>:null}

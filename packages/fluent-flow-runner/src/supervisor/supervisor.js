@@ -1011,6 +1011,7 @@ export function createSupervisorHandlers({ ledger, profiles, backends, containme
     if (!w) return false;
     if (!entry && closed.get(sessionId)?.generation === w.generation) return false;
     let unverifiable = containment?.state !== 'verified' || w.needsRecovery === true || (entry ? Boolean(entry.stop && entry.stop !== 'quiesced') : false);
+    let cgroupProcesses = null;
     let cgroupPids = null;
     let escaped = false;
     try {
@@ -1019,7 +1020,8 @@ export function createSupervisorHandlers({ ledger, profiles, backends, containme
       if (state.populated === false) cgroupPids = [];
       else if (state.populated === true) {
         const read = await observeLeaf(w, state.leaf);
-        cgroupPids = Array.isArray(read?.pids) ? read.pids.map((p) => p?.pid) : null;
+        cgroupProcesses = Array.isArray(read?.pids) ? read.pids : null;
+        cgroupPids = cgroupProcesses?.map((p) => p?.pid) ?? null;
         if (escapesOf(w).length) escaped = true;
       }
       if (w.identity && (await isLive(w.identity))) {
@@ -1031,11 +1033,25 @@ export function createSupervisorHandlers({ ledger, profiles, backends, containme
       log({ msg: 'execution slot activity unreadable', sessionId, error: err?.message, code: err?.code });
       return true;
     }
+    const activeTurn = typeof entry.worker.idle !== 'function' || entry.worker.idle() !== true;
+    const pendingRequests = entry.worker.pending().length;
+    const retainedPids = [];
+    try {
+      if (!activeTurn && pendingRequests === 0 && Array.isArray(cgroupProcesses) && typeof entry.worker.retainsProcess === 'function') {
+        for (const candidate of cgroupProcesses) {
+          if (candidate?.pid !== w.identity?.pid && await entry.worker.retainsProcess(candidate)) retainedPids.push(candidate.pid);
+        }
+      }
+    } catch (err) {
+      log({ msg: 'execution slot activity unreadable', sessionId, error: err?.message, code: err?.code });
+      return true;
+    }
     return holdsSlot({
-      activeTurn: typeof entry.worker.idle !== 'function' || entry.worker.idle() !== true,
-      pendingRequests: entry.worker.pending().length,
+      activeTurn,
+      pendingRequests,
       workerPid: w.identity?.pid ?? null,
       cgroupPids,
+      retainedPids,
       escaped,
       unverifiable,
     });

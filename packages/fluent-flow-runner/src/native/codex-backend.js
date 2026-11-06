@@ -2,7 +2,7 @@
 import { spawn as spawnChild } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import nodeFs from 'node:fs';
-import { isAbsolute } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { answerBarrierRef, BackendContractError } from '../supervisor/backend-contract.js';
 import { assessCodexLayers, FF_CODEX_MCP_SERVERS } from './codex-config-gate.js';
 import { CODEX_LABELS, codexServerRequest, createCodexNormalizeContext, markOpenTurnsUnproven, normalizeCodexMessage, rpcRequestId } from './codex-normalize.js';
@@ -11,6 +11,7 @@ import { createJsonlChannel } from './jsonl.js';
 import { buildNativeEnv } from './native-env.js';
 import { codexArgs, codexLaunchControls, codexQuestionServerOverrides, NATIVE_OBSERVED, NATIVE_PINS, readNativeVersion } from './pins.js';
 import { startQuestionServer } from './question-mcp.js';
+import { readProcessDetails, sameProcess } from '../supervisor/process-identity.js';
 
 const OBSERVED = NATIVE_OBSERVED.codex;
 const REPORTING_SERVER = 'ff_reporting';
@@ -23,6 +24,30 @@ const INTERRUPT_SETTLE_MS = 30_000;
 const EXIT_WAIT_MS = 5_000;
 const LOADED_LIST_MAX_PAGES = 1000;
 const SANDBOX_TYPES = Object.freeze({ 'read-only': 'readOnly', 'workspace-write': 'workspaceWrite', 'danger-full-access': 'dangerFullAccess' });
+
+export async function isCodexRetainedProcess({
+  worker,
+  candidate,
+  executableFor = (pid) => nodeFs.realpathSync(`/proc/${pid}/exe`),
+  detailsFor = readProcessDetails,
+}) {
+  if (!Number.isSafeInteger(worker?.pid) || !Number.isSafeInteger(candidate?.pid) || candidate.ppid !== worker.pid) return false;
+  const [workerBefore, candidateBefore] = await Promise.all([detailsFor(worker.pid), detailsFor(candidate.pid)]);
+  if (!sameProcess(worker, workerBefore) || !sameProcess(candidate, candidateBefore)) return false;
+  if (candidateBefore.ppid !== workerBefore.pid || candidateBefore.ppid !== candidate.ppid) return false;
+  if (typeof candidate.cgroup !== 'string' || candidateBefore.cgroup !== candidate.cgroup || candidateBefore.cgroup !== workerBefore.cgroup) return false;
+  const workerExecutableBefore = executableFor(worker.pid);
+  const candidateExecutableBefore = executableFor(candidate.pid);
+  const [workerAfter, candidateAfter] = await Promise.all([detailsFor(worker.pid), detailsFor(candidate.pid)]);
+  if (!sameProcess(worker, workerAfter) || !sameProcess(candidate, candidateAfter)) return false;
+  if (candidateAfter.ppid !== workerAfter.pid || candidateAfter.cgroup !== candidate.cgroup || candidateAfter.cgroup !== workerAfter.cgroup) return false;
+  const workerExecutableAfter = executableFor(worker.pid);
+  const candidateExecutableAfter = executableFor(candidate.pid);
+  return typeof workerExecutableBefore === 'string'
+    && workerExecutableAfter === workerExecutableBefore
+    && candidateExecutableBefore === join(dirname(workerExecutableBefore), 'codex-code-mode-host')
+    && candidateExecutableAfter === candidateExecutableBefore;
+}
 
 export class CodexBackendError extends Error {
   /** @param {string} code @param {string} reason @param {ErrorOptions} [options] */
@@ -732,6 +757,10 @@ function createSession({ log, auth, profile, sessionId, generation, worktree, st
 
     pending() {
       return [...[...approvals.values()].filter((e) => !e.settled).map((e) => e.publicRequest), ...questionRequests.values()];
+    },
+
+    retainsProcess(candidate) {
+      return isCodexRetainedProcess({ worker: worker.identity, candidate });
     },
 
     idle() {

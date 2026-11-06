@@ -329,7 +329,6 @@ export interface Mapping {
   hostReachability?: 'online' | 'stale' | 'offline' | null;
   hostLastSeenAt?: string | null;
   profiles?: MappingProfile[];
-  allowedModels?: string[] | null;
   capacity?: Partial<Record<'claude-code' | 'codex', CapacityEntry>> | null;
 }
 
