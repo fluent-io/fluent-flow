@@ -1,21 +1,18 @@
 #!/usr/bin/env node
 
 import { createClient } from '../src/client.js';
-import { resolveCommand } from '../src/commands.js';
+import { createAcpRuntime } from '../src/acp/runtime.js';
 import { createRunner } from '../src/runner.js';
 import { createLogger } from '../src/logger.js';
 import { parseArgs } from '../src/parse-args.js';
 import { resolveToken } from '../src/resolve-token.js';
 
-/**
- * Main entry point. Only runs when executed directly (not imported for testing).
- */
 async function main() {
   let opts;
   try {
     opts = parseArgs(process.argv.slice(2));
-  } catch (err) {
-    console.error(`Error: ${err.message}\n\nUsage: fluent-flow-runner --server <url>\n  Legacy: --token <token>\n  Agent:  --agent <id> --mcp-auth-token <token>\nOptions: [--command <cmd>] [--cwd <path>] [--verbose]`);
+  } catch (error) {
+    console.error(`Error: ${error.message}\n\nUsage: fluent-flow-runner --server <url>\n  Legacy: --token <token>\n  Agent:  --agent <id> --mcp-auth-token <token>\nOptions: [--acp-command <cmd>] [--acp-arg <arg>]... [--cwd <path>] [--verbose]`);
     process.exit(1);
   }
 
@@ -24,8 +21,8 @@ async function main() {
   let token;
   try {
     token = await resolveToken(opts, log);
-  } catch (err) {
-    log.error('Failed to resolve token', { error: err.message });
+  } catch (error) {
+    log.error('Failed to resolve runner credentials', { error: error.message });
     process.exit(1);
   }
 
@@ -33,25 +30,21 @@ async function main() {
   const runner = createRunner({
     client,
     log,
-    resolveCommand: (cmdOpts) => resolveCommand({ ...cmdOpts, commandOverride: opts.command }),
+    createAcpRuntime,
+    acpCommand: opts.acpCommand,
+    acpArgs: opts.acpArgs,
+    runnerToken: token,
     cwd: opts.cwd,
   });
 
-  // Signal hardening: the first signal runs the full shutdown (kill active
-  // agent, report the active claim as a transient failure) and only exits the
-  // process once it completes — docker stop's SIGKILL at 10s would otherwise
-  // cut the report short. A second signal bails out immediately.
   let shuttingDown = false;
   const handleSignal = () => {
-    if (shuttingDown) {
-      process.exit(1);
-    }
+    if (shuttingDown) process.exit(1);
     shuttingDown = true;
-    runner
-      .shutdown()
-      .catch(() => {})
-      .finally(() => process.exit(0));
-    // Absolute cap: never outlive docker's 10s stop grace.
+    runner.shutdown().then(
+      () => process.exit(0),
+      () => process.exit(1),
+    );
     const cap = setTimeout(() => process.exit(1), 9000);
     cap.unref();
   };
@@ -60,14 +53,11 @@ async function main() {
 
   try {
     await runner.start();
-  } catch (err) {
-    log.error('Runner failed', { error: err.message });
+  } catch (error) {
+    log.error('Runner failed', { error: error.message });
     process.exit(1);
   }
 }
 
-// Run main only when executed directly
 const isDirectRun = process.argv[1]?.endsWith('fluent-flow-runner.js') && !process.env.VITEST;
-if (isDirectRun) {
-  main();
-}
+if (isDirectRun) main();

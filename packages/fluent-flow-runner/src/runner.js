@@ -1,217 +1,208 @@
-import { spawn, execFile as execFileCb } from 'node:child_process';
+import { execFile as execFileCb } from 'node:child_process';
 import { hostname, platform } from 'node:os';
+import { resolve as resolvePath } from 'node:path';
+import { createAcpRuntime as createDefaultAcpRuntime } from './acp/runtime.js';
+import { resolveAcpCommand } from './acp/command.js';
+import { normalizeAcpUpdate } from './acp/normalize.js';
 import { prepareWorktree } from './worktree.js';
 import { resolvePrompt } from './prompts.js';
-import { checkRunnerHealth, sendAlert } from './health.js';
 
-/**
- * Build an isolated environment for shell commands.
- * Passes all of process.env through so agent subprocesses receive
- * API keys (ANTHROPIC_API_KEY, OPENAI_API_KEY, etc.) and other
- * needed configuration. Command-specific env vars override.
- */
-function buildCommandEnv(cmdEnv) {
-  return { ...process.env, ...cmdEnv };
-}
-
-/** Default max consecutive poll failures before the runner stops. */
 const DEFAULT_MAX_POLL_FAILURES = 30;
-
-/** Base delay (ms) for exponential backoff on consecutive poll failures. */
 const BASE_BACKOFF_MS = 2000;
-
-/** Maximum backoff delay (ms). */
 const MAX_BACKOFF_MS = 60000;
-
-/** Maximum total time (ms) spent in consecutive backoff before forced exit. */
-const MAX_BACKOFF_TOTAL_MS = 10 * 60 * 1000; // 10 minutes
-
-/** Heartbeat interval (ms) while a claim executes. Env: FLUENT_FLOW_HEARTBEAT_MS. */
+const MAX_BACKOFF_TOTAL_MS = 10 * 60 * 1000;
 const DEFAULT_HEARTBEAT_MS = 60_000;
-
-/** Hard cap on a single agent execution (ms). Env: FLUENT_FLOW_AGENT_TIMEOUT_MS. 0 disables. */
-const DEFAULT_AGENT_TIMEOUT_MS = 60 * 60 * 1000;
-
-/** Grace period (ms) between SIGTERM and SIGKILL when a process must die. */
-const DEFAULT_KILL_ESCALATION_MS = 10_000;
-
-/** Cap on buffered agent stdout (bytes) — only the tail is kept. */
-const STDOUT_CAP_BYTES = 5 * 1024 * 1024;
-
-/** Backoff delays (ms) between claim-report retries (network errors / 5xx / 429). */
+const DEFAULT_COMMAND_POLL_MS = 1000;
+const DEFAULT_EVENT_FLUSH_MS = 250;
+const DEFAULT_EVENT_BATCH_SIZE = 25;
+const DEFAULT_AGENT_TEXT_LIMIT_BYTES = 5 * 1024 * 1024;
 const REPORT_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 16000];
+const SECRET_ENV_NAME = /(?:token|secret|password|credential|api[_-]?key|private[_-]?key|signing[_-]?key|encryption[_-]?key|(?:^|[_-])key(?:[_-]|$))/iu;
+const IGNORED_ENV_SECRET_VALUES = new Set(['true', 'false', 'null', 'undefined', 'none', 'yes', 'no', 'on', 'off']);
+const DEFINITE_COMMAND_REJECTION = /(invalid|required|unknown or not open|not ready|not active|not open|has not started|already|unsupported|must be|non-empty)/iu;
 
-/** Read a non-negative numeric env var, falling back to a default. */
-function numFromEnv(name, dflt) {
-  const n = Number(process.env[name]);
-  return Number.isFinite(n) && n >= 0 ? n : dflt;
+function numFromEnv(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
-/**
- * claude-code exits 0 even when the run errored pre-flight (e.g.
- * "Not logged in · Please run /login") — only the JSON result envelope tells
- * the truth. Returns the envelope when stdout is one, else null.
- */
-export function parseHarnessResult(stdout) {
-  try {
-    const j = JSON.parse(stdout);
-    if (j?.type === 'result') return j;
-  } catch {
-    // Not a claude JSON envelope — plain agent stdout.
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function commandFailureIsUncertain(error) {
+  const message = String(error?.message ?? '');
+  return !DEFINITE_COMMAND_REJECTION.test(message);
+}
+
+function collectText(value, output) {
+  if (Array.isArray(value)) {
+    for (const item of value) collectText(item, output);
+    return;
   }
-  return null;
+  if (value === null || typeof value !== 'object') return;
+  for (const [key, item] of Object.entries(value)) {
+    if (key === 'text' && typeof item === 'string') output.push(item);
+    else collectText(item, output);
+  }
 }
 
-/**
- * Create a runner instance.
- *
- * @param {object} opts
- * @param {object} opts.client — createClient() instance
- * @param {object} opts.log — createLogger() instance
- * @param {Function} opts.resolveCommand — resolveCommand() from commands.js
- * @param {string} [opts.cwd] — working directory for agent commands
- * @param {object} [opts.meta] — session metadata override
- * @param {number} [opts.maxPollFailures] — max consecutive poll failures before stopping
- * @param {number} [opts.heartbeatIntervalMs] — claim heartbeat interval (default env FLUENT_FLOW_HEARTBEAT_MS or 60s)
- * @param {number} [opts.agentTimeoutMs] — per-execution timeout (default env FLUENT_FLOW_AGENT_TIMEOUT_MS or 60min)
- * @param {number} [opts.killEscalationMs] — SIGTERM→SIGKILL grace (default 10s)
- * @returns {{ start, shutdown }}
- */
+function createRuntimeLog(log) {
+  return {
+    debug: () => log.debug('ACP runtime activity'),
+    info: () => log.info('ACP runtime activity'),
+    warn: () => log.warn('ACP runtime warning'),
+    error: () => log.error('ACP runtime failure'),
+  };
+}
+
+function environmentSecrets(environment) {
+  const values = [];
+  for (const [name, value] of Object.entries(environment)) {
+    if (!SECRET_ENV_NAME.test(name) || typeof value !== 'string') continue;
+    const normalized = value.trim().toLowerCase();
+    if (normalized.length < 8 || IGNORED_ENV_SECRET_VALUES.has(normalized)) continue;
+    if (/^[+-]?(?:0+(?:\.0+)?|1(?:\.0+)?)$/u.test(normalized)) continue;
+    values.push(value);
+  }
+  return values;
+}
+
 export function createRunner({
   client,
   log,
-  resolveCommand,
+  createAcpRuntime = createDefaultAcpRuntime,
   cwd,
   meta,
   maxPollFailures,
   heartbeatIntervalMs,
-  agentTimeoutMs,
-  killEscalationMs,
-  healthRetryMs = 30_000,
-  healthIntervalMs,
+  acpCommand,
+  acpArgs = [],
+  commandPollMs = DEFAULT_COMMAND_POLL_MS,
+  eventFlushMs = DEFAULT_EVENT_FLUSH_MS,
+  eventBatchSize = DEFAULT_EVENT_BATCH_SIZE,
+  agentTextLimitBytes = DEFAULT_AGENT_TEXT_LIMIT_BYTES,
+  runnerToken,
+  secretValues = [],
+  runtimeLimits,
 }) {
   let running = false;
   let sessionId = null;
-  let activeWork = null;
-  let activeProcess = null;
+  let activeState = null;
   let shutdownPromise = null;
-  let runnerHealthy = true;
-  let healthTimer = null;
+  let heartbeatTimer = null;
+  let heartbeatDead = false;
   const maxFailures = maxPollFailures ?? DEFAULT_MAX_POLL_FAILURES;
   const heartbeatMs = heartbeatIntervalMs ?? numFromEnv('FLUENT_FLOW_HEARTBEAT_MS', DEFAULT_HEARTBEAT_MS);
-  const agentTimeout = agentTimeoutMs ?? numFromEnv('FLUENT_FLOW_AGENT_TIMEOUT_MS', DEFAULT_AGENT_TIMEOUT_MS);
-  const killEscalateMs = killEscalationMs ?? DEFAULT_KILL_ESCALATION_MS;
-  const healthCheckIntervalMs = healthIntervalMs ?? numFromEnv('FLUENT_FLOW_HEALTH_INTERVAL_MS', 300_000);
-
+  const baseCwd = resolvePath(cwd ?? process.cwd());
+  const batchSize = Math.max(1, Math.floor(eventBatchSize));
+  const textLimit = Math.max(0, Math.floor(agentTextLimitBytes));
   const sessionMeta = meta ?? {
     hostname: hostname(),
     os: platform(),
     ...(cwd && { cwd }),
   };
 
-  /** Resolve the server-assigned claim id from a work payload (any casing). */
   function claimIdOf(work) {
     return work.claim_id ?? work.claimId ?? work.id ?? null;
   }
 
-  /** Build a claim-result payload, including claim_id whenever known. */
   function claimPayload(work, status, extra = {}) {
     const payload = {
       status,
       repo: work.repo,
       pr_number: work.prNumber ?? work.pr_number ?? null,
       attempt: work.attempt,
+      session_id: sessionId,
     };
     const claimId = claimIdOf(work);
     if (claimId != null) payload.claim_id = claimId;
     return { ...payload, ...extra };
   }
 
-  /**
-   * Report a claim result with bounded retry. Retries network errors, 5xx and
-   * 429; other 4xx are permanent (bad payload / already resolved) and rethrow
-   * immediately so the runner doesn't wait on a dead outcome.
-   */
   async function reportClaimWithRetry(payload, { delays = REPORT_RETRY_DELAYS_MS } = {}) {
-    let lastErr;
-    for (let attempt = 0; attempt <= delays.length; attempt++) {
+    let lastError;
+    for (let attempt = 0; attempt <= delays.length; attempt += 1) {
       try {
         return await client.reportClaim(payload);
-      } catch (err) {
-        lastErr = err;
-        const m = /failed: (\d{3})/.exec(err.message ?? '');
-        const status = m ? Number(m[1]) : null;
-        if (status !== null && status < 500 && status !== 429) throw err;
+      } catch (error) {
+        lastError = error;
+        const match = /failed: (\d{3})/u.exec(error?.message ?? '');
+        const status = match ? Number(match[1]) : null;
+        if (status !== null && status < 500 && status !== 429) throw error;
         if (attempt < delays.length) {
           log.warn('Claim report failed, retrying', {
             attempt: attempt + 1,
             nextRetryMs: delays[attempt],
             httpStatus: status,
-            error: err.message,
           });
-          await new Promise((r) => setTimeout(r, delays[attempt]));
+          await delay(delays[attempt]);
         }
       }
     }
-    throw lastErr;
+    throw lastError;
   }
 
-  /** Terminate a process: SIGTERM, then SIGKILL after the escalation window. */
-  function killProcessWithEscalation(proc, escalateMs = killEscalateMs) {
+  function reportState(state, status, extra = {}, options) {
+    if (state.reportPromise) return state.reportPromise;
+    const finalStatus = state.shuttingDown ? 'failed' : status;
+    const finalExtra = state.shuttingDown ? { failure_kind: 'transient' } : extra;
+    const finalOptions = state.shuttingDown ? { delays: [1000] } : options;
+    state.reportPromise = reportClaimWithRetry(claimPayload(state.work, finalStatus, finalExtra), finalOptions).catch(() => {
+      log.error('Failed to report claim');
+    });
+    return state.reportPromise;
+  }
+  function closeStateRuntime(state) {
+    if (!state.runtime) return Promise.resolve();
+    state.closePromise = state.closePromise ?? (async () => {
+      await state.runtime.close();
+      await state.runtime.exited;
+    })();
+    return state.closePromise;
+  }
+  function stopCommandService(state) {
+    state.commandsRunning = false;
+    state.commandPollController?.abort();
+    const wake = state.commandWake;
+    state.commandWake = null;
+    wake?.();
+    state.commandStopResolve?.();
+  }
+  function installTurnTail(state, turn) {
+    const tail = Promise.resolve(turn);
+    state.turnTail = tail;
+    tail.then(
+      () => {
+        if (state.turnTail === tail) stopCommandService(state);
+      },
+      () => {
+        if (state.turnTail === tail) stopCommandService(state);
+      },
+    );
+    return tail;
+  }
+
+
+  function waitForCommandPoll(state) {
     return new Promise((resolve) => {
-      if (!proc) return resolve();
       let settled = false;
-      const done = () => { if (!settled) { settled = true; resolve(); } };
-      proc.on('close', done);
-      proc.on('exit', done);
-      try {
-        proc.kill('SIGTERM');
-      } catch (e) {
-        // The process is un-signallable (already dead → ESRCH, or not ours →
-        // EPERM) — waiting for a close event or the SIGKILL escalation is
-        // pointless. Resolve immediately.
-        if (e.code !== 'ESRCH') log.warn('Failed to kill agent process', { error: e.message, code: e.code });
-        done();
-        return;
-      }
-      const escalate = setTimeout(() => {
-        try { proc.kill('SIGKILL'); } catch { /* Safe to continue: already dead */ }
-      }, escalateMs);
-      if (escalate.unref) escalate.unref();
-      // Safety net: never wait past the escalation window even without a close event.
-      const cap = setTimeout(done, escalateMs + 50);
-      if (cap.unref) cap.unref();
+      let timer;
+      const wake = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (state.commandWake === wake) state.commandWake = null;
+        resolve();
+      };
+      state.commandWake = wake;
+      timer = setTimeout(wake, commandPollMs);
+      timer.unref?.();
+      if (!state.commandsRunning || state.shuttingDown) wake();
     });
   }
 
-  let heartbeatTimer = null;
-  let heartbeatDead = false;
 
-  /**
-   * Start the claim heartbeat (session TTL + claim expiry extension) while an
-   * agent executes. On 410 the session is gone — stop heartbeating but keep
-   * working; the server re-dispatches via claim expiry.
-   */
-  function startHeartbeat(claimId) {
-    if (!claimId || !client.heartbeat || heartbeatMs <= 0) return;
-    heartbeatDead = false;
-    heartbeatTimer = setInterval(async () => {
-      if (heartbeatDead || !sessionId) return;
-      try {
-        await client.heartbeat(sessionId, claimId);
-      } catch (err) {
-        if (/failed: 410/.test(err.message ?? '')) {
-          heartbeatDead = true;
-          stopHeartbeat();
-          log.warn('Session expired mid-claim — heartbeat stopped; server re-dispatches on expiry', { claimId });
-          return;
-        }
-        // Safe to continue: heartbeat is advisory — the next tick retries.
-        log.warn('Heartbeat failed', { claimId, error: err.message });
-      }
-    }, heartbeatMs);
-    if (heartbeatTimer.unref) heartbeatTimer.unref();
-  }
 
   function stopHeartbeat() {
     heartbeatDead = true;
@@ -221,447 +212,769 @@ export function createRunner({
     }
   }
 
-  /**
-   * Execute an agent command and return the result.
-   * Accepts either { bin, args } (no shell) or { shell, env } (custom template).
-   * Enforces a hard execution timeout (SIGTERM → SIGKILL) and caps buffered
-   * stdout at STDOUT_CAP_BYTES (keeping the tail, which is what verdict
-   * parsing needs).
-   * @param {{ bin: string, args: string[] } | { shell: string, env?: Record<string, string> }} cmd
-   * @param {string} [cwdOverride]
-   * @param {number} [timeoutMs]
-   * @returns {Promise<{ exitCode: number, stdout: string, timedOut?: boolean, stdoutTruncated?: boolean }>}
-   */
-  function execute(cmd, cwdOverride, timeoutMs = agentTimeout) {
-    return new Promise((resolve, reject) => {
-      log.info('Executing agent command', { command: cmd.shell ?? cmd.bin });
-
-      const baseOpts = { cwd: cwdOverride ?? cwd ?? process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] };
-
-      const proc = cmd.shell
-        ? spawn(cmd.shell, [], {
-            ...baseOpts,
-            shell: true,
-            env: buildCommandEnv(cmd.env),
-          })
-        : spawn(cmd.bin, cmd.args, { ...baseOpts, shell: false });
-
-      activeProcess = proc;
-
-      // Tail-capped stdout buffering — agent transcripts can exceed available
-      // memory in containers; only the last STDOUT_CAP_BYTES are kept.
-      const chunks = [];
-      let buffered = 0;
-      let truncated = false;
-      const debugOn = log.isDebug ? log.isDebug() : true;
-      proc.stdout.on('data', (data) => {
-        chunks.push(data);
-        buffered += data.length;
-        while (buffered > STDOUT_CAP_BYTES && chunks.length > 1) {
-          buffered -= chunks[0].length;
-          chunks.shift();
-          truncated = true;
+  function startHeartbeat(claimId) {
+    if (!claimId || !client.heartbeat || heartbeatMs <= 0) return;
+    heartbeatDead = false;
+    heartbeatTimer = setInterval(async () => {
+      if (heartbeatDead || !sessionId) return;
+      try {
+        await client.heartbeat(sessionId, claimId);
+      } catch (error) {
+        if (/failed: 410/u.test(error?.message ?? '')) {
+          heartbeatDead = true;
+          stopHeartbeat();
+          log.warn('Claim heartbeat ownership expired', { claimId });
+          return;
         }
-        if (debugOn) log.debug('agent:stdout', { data: data.toString().trimEnd() });
-      });
-
-      proc.stderr.on('data', (data) => {
-        if (debugOn) log.debug('agent:stderr', { data: data.toString().trimEnd() });
-      });
-
-      // Execution timeout: SIGTERM, then SIGKILL after the escalation window.
-      let timedOut = false;
-      let escalateTimer = null;
-      const timeoutTimer = timeoutMs > 0
-        ? setTimeout(() => {
-            timedOut = true;
-            log.warn('Agent execution timed out — terminating', { timeoutMs });
-            try { proc.kill('SIGTERM'); } catch { /* Safe to continue: already dead */ }
-            escalateTimer = setTimeout(() => {
-              try { proc.kill('SIGKILL'); } catch { /* Safe to continue: already dead */ }
-            }, killEscalateMs);
-            if (escalateTimer.unref) escalateTimer.unref();
-          }, timeoutMs)
-        : null;
-      if (timeoutTimer && timeoutTimer.unref) timeoutTimer.unref();
-
-      proc.on('close', (code) => {
-        activeProcess = null;
-        clearTimeout(timeoutTimer);
-        clearTimeout(escalateTimer);
-        const stdout = Buffer.concat(chunks).toString();
-        resolve({
-          exitCode: timedOut ? 124 : (code ?? 1),
-          stdout,
-          ...(truncated && { stdoutTruncated: true }),
-          ...(timedOut && { timedOut: true }),
-        });
-      });
-
-      proc.on('error', (err) => {
-        activeProcess = null;
-        clearTimeout(timeoutTimer);
-        clearTimeout(escalateTimer);
-        reject(err);
-      });
-    });
+        log.warn('Claim heartbeat failed', { claimId });
+      }
+    }, heartbeatMs);
+    heartbeatTimer.unref?.();
   }
 
-  /**
-   * Handle a single work item: resolve command, execute, report result.
-   * The claim heartbeat runs for the duration; every report carries the
-   * server-assigned claim_id and a failure_kind ('transient' failures are
-   * re-dispatchable server-side, 'terminal'/omitted are not).
-   * @param {object} work — claim payload from the server
-   */
-  async function handleWork(work) {
-    activeWork = work;
-    const claimId = claimIdOf(work);
-    startHeartbeat(claimId);
+  async function authenticateClaimGithubToken(githubToken) {
+    if (!githubToken) return;
     try {
-      const { message, repo, attempt } = work;
-      const prNumber = work.prNumber ?? work.pr_number;
-      const branch = work.branch;
+      await new Promise((resolve, reject) => {
+        const child = execFileCb('gh', ['auth', 'login', '--with-token'], { stdio: ['pipe', 'pipe', 'pipe'] }, (error) => {
+          if (error) reject(error);
+          else resolve();
+        });
+        child.stdin.write(`${githubToken}\n`);
+        child.stdin.end();
+      });
+      log.info('GitHub CLI claim authentication refreshed');
+    } catch {
+      log.warn('GitHub CLI claim authentication failed; continuing with existing authentication');
+    }
+  }
 
-      log.info('Work received', { repo, prNumber, attempt, branch, event: work.event, claimId });
+  function createInteractionBridge(state, claimId, runtimeEnvironment) {
+    const eventQueue = [];
+    const agentText = [];
+    let agentTextBytes = 0;
+    let sequence = 0;
+    let flushTimer = null;
+    let flushTail = Promise.resolve();
+    const redactionValues = [runnerToken, ...secretValues, state.work.githubToken, ...environmentSecrets(runtimeEnvironment)]
+      .filter((value) => typeof value === 'string' && value.length > 0);
 
-      // Re-authenticate gh CLI with the GitHub App token if the server provides one,
-      // so reviews are posted as the GitHub App bot, not a personal account.
-      if (work.githubToken) {
-        try {
-          await new Promise((resolve, reject) => {
-            const proc = execFileCb('gh', ['auth', 'login', '--with-token'], { stdio: ['pipe', 'pipe', 'pipe'] }, (err) => {
-              if (err) reject(err); else resolve();
-            });
-            proc.stdin.write(work.githubToken + '\n');
-            proc.stdin.end();
-          });
-          log.info('gh CLI re-authenticated with GitHub App token');
-        } catch (e) {
-          log.warn('Failed to re-auth gh with GitHub App token, using fallback', { error: e.message });
+    function appendAgentText(text) {
+      if (textLimit === 0 || text.length === 0) return;
+      let chunk = Buffer.from(text, 'utf8');
+      if (chunk.length >= textLimit) {
+        agentText.length = 0;
+        chunk = Buffer.from(chunk.subarray(chunk.length - textLimit));
+        agentText.push(chunk);
+        agentTextBytes = chunk.length;
+        return;
+      }
+      agentText.push(chunk);
+      agentTextBytes += chunk.length;
+      while (agentTextBytes > textLimit && agentText.length > 0) {
+        const excess = agentTextBytes - textLimit;
+        const first = agentText[0];
+        if (first.length <= excess) {
+          agentText.shift();
+          agentTextBytes -= first.length;
+        } else {
+          agentText[0] = Buffer.from(first.subarray(excess));
+          agentTextBytes -= excess;
         }
       }
+    }
 
-      let cmd;
+    function clearFlushTimer() {
+      if (!flushTimer) return;
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+
+    function flushEvents() {
+      clearFlushTimer();
+      const operation = flushTail.then(async () => {
+        while (eventQueue.length > 0) {
+          const events = eventQueue.slice(0, batchSize);
+          await client.postClaimEvents(sessionId, claimId, events);
+          eventQueue.splice(0, events.length);
+        }
+      });
+      flushTail = operation.catch(() => undefined);
+      return operation;
+    }
+
+    function failFromBackgroundUpload() {
+      if (!state.interactionFailure) {
+        state.interactionFailure = new Error('ACP event delivery failed');
+        state.interactionFailureResolve?.(state.interactionFailure);
+      }
+      stopCommandService(state);
+    }
+
+    function scheduleFlush() {
+      if (flushTimer || eventFlushMs <= 0) return;
+      flushTimer = setTimeout(() => {
+        flushTimer = null;
+        flushEvents().catch(failFromBackgroundUpload);
+      }, eventFlushMs);
+      flushTimer.unref?.();
+    }
+
+    async function onEvent(params) {
+      if (state.interactionFailure) throw state.interactionFailure;
+      const nextSequence = sequence + 1;
+      const event = normalizeAcpUpdate({
+        claimId,
+        sessionId: params.sessionId,
+        seq: nextSequence,
+        update: params.update,
+        secretValues: redactionValues,
+      });
+      sequence = nextSequence;
+      if (event.kind === 'agent_message') {
+        const pieces = [];
+        collectText(event.payload.raw, pieces);
+        for (const piece of pieces) appendAgentText(piece);
+      }
+      eventQueue.push(event);
+      if (event.payload.raw.sessionUpdate === 'state_update') {
+        if (event.payload.raw.state === 'running' || event.payload.raw.state === 'requires_action') {
+          state.turnSawActive = true;
+        } else if (
+          event.payload.raw.state === 'idle'
+          && state.turnSawActive
+          && state.queuedPromptCount === 0
+        ) {
+          state.turnSawActive = false;
+          stopCommandService(state);
+        }
+      }
+      if (eventQueue.length >= batchSize) await flushEvents();
+      else scheduleFlush();
+    }
+
+    async function onRequest(request) {
+      await client.postClaimRequest(sessionId, claimId, request);
+    }
+
+    return {
+      onEvent,
+      onRequest,
+      flushEvents,
+      clearFlushTimer,
+      agentMessageText: () => Buffer.concat(agentText, agentTextBytes).toString('utf8'),
+    };
+  }
+
+  function commandIdOf(command) {
+    const commandId = command?.id ?? command?.command_id;
+    if ((typeof commandId !== 'string' || commandId.length === 0) && !Number.isSafeInteger(commandId)) {
+      throw new Error('Claim command identifier is invalid');
+    }
+    return commandId;
+  }
+
+  function recordCommandFailure(state, error) {
+    if (!state.commandFailure) {
+      state.commandFailure = error;
+      state.commandFailureResolve?.(error);
+    }
+    stopCommandService(state);
+  }
+
+  async function acknowledgeNotApplied(state, claimId, command) {
+    try {
+      await client.ackClaimCommand(
+        sessionId,
+        claimId,
+        commandIdOf(command),
+        'failed',
+        { error: 'Command was not applied' },
+        state.commandTransportOptions,
+      );
+    } catch (error) {
+      recordCommandFailure(state, error);
+    }
+  }
+
+  async function acknowledgeNotAppliedBatch(state, claimId, commands) {
+    for (const command of commands) await acknowledgeNotApplied(state, claimId, command);
+  }
+
+  function schedulePromptCommand(state, claimId, command) {
+    state.queuedPromptCount += 1;
+    let queued = true;
+    let turnSettled = false;
+    let resolveTurn;
+    const turn = new Promise((resolve) => {
+      resolveTurn = resolve;
+    });
+    const settleTurn = (outcome) => {
+      if (turnSettled) return;
+      turnSettled = true;
+      resolveTurn(outcome);
+    };
+    const leaveQueue = () => {
+      if (!queued) return;
+      queued = false;
+      state.queuedPromptCount -= 1;
+    };
+    const previousTurn = state.turnTail;
+    installTurnTail(state, turn);
+
+    const task = (async () => {
+      const prior = await Promise.race([
+        previousTurn.then((outcome) => ({ outcome })),
+        state.commandStopPromise.then(() => ({ stopped: true })),
+      ]);
+      if (prior.stopped) {
+        leaveQueue();
+        const outcome = state.dashboardCancelApplied
+          ? await previousTurn
+          : {
+              error: state.commandFailure
+                ?? state.interactionFailure
+                ?? new Error('Command service stopped before applying prompt'),
+            };
+        settleTurn(outcome);
+        await acknowledgeNotApplied(state, claimId, command);
+        return outcome;
+      }
+
+      const previousOutcome = prior.outcome;
+      if (state.cancelBarrier) await state.cancelBarrier;
+      if (
+        previousOutcome.error
+        || state.dashboardCancelApplied
+        || state.shuttingDown
+        || !state.commandsRunning
+      ) {
+        leaveQueue();
+        settleTurn(previousOutcome);
+        await acknowledgeNotApplied(state, claimId, command);
+        return previousOutcome;
+      }
+
+      const commandId = commandIdOf(command);
+      const payload = command.payload ?? {};
+      const text = payload.text ?? payload.prompt;
+      if (typeof text !== 'string' || text.trim().length === 0) {
+        leaveQueue();
+        settleTurn(previousOutcome);
+        try {
+          await client.ackClaimCommand(
+            sessionId,
+            claimId,
+            commandId,
+            'failed',
+            { error: 'Command was rejected' },
+            state.commandTransportOptions,
+          );
+        } catch (error) {
+          recordCommandFailure(state, error);
+        }
+        return previousOutcome;
+      }
+
+      leaveQueue();
+      state.turnSawActive = false;
+      let result;
+      try {
+        result = await state.runtime.prompt(text);
+        settleTurn({ result });
+      } catch (error) {
+        const uncertain = commandFailureIsUncertain(error);
+        const outcome = uncertain ? { error } : previousOutcome;
+        settleTurn(outcome);
+        try {
+          await client.ackClaimCommand(
+            sessionId,
+            claimId,
+            commandId,
+            uncertain ? 'uncertain' : 'failed',
+            { error: uncertain ? 'Command outcome is uncertain' : 'Command was rejected' },
+            state.commandTransportOptions,
+          );
+        } catch (ackError) {
+          recordCommandFailure(state, ackError);
+          return outcome;
+        }
+        if (uncertain) recordCommandFailure(state, error);
+        return outcome;
+      }
+
+      try {
+        await client.ackClaimCommand(
+          sessionId,
+          claimId,
+          commandId,
+          'acked',
+          { applied: true },
+          state.commandTransportOptions,
+        );
+      } catch (error) {
+        recordCommandFailure(state, error);
+      }
+      return { result };
+    })().catch((error) => {
+      leaveQueue();
+      settleTurn({ error });
+      recordCommandFailure(state, error);
+      return { error };
+    });
+    state.commandTasks.push(task);
+  }
+
+  async function applyImmediateCommand(state, claimId, command) {
+    const commandId = commandIdOf(command);
+    const payload = command.payload ?? {};
+    let cancelBarrierResolve;
+    let cancelBarrier;
+    try {
+      if (command.kind === 'cancel') {
+        cancelBarrier = new Promise((resolve) => {
+          cancelBarrierResolve = resolve;
+        });
+        state.cancelBarrier = cancelBarrier;
+        await state.runtime.cancel();
+        state.dashboardCancelApplied = true;
+        stopCommandService(state);
+        cancelBarrierResolve();
+      } else if (command.kind === 'permission' || command.kind === 'elicitation') {
+        const requestKey = command.request_key ?? command.requestKey ?? payload.requestKey;
+        if (typeof requestKey !== 'string' || requestKey.length === 0) throw new Error('ACP request key is required');
+        await state.runtime.answerRequest(requestKey, payload.answer ?? payload.response);
+      } else {
+        throw new Error('ACP command kind is unsupported');
+      }
+    } catch (error) {
+      if (cancelBarrierResolve) cancelBarrierResolve();
+      if (state.cancelBarrier === cancelBarrier) state.cancelBarrier = null;
+      const uncertain = commandFailureIsUncertain(error);
+      try {
+        await client.ackClaimCommand(
+          sessionId,
+          claimId,
+          commandId,
+          uncertain ? 'uncertain' : 'failed',
+          { error: uncertain ? 'Command outcome is uncertain' : 'Command was rejected' },
+          state.commandTransportOptions,
+        );
+      } catch (ackError) {
+        recordCommandFailure(state, ackError);
+        return;
+      }
+      if (uncertain) recordCommandFailure(state, error);
+      return;
+    }
+
+    try {
+      await client.ackClaimCommand(
+        sessionId,
+        claimId,
+        commandId,
+        'acked',
+        { applied: true },
+        state.commandTransportOptions,
+      );
+    } catch (error) {
+      recordCommandFailure(state, error);
+    }
+  }
+
+  async function serviceCommands(state, claimId) {
+    try {
+      while (state.commandsRunning && !state.shuttingDown) {
+        const pollController = new AbortController();
+        state.commandPollController = pollController;
+        let response;
+        try {
+          response = await client.pollClaimCommands(
+            sessionId,
+            claimId,
+            { signal: pollController.signal },
+          );
+        } catch (error) {
+          if (pollController.signal.aborted && (!state.commandsRunning || state.shuttingDown)) break;
+          throw error;
+        } finally {
+          if (state.commandPollController === pollController) state.commandPollController = null;
+        }
+
+        const commands = Array.isArray(response)
+          ? response
+          : Array.isArray(response?.commands)
+            ? response.commands
+            : response?.command
+              ? [response.command]
+              : [];
+
+        if (!state.commandsRunning || state.shuttingDown) {
+          await acknowledgeNotAppliedBatch(state, claimId, commands);
+          break;
+        }
+
+        for (let index = 0; index < commands.length; index += 1) {
+          if (!state.commandsRunning || state.shuttingDown) {
+            await acknowledgeNotAppliedBatch(state, claimId, commands.slice(index));
+            break;
+          }
+          const command = commands[index];
+          if (command?.kind === 'prompt') schedulePromptCommand(state, claimId, command);
+          else await applyImmediateCommand(state, claimId, command);
+          if (!state.commandsRunning || state.shuttingDown) {
+            await acknowledgeNotAppliedBatch(state, claimId, commands.slice(index + 1));
+            break;
+          }
+        }
+
+        if (state.commandsRunning && !state.shuttingDown && commands.length === 0) {
+          await waitForCommandPoll(state);
+        }
+      }
+    } catch (error) {
+      recordCommandFailure(state, error);
+    }
+  }
+
+  function verdictFrom(text) {
+    if (/<!--\s*reviewer-result:\s*\{\s*"status"\s*:\s*"FAIL"/iu.test(text)) return 'fail';
+    if (/<!--\s*reviewer-result:/iu.test(text)) return 'pass';
+    return undefined;
+  }
+
+  async function cleanupWorktree(cleanup) {
+    if (!cleanup) return;
+    try {
+      await cleanup();
+      log.info('Worktree cleaned up');
+    } catch {
+      log.warn('Worktree cleanup failed; continuing claim finalization');
+    }
+  }
+
+  async function handleWork(work) {
+    let commandStopResolve;
+    let commandFailureResolve;
+    let interactionFailureResolve;
+    const commandStopPromise = new Promise((resolve) => {
+      commandStopResolve = resolve;
+    });
+    const commandFailurePromise = new Promise((resolve) => {
+      commandFailureResolve = resolve;
+    });
+    const interactionFailurePromise = new Promise((resolve) => {
+      interactionFailureResolve = resolve;
+    });
+    const claimId = claimIdOf(work);
+    const state = {
+      work,
+      runtime: null,
+      closePromise: null,
+      bridge: null,
+      commandsRunning: false,
+      commandWake: null,
+      commandLoop: null,
+      commandTasks: [],
+      queuedPromptCount: 0,
+      turnSawActive: false,
+      commandPollController: null,
+      commandTransportController: new AbortController(),
+      commandTransportOptions: null,
+      turnTail: null,
+      cancelBarrier: null,
+      commandStopPromise,
+      commandStopResolve,
+      commandFailurePromise,
+      commandFailureResolve,
+      interactionFailurePromise,
+      interactionFailureResolve,
+      commandFailure: null,
+      interactionFailure: null,
+      dashboardCancelApplied: false,
+      shuttingDown: false,
+      reportPromise: null,
+    };
+    state.commandTransportOptions = { signal: state.commandTransportController.signal };
+    activeState = state;
+    startHeartbeat(claimId);
+    let worktreeCleanup = null;
+    let bridge = null;
+    let runtimeResult = null;
+    let runtimeFailure = null;
+
+    try {
+      log.info('Work received', { claimId, attempt: work.attempt });
+      await authenticateClaimGithubToken(work.githubToken);
+
+      let prompt;
+      let command;
       try {
         const claimType = work.claim_type ?? work.claimType ?? 'review_fix';
-        if (!work.claim_type && !work.claimType) {
-          log.info('No claim_type in work payload, defaulting to review_fix');
-        }
-        const prompt = resolvePrompt({ claimType, work });
-        if (!work.agentType) {
-          throw new Error(`Work item ${repo}#${prNumber} has no agentType — server routing bug`);
-        }
-        cmd = resolveCommand({
-          agentType: work.agentType,
-          prompt,
-          transportCommand: work.transportCommand,
-        });
-      } catch (err) {
-        // Transient: environment/inputs may be fixed by a re-dispatch.
-        log.error('Failed to resolve command', { error: err.message });
-        await reportClaimWithRetry(claimPayload(work, 'failed', { failure_kind: 'transient' })).catch((e) => {
-          log.error('Failed to report claim', { error: e.message });
-        });
+        prompt = resolvePrompt({ claimType, work });
+        if (!work.agentType) throw new Error('Claim agent type is missing');
+        command = resolveAcpCommand({ agentType: work.agentType, command: acpCommand, args: acpArgs });
+      } catch {
+        log.error('ACP claim setup failed');
+        stopHeartbeat();
+        await reportState(state, 'failed', { failure_kind: 'transient' });
         return;
       }
 
-      // Prepare worktree if branch is provided
-      let worktreeCleanup = null;
-      let agentCwd = cwd ?? process.cwd();
-      if (branch && repo) {
+      let agentCwd = baseCwd;
+      if (work.branch && work.repo) {
         try {
-          const wt = await prepareWorktree({
-            workDir: cwd ?? process.cwd(),
-            repo,
-            prNumber,
-            attempt,
-            branch,
+          const prepared = await prepareWorktree({
+            workDir: baseCwd,
+            repo: work.repo,
+            prNumber: work.prNumber ?? work.pr_number,
+            attempt: work.attempt,
+            branch: work.branch,
           });
-          agentCwd = wt.worktreePath;
-          worktreeCleanup = wt.cleanup;
-          log.info('Worktree ready', { worktreePath: agentCwd });
-        } catch (err) {
-          // Transient: clone/auth failures are expected in container environments.
-          log.error('Failed to prepare worktree', { error: err.message });
-          await reportClaimWithRetry(claimPayload(work, 'failed', { failure_kind: 'transient' })).catch((e) => {
-            log.error('Failed to report claim', { error: e.message });
-          });
+          agentCwd = resolvePath(prepared.worktreePath);
+          worktreeCleanup = prepared.cleanup;
+          log.info('Worktree ready');
+        } catch {
+          log.error('Worktree preparation failed');
+          stopHeartbeat();
+          await reportState(state, 'failed', { failure_kind: 'transient' });
           return;
         }
       }
 
-      let result;
-      try {
-        result = await execute(cmd, agentCwd);
-      } catch (err) {
-        // Terminal: the harness binary itself failed to spawn (e.g. ENOENT) —
-        // a re-dispatch on this machine would fail identically.
-        log.error('Agent process error', { error: err.message });
-        result = { exitCode: 1, stdout: '' };
+      if (state.shuttingDown) {
+        stopHeartbeat();
+        await reportState(state, 'failed', { failure_kind: 'transient' }, { delays: [1000] });
+        return;
       }
-      const { exitCode, stdout: agentOutput, timedOut } = result;
 
-      // Always clean up worktree
-      if (worktreeCleanup) {
+      const runtimeEnvironment = { ...process.env };
+      try {
+        bridge = createInteractionBridge(state, claimId, runtimeEnvironment);
+        state.bridge = bridge;
+        state.runtime = createAcpRuntime({
+          command,
+          cwd: agentCwd,
+          env: runtimeEnvironment,
+          onEvent: bridge.onEvent,
+          onRequest: bridge.onRequest,
+          log: createRuntimeLog(log),
+          ...(runtimeLimits && { limits: runtimeLimits }),
+        });
+      } catch {
+        runtimeFailure = new Error('ACP runtime creation failed');
+      }
+
+      if (state.runtime) {
+        state.commandsRunning = true;
+        state.turnSawActive = false;
         try {
-          await worktreeCleanup();
-          log.info('Worktree cleaned up');
-        } catch (err) {
-          log.warn('Failed to clean up worktree', { error: err.message });
+          installTurnTail(
+            state,
+            (async () => state.runtime.runInitialPrompt(prompt))().then(
+              (result) => ({ result }),
+              (error) => ({ error }),
+            ),
+          );
+          state.commandLoop = serviceCommands(state, claimId);
+          let observedTurn;
+          do {
+            observedTurn = state.turnTail;
+            const settled = await Promise.race([
+              observedTurn.then((outcome) => ({ outcome })),
+              state.commandFailurePromise.then((error) => ({ commandFailure: error })),
+              state.interactionFailurePromise.then((error) => ({ interactionFailure: error })),
+            ]);
+            if (settled.commandFailure) {
+              runtimeFailure = runtimeFailure ?? settled.commandFailure;
+              break;
+            }
+            if (settled.interactionFailure) {
+              runtimeFailure = runtimeFailure ?? settled.interactionFailure;
+              break;
+            }
+            if (settled.outcome.error) runtimeFailure = runtimeFailure ?? settled.outcome.error;
+            else runtimeResult = settled.outcome.result;
+          } while (observedTurn !== state.turnTail);
+        } finally {
+          stopCommandService(state);
+          if (state.commandFailure || state.interactionFailure || state.shuttingDown) {
+            try {
+              await closeStateRuntime(state);
+            } catch (error) {
+              runtimeFailure = runtimeFailure ?? error;
+            }
+          }
+          if (state.commandLoop) await state.commandLoop;
+          if (state.commandTasks.length > 0) await Promise.all(state.commandTasks);
+          try {
+            await closeStateRuntime(state);
+          } catch (error) {
+            runtimeFailure = runtimeFailure ?? error;
+          }
+          if (bridge) {
+            bridge.clearFlushTimer();
+            try {
+              await bridge.flushEvents();
+            } catch (error) {
+              state.interactionFailure = state.interactionFailure ?? error;
+            }
+          }
         }
       }
 
-    // claude-code exits 0 even when the run errored pre-flight — a claim that
-    // "completed" without the harness ever running is a silent no-op.
-    let harnessError = null;
-    if (exitCode === 0) {
-      const envelope = parseHarnessResult(agentOutput);
-      if (envelope?.is_error) {
-        harnessError = String(envelope.result ?? 'harness reported an error result').slice(0, 300);
-      }
-    }
-    const status = harnessError ? 'failed' : (exitCode === 0 ? 'completed' : 'failed');
-      const failureKind = timedOut ? 'transient' : undefined; // non-zero exits stay terminal
-      log.info('Agent finished', { repo, prNumber, attempt, exitCode, status, timedOut: !!timedOut, harnessError: harnessError ?? undefined });
-
-    if (harnessError) {
-      // Terminal: harness auth/config will not fix itself on a re-dispatch —
-      // alert so an operator notices instead of burning retry attempts.
-      log.error('Harness reported an error result despite exit 0 — failing the claim', { repo, prNumber, attempt, detail: harnessError });
-      await sendAlert('harness-error-result', { repo, prNumber, attempt, detail: harnessError });
-    }
-
-      // Parse review verdict from agent output for chaining
-      let verdict;
-      const claimType = work.claim_type ?? work.claimType;
-      if (status === 'completed' && claimType === 'review' && agentOutput) {
-        try {
-          // Claude Code returns JSON with a "result" field containing the text
-          const parsed = JSON.parse(agentOutput);
-          const text = parsed.result ?? agentOutput;
-          if (/<!--\s*reviewer-result:\s*\{\s*"status"\s*:\s*"FAIL"/i.test(text)) {
-            verdict = 'fail';
-            log.info('Review verdict: FAIL');
-          } else if (/<!--\s*reviewer-result:/i.test(text)) {
-            verdict = 'pass';
-            log.info('Review verdict: PASS');
-          }
-        } catch {
-          // Not JSON or no verdict marker — try raw text
-          if (/<!--\s*reviewer-result:\s*\{\s*"status"\s*:\s*"FAIL"/i.test(agentOutput)) {
-            verdict = 'fail';
-            log.info('Review verdict: FAIL (raw)');
-          } else if (/<!--\s*reviewer-result:/i.test(agentOutput)) {
-            verdict = 'pass';
-            log.info('Review verdict: PASS (raw)');
-          }
-        }
-      }
-
-      try {
-        await reportClaimWithRetry(
-          claimPayload(work, status, {
-            ...(verdict && { verdict }),
-            ...(failureKind && { failure_kind: failureKind }),
-          }),
-        );
-      } catch (err) {
-        log.error('Failed to report claim', { error: err.message });
-      }
-    } finally {
+      await cleanupWorktree(worktreeCleanup);
+      worktreeCleanup = null;
       stopHeartbeat();
-      activeWork = null;
+
+      if (state.shuttingDown || runtimeFailure || state.commandFailure || state.interactionFailure || !runtimeResult) {
+        await reportState(state, 'failed', { failure_kind: 'transient' }, state.shuttingDown ? { delays: [1000] } : undefined);
+        return;
+      }
+
+      const stopReason = runtimeResult.stopReason;
+      let status;
+      let failureKind;
+      if (stopReason === 'end_turn') status = 'completed';
+      else if (stopReason === 'cancelled' && state.dashboardCancelApplied) status = 'cancelled';
+      else if (stopReason === 'cancelled') {
+        status = 'failed';
+        failureKind = 'transient';
+      } else {
+        status = 'failed';
+      }
+
+      const claimType = work.claim_type ?? work.claimType;
+      const verdict = status === 'completed' && claimType === 'review' && bridge
+        ? verdictFrom(bridge.agentMessageText())
+        : undefined;
+      await reportState(state, status, {
+        ...(failureKind && { failure_kind: failureKind }),
+        ...(verdict && { verdict }),
+      });
+    } finally {
+      stopCommandService(state);
+      bridge?.clearFlushTimer();
+      stopHeartbeat();
+      await cleanupWorktree(worktreeCleanup);
+      if (activeState === state) activeState = null;
     }
   }
 
-  /**
-   * Authenticate gh CLI if GITHUB_TOKEN is set and gh is available.
-   */
   async function ensureGhAuth() {
     if (!process.env.GITHUB_TOKEN) return;
     try {
       await new Promise((resolve, reject) => {
-        execFileCb('gh', ['auth', 'status'], { stdio: 'pipe' }, (err) => {
-          if (err) reject(err); else resolve();
+        execFileCb('gh', ['auth', 'status'], { stdio: 'pipe' }, (error) => {
+          if (error) reject(error);
+          else resolve();
         });
       });
     } catch {
       try {
         await new Promise((resolve, reject) => {
-          const proc = execFileCb('gh', ['auth', 'login', '--with-token'], { stdio: ['pipe', 'pipe', 'pipe'] }, (err) => {
-            if (err) reject(err); else resolve();
+          const child = execFileCb('gh', ['auth', 'login', '--with-token'], { stdio: ['pipe', 'pipe', 'pipe'] }, (error) => {
+            if (error) reject(error);
+            else resolve();
           });
-          proc.stdin.write(process.env.GITHUB_TOKEN + '\n');
-          proc.stdin.end();
+          child.stdin.write(`${process.env.GITHUB_TOKEN}\n`);
+          child.stdin.end();
         });
-        log.info('gh CLI authenticated with GITHUB_TOKEN');
-      } catch (e) {
-        log.info('gh CLI not available or auth failed', { error: e.message });
+        log.info('GitHub CLI authentication refreshed');
+      } catch {
+        log.info('GitHub CLI authentication unavailable; continuing');
       }
     }
   }
 
-  /**
-   * Shutdown sequence: stop heartbeats, terminate the active agent
-   * (SIGTERM → SIGKILL), then report the active claim as a transient failure
-   * with a bounded retry budget sized to fit inside docker stop's 10s grace.
-   */
   async function doShutdown() {
-    log.info('Shutting down...');
+    log.info('Shutting down');
     running = false;
     stopHeartbeat();
-    clearInterval(healthTimer);
-    if (activeProcess) {
-      const proc = activeProcess;
-      activeProcess = null;
-      await killProcessWithEscalation(proc, Math.min(killEscalateMs, 5000));
-    }
-    if (activeWork) {
-      const work = activeWork;
-      activeWork = null;
+    const state = activeState;
+    if (!state) return;
+    state.shuttingDown = true;
+    state.commandTransportController.abort();
+    stopCommandService(state);
+    if (state.runtime) {
       try {
-        await reportClaimWithRetry(claimPayload(work, 'failed', { failure_kind: 'transient' }), { delays: [1000] });
-        log.info('Reported active claim as failed on shutdown', { repo: work.repo });
-      } catch (err) {
-        log.error('Failed to report claim on shutdown', { error: err.message });
+        await closeStateRuntime(state);
+      } catch {
+        log.warn('ACP runtime shutdown failed; reporting transient claim failure');
       }
     }
+    if (state.commandLoop) await state.commandLoop;
+    if (state.commandTasks.length > 0) await Promise.all(state.commandTasks);
+    if (state.bridge) {
+      state.bridge.clearFlushTimer();
+      try {
+        await state.bridge.flushEvents();
+      } catch {
+        state.interactionFailure = state.interactionFailure ?? new Error('ACP event delivery failed');
+      }
+    }
+    await reportState(state, 'failed', { failure_kind: 'transient' }, { delays: [1000] });
   }
 
   return {
-    /**
-     * Start the runner. Registers a session and enters the poll loop.
-     * Resolves when shutdown() is called.
-     */
     async start() {
       running = true;
-
-      // Health gate: never register — and so never claim — while the harness
-      // cannot run. An unhealthy runner consuming claims completes them as
-      // silent no-ops (the exact production failure: claude "Not logged in",
-      // exit 0, claim completed, review never posted).
-      let health = await checkRunnerHealth();
-      if (!health.healthy) {
-        log.error('Runner unhealthy — not claiming work', { harness: health.harness, gh: health.gh });
-        await sendAlert('startup-health-check-failed', health);
-        while (running && !(health = await checkRunnerHealth()).healthy) {
-          await new Promise((r) => setTimeout(r, healthRetryMs));
-        }
-        if (!running) { log.info('Runner stopped before becoming healthy'); return; }
-        log.info('Runner recovered — claiming work', { harness: health.harness });
-        await sendAlert('recovered', { harness: health.harness });
-      }
-
-      // Periodic re-check while polling: flip to not-claiming (and alert once
-      // per state change) if the harness breaks mid-run. Env:
-      // FLUENT_FLOW_HEALTH_INTERVAL_MS (default 5 min, 0 disables).
-      if (healthCheckIntervalMs > 0) {
-        healthTimer = setInterval(async () => {
-          const h = await checkRunnerHealth();
-          if (!h.healthy && runnerHealthy) {
-            runnerHealthy = false;
-            log.error('Runner became unhealthy — pausing claim pickup', { harness: h.harness });
-            await sendAlert('health-check-failed', h);
-          } else if (h.healthy && !runnerHealthy) {
-            runnerHealthy = true;
-            log.info('Runner healthy again — resuming claim pickup', { harness: h.harness });
-            await sendAlert('recovered', { harness: h.harness });
-          }
-        }, healthCheckIntervalMs);
-        if (healthTimer.unref) healthTimer.unref();
-      }
-
       await ensureGhAuth();
-
-      log.info('Registering session...');
-      const session = await client.register(sessionMeta);
-      sessionId = session.session_id;
-      log.info('Session registered', { sessionId, status: session.status });
+      log.info('Registering session');
+      const registration = await client.register(sessionMeta);
+      sessionId = registration.session_id;
+      log.info('Session registered', { sessionId, status: registration.status });
 
       let consecutiveFailures = 0;
       let backoffStart = null;
-
       while (running) {
-        if (!runnerHealthy) {
-          // Unhealthy: skip claiming entirely — the session expires and the
-          // server marks this runner offline instead of routing work to it.
-          await new Promise((r) => setTimeout(r, 5000));
-          continue;
-        }
         try {
           const work = await client.poll(sessionId);
           consecutiveFailures = 0;
-          backoffStart = null; // reset on success
-          if (work) {
-            await handleWork(work);
-          } else {
-            // Server returned no work (poll timeout). Brief pause before reconnect.
-            await new Promise((r) => setTimeout(r, 100));
-          }
-        } catch (err) {
+          backoffStart = null;
+          if (work) await handleWork(work);
+          else await delay(100);
+        } catch (error) {
           if (!running) break;
-          consecutiveFailures++;
+          consecutiveFailures += 1;
           if (!backoffStart) backoffStart = Date.now();
           const backoff = Math.min(BASE_BACKOFF_MS * 2 ** (consecutiveFailures - 1), MAX_BACKOFF_MS);
-
-          // Watchdog: if total backoff time exceeds threshold, force exit
           if (Date.now() - backoffStart >= MAX_BACKOFF_TOTAL_MS) {
-            log.error('Watchdog: total backoff exceeded threshold, forcing exit', {
-              totalBackoffMs: Date.now() - backoffStart,
-              thresholdMs: MAX_BACKOFF_TOTAL_MS,
-              consecutiveFailures,
-            });
-            process.exit(1); // Let the orchestrator restart us
+            log.error('Poll watchdog exceeded its retry window', { consecutiveFailures });
+            process.exit(1);
           }
-
-          log.error('Poll error', {
-            error: err.message,
-            consecutiveFailures,
-            maxFailures,
-            nextRetryMs: backoff,
-          });
-          // Re-register on session expiry (410) instead of retrying stale session
-          if (err.message && err.message.startsWith('Poll failed: 410')) {
-            log.info('Session expired, re-registering...');
+          log.error('Poll failed', { consecutiveFailures, maxFailures, nextRetryMs: backoff });
+          if (error?.message?.startsWith('Poll failed: 410')) {
             try {
-              const session = await client.register(sessionMeta);
-              sessionId = session.session_id;
-              log.info('Re-registered', { sessionId, status: session.status });
+              const replacement = await client.register(sessionMeta);
+              sessionId = replacement.session_id;
               consecutiveFailures = 0;
-              backoffStart = null; // reset watchdog window after successful re-registration
-              continue; // Resume polling immediately without backoff delay
-            } catch (regErr) {
-              log.error('Re-registration failed', { error: regErr.message });
+              backoffStart = null;
+              log.info('Session re-registered', { sessionId, status: replacement.status });
+              continue;
+            } catch {
+              log.error('Session re-registration failed');
             }
           }
           if (consecutiveFailures >= maxFailures) {
-            log.error('Max consecutive poll failures reached, stopping runner', {
-              consecutiveFailures,
-              maxFailures,
-            });
+            log.error('Poll failure circuit opened', { consecutiveFailures, maxFailures });
             running = false;
             break;
           }
-          await new Promise((r) => setTimeout(r, backoff));
+          await delay(backoff);
         }
       }
-
       log.info('Runner stopped');
     },
-
-    /**
-     * Gracefully shut down. Kills active agent process, reports active claim as
-     * failed (transient). Memoized — concurrent calls await the same shutdown;
-     * resolves only after the kill and the bounded report have completed.
-     */
     shutdown() {
       shutdownPromise = shutdownPromise ?? doShutdown();
       return shutdownPromise;
     },
-
-    /** Expose for testing */
-    get sessionId() { return sessionId; },
-    get activeWork() { return activeWork; },
+    get sessionId() {
+      return sessionId;
+    },
+    get activeWork() {
+      return activeState?.work ?? null;
+    },
   };
 }

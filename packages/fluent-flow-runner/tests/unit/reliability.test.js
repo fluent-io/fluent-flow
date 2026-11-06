@@ -1,384 +1,269 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { EventEmitter } from 'node:events';
-
-const mockSpawn = vi.fn();
-vi.mock('node:child_process', () => ({
-  spawn: (...args) => mockSpawn(...args),
-}));
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockPrepareWorktree = vi.fn();
-vi.mock('../../src/worktree.js', () => ({
-  prepareWorktree: (...args) => mockPrepareWorktree(...args),
-}));
+vi.mock('../../src/worktree.js', () => ({ prepareWorktree: (...args) => mockPrepareWorktree(...args) }));
 
-vi.mock('../../src/health.js', () => ({
-  // Inline implementations (not mockResolvedValue) so vi.resetAllMocks in
-  // per-describe beforeEach hooks restores these healthy defaults.
-  checkRunnerHealth: vi.fn(async () => ({ healthy: true, harness: { ok: true, detail: 'mock' }, gh: { ok: true, detail: 'mock' } })),
-  sendAlert: vi.fn(async () => ({ sent: false, configured: false })),
-}));
-
-import { checkRunnerHealth, sendAlert } from '../../src/health.js';
 import { createRunner } from '../../src/runner.js';
-import { createClient } from '../../src/client.js';
 
-function makeClient(overrides = {}) {
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+function log() {
+  return { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), isDebug: vi.fn(() => false) };
+}
+
+function api(overrides = {}) {
   return {
-    register: vi.fn().mockResolvedValue({ ok: true, session_id: 1, status: 'online' }),
-    poll: vi.fn().mockResolvedValue(null),
-    reportClaim: vi.fn().mockResolvedValue({ ok: true, claim_id: 1, status: 'completed' }),
-    heartbeat: vi.fn().mockResolvedValue({ ok: true }),
+    register: vi.fn(async () => ({ session_id: 'registration-1', status: 'online' })),
+    poll: vi.fn(async () => null),
+    heartbeat: vi.fn(async () => ({ ok: true })),
+    reportClaim: vi.fn(async () => ({ ok: true })),
+    postClaimEvents: vi.fn(async () => ({ ok: true })),
+    postClaimRequest: vi.fn(async () => ({ ok: true })),
+    pollClaimCommands: vi.fn(async () => ({ commands: [] })),
+    ackClaimCommand: vi.fn(async () => ({ ok: true })),
     ...overrides,
   };
 }
 
-function makeLogger() {
-  return { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() };
-}
-
-/** Fake child process that exits with the given code after closeDelay ms. */
-function fakeProcess(exitCode = 0, closeDelay = 10) {
-  const handlers = {};
-  const proc = {
-    on: vi.fn((event, cb) => { (handlers[event] ??= []).push(cb); }),
-    stdout: { on: vi.fn() },
-    stderr: { on: vi.fn() },
-    kill: vi.fn(),
-    pid: 1234,
+function runtime(runInitialPrompt = vi.fn(async () => ({ sessionId: 'acp-1', messageId: 'm-1', stopReason: 'end_turn' }))) {
+  return {
+    runInitialPrompt,
+    prompt: vi.fn(),
+    cancel: vi.fn(),
+    answerRequest: vi.fn(),
+    close: vi.fn(async () => undefined),
+    exited: Promise.resolve({ code: 0, signal: null, error: null }),
   };
-  setTimeout(() => (handlers.close ?? []).forEach((cb) => cb(exitCode)), closeDelay);
-  return proc;
 }
 
-/** Fake process that ignores SIGTERM and only dies on SIGKILL. */
-function stubbornProcess() {
-  const handlers = {};
-  const proc = {
-    on: vi.fn((event, cb) => { (handlers[event] ??= []).push(cb); }),
-    stdout: { on: vi.fn() },
-    stderr: { on: vi.fn() },
-    kill: vi.fn((sig) => {
-      if (sig === 'SIGKILL') setTimeout(() => (handlers.close ?? []).forEach((cb) => cb(137)), 5);
-    }),
-    pid: 9999,
-  };
-  return proc;
+const WORK = { claim_id: 42, claim_type: 'review_fix', message: 'Fix it', repo: 'org/repo', pr_number: 7, attempt: 1, agentType: 'claude-code' };
+
+async function waitFor(predicate, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  throw new Error('Timed out waiting for runner');
 }
 
-/** Fake process that emits oversized stdout chunks (optionally with a marker in the dropped head) then exits. */
-function loudProcess(marker = null) {
-  const handlers = {};
-  const stdoutListeners = {};
-  const proc = {
-    on: vi.fn((event, cb) => { (handlers[event] ??= []).push(cb); }),
-    stdout: { on: vi.fn((event, cb) => { stdoutListeners[event] = cb; }) },
-    stderr: { on: vi.fn() },
-    kill: vi.fn(),
-    pid: 4321,
-  };
-  setTimeout(() => {
-    const head = marker ? Buffer.concat([Buffer.alloc(3 * 1024 * 1024 - 64, 0x61), Buffer.from(marker)]) : Buffer.alloc(3 * 1024 * 1024, 0x61);
-    stdoutListeners.data?.(head); // 3MB 'a' (+ marker at the very end)
-    stdoutListeners.data?.(Buffer.alloc(3 * 1024 * 1024, 0x62)); // 3MB 'b' → over cap, head dropped
-    (handlers.close ?? []).forEach((cb) => cb(0));
-  }, 10);
-  return proc;
-}
-
-const WORK = {
-  event: 'review_failed',
-  message: 'Fix the bug',
-  repo: 'org/repo',
-  prNumber: 7,
-  attempt: 1,
-  claim_id: 42,
-  agentType: 'claude-code',
-};
-
-function makeRunner(client, { resolveCommand, ...opts } = {}) {
+function makeRunner(client, acpRuntime, options = {}) {
   return createRunner({
     client,
-    log: makeLogger(),
-    resolveCommand:
-      resolveCommand ?? vi.fn().mockImplementation(({ prompt }) => ({ bin: 'claude', args: ['-p', prompt] })),
-    ...opts,
+    log: log(),
+    createAcpRuntime: vi.fn(() => acpRuntime),
+    cwd: '/repo',
+    acpCommand: 'agent',
+    commandPollMs: 1,
+    ...options,
   });
 }
 
-/** Drive one work item through start() and shut down. */
-async function runOneWork(client, opts = {}, work = WORK, spawnImpl) {
-  let pollCount = 0;
-  client.poll = vi.fn().mockImplementation(async () => {
-    pollCount++;
-    return pollCount === 1 ? work : null;
-  });
-  if (spawnImpl) mockSpawn.mockImplementationOnce(spawnImpl);
-  const runner = makeRunner(client, opts);
-  const startPromise = runner.start();
-  await new Promise((r) => setTimeout(r, opts.settleMs ?? 150));
-  runner.shutdown();
-  await startPromise;
-  return runner;
-}
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockPrepareWorktree.mockResolvedValue({ worktreePath: '/worktree', cleanup: vi.fn(async () => undefined) });
+});
 
-describe('client.heartbeat', () => {
-  it('POSTs session_id and claim_id to /api/runner/heartbeat', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) });
-    const client = createClient({ serverUrl: 'http://srv', token: 'ff_x', fetch: fetchMock });
-    await client.heartbeat(3, 42);
-    expect(fetchMock).toHaveBeenCalledWith(
-      'http://srv/api/runner/heartbeat',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ session_id: 3, claim_id: 42 }),
-      }),
-    );
+describe('heartbeat', () => {
+  it('continues heartbeating while the ACP turn is pending and stops before report', async () => {
+    const turn = deferred();
+    const client = api({ poll: vi.fn().mockResolvedValueOnce(WORK).mockResolvedValue(null) });
+    const runner = makeRunner(client, runtime(vi.fn(() => turn.promise)), { heartbeatIntervalMs: 5 });
+    const started = runner.start();
+    await waitFor(() => client.heartbeat.mock.calls.length >= 2);
+    turn.resolve({ sessionId: 'acp', messageId: 'm', stopReason: 'end_turn' });
+    await waitFor(() => client.reportClaim.mock.calls.length === 1);
+    const count = client.heartbeat.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(client.heartbeat).toHaveBeenCalledWith('registration-1', 42);
+    expect(client.heartbeat).toHaveBeenCalledTimes(count);
+    await runner.shutdown();
+    await started;
   });
 
-  it('throws a labeled error on non-ok responses', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 410, text: async () => 'expired' });
-    const client = createClient({ serverUrl: 'http://srv', token: 'ff_x', fetch: fetchMock });
-    await expect(client.heartbeat(3, 42)).rejects.toThrow(/Heartbeat failed: 410/);
+  it('stops heartbeat after ownership expires without aborting the ACP turn', async () => {
+    const turn = deferred();
+    const client = api({
+      poll: vi.fn().mockResolvedValueOnce(WORK).mockResolvedValue(null),
+      heartbeat: vi.fn(async () => { throw new Error('Heartbeat failed: 410 — stale'); }),
+    });
+    const runner = makeRunner(client, runtime(vi.fn(() => turn.promise)), { heartbeatIntervalMs: 2 });
+    const started = runner.start();
+    await waitFor(() => client.heartbeat.mock.calls.length === 1);
+    turn.resolve({ sessionId: 'acp', messageId: 'm', stopReason: 'end_turn' });
+    await waitFor(() => client.reportClaim.mock.calls.length === 1);
+    expect(client.heartbeat).toHaveBeenCalledTimes(1);
+    expect(client.reportClaim).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+    await runner.shutdown();
+    await started;
   });
 });
 
-describe('claim heartbeat during execution', () => {
-  beforeEach(() => {
-    vi.resetAllMocks(); // reset, not clear: clearAllMocks leaves queued mockImplementationOnce impls
-  });
-
-  it('heartbeats while a claim executes and stops when it finishes', async () => {
-    const client = makeClient();
-    await runOneWork(client, { heartbeatIntervalMs: 5, settleMs: 120 }, WORK, () => fakeProcess(0, 60));
-    expect(client.heartbeat).toHaveBeenCalledWith(1, 42);
-    const callsDuringWork = client.heartbeat.mock.calls.length;
-    expect(callsDuringWork).toBeGreaterThanOrEqual(2);
-    // After handleWork completes the timer is cleared — no further calls.
-    await new Promise((r) => setTimeout(r, 30));
-    expect(client.heartbeat.mock.calls.length).toBe(callsDuringWork);
-  });
-
-  it('stops heartbeating on 410 but still completes and reports the claim', async () => {
-    const client = makeClient({
-      heartbeat: vi.fn().mockRejectedValue(new Error('Heartbeat failed: 410 — Session expired or offline — re-register')),
+describe('shutdown mid-claim', () => {
+  it('closes the runtime, waits for it, cleans the worktree, and reports one transient failure', async () => {
+    const turn = deferred();
+    const exited = deferred();
+    const cleanup = vi.fn(async () => undefined);
+    mockPrepareWorktree.mockResolvedValueOnce({ worktreePath: '/worktree', cleanup });
+    const acpRuntime = runtime(vi.fn(() => turn.promise));
+    acpRuntime.exited = exited.promise;
+    acpRuntime.close.mockImplementationOnce(async () => {
+      turn.reject(new Error('closed for shutdown'));
+      exited.resolve({ code: 0, signal: null, error: null });
+      await exited.promise;
     });
-    await runOneWork(client, { heartbeatIntervalMs: 5, settleMs: 120 }, WORK, () => fakeProcess(0, 60));
-    expect(client.heartbeat.mock.calls.length).toBe(1);
-    expect(client.reportClaim).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'completed', claim_id: 42 }),
-    );
+    const client = api({ poll: vi.fn().mockResolvedValueOnce({ ...WORK, branch: 'fix/x' }).mockResolvedValue(null) });
+    const runner = makeRunner(client, acpRuntime);
+    const started = runner.start();
+    await waitFor(() => acpRuntime.runInitialPrompt.mock.calls.length === 1);
+    const first = runner.shutdown();
+    const second = runner.shutdown();
+    await Promise.all([first, second, started]);
+    expect(acpRuntime.close).toHaveBeenCalledTimes(1);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(client.reportClaim).toHaveBeenCalledTimes(1);
+    expect(client.reportClaim).toHaveBeenCalledWith(expect.objectContaining({
+      claim_id: 42,
+      session_id: 'registration-1',
+      status: 'failed',
+      failure_kind: 'transient',
+    }));
   });
 
-  it('does not heartbeat when the work has no claim id', async () => {
-    const client = makeClient();
-    const work = { ...WORK, claim_id: undefined, claimId: undefined, id: undefined };
-    await runOneWork(client, { heartbeatIntervalMs: 5 }, work, () => fakeProcess(0));
-    expect(client.heartbeat).not.toHaveBeenCalled();
+  it('closes and reports without waiting for an indefinitely pending command poll', async () => {
+    const turn = deferred();
+    let pollAborted = false;
+    const order = [];
+    const acpRuntime = runtime(vi.fn(() => turn.promise));
+    acpRuntime.close.mockImplementationOnce(async () => {
+      order.push('close');
+      turn.reject(new Error('closed for shutdown'));
+    });
+    const client = api({
+      poll: vi.fn().mockResolvedValueOnce(WORK).mockResolvedValue(null),
+      pollClaimCommands: vi.fn((_sessionId, _claimId, { signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          pollAborted = true;
+          reject(new Error('command poll aborted'));
+        }, { once: true });
+      })),
+      reportClaim: vi.fn(async () => {
+        order.push('report');
+        return { ok: true };
+      }),
+    });
+    const runner = makeRunner(client, acpRuntime);
+    const started = runner.start();
+    await waitFor(() => client.pollClaimCommands.mock.calls.length === 1);
+    const completion = Promise.race([
+      runner.shutdown().then(() => 'shutdown'),
+      new Promise((resolve) => setTimeout(() => resolve('timed-out'), 200)),
+    ]);
+    await expect(completion).resolves.toBe('shutdown');
+    expect(pollAborted).toBe(true);
+    expect(order).toEqual(['close', 'report']);
+    expect(client.reportClaim).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed',
+      failure_kind: 'transient',
+    }));
+    await started;
   });
 });
 
 describe('claim report retry', () => {
-  beforeEach(() => {
-    vi.resetAllMocks(); // reset, not clear: clearAllMocks leaves queued mockImplementationOnce impls
-  });
-
-  it('retries a 500 and succeeds on the second attempt', async () => {
-    const client = makeClient({
-      reportClaim: vi
-        .fn()
-        .mockRejectedValueOnce(new Error('Claim report failed: 500 — boom'))
-        .mockResolvedValue({ ok: true }),
-    });
-    const origDelay = 1000;
-    const t0 = Date.now();
-    // settle must exceed the 1s retry delay so shutdown doesn't race the in-flight report
-    await runOneWork(client, { settleMs: 1600 }, WORK, () => fakeProcess(0));
-    expect(client.reportClaim).toHaveBeenCalledTimes(2);
-    expect(Date.now() - t0).toBeGreaterThanOrEqual(950);
-  }, 10000);
-
-  it('does not retry a permanent 404', async () => {
-    const client = makeClient({
-      reportClaim: vi.fn().mockRejectedValue(new Error('Claim report failed: 404 — not found')),
-    });
-    await runOneWork(client, {}, WORK, () => fakeProcess(0));
-    expect(client.reportClaim).toHaveBeenCalledTimes(1);
-  });
-
-  it('carries claim_id on every report', async () => {
-    const client = makeClient();
-    await runOneWork(client, {}, WORK, () => fakeProcess(0));
-    expect(client.reportClaim).toHaveBeenCalledWith(expect.objectContaining({ claim_id: 42 }));
-  });
-});
-
-describe('failure classification', () => {
-  beforeEach(() => {
-    vi.resetAllMocks(); // reset, not clear: clearAllMocks leaves queued mockImplementationOnce impls
-  });
-
-  it('reports worktree prep failure as transient', async () => {
-    mockPrepareWorktree.mockRejectedValueOnce(new Error('clone failed'));
-    const client = makeClient();
-    await runOneWork(client, {}, { ...WORK, branch: 'fix-branch' }); // no spawnImpl — spawn is never reached
-    expect(mockPrepareWorktree).toHaveBeenCalled();
-    expect(client.reportClaim).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'failed', failure_kind: 'transient', claim_id: 42 }),
-    );
-    expect(mockSpawn).not.toHaveBeenCalled();
-  });
-
-  it('reports command-resolution failure as transient', async () => {
-    const client = makeClient();
-    await runOneWork(
-      client,
-      { resolveCommand: vi.fn().mockImplementation(() => { throw new Error('no template'); }) },
-      { ...WORK, agentType: 'unknown-type' },
-    );
-    expect(client.reportClaim).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'failed', failure_kind: 'transient' }),
-    );
-  });
-
-  it('keeps non-zero agent exit terminal (no failure_kind)', async () => {
-    const client = makeClient();
-    await runOneWork(client, {}, WORK, () => fakeProcess(3));
-    const payload = client.reportClaim.mock.calls[0][0];
-    expect(payload.status).toBe('failed');
-    expect(payload.failure_kind).toBeUndefined();
-  });
-});
-
-describe('execution timeout', () => {
-  beforeEach(() => {
-    vi.resetAllMocks(); // reset, not clear: clearAllMocks leaves queued mockImplementationOnce impls
-  });
-
-  it('SIGTERMs then SIGKILLs a hung agent and reports transient with exit code 124', async () => {
-    const client = makeClient();
-    await runOneWork(client, { agentTimeoutMs: 20, killEscalationMs: 30, settleMs: 300 }, WORK, () => stubbornProcess());
-    const killCalls = mockSpawn.mock.results[0].value.kill.mock.calls.map((c) => c[0]);
-    expect(killCalls).toEqual(['SIGTERM', 'SIGKILL']);
-    expect(client.reportClaim).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'failed', failure_kind: 'transient', claim_id: 42 }),
-    );
-  }, 10000);
-});
-
-describe('stdout cap', () => {
-  beforeEach(() => {
-    vi.resetAllMocks(); // reset, not clear: clearAllMocks leaves queued mockImplementationOnce impls
-  });
-
-  it('drops the head when stdout exceeds 5MB — a marker in the dropped chunk is absent from the verdict', async () => {
-    const client = makeClient();
-    // loudProcess emits 3MB of 'a' then 3MB of 'b'. With the marker embedded
-    // at the end of the FIRST chunk, the cap must drop it — so the review
-    // verdict stays undefined. Without the cap the marker survives.
-    const work = { ...WORK, claim_type: 'review' };
-    await runOneWork(client, { settleMs: 300 }, work, () => loudProcess('<!-- reviewer-result: { "status": "PASS" } -->'));
-    const payload = client.reportClaim.mock.calls[0][0];
-    expect(payload.status).toBe('completed');
-    expect(payload.claim_id).toBe(42);
-    expect(payload.verdict).toBeUndefined();
-  }, 10000);
-});
-
-describe('shutdown', () => {
-  beforeEach(() => {
-    vi.resetAllMocks(); // reset, not clear: clearAllMocks leaves queued mockImplementationOnce impls
-  });
-
-  it('kills the active agent and reports the active claim as transient', async () => {
-    let pollCount = 0;
-    const client = makeClient({
-      poll: vi.fn().mockImplementation(async () => {
-        pollCount++;
-        return pollCount === 1 ? WORK : null;
-      }),
-    });
-    // Process only dies when SIGTERM'd (kill → close), never on its own.
-    const handlers = {};
-    const proc = {
-      on: vi.fn((event, cb) => { (handlers[event] ??= []).push(cb); }),
-      stdout: { on: vi.fn() },
-      stderr: { on: vi.fn() },
-      kill: vi.fn(() => {
-        setTimeout(() => (handlers.close ?? []).forEach((cb) => cb(143)), 10);
-      }),
-      pid: 3141,
-    };
-    mockSpawn.mockImplementationOnce(() => proc);
-    const runner = makeRunner(client, { killEscalationMs: 200 });
-    const startPromise = runner.start();
-    await new Promise((r) => setTimeout(r, 80)); // work now executing
-    await runner.shutdown();
-    const p2 = runner.shutdown(); // memoized — same promise, no second report
-    expect(p2).toBeInstanceOf(Promise);
-    await startPromise;
-    expect(proc.kill).toHaveBeenCalledWith('SIGTERM');
-    // Two reports are expected and server-safe: (1) shutdown's transient
-    // failure report, (2) handleWork's own terminal report after the killed
-    // process closes — the server answers the second with already_resolved.
-    expect(client.reportClaim).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'failed', failure_kind: 'transient', claim_id: 42 }),
-    );
-    expect(client.reportClaim).toHaveBeenCalledTimes(2);
-  }, 10000);
-});
-
-describe('cannot-run detection', () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-    vi.mocked(checkRunnerHealth).mockResolvedValue({ healthy: true, harness: { ok: true, detail: 'mock' }, gh: { ok: true, detail: 'mock' } });
-  });
-
-  it.each([0, 8, 50])('fails the claim and alerts on an exit-0 harness error after %ims startup', async (startupMs) => {
+  it('retries transient report failures and preserves the owned payload', async () => {
     vi.useFakeTimers();
     try {
-      vi.mocked(checkRunnerHealth).mockImplementationOnce(() => new Promise((resolve) => {
-        setTimeout(() => resolve({ healthy: true, harness: { ok: true, detail: 'mock' }, gh: { ok: true, detail: 'mock' } }), startupMs);
-      }));
-      const proc = Object.assign(new EventEmitter(), {
-        stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn(), pid: 777,
+      const client = api({
+        poll: vi.fn().mockResolvedValueOnce(WORK).mockResolvedValue(null),
+        reportClaim: vi.fn().mockRejectedValueOnce(new Error('Claim report failed: 500')).mockResolvedValueOnce({ ok: true }),
       });
-      const client = makeClient();
-      const run = runOneWork(client, { settleMs: 250 }, WORK, () => {
-        queueMicrotask(() => {
-          proc.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'result', subtype: 'success', is_error: true, result: 'Not logged in · Please run /login' })));
-          proc.emit('close', 0);
-        });
-        return proc;
-      });
-      await vi.advanceTimersByTimeAsync(400);
-      await run;
-
-      const payload = client.reportClaim.mock.calls[0][0];
-      expect(payload.status).toBe('failed');
-      expect(payload.failure_kind).toBeUndefined();
-      expect(sendAlert).toHaveBeenCalledWith('harness-error-result', expect.objectContaining({
-        repo: 'org/repo',
-        detail: expect.stringContaining('Not logged in'),
-      }));
+      const runner = makeRunner(client, runtime());
+      const started = runner.start();
+      await vi.advanceTimersByTimeAsync(1001);
+      await Promise.resolve();
+      expect(client.reportClaim).toHaveBeenCalledTimes(2);
+      expect(client.reportClaim.mock.calls[0][0]).toEqual(client.reportClaim.mock.calls[1][0]);
+      expect(client.reportClaim.mock.calls[1][0]).toMatchObject({ claim_id: 42, session_id: 'registration-1', status: 'completed' });
+      await runner.shutdown();
+      await vi.advanceTimersByTimeAsync(200);
+      await started;
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
     }
   });
 
-  it('does not register or claim until the startup health check passes', async () => {
-    vi.mocked(checkRunnerHealth)
-      .mockResolvedValueOnce({ healthy: false, harness: { ok: false, detail: 'claude reported an error result: Not logged in' }, gh: { ok: true, detail: '' } })
-      .mockResolvedValueOnce({ healthy: true, harness: { ok: true, detail: 'ok' }, gh: { ok: true, detail: '' } });
+  it('does not retry a permanent report rejection', async () => {
+    const client = api({
+      poll: vi.fn().mockResolvedValueOnce(WORK).mockResolvedValue(null),
+      reportClaim: vi.fn(async () => { throw new Error('Claim report failed: 409'); }),
+    });
+    const runner = makeRunner(client, runtime());
+    const started = runner.start();
+    await waitFor(() => client.reportClaim.mock.calls.length === 1);
+    await runner.shutdown();
+    await started;
+    expect(client.reportClaim).toHaveBeenCalledTimes(1);
+  });
+});
 
-    const client = makeClient();
-    const runner = makeRunner(client, { healthRetryMs: 10 });
-    const startPromise = runner.start();
-    await new Promise((r) => setTimeout(r, 80));
+describe('poll reliability', () => {
+  it('re-registers immediately after a 410 and polls with the new session', async () => {
+    const client = api({
+      register: vi.fn().mockResolvedValueOnce({ session_id: 'old', status: 'online' }).mockResolvedValueOnce({ session_id: 'new', status: 'online' }),
+      poll: vi.fn().mockRejectedValueOnce(new Error('Poll failed: 410 — expired')).mockResolvedValue(null),
+    });
+    const runner = makeRunner(client, runtime());
+    const started = runner.start();
+    await waitFor(() => client.poll.mock.calls.some(([session]) => session === 'new'));
+    await runner.shutdown();
+    await started;
+    expect(client.register).toHaveBeenCalledTimes(2);
+    expect(client.poll.mock.calls.slice(0, 2).map(([session]) => session)).toEqual(['old', 'new']);
+  });
 
-    expect(client.register).toHaveBeenCalledTimes(1); // only after recovery
-    expect(sendAlert).toHaveBeenCalledWith('startup-health-check-failed', expect.anything());
-    runner.shutdown();
-    await startPromise;
-  }, 10000);
+  it('opens the poll circuit after the configured consecutive failure limit', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = api({ poll: vi.fn(async () => { throw new Error('offline'); }) });
+      const runner = makeRunner(client, runtime(), { maxPollFailures: 3 });
+      const started = runner.start();
+      await vi.advanceTimersByTimeAsync(10_000);
+      await started;
+      expect(client.poll).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('resets the circuit after a successful poll', async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const client = api({
+        poll: vi.fn(async () => {
+          calls += 1;
+          if ([1, 2, 4, 5].includes(calls)) throw new Error('offline');
+          return null;
+        }),
+      });
+      const runner = makeRunner(client, runtime(), { maxPollFailures: 3 });
+      const started = runner.start();
+      await vi.advanceTimersByTimeAsync(30_000);
+      await runner.shutdown();
+      await vi.advanceTimersByTimeAsync(200);
+      await started;
+      expect(client.poll.mock.calls.length).toBeGreaterThan(5);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
 });

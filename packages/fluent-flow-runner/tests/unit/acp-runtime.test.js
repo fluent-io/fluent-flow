@@ -80,7 +80,7 @@ function makeHarness(scenario = 'normal', overrides = {}) {
     now: overrides.now ?? (() => Date.now()),
     timers: overrides.timers ?? { setTimeout, clearTimeout },
     limits: {
-      requestTimeoutMs: 250,
+      requestTimeoutMs: 1000,
       silenceMs: 50,
       shutdownIdleMs: 75,
       shutdownExitMs: 75,

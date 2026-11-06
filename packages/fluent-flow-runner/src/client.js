@@ -1,82 +1,71 @@
-/**
- * HTTP client for the Fluent Flow runner API.
- * Wraps the three runner endpoints: register, poll, reportClaim.
- *
- * @param {object} opts
- * @param {string} opts.serverUrl — Fluent Flow server base URL
- * @param {string} opts.token — Agent token (ff_...)
- * @param {Function} [opts.fetch] — fetch implementation (default: globalThis.fetch)
- * @returns {{ register, poll, reportClaim }}
- */
 export function createClient({ serverUrl, token, fetch: fetchFn = globalThis.fetch }) {
   const base = serverUrl.replace(/\/+$/, '');
   const headers = {
     'Content-Type': 'application/json',
-    'Authorization': `Bearer ${token}`,
+    Authorization: `Bearer ${token}`,
   };
-
-  async function post(path, body, label) {
+  async function post(path, body, label, { signal } = {}) {
     const timeoutMs = 35_000;
     const controller = new AbortController();
+    const forwardAbort = () => controller.abort();
+    if (signal?.aborted) forwardAbort();
+    else signal?.addEventListener('abort', forwardAbort, { once: true });
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    let res;
+    let response;
     try {
-      res = await fetchFn(`${base}${path}`, {
+      response = await fetchFn(`${base}${path}`, {
         method: 'POST',
         headers,
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-    } catch (err) {
-      const reason = err?.message ? `: ${err.message}` : '';
-      const message = controller.signal.aborted
+    } catch (error) {
+      const reason = error?.message ? `: ${error.message}` : '';
+      const message = controller.signal.aborted && !signal?.aborted
         ? `${label} request failed after ${timeoutMs}ms${reason}`
         : `${label} request failed${reason}`;
-      throw new Error(message, { cause: err });
+      throw new Error(message, { cause: error });
     } finally {
       clearTimeout(timeout);
+      signal?.removeEventListener('abort', forwardAbort);
     }
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`${label} failed: ${res.status}${text ? ` — ${text}` : ''}`);
-    }
-    return res.json();
+    if (!response.ok) throw new Error(`${label} failed: ${response.status}`);
+    return response.json();
   }
 
   return {
-    /**
-     * Register a session with the server.
-     * @param {object} meta — { hostname, os, cwd }
-     * @returns {Promise<{ ok, session_id, status }>}
-     */
     register: (meta) => post('/api/runner/register', { meta }, 'Register'),
-
-    /**
-     * Long-poll for work.
-     * @param {number} sessionId
-     * @returns {Promise<object|null>} — claim payload or null
-     */
     poll: async (sessionId) => {
       const data = await post('/api/runner/poll', { session_id: sessionId }, 'Poll');
       return data.work ?? null;
     },
-
-    /**
-     * Heartbeat while a claim executes — extends the session TTL and the
-     * claim's expiry on the server so long agent runs aren't re-dispatched
-     * mid-flight.
-     * @param {number} sessionId
-     * @param {number} claimId
-     * @returns {Promise<{ ok: boolean }>}
-     */
-    heartbeat: (sessionId, claimId) => post('/api/runner/heartbeat', { session_id: sessionId, claim_id: claimId }, 'Heartbeat'),
-
-    /**
-     * Report a claim result back to the server.
-     * @param {object} claim — { status, repo, pr_number, attempt }
-     * @returns {Promise<{ ok, claim_id, status }>}
-     */
+    heartbeat: (sessionId, claimId) => post(
+      '/api/runner/heartbeat',
+      { session_id: sessionId, claim_id: claimId },
+      'Heartbeat',
+    ),
     reportClaim: (claim) => post('/api/runner/claim', claim, 'Claim report'),
-
+    postClaimEvents: (sessionId, claimId, events) => post(
+      `/api/runner/claims/${encodeURIComponent(claimId)}/events`,
+      { session_id: sessionId, events },
+      'Claim events',
+    ),
+    postClaimRequest: (sessionId, claimId, request) => post(
+      `/api/runner/claims/${encodeURIComponent(claimId)}/requests`,
+      { session_id: sessionId, request },
+      'Claim request',
+    ),
+    pollClaimCommands: (sessionId, claimId, options) => post(
+      `/api/runner/claims/${encodeURIComponent(claimId)}/commands/poll`,
+      { session_id: sessionId },
+      'Claim commands',
+      options,
+    ),
+    ackClaimCommand: (sessionId, claimId, commandId, status, result, options) => post(
+      `/api/runner/claims/${encodeURIComponent(claimId)}/commands/${encodeURIComponent(commandId)}/ack`,
+      { session_id: sessionId, status, result },
+      'Claim command acknowledgement',
+      options,
+    ),
   };
 }

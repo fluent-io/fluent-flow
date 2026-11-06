@@ -1,21 +1,36 @@
-/**
- * Parse CLI arguments into an options object.
- * @param {string[]} argv — process.argv.slice(2) equivalent
- * @returns {object}
- */
-export function parseArgs(argv) {
-  const opts = { verbose: false };
+const VALUE_FLAGS = new Map([
+  ['--token', 'token'],
+  ['--server', 'server'],
+  ['--cwd', 'cwd'],
+  ['--agent', 'agent'],
+  ['--mcp-auth-token', 'mcpAuthToken'],
+  ['--acp-command', 'acpCommand'],
+]);
 
-  for (let i = 0; i < argv.length; i++) {
-    switch (argv[i]) {
-      case '--token':          opts.token = argv[++i]; break;
-      case '--server':         opts.server = argv[++i]; break;
-      case '--command':        opts.command = argv[++i]; break;
-      case '--cwd':            opts.cwd = argv[++i]; break;
-      case '--verbose':        opts.verbose = true; break;
-      case '--agent':          opts.agent = argv[++i]; break;
-      case '--mcp-auth-token': opts.mcpAuthToken = argv[++i]; break;
+export function parseArgs(argv) {
+  const opts = { verbose: false, acpArgs: [] };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const flag = argv[index];
+    if (flag === '--verbose') {
+      opts.verbose = true;
+      continue;
     }
+    if (flag === '--command') {
+      throw new Error('--command was removed; use --acp-command with repeatable --acp-arg values');
+    }
+    if (flag === '--acp-arg') {
+      if (index + 1 >= argv.length) throw new Error('--acp-arg requires a value');
+      opts.acpArgs.push(argv[index + 1]);
+      index += 1;
+      continue;
+    }
+    const property = VALUE_FLAGS.get(flag);
+    if (!property) throw new Error(`Unknown option: ${flag}`);
+    const value = argv[index + 1];
+    if (value === undefined || value.startsWith('--')) throw new Error(`${flag} requires a value`);
+    opts[property] = value;
+    index += 1;
   }
 
   if (!opts.token && !opts.agent) throw new Error('--token or --agent is required');
