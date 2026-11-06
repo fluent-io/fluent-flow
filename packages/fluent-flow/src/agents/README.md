@@ -83,7 +83,7 @@ Review fails → createClaim (always pending, no session)
 - `claimPendingWork()` is the only way a claim moves to `claimed` — atomic CAS
 - Long-poll push is a notification hint only — if lost, runners pick up via `claimPendingWork()` on next poll
 - Expired claims are automatically re-dispatched at `attempt + 1` (capped at 10) by the expiry worker
-- `head_sha` is stored on claims so check-runs can be created on re-dispatch
+- Parent `head_sha` values survive auto-chain and re-dispatch; post-expiry redispatch creates a queued Check Run on the same commit
 
 ## Multi-tenancy
 

@@ -321,13 +321,14 @@ export async function handleClaimResult(req, res) {
         try {
           await createClaim({
             orgId: org_id,
-            repo,
-            prNumber: pr_number,
-            attempt: attempt + 1,
+            repo: claim.repo,
+            prNumber: claim.pr_number,
+            attempt: claim.attempt + 1,
             claimType: 'review_fix',
             payload: { source_claim_id: claim.id, branch: claim.payload?.branch },
+            headSha: claim.head_sha,
           });
-          logger.info({ msg: 'Auto-created review_fix claim after FAIL review', repo, prNumber: pr_number, attempt: attempt + 1 });
+          logger.info({ msg: 'Auto-created review_fix claim after FAIL review', repo: claim.repo, prNumber: claim.pr_number, attempt: claim.attempt + 1 });
         } catch (err) {
           // Safe to continue: review_fix claim creation failure — the
           // original review result is already recorded. The agent can
@@ -341,13 +342,14 @@ export async function handleClaimResult(req, res) {
         try {
           await createClaim({
             orgId: org_id,
-            repo,
-            prNumber: pr_number,
-            attempt: attempt + 1,
+            repo: claim.repo,
+            prNumber: claim.pr_number,
+            attempt: claim.attempt + 1,
             claimType: 'build',
             payload: { source_claim_id: claim.id },
+            headSha: claim.head_sha,
           });
-          logger.info({ msg: 'Auto-created build claim after spec completion', repo, prNumber: pr_number, attempt: attempt + 1 });
+          logger.info({ msg: 'Auto-created build claim after spec completion', repo: claim.repo, prNumber: claim.pr_number, attempt: claim.attempt + 1 });
         } catch (err) {
           // Safe to continue: build claim creation failure — the spec
           // completion is already recorded. The build can be manually
