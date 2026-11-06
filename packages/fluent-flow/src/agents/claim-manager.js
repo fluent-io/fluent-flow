@@ -1,5 +1,5 @@
-import { and, desc, eq, getTableColumns, inArray, lt, sql } from 'drizzle-orm';
-import { db, schema } from '@fluent-flow/db';
+import { and, desc, eq, getTableColumns, inArray, sql } from 'drizzle-orm';
+import { cancelOpenClaimInteractions, db, getPool, schema } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 import { setSessionStatus } from './session-manager.js';
 import logger from '../logger.js';
@@ -20,6 +20,10 @@ export const MAX_RETRY_ATTEMPTS = 10;
  */
 function toSnakeClaim(row) {
   if (!row) return row;
+  if (row.org_id !== undefined) {
+    const { session_agent_id: _sessionAgentId, ...claim } = row;
+    return claim;
+  }
   return {
     id: row.id,
     org_id: row.orgId,
@@ -38,16 +42,6 @@ function toSnakeClaim(row) {
     check_run_external_id: row.checkRunExternalId,
     head_sha: row.headSha,
   };
-}
-
-async function getSessionAgentId(sessionId) {
-  if (!sessionId) return null;
-  const [row] = await db
-    .select({ agentId: agentSessions.agentId })
-    .from(agentSessions)
-    .where(eq(agentSessions.id, sessionId))
-    .limit(1);
-  return row?.agentId ?? null;
 }
 
 async function freeSession(orgId, sessionId, agentId, targetStatus = 'online') {
@@ -195,40 +189,99 @@ export async function getClaimById(orgId, claimId) {
   return toSnakeClaim(row) ?? null;
 }
 
-async function finalizeClaimById(orgId, claimId, finalStatus) {
-  const [row] = await db
-    .update(agentClaims)
-    .set({ status: finalStatus, completedAt: sql`NOW()` })
-    .where(
-      and(
-        eq(agentClaims.id, claimId),
-        eq(agentClaims.orgId, orgId),
-        inArray(agentClaims.status, ['claimed', 'pending']),
-      ),
-    )
-    .returning({
-      ...getTableColumns(agentClaims),
-      sessionAgentId: sql`(SELECT ${agentSessions.agentId} FROM ${agentSessions} WHERE ${agentSessions.id} = ${agentClaims.sessionId})`.as('session_agent_id'),
-    });
+export async function assertClaimOwner(
+  { orgId, agentId, sessionId, claimId },
+  executor = null,
+  lockMode = null,
+) {
+  const client = executor ?? await getPool().connect();
+  const ownsClient = executor == null;
+  try {
+    const lockClause = lockMode === 'share' ? ' FOR SHARE' : '';
+    const owned = await client.query(
+      `SELECT claim.*
+       FROM agent_claims claim
+       JOIN agent_sessions session
+         ON session.id = claim.session_id
+        AND session.org_id = claim.org_id
+       WHERE claim.id = $4
+         AND claim.org_id = $1
+         AND session.agent_id = $2
+         AND claim.session_id = $3
+         AND claim.status = 'claimed'${lockClause}`,
+      [orgId, agentId, sessionId, claimId],
+    );
+    if (owned.rows.length > 0) return toSnakeClaim(owned.rows[0]);
+    const currentOrg = await client.query(
+      'SELECT id FROM agent_claims WHERE id = $1 AND org_id = $2',
+      [claimId, orgId],
+    );
+    const statusCode = currentOrg.rows.length === 0 ? 404 : 409;
+    throw Object.assign(new Error(statusCode === 404 ? 'Claim not found' : 'Claim ownership is stale'), { statusCode });
+  } finally {
+    if (ownsClient) client.release();
+  }
+}
+
+export async function withClaimOwner(input, operation) {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await assertClaimOwner(input, client, 'share');
+    const result = await operation(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function finalizeClaimById(orgId, claimId, sessionId, finalStatus) {
+  const client = await getPool().connect();
+  let row;
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `UPDATE agent_claims claim
+       SET status = $4, completed_at = NOW()
+       WHERE claim.id = $2
+         AND claim.org_id = $1
+         AND claim.session_id = $3
+         AND claim.status = 'claimed'
+       RETURNING claim.*,
+         (SELECT session.agent_id
+            FROM agent_sessions session
+           WHERE session.id = claim.session_id
+             AND session.org_id = claim.org_id) AS session_agent_id`,
+      [orgId, claimId, sessionId, finalStatus],
+    );
+    row = result.rows[0] ?? null;
+    if (row) await cancelOpenClaimInteractions({ orgId, claimId }, client);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
   if (!row) return null;
-  const { sessionAgentId, ...claim } = row;
-  await freeSession(orgId, claim.sessionId, sessionAgentId, 'online');
-  return toSnakeClaim(claim);
+  await freeSession(orgId, row.session_id, row.session_agent_id, 'online');
+  return toSnakeClaim(row);
 }
 
-/**
- * Mark a claim completed by id. The only ambiguity-free finalization —
- * use whenever the caller knows the claim id.
- */
-export async function completeClaimById(orgId, claimId) {
-  return finalizeClaimById(orgId, claimId, 'completed');
+export async function completeClaimById(orgId, claimId, sessionId) {
+  return finalizeClaimById(orgId, claimId, sessionId, 'completed');
 }
 
-/**
- * Mark a claim failed by id. The only ambiguity-free finalization.
- */
-export async function failClaimById(orgId, claimId) {
-  return finalizeClaimById(orgId, claimId, 'failed');
+export async function failClaimById(orgId, claimId, sessionId) {
+  return finalizeClaimById(orgId, claimId, sessionId, 'failed');
+}
+
+export async function cancelClaimById(orgId, claimId, sessionId) {
+  return finalizeClaimById(orgId, claimId, sessionId, 'cancelled');
 }
 
 /**
@@ -264,23 +317,41 @@ export async function redispatchClaim(claim) {
  * Expire all overdue claims. Sets associated sessions to offline.
  */
 export async function expireClaims() {
-  const claims = await db
-    .update(agentClaims)
-    .set({ status: 'expired', completedAt: sql`NOW()` })
-    .where(and(eq(agentClaims.status, 'claimed'), lt(agentClaims.expiresAt, sql`NOW()`)))
-    .returning();
+  const client = await getPool().connect();
+  let claims;
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `UPDATE agent_claims claim
+       SET status = 'expired', completed_at = NOW()
+       WHERE claim.status = 'claimed'
+         AND claim.expires_at < NOW()
+       RETURNING claim.*,
+         (SELECT session.agent_id
+            FROM agent_sessions session
+           WHERE session.id = claim.session_id
+             AND session.org_id = claim.org_id) AS session_agent_id`,
+    );
+    claims = result.rows;
+    for (const claim of claims) {
+      await cancelOpenClaimInteractions({ orgId: claim.org_id, claimId: claim.id }, client);
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
   for (const claim of claims) {
     try {
-      const agentId = await getSessionAgentId(claim.sessionId);
-      await freeSession(claim.orgId, claim.sessionId, agentId, 'offline');
+      await freeSession(claim.org_id, claim.session_id, claim.session_agent_id, 'offline');
     } catch (err) {
-      // Safe to continue: per-claim iteration during expiry sweep — one
-      // stale session shouldn't block expiry of other claims. The session
-      // will time out naturally if this cleanup path fails.
       logger.warn({
         msg: 'Failed to free session on claim expiration',
         error: err.message,
-        sessionId: claim.sessionId,
+        sessionId: claim.session_id,
+        safeToContinue: true,
       });
     }
   }

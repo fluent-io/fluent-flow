@@ -57,18 +57,21 @@ vi.mock('../../src/agents/claim-manager.js', async (importOriginal) => {
   const real = await importOriginal();
   return {
     ...real,
+    assertClaimOwner: vi.fn(),
+    withClaimOwner: vi.fn(),
     completeClaim: vi.fn(),
     failClaim: vi.fn(),
     getClaimByAttempt: vi.fn(),
     getClaimById: vi.fn(),
     completeClaimById: vi.fn(),
     failClaimById: vi.fn(),
+    cancelClaimById: vi.fn(),
     extendClaim: vi.fn(),
     redispatchClaim: vi.fn(),
   };
 });
 
-import { completeClaimById } from '../../src/agents/claim-manager.js';
+import { assertClaimOwner, completeClaimById } from '../../src/agents/claim-manager.js';
 import { handleClaimResult } from '../../src/routes/runner.js';
 
 function makeResponse() {
@@ -90,7 +93,7 @@ function makeResponse() {
 }
 
 function makeRequest(body) {
-  return { body, tokenInfo: { org_id: 'org-1', agent_id: 'agent-1' } };
+  return { body: { session_id: 3, ...body }, tokenInfo: { org_id: 'org-1', agent_id: 'agent-1' } };
 }
 
 const REVIEW_CLAIM = {
@@ -99,6 +102,7 @@ const REVIEW_CLAIM = {
   repo: 'acme/widgets',
   pr_number: 17,
   attempt: 3,
+  session_id: 3,
   claim_type: 'review',
   payload: { branch: 'feature/widgets' },
   head_sha: 'review-head-sha',
@@ -111,6 +115,7 @@ const SPEC_CLAIM = {
   repo: 'acme/widgets',
   pr_number: 17,
   attempt: 6,
+  session_id: 3,
   claim_type: 'spec',
   payload: { auto_chain: true },
   head_sha: 'spec-head-sha',
@@ -119,6 +124,7 @@ const SPEC_CLAIM = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  assertClaimOwner.mockResolvedValue({ id: 41, org_id: 'org-1', session_id: 3, status: 'claimed' });
   insertedClaims.length = 0;
 });
 

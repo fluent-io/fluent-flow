@@ -197,7 +197,7 @@ describe('dispatch', () => {
     );
   });
 
-  it('includes agentType and transportCommand in long_poll payload', async () => {
+  it('includes agentType but no executable configuration in long_poll payload', async () => {
     const mockSend = vi.fn();
     getAgentConfig.mockReturnValue(null);
     getAgent.mockResolvedValueOnce({
@@ -217,7 +217,8 @@ describe('dispatch', () => {
 
     const sentPayload = mockSend.mock.calls[0][1];
     expect(sentPayload.agentType).toBe('custom');
-    expect(sentPayload.transportCommand).toBe('my-agent "{prompt}"');
+    expect(sentPayload).not.toHaveProperty('transportCommand');
+    expect(JSON.stringify(sentPayload)).not.toContain('my-agent');
   });
 
   it('does not include session_id for non-long_poll agents', async () => {

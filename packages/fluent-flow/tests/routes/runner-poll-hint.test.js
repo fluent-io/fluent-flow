@@ -16,10 +16,14 @@ vi.mock('../../src/agents/session-manager.js', () => ({
 }));
 
 vi.mock('../../src/agents/claim-manager.js', () => ({
+  assertClaimOwner: vi.fn(),
+  withClaimOwner: vi.fn(),
   completeClaim: vi.fn(),
   failClaim: vi.fn(),
   completeClaimById: vi.fn(),
   failClaimById: vi.fn(),
+  cancelClaimById: vi.fn(),
+  extendClaim: vi.fn(),
   getClaimById: vi.fn(),
   getClaimByAttempt: vi.fn(),
   createClaim: vi.fn(),
@@ -44,6 +48,10 @@ vi.mock('@fluent-flow/db', async (importOriginal) => {
   return {
     db: { execute: vi.fn() },
     schema: real.schema,
+    appendClaimEvents: vi.fn(),
+    upsertClaimRequest: vi.fn(),
+    leaseClaimCommands: vi.fn(),
+    ackClaimCommand: vi.fn(),
   };
 });
 

@@ -16,11 +16,14 @@ vi.mock('../../src/agents/session-manager.js', () => ({
 }));
 
 vi.mock('../../src/agents/claim-manager.js', () => ({
+  assertClaimOwner: vi.fn(),
+  withClaimOwner: vi.fn(),
   extendClaim: vi.fn(),
   completeClaim: vi.fn(),
   failClaim: vi.fn(),
   completeClaimById: vi.fn(),
   failClaimById: vi.fn(),
+  cancelClaimById: vi.fn(),
   getClaimById: vi.fn(),
   getClaimByAttempt: vi.fn(),
   createClaim: vi.fn(),

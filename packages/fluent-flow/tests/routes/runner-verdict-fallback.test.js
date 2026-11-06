@@ -10,10 +10,14 @@ vi.mock('../../src/db/client.js', () => ({
 }));
 
 vi.mock('../../src/agents/claim-manager.js', () => ({
+  assertClaimOwner: vi.fn(),
+  withClaimOwner: vi.fn(),
   completeClaim: vi.fn(),
   failClaim: vi.fn(),
   completeClaimById: vi.fn(),
   failClaimById: vi.fn(),
+  cancelClaimById: vi.fn(),
+  extendClaim: vi.fn(),
   getClaimById: vi.fn(),
   getClaimByAttempt: vi.fn(),
   createClaim: vi.fn(),
@@ -25,7 +29,7 @@ vi.mock('../../src/engine/review-manager.js', () => ({
   dispatchReview: vi.fn(),
 }));
 
-import { completeClaimById, createClaim } from '../../src/agents/claim-manager.js';
+import { assertClaimOwner, completeClaimById, createClaim } from '../../src/agents/claim-manager.js';
 import { fetchLatestReviewVerdict } from '../../src/engine/review-manager.js';
 import { handleClaimResult } from '../../src/routes/runner.js';
 
@@ -39,7 +43,7 @@ function makeRes() {
   };
 }
 
-const REQ = (body) => ({ body, tokenInfo: { org_id: 'o1', agent_id: 'a1' } });
+const REQ = (body) => ({ body: { claim_id: 7, session_id: 3, ...body }, tokenInfo: { org_id: 'o1', agent_id: 'a1' } });
 
 const REVIEW_CLAIM = {
   id: 7,
@@ -47,6 +51,7 @@ const REVIEW_CLAIM = {
   repo: 'o/r',
   pr_number: 5,
   attempt: 2,
+  session_id: 3,
   claim_type: 'review',
   payload: {},
   head_sha: 'abc123',
@@ -55,6 +60,7 @@ const REVIEW_CLAIM = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  assertClaimOwner.mockResolvedValue(REVIEW_CLAIM);
   completeClaimById.mockResolvedValue({ ...REVIEW_CLAIM, status: 'completed' });
 });
 

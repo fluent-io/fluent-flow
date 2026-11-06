@@ -128,7 +128,6 @@ export async function dispatch({ agentId, event, payload }) {
     ...(agentConfig.delivery?.to && { to: agentConfig.delivery.to }),
     ...(agentConfig.transport === 'long_poll' && {
       agentType: agentConfig.agent_type,
-      transportCommand: agentConfig.command,
     }),
   };
 
