@@ -169,6 +169,13 @@
       "when": 1794096000000,
       "tag": "0023_collab_claim_idempotency",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1794182400000,
+      "tag": "0024_claim_event_byte_budget",
+      "breakpoints": true
     }
   ]
 }

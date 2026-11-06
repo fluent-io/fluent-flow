@@ -2,6 +2,7 @@ import pg from 'pg';
 import { getPool } from '../pool.js';
 
 export type QueryExecutor = Pick<pg.Pool, 'query'> | Pick<pg.PoolClient, 'query'>;
+export const MAX_CLAIM_EVENT_BYTES = 16 * 1024 * 1024;
 
 export interface ClaimRequest {
   orgId: string;
@@ -85,20 +86,38 @@ export async function appendClaimEvents(input: {
 }, executor?: QueryExecutor): Promise<{ inserted: number; lastSeq: number | null }> {
   if (input.events.length === 0) return { inserted: 0, lastSeq: null };
   return atomic(executor, async (client) => {
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtext($1))`,
+      [`claim-events:${input.orgId}:${input.claimId}`],
+    );
+    const existing = await client.query<{ payload_bytes: string }>(
+      `SELECT COALESCE(SUM(payload_bytes), 0)::text AS payload_bytes
+       FROM agent_claim_events
+       WHERE org_id = $1 AND claim_id = $2`,
+      [input.orgId, input.claimId],
+    );
+    let payloadBytes = Number(existing.rows[0].payload_bytes);
     let inserted = 0;
     for (const event of input.events) {
-      const result = await client.query(
+      const serializedPayload = JSON.stringify(event.payload);
+      const result = await client.query<{ inserted: boolean; payload_bytes: number }>(
         `INSERT INTO agent_claim_events (org_id, claim_id, seq, kind, payload)
          VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (org_id, claim_id, seq) DO UPDATE
            SET kind = agent_claim_events.kind
          WHERE agent_claim_events.kind = EXCLUDED.kind
            AND agent_claim_events.payload = EXCLUDED.payload
-         RETURNING xmax = 0 AS inserted`,
-        [input.orgId, input.claimId, event.seq, event.kind, JSON.stringify(event.payload)],
+         RETURNING xmax = 0 AS inserted, payload_bytes`,
+        [input.orgId, input.claimId, event.seq, event.kind, serializedPayload],
       );
       if (result.rows.length === 0) throw new Error('Interaction conflict.');
-      if (result.rows[0].inserted) inserted += 1;
+      if (result.rows[0].inserted) {
+        inserted += 1;
+        payloadBytes += result.rows[0].payload_bytes;
+      }
+    }
+    if (payloadBytes > MAX_CLAIM_EVENT_BYTES) {
+      throw new Error('Claim event payload limit exceeded.');
     }
     return { inserted, lastSeq: Math.max(...input.events.map((event) => event.seq)) };
   });

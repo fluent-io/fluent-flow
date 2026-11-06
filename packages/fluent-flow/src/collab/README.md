@@ -22,6 +22,9 @@ rate-limited secret invitation redemption.
   checks current permissions on every delivery; revocation closes a filtered
   stream with `access_revoked`. `/attention` shares the current safe DTO;
   reading an update does not resolve a pending approval or error.
+- `routes-claim-executions.js`: task-linked ACP claim start/history, safe detail
+  projection, internal event/request history and idempotent steering, answers
+  and cancellation.
 - `routes-hosts.js`: owner-scoped host enrollment and allowlisted mappings.
   `POST /hosts` returns the one-time `{id,name,token}` enrollment DTO.
   `GET /hosts` returns token-free summaries with nullable `lastHeartbeatAt`;

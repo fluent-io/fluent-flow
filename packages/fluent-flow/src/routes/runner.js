@@ -494,6 +494,9 @@ function interactionErrorResponse(error, res, operation) {
   logger.error({ msg: `Failed to ${operation}`, error: error.message });
   const ownershipResponse = ownershipErrorResponse(error, res);
   if (ownershipResponse) return ownershipResponse;
+  if (error.message === 'Claim event payload limit exceeded.') {
+    return payloadTooLarge(res);
+  }
   if (error.message?.startsWith('Interaction conflict')) {
     return res.status(409).json({ error: 'Interaction conflict' });
   }

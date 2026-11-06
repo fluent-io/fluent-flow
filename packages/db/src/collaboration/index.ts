@@ -109,11 +109,17 @@ export {
   startCollabClaimExecution,
   listCollabClaimExecutions,
   getCollabClaimExecution,
+  listCollabClaimEvents,
+  listCollabClaimRequests,
+  submitCollabClaimCommand,
 } from './claim-executions.js';
 export type {
   ClaimExecution,
   ClaimExecutionBadge,
+  ClaimExecutionEvent,
+  ClaimExecutionRequest,
   StartClaimExecutionResult,
+  SubmitClaimCommandResult,
 } from './claim-executions.js';
 
 export { createCollabComment, listCollabComments } from './comments.js';

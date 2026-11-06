@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { getPool } from '../pool.js';
+import {
+  cancelOpenClaimInteractions,
+  enqueueClaimCommand,
+  reserveClaimRequestAnswer,
+} from '../queries/claim-interactions.js';
+import type { ClaimCommand } from '../queries/claim-interactions.js';
 import { insertPendingClaim } from '../queries/claims.js';
 import { authorize, getProjectCapabilities } from './authorize.js';
 import type { CollabActor } from './auth.js';
@@ -30,6 +36,29 @@ export type ClaimExecution = ClaimExecutionBadge & {
 
 export type StartClaimExecutionResult = {
   claim: ClaimExecution | ClaimExecutionBadge;
+  created: boolean;
+};
+
+export type ClaimExecutionEvent = {
+  seq: number;
+  kind: string;
+  payload: unknown;
+  createdAt: string;
+};
+
+export type ClaimExecutionRequest = {
+  requestKey: string;
+  kind: 'permission' | 'elicitation';
+  payload: unknown;
+  status: 'open' | 'answer_queued' | 'resolved' | 'uncertain' | 'cancelled';
+  createdAt: string;
+  resolvedAt: string | null;
+};
+
+export type SubmitClaimCommandResult = {
+  commandId: number | null;
+  kind: 'prompt' | 'cancel' | 'permission' | 'elicitation';
+  status: string;
   created: boolean;
 };
 
@@ -75,10 +104,113 @@ const detailSchema = z.object({
   claimId: z.number().int().positive(),
 });
 
+const POSTGRES_INTEGER_MAX = 2_147_483_647;
+const CLAIM_INTERACTION_PAGE_BYTES = 1024 * 1024;
+const CURSOR_TIMESTAMP_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{6})Z$/;
+
+function validCursorTimestamp(value: string): boolean {
+  const match = CURSOR_TIMESTAMP_PATTERN.exec(value);
+  if (match === null) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  return date.getUTCFullYear() === year
+    && date.getUTCMonth() === month - 1
+    && date.getUTCDate() === day
+    && date.getUTCHours() === hour
+    && date.getUTCMinutes() === minute
+    && date.getUTCSeconds() === second;
+}
+
+const cursorTimestampSchema = z.string().refine(validCursorTimestamp);
+const cursorIntegerSchema = z.number().int().positive().max(POSTGRES_INTEGER_MAX);
+
 const cursorSchema = z.object({
-  t: z.string().min(1),
-  c: z.number().int().positive(),
+  t: cursorTimestampSchema,
+  c: cursorIntegerSchema,
+}).strict();
+
+const eventListSchema = z.object({
+  actor: z.object({ principalId: z.string().uuid(), sessionVersion: z.number().int().min(1) }),
+  claimId: z.number().int().positive(),
+  cursor: z.string().optional(),
+  limit: z.number().int().positive().max(100).default(50),
 });
+
+const requestListSchema = eventListSchema;
+
+const eventCursorSchema = z.object({
+  s: cursorIntegerSchema,
+}).strict();
+
+const requestCursorSchema = z.object({
+  t: cursorTimestampSchema,
+  k: z.string().min(1).max(512),
+}).strict();
+
+const commandActorSchema = z.object({
+  principalId: z.string().uuid(),
+  sessionVersion: z.number().int().min(1),
+}).strict();
+
+const commandBase = {
+  actor: commandActorSchema,
+  claimId: z.number().int().positive(),
+  idempotencyKey: z.string().min(8).max(256),
+};
+
+const commandSchema = z.discriminatedUnion('kind', [
+  z.object({
+    ...commandBase,
+    kind: z.literal('prompt'),
+    payload: z.object({ text: z.string().min(1).max(20000) }).strict(),
+    requestKey: z.never().optional(),
+  }).strict(),
+  z.object({
+    ...commandBase,
+    kind: z.literal('cancel'),
+    payload: z.object({}).strict(),
+    requestKey: z.never().optional(),
+  }).strict(),
+  z.object({
+    ...commandBase,
+    kind: z.literal('permission'),
+    payload: z.object({ answer: z.record(z.unknown()) }).strict(),
+    requestKey: z.string().min(1).max(512),
+  }).strict(),
+  z.object({
+    ...commandBase,
+    kind: z.literal('elicitation'),
+    payload: z.object({ answer: z.record(z.unknown()) }).strict(),
+    requestKey: z.string().min(1).max(512),
+  }).strict(),
+]);
+
+type ExecutionScope = {
+  project_id: string;
+  org_id: string;
+};
+
+type EventRow = {
+  seq: number;
+  kind: string;
+  payload: unknown;
+  created_at: Date;
+};
+
+type RequestRow = {
+  request_key: string;
+  kind: 'permission' | 'elicitation';
+  payload: unknown;
+  status: ClaimExecutionRequest['status'];
+  created_at: Date;
+  resolved_at: Date | null;
+  cursor_created_at: string;
+};
 
 const CLAIM_SELECT = `SELECT
   claim.id,
@@ -151,25 +283,12 @@ async function taskScope(taskId: string): Promise<{ projectId: string; legacyOrg
   };
 }
 
-async function requireLegacyRepo(
-  repo: string,
-  legacyOrgId: string,
-  legacyUserId: number,
-): Promise<void> {
+async function requireLegacyRepo(repo: string, legacyOrgId: string): Promise<void> {
   const result = await getPool().query(
-    `SELECT repo.id
-     FROM repos repo
-     JOIN users actor ON actor.id = $3
-     WHERE repo.repo_full_name = $1
-       AND repo.org_id = $2
-       AND (
-         actor.is_superadmin
-         OR EXISTS (
-           SELECT 1 FROM user_orgs membership
-           WHERE membership.user_id = actor.id AND membership.org_id = repo.org_id
-         )
-       )`,
-    [repo, legacyOrgId, legacyUserId],
+    `SELECT id
+     FROM repos
+     WHERE repo_full_name = $1 AND org_id = $2`,
+    [repo, legacyOrgId],
   );
   if (result.rows.length === 0) throw new CollabServiceError(404, 'not_found', 'Not found.');
 }
@@ -211,12 +330,11 @@ export async function startCollabClaimExecution(input: {
   const principal = await requireCurrentPrincipal(parsed.actor);
   const scope = await taskScope(parsed.taskId);
   await authorize(parsed.actor, { projectId: scope.projectId }, ['run.start']);
-  if (scope.legacyOrgId === null || principal.legacyUserId === null) {
+  if (scope.legacyOrgId === null) {
     throw new CollabServiceError(404, 'not_found', 'Not found.');
   }
   const legacyOrgId = scope.legacyOrgId;
-  const legacyUserId = principal.legacyUserId;
-  await requireLegacyRepo(parsed.repo, legacyOrgId, legacyUserId);
+  await requireLegacyRepo(parsed.repo, legacyOrgId);
   const canonical = {
     expectedVersion: parsed.expectedVersion,
     repo: parsed.repo,
@@ -340,4 +458,326 @@ export async function getCollabClaimExecution(input: {
   const row = result.rows[0];
   await authorize(parsed.actor, { projectId: row.project_id }, ['task.read']);
   return projectClaim(principal.id, row.project_id, row);
+}
+
+async function claimExecutionScope(claimId: number): Promise<ExecutionScope> {
+  const result = await getPool().query<ExecutionScope>(
+    `SELECT execution.project_id, claim.org_id
+     FROM collab_claim_executions execution
+     JOIN agent_claims claim ON claim.id = execution.claim_id
+     WHERE execution.claim_id = $1`,
+    [claimId],
+  );
+  if (result.rows.length === 0) throw new CollabServiceError(404, 'not_found', 'Not found.');
+  return result.rows[0];
+}
+
+function decodeEventCursor(cursor: string | undefined): { s: number } | null {
+  if (cursor === undefined) return null;
+  try {
+    return eventCursorSchema.parse(JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')));
+  } catch {
+    throw new CollabServiceError(400, 'invalid_cursor', 'The cursor is invalid.');
+  }
+}
+
+function decodeRequestCursor(cursor: string | undefined): { t: string; k: string } | null {
+  if (cursor === undefined) return null;
+  try {
+    return requestCursorSchema.parse(JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')));
+  } catch {
+    throw new CollabServiceError(400, 'invalid_cursor', 'The cursor is invalid.');
+  }
+}
+
+function encodeEventCursor(row: EventRow): string {
+  return Buffer.from(JSON.stringify({ s: row.seq })).toString('base64url');
+}
+
+function encodeRequestCursor(row: RequestRow): string {
+  return Buffer.from(JSON.stringify({ t: row.cursor_created_at, k: row.request_key })).toString('base64url');
+}
+function byteBoundedPage<Row, Value>(
+  rows: Row[],
+  limit: number,
+  project: (row: Row) => Value,
+): { items: Value[]; hasMore: boolean } {
+  const items: Value[] = [];
+  let bytes = 2;
+  const candidateCount = Math.min(rows.length, limit);
+  for (let index = 0; index < candidateCount; index += 1) {
+    const item = project(rows[index]);
+    const itemBytes = Buffer.byteLength(JSON.stringify(item), 'utf8');
+    const separatorBytes = items.length === 0 ? 0 : 1;
+    if (items.length > 0 && bytes + separatorBytes + itemBytes > CLAIM_INTERACTION_PAGE_BYTES) break;
+    items.push(item);
+    bytes += separatorBytes + itemBytes;
+  }
+  return { items, hasMore: rows.length > items.length };
+}
+
+export async function listCollabClaimEvents(input: {
+  actor: CollabActor;
+  claimId: number;
+  cursor?: string;
+  limit?: number;
+}): Promise<{ events: ClaimExecutionEvent[]; nextCursor: string | null }> {
+  const parsed = eventListSchema.parse(input);
+  const scope = await claimExecutionScope(parsed.claimId);
+  await authorize(parsed.actor, { projectId: scope.project_id }, ['task.read', 'internal.read']);
+  const cursor = decodeEventCursor(parsed.cursor);
+  const result = await getPool().query<EventRow>(
+    `SELECT event.seq, event.kind, event.payload, event.created_at
+     FROM collab_claim_executions execution
+     JOIN agent_claims claim ON claim.id = execution.claim_id
+     JOIN agent_claim_events event
+       ON event.claim_id = execution.claim_id AND event.org_id = claim.org_id
+     WHERE execution.claim_id = $1 AND claim.org_id = $2
+       AND ($3::integer IS NULL OR event.seq > $3)
+     ORDER BY event.seq
+     LIMIT $4`,
+    [parsed.claimId, scope.org_id, cursor?.s ?? null, parsed.limit + 1],
+  );
+  const page = byteBoundedPage(result.rows, parsed.limit, (row): ClaimExecutionEvent => ({
+    seq: row.seq,
+    kind: row.kind,
+    payload: row.payload,
+    createdAt: row.created_at.toISOString(),
+  }));
+  return {
+    events: page.items,
+    nextCursor: page.hasMore ? encodeEventCursor(result.rows[page.items.length - 1]) : null,
+  };
+}
+
+export async function listCollabClaimRequests(input: {
+  actor: CollabActor;
+  claimId: number;
+  cursor?: string;
+  limit?: number;
+}): Promise<{ requests: ClaimExecutionRequest[]; nextCursor: string | null }> {
+  const parsed = requestListSchema.parse(input);
+  const scope = await claimExecutionScope(parsed.claimId);
+  await authorize(parsed.actor, { projectId: scope.project_id }, ['task.read', 'internal.read']);
+  const cursor = decodeRequestCursor(parsed.cursor);
+  const result = await getPool().query<RequestRow>(
+    `SELECT
+       request.request_key,
+       request.kind,
+       request.payload,
+       request.status,
+       request.created_at,
+       request.resolved_at,
+       to_char(request.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_created_at
+     FROM collab_claim_executions execution
+     JOIN agent_claims claim ON claim.id = execution.claim_id
+     JOIN agent_claim_requests request
+       ON request.claim_id = execution.claim_id AND request.org_id = claim.org_id
+     WHERE execution.claim_id = $1 AND claim.org_id = $2
+       AND (
+         $3::timestamptz IS NULL
+         OR (request.created_at, request.request_key) > ($3::timestamptz, $4::text)
+       )
+     ORDER BY request.created_at, request.request_key
+     LIMIT $5`,
+    [parsed.claimId, scope.org_id, cursor?.t ?? null, cursor?.k ?? '', parsed.limit + 1],
+  );
+  const page = byteBoundedPage(result.rows, parsed.limit, (row): ClaimExecutionRequest => ({
+    requestKey: row.request_key,
+    kind: row.kind,
+    payload: row.payload,
+    status: row.status,
+    createdAt: row.created_at.toISOString(),
+    resolvedAt: row.resolved_at?.toISOString() ?? null,
+  }));
+  return {
+    requests: page.items,
+    nextCursor: page.hasMore ? encodeRequestCursor(result.rows[page.items.length - 1]) : null,
+  };
+}
+
+function interactionConflict(error: unknown, code: 'idempotency_conflict' | 'request_conflict'): never {
+  if (error instanceof Error && error.message === 'Interaction conflict.') {
+    const message = code === 'idempotency_conflict'
+      ? 'This request identity was already used with a different payload.'
+      : 'The request is not available.';
+    throw new CollabServiceError(409, code, message);
+  }
+  throw error;
+}
+
+export async function submitCollabClaimCommand(input: {
+  actor: CollabActor;
+  claimId: number;
+  idempotencyKey: string;
+  kind: 'prompt' | 'cancel' | 'permission' | 'elicitation';
+  payload: Record<string, unknown>;
+  requestKey?: string;
+}): Promise<SubmitClaimCommandResult> {
+  const parsed = commandSchema.parse(input);
+  if (Buffer.byteLength(JSON.stringify(parsed.payload), 'utf8') > 256 * 1024) {
+    throw new CollabServiceError(413, 'payload_too_large', 'The request payload is too large.');
+  }
+  const principal = await requireCurrentPrincipal(parsed.actor);
+  const scope = await claimExecutionScope(parsed.claimId);
+  const required = parsed.kind === 'cancel'
+    ? ['internal.read', 'run.cancel'] as const
+    : ['internal.read', 'run.steer'] as const;
+  await authorize(parsed.actor, { projectId: scope.project_id }, required);
+  const canonical = {
+    kind: parsed.kind,
+    payload: parsed.payload,
+    requestKey: parsed.kind === 'permission' || parsed.kind === 'elicitation'
+      ? parsed.requestKey
+      : null,
+  };
+  const hash = requestHash(canonical);
+  return withClientTransaction<SubmitClaimCommandResult>(async (tx) => {
+    const locked = await tx.query<{ org_id: string; status: string }>(
+      `SELECT claim.org_id, claim.status
+       FROM collab_claim_executions execution
+       JOIN agent_claims claim ON claim.id = execution.claim_id
+       WHERE execution.claim_id = $1
+         AND execution.project_id = $2
+         AND claim.org_id = $3
+       FOR UPDATE OF claim`,
+      [parsed.claimId, scope.project_id, scope.org_id],
+    );
+    if (locked.rows.length === 0) throw new CollabServiceError(404, 'not_found', 'Not found.');
+    const claim = locked.rows[0];
+    const requestKey = parsed.kind === 'permission' || parsed.kind === 'elicitation'
+      ? parsed.requestKey
+      : null;
+    const existingCommand = await tx.query<{
+      id: number;
+      kind: SubmitClaimCommandResult['kind'];
+      status: string;
+      body_matches: boolean;
+    }>(
+      `SELECT id, kind, status,
+         kind = $4
+           AND payload = $5::jsonb
+           AND request_key IS NOT DISTINCT FROM $6::text AS body_matches
+       FROM agent_claim_commands
+       WHERE org_id = $1 AND claim_id = $2 AND idempotency_key = $3`,
+      [
+        claim.org_id,
+        parsed.claimId,
+        parsed.idempotencyKey,
+        parsed.kind,
+        JSON.stringify(parsed.payload),
+        requestKey,
+      ],
+    );
+    if (existingCommand.rows.length > 0) {
+      const existing = existingCommand.rows[0];
+      if (!existing.body_matches) {
+        throw new CollabServiceError(
+          409,
+          'idempotency_conflict',
+          'This request identity was already used with a different payload.',
+        );
+      }
+      return {
+        commandId: existing.id,
+        kind: existing.kind,
+        status: existing.status,
+        created: false,
+      };
+    }
+    if (parsed.kind === 'cancel') {
+      const existingCancellation = await tx.query<{ request_hash: string }>(
+        `SELECT request_hash
+         FROM collab_idempotency_records
+         WHERE scope_key = $1 AND idempotency_key = $2`,
+        [`claim-command:${parsed.claimId}`, parsed.idempotencyKey],
+      );
+      if (existingCancellation.rows.length > 0) {
+        if (existingCancellation.rows[0].request_hash !== hash) {
+          throw new CollabServiceError(
+            409,
+            'idempotency_conflict',
+            'This request identity was already used with a different payload.',
+          );
+        }
+        return { commandId: null, kind: 'cancel', status: 'cancelled', created: false };
+      }
+    }
+    if (claim.status === 'pending') {
+      if (parsed.kind !== 'cancel') {
+        throw new CollabServiceError(409, 'claim_not_active', 'The execution is not active.');
+      }
+      const cancelled = await tx.query(
+        `UPDATE agent_claims
+         SET status = 'cancelled', completed_at = now()
+         WHERE id = $1 AND org_id = $2 AND status = 'pending'
+         RETURNING id`,
+        [parsed.claimId, claim.org_id],
+      );
+      if (cancelled.rows.length === 0) {
+        throw new CollabServiceError(409, 'claim_not_active', 'The execution is not active.');
+      }
+      await cancelOpenClaimInteractions(
+        { orgId: claim.org_id, claimId: parsed.claimId },
+        tx,
+      );
+      await tx.query(
+        `INSERT INTO collab_idempotency_records
+           (principal_id, scope_key, idempotency_key, request_hash, claim_id)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [
+          principal.id,
+          `claim-command:${parsed.claimId}`,
+          parsed.idempotencyKey,
+          hash,
+          parsed.claimId,
+        ],
+      );
+      return { commandId: null, kind: 'cancel', status: 'cancelled', created: true };
+    }
+    if (claim.status !== 'claimed') {
+      throw new CollabServiceError(409, 'claim_not_active', 'The execution is not active.');
+    }
+    if (parsed.kind === 'permission' || parsed.kind === 'elicitation') {
+      let reserved: { command: ClaimCommand; created: boolean } | null;
+      try {
+        reserved = await reserveClaimRequestAnswer({
+          orgId: claim.org_id,
+          claimId: parsed.claimId,
+          requestKey: parsed.requestKey,
+          idempotencyKey: parsed.idempotencyKey,
+          kind: parsed.kind,
+          payload: parsed.payload,
+        }, tx);
+      } catch (error) {
+        interactionConflict(error, 'request_conflict');
+      }
+      if (reserved === null) {
+        throw new CollabServiceError(409, 'request_conflict', 'The request is not available.');
+      }
+      return {
+        commandId: reserved.command.id,
+        kind: reserved.command.kind,
+        status: reserved.command.status,
+        created: reserved.created,
+      };
+    }
+    try {
+      const queued = await enqueueClaimCommand({
+        orgId: claim.org_id,
+        claimId: parsed.claimId,
+        idempotencyKey: parsed.idempotencyKey,
+        kind: parsed.kind,
+        payload: parsed.payload,
+      }, tx);
+      return {
+        commandId: queued.command.id,
+        kind: queued.command.kind,
+        status: queued.command.status,
+        created: queued.created,
+      };
+    } catch (error) {
+      interactionConflict(error, 'idempotency_conflict');
+    }
+  });
 }

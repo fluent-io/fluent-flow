@@ -170,9 +170,6 @@ describe('task-linked claim executions', () => {
       idx: previous!.idx + 1,
       tag: '0023_collab_claim_idempotency',
     }));
-    expect(journal.entries.at(-1)).toEqual(expect.objectContaining({
-      tag: '0023_collab_claim_idempotency',
-    }));
   });
 
   it('migrates idempotency records to exactly one UUID or integer resource', async () => {

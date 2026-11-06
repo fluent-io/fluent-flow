@@ -30,6 +30,9 @@ surface; `identity.ts` preserves the shared import facade.
   attempt. Each recheck is its own short fenced transaction (token, session
   and epoch re-checked), so no connection, transaction or lock is held while
   waiting and a revoked or superseded host fails on the next recheck.
+- `claim-executions.ts`: task-linked claim start and history projections,
+  capability-checked event/request readers, and transactional idempotent ACP
+  prompts, request answers and cancellation.
 - `tokens.ts`: hashed human project tokens and session-bound agent context;
   reporting credentials never grant membership, Start or acceptance powers.
 - `evidence.ts`: workpad criteria/checks/plans/questions, artifacts, ideas,
