@@ -74,7 +74,6 @@ describe('migration 0022 agent claim ACP interactions', () => {
     expect(previous).toBeDefined();
     expect(current).toEqual(expect.objectContaining({ idx: 22, tag: '0022_agent_claim_acp' }));
     expect(current!.idx).toBe(previous!.idx + 1);
-    expect(journal.entries.at(-1)).toEqual(expect.objectContaining({ tag: '0022_agent_claim_acp' }));
   });
 
   it('adds the four interaction tables with the designed columns', async () => {

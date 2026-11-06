@@ -28,6 +28,7 @@ vi.mock('../../src/agents/claim-manager.js', () => ({
   getClaimById: vi.fn(),
   getClaimByAttempt: vi.fn(),
   createClaim: vi.fn(),
+  createFollowOnClaim: vi.fn(),
   redispatchClaim: vi.fn(),
   extendClaim: vi.fn(),
 }));

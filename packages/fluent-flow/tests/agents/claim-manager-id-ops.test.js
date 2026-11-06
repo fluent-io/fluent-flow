@@ -17,22 +17,25 @@ const state = vi.hoisted(() => ({
   order: [],
   client: { query: vi.fn(), release: vi.fn() },
   pool: { connect: vi.fn() },
+  insertPendingClaim: vi.fn(),
 }));
 
 vi.mock('@fluent-flow/db', async (importOriginal) => {
   const real = await importOriginal();
-  const returning = vi.fn().mockResolvedValue([]);
+  const returning = vi.fn().mockImplementation(async () => [{
+    id: 99,
+    ...state.insertValues.at(-1),
+  }]);
   const where = vi.fn().mockReturnValue({ returning });
   const set = vi.fn().mockImplementation((args) => {
     state.updateSet.push(args);
     return { where };
   });
   const update = vi.fn().mockReturnValue({ set });
-  const insertReturning = vi.fn().mockResolvedValue([]);
-  const onConflict = vi.fn().mockReturnValue({ returning: insertReturning });
+  const onConflictDoNothing = vi.fn().mockReturnValue({ returning });
   const values = vi.fn().mockImplementation((args) => {
     state.insertValues.push(args);
-    return { onConflictDoNothing: onConflict };
+    return { onConflictDoNothing };
   });
   const insert = vi.fn().mockReturnValue({ values });
   const select = vi.fn().mockReturnValue({
@@ -41,14 +44,15 @@ vi.mock('@fluent-flow/db', async (importOriginal) => {
     }),
   });
   return {
-    db: { update, insert, select, set, where, returning, values, onConflict },
+    db: { update, insert, select, set, where, returning, values, onConflictDoNothing },
     schema: real.schema,
     getPool: vi.fn(() => state.pool),
+    insertPendingClaim: state.insertPendingClaim,
     cancelOpenClaimInteractions: vi.fn(),
   };
 });
 
-import { cancelOpenClaimInteractions, db } from '@fluent-flow/db';
+import { cancelOpenClaimInteractions, db, insertPendingClaim } from '@fluent-flow/db';
 import { setSessionStatus } from '../../src/agents/session-manager.js';
 import {
   assertClaimOwner,
@@ -99,6 +103,21 @@ beforeEach(() => {
     state.order.push(String(text).trim().split(/\s+/)[0].toUpperCase());
     if (/UPDATE\s+agent_claims/i.test(String(text))) return { rows: [RAW_CLAIM] };
     return { rows: [] };
+  });
+  state.insertPendingClaim.mockImplementation(async (input) => {
+    state.order.push('INSERT_CLAIM');
+    return {
+      id: 99,
+      org_id: input.orgId,
+      repo: input.repo,
+      pr_number: input.prNumber,
+      attempt: input.attempt,
+      session_id: null,
+      claim_type: input.claimType,
+      status: 'pending',
+      payload: input.payload,
+      head_sha: input.headSha ?? null,
+    };
   });
   cancelOpenClaimInteractions.mockImplementation(async () => {
     state.order.push('CANCEL_INTERACTIONS');
@@ -280,22 +299,82 @@ describe('existing claim id operations', () => {
   });
 
   it('redispatches at attempt plus one and preserves type, payload, and head SHA', async () => {
-    db.onConflict.mockReturnValueOnce({ returning: vi.fn().mockResolvedValue([{ id: 99, attempt: 3 }]) });
-    await redispatchClaim(CLAIM);
-    expect(state.insertValues[0]).toMatchObject({
+    const replacement = await redispatchClaim(CLAIM);
+
+    expect(replacement).toMatchObject({ id: 99, attempt: 3, claim_type: 'review_fix' });
+    expect(insertPendingClaim).toHaveBeenCalledWith({
       orgId: 'o1',
+      repo: 'o/r',
+      prNumber: 5,
       attempt: 3,
       claimType: 'review_fix',
       payload: { branch: 'fix/x' },
       headSha: 'abc123',
-      status: 'pending',
-      sessionId: null,
+    }, state.client);
+  });
+
+  it('copies a linked retry exactly once in the claim transaction', async () => {
+    const linkWrites = [];
+    state.client.query.mockImplementation(async (text, params) => {
+      const sql = String(text);
+      if (/^BEGIN$/i.test(sql)) state.order.push('BEGIN');
+      else if (/INSERT\s+INTO\s+collab_claim_executions/i.test(sql)) {
+        state.order.push('COPY_LINK');
+        linkWrites.push({ sql, params });
+        return { rows: [], rowCount: 1 };
+      } else if (/^COMMIT$/i.test(sql)) state.order.push('COMMIT');
+      else if (/^ROLLBACK$/i.test(sql)) state.order.push('ROLLBACK');
+      return { rows: [] };
     });
+
+    await redispatchClaim(CLAIM);
+
+    expect(linkWrites).toHaveLength(1);
+    expect(linkWrites[0].sql).toMatch(
+      /SELECT\s+task_id,\s*project_id,\s*[^;]*root_claim_id,\s*created_by_principal_id/is,
+    );
+    expect(linkWrites[0].params).toEqual(expect.arrayContaining([7, 99]));
+    expect(state.order).toEqual(['BEGIN', 'INSERT_CLAIM', 'COPY_LINK', 'COMMIT']);
+    expect(state.client.release).toHaveBeenCalledOnce();
+  });
+
+  it('commits an unlinked retry without inventing an execution link', async () => {
+    state.client.query.mockImplementation(async (text) => {
+      const sql = String(text);
+      if (/^BEGIN$/i.test(sql)) state.order.push('BEGIN');
+      else if (/INSERT\s+INTO\s+collab_claim_executions/i.test(sql)) {
+        state.order.push('COPY_LINK');
+        return { rows: [], rowCount: 0 };
+      } else if (/^COMMIT$/i.test(sql)) state.order.push('COMMIT');
+      return { rows: [] };
+    });
+
+    await expect(redispatchClaim(CLAIM)).resolves.toMatchObject({ id: 99, attempt: 3 });
+
+    expect(state.order).toEqual(['BEGIN', 'INSERT_CLAIM', 'COPY_LINK', 'COMMIT']);
+  });
+
+  it('rolls back the retry insert when execution-link inheritance fails', async () => {
+    state.client.query.mockImplementation(async (text) => {
+      const sql = String(text);
+      if (/^BEGIN$/i.test(sql)) state.order.push('BEGIN');
+      else if (/INSERT\s+INTO\s+collab_claim_executions/i.test(sql)) {
+        state.order.push('COPY_LINK');
+        throw new Error('link copy failed');
+      } else if (/^ROLLBACK$/i.test(sql)) state.order.push('ROLLBACK');
+      return { rows: [] };
+    });
+
+    await expect(redispatchClaim(CLAIM)).rejects.toThrow('link copy failed');
+
+    expect(state.order).toEqual(['BEGIN', 'INSERT_CLAIM', 'COPY_LINK', 'ROLLBACK']);
+    expect(state.client.release).toHaveBeenCalledOnce();
   });
 
   it('does not redispatch past the retry cap', async () => {
     expect(MAX_RETRY_ATTEMPTS).toBe(10);
     await expect(redispatchClaim({ ...CLAIM, attempt: 10 })).resolves.toBeNull();
-    expect(state.insertValues).toHaveLength(0);
+    expect(insertPendingClaim).not.toHaveBeenCalled();
+    expect(state.pool.connect).not.toHaveBeenCalled();
   });
 });

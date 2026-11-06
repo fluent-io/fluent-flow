@@ -1,4 +1,5 @@
 import { query, getPool } from '../pool.js';
+import { insertPendingClaim } from './claims.js';
 
 export interface RepoListItem {
   id: string;
@@ -67,12 +68,8 @@ export async function createClaim({
   try {
     await client.query('BEGIN');
 
-    // Lock the repo row with FOR UPDATE to serialize claim creation and prevent
-    // race conditions on attempt allocation. This locks per-repo (all PRs share
-    // the same repo row), which is acceptable since claim creation is low-frequency.
-    // For finer-grained concurrency, use pg_advisory_xact_lock(org_id, repo, pr_number).
     const repoResult = await client.query(
-      'SELECT id, org_id, repo_full_name FROM repos WHERE id = $1 FOR UPDATE',
+      'SELECT id, org_id, repo_full_name FROM repos WHERE id = $1',
       [repoId],
     );
     if (repoResult.rows.length === 0) {
@@ -81,26 +78,27 @@ export async function createClaim({
     }
 
     const repo = repoResult.rows[0] as { id: string; org_id: string; repo_full_name: string };
-    const attemptResult = await client.query(
-      `SELECT COALESCE(MAX(attempt), 0) + 1 AS next_attempt
-       FROM agent_claims
-       WHERE org_id = $1 AND repo = $2 AND pr_number ${prNumber != null ? '= $3' : 'IS NULL'}`,
-      prNumber != null ? [repo.org_id, repo.repo_full_name, prNumber] : [repo.org_id, repo.repo_full_name],
-    );
-    const attempt = (attemptResult.rows[0] as { next_attempt: number }).next_attempt;
-
-    const payload = { message: description, ...extraPayload };
-    const claimResult = await client.query(
-      `INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload)
-       VALUES ($1, $2, $3, $4, $5, 'pending', $6)
-       RETURNING id, org_id, repo, claim_type, status`,
-      [repo.org_id, repo.repo_full_name, prNumber ?? null, attempt, claimType, JSON.stringify(payload)],
-    );
-
+    const claim = await insertPendingClaim({
+      orgId: repo.org_id,
+      repo: repo.repo_full_name,
+      prNumber: prNumber ?? null,
+      claimType,
+      payload: { message: description, ...extraPayload },
+    }, client);
+    if (claim === null) {
+      throw new Error('Claim allocation failed');
+    }
     await client.query('COMMIT');
-    return claimResult.rows[0] as CreatedClaim;
+
+    return {
+      id: claim.id,
+      org_id: claim.org_id,
+      repo: claim.repo,
+      claim_type: claim.claim_type,
+      status: claim.status,
+    };
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
+    await client.query('ROLLBACK');
     throw err;
   } finally {
     client.release();

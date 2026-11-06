@@ -1,5 +1,5 @@
 import { and, desc, eq, getTableColumns, inArray, sql } from 'drizzle-orm';
-import { cancelOpenClaimInteractions, db, getPool, schema } from '@fluent-flow/db';
+import { cancelOpenClaimInteractions, db, getPool, insertPendingClaim, schema } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 import { setSessionStatus } from './session-manager.js';
 import logger from '../logger.js';
@@ -67,38 +67,74 @@ async function freeSession(orgId, sessionId, agentId, targetStatus = 'online') {
  * @param {string|null} [opts.headSha] — stored for re-dispatch check-run creation
  */
 export async function createClaim({ orgId, repo, prNumber, attempt, agentId, payload, claimType = 'review_fix', ttlMs = DEFAULT_CLAIM_TTL_MS, headSha = null }) {
-  const insertValues = {
+  const claim = await insertPendingClaim({
     orgId,
     repo,
     prNumber,
     attempt,
-    sessionId: null,
     claimType,
-    status: 'pending',
     payload,
-    claimedAt: null,
-    expiresAt: null,
     headSha,
-  };
-
-  // Insert only — never overwrite an existing claim.
-  // The unique constraint (org_id, repo, pr_number, claim_type, attempt) ensures
-  // each claim is immutable once created.
-  const conflictTarget = prNumber == null
-    ? { target: 'agent_claims_org_repo_attempt_no_pr_key' }
-    : { target: [agentClaims.orgId, agentClaims.repo, agentClaims.prNumber, agentClaims.claimType, agentClaims.attempt] };
-
-  const [claim] = await db
-    .insert(agentClaims)
-    .values(insertValues)
-    .onConflictDoNothing({ ...conflictTarget })
-    .returning();
-
+  });
   if (!claim) {
     logger.info({ msg: 'Claim already exists, skipping', orgId, repo, prNumber, attempt, claimType });
     return null;
   }
+  audit('claim_created', {
+    repo,
+    data: { claimId: claim.id, prNumber, attempt, status: 'pending', claimType },
+  });
+  logger.info({ msg: 'Claim created', orgId, repo, prNumber, attempt, status: 'pending', claimType });
+  return toSnakeClaim(claim);
+}
 
+export async function createFollowOnClaim({
+  parentClaimId,
+  orgId,
+  repo,
+  prNumber,
+  attempt,
+  payload,
+  claimType,
+  headSha = null,
+}) {
+  const client = await getPool().connect();
+  let claim;
+  try {
+    await client.query('BEGIN');
+    const pendingClaim = {
+      orgId,
+      repo,
+      prNumber,
+      claimType,
+      payload,
+      headSha,
+    };
+    if (attempt !== undefined) {
+      pendingClaim.attempt = attempt;
+    }
+    claim = await insertPendingClaim(pendingClaim, client);
+    if (claim) {
+      await client.query(
+        `INSERT INTO collab_claim_executions
+           (task_id, project_id, claim_id, root_claim_id, created_by_principal_id)
+         SELECT task_id, project_id, $2, root_claim_id, created_by_principal_id
+         FROM collab_claim_executions
+         WHERE claim_id = $1`,
+        [parentClaimId, claim.id],
+      );
+    }
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+  if (!claim) {
+    logger.info({ msg: 'Claim already exists, skipping', orgId, repo, prNumber, attempt, claimType });
+    return null;
+  }
   audit('claim_created', {
     repo,
     data: { claimId: claim.id, prNumber, attempt, status: 'pending', claimType },
@@ -302,7 +338,8 @@ export async function redispatchClaim(claim) {
     });
     return null;
   }
-  return createClaim({
+  return createFollowOnClaim({
+    parentClaimId: claim.id,
     orgId: claim.org_id,
     repo: claim.repo,
     prNumber: claim.pr_number,

@@ -105,6 +105,16 @@ export {
   queueArtifactRead,
   getSessionTimeline,
 } from './runs.js';
+export {
+  startCollabClaimExecution,
+  listCollabClaimExecutions,
+  getCollabClaimExecution,
+} from './claim-executions.js';
+export type {
+  ClaimExecution,
+  ClaimExecutionBadge,
+  StartClaimExecutionResult,
+} from './claim-executions.js';
 
 export { createCollabComment, listCollabComments } from './comments.js';
 export type { CollabComment } from './comments.js';

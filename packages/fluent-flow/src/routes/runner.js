@@ -7,6 +7,7 @@ import {
   cancelClaimById,
   completeClaimById,
   createClaim,
+  createFollowOnClaim,
   extendClaim,
   failClaimById,
   redispatchClaim,
@@ -449,16 +450,18 @@ export async function handleClaimResult(req, res) {
 
     if (claimType === 'spec' && claim.payload?.auto_chain !== false) {
       try {
-        await createClaim({
+        const nextClaim = await createFollowOnClaim({
+          parentClaimId: claim.id,
           orgId: org_id,
           repo: claim.repo,
           prNumber: claim.pr_number,
-          attempt: claim.attempt + 1,
           claimType: 'build',
           payload: { source_claim_id: claim.id },
           headSha: claim.head_sha,
         });
-        logger.info({ msg: 'Auto-created build claim after spec completion', repo: claim.repo, prNumber: claim.pr_number, attempt: claim.attempt + 1 });
+        if (nextClaim) {
+          logger.info({ msg: 'Auto-created build claim after spec completion', repo: claim.repo, prNumber: claim.pr_number, attempt: nextClaim.attempt });
+        }
       } catch (err) {
         logger.error({ msg: 'Failed to create follow-on build claim', error: err.message, safeToContinue: true });
       }

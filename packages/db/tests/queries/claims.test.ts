@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mockQuery = vi.fn();
 vi.mock('../../src/pool', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
+  getPool: vi.fn(),
 }));
 
 const { getAgentClaims, dismissClaim, dismissStaleClaims, dismissPipelineClaims } = await import('../../src/queries/claims');

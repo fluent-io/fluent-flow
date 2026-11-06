@@ -1,4 +1,4 @@
-import { pgTable, text, jsonb, timestamp, integer, primaryKey, bigint, index, uniqueIndex, foreignKey, uuid } from 'drizzle-orm/pg-core';
+import { pgTable, text, jsonb, timestamp, integer, primaryKey, bigint, index, uniqueIndex, foreignKey, uuid, check } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { orgs } from './orgs.js';
 
@@ -151,4 +151,20 @@ export const collabClaimExecutions = pgTable('collab_claim_executions', {
   pk: primaryKey({ columns: [t.taskId, t.claimId] }),
   taskIdx: index('collab_claim_executions_task_idx').on(t.taskId, t.createdAt, t.claimId),
   rootClaimIdx: index('collab_claim_executions_root_claim_idx').on(t.rootClaimId),
+}));
+
+export const collabIdempotencyRecords = pgTable('collab_idempotency_records', {
+  principalId: uuid('principal_id').notNull(),
+  scopeKey: text('scope_key').notNull(),
+  idempotencyKey: text('idempotency_key').notNull(),
+  requestHash: text('request_hash').notNull(),
+  resourceId: uuid('resource_id'),
+  claimId: integer('claim_id').references(() => agentClaims.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.principalId, t.scopeKey, t.idempotencyKey] }),
+  exactlyOneResource: check(
+    'collab_idempotency_records_exactly_one_resource',
+    sql`((${t.resourceId} IS NOT NULL)::integer + (${t.claimId} IS NOT NULL)::integer = 1)`,
+  ),
 }));

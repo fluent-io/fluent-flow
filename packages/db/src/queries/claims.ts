@@ -1,6 +1,117 @@
+import pg from 'pg';
 import { query } from '../pool.js';
 import { claimSchema } from '../schemas/claims.js';
 import type { Claim } from '../schemas/claims.js';
+import { withClientTransaction } from '../collaboration/tx.js';
+import type { QueryExecutor } from './claim-interactions.js';
+
+export type PendingClaimInput = {
+  orgId: string;
+  repo: string;
+  prNumber: number | null;
+  claimType: string;
+  payload: Record<string, unknown>;
+  headSha?: string | null;
+  attempt?: number;
+};
+
+export type PendingClaimRow = {
+  id: number;
+  org_id: string;
+  repo: string;
+  pr_number: number | null;
+  attempt: number;
+  session_id: number | null;
+  claim_type: string;
+  status: string;
+  payload: Record<string, unknown>;
+  claimed_at: Date | null;
+  completed_at: Date | null;
+  expires_at: Date | null;
+  archived_at: Date | null;
+  created_at: Date;
+  check_run_external_id: number | null;
+  head_sha: string | null;
+};
+
+async function insertAtAttempt(
+  input: PendingClaimInput,
+  attempt: number,
+  executor: QueryExecutor,
+): Promise<PendingClaimRow | null> {
+  const result = await executor.query<PendingClaimRow>(
+    `INSERT INTO agent_claims
+       (org_id, repo, pr_number, attempt, session_id, claim_type, status, payload,
+        claimed_at, expires_at, head_sha)
+     VALUES ($1, $2, $3, $4, NULL, $5, 'pending', $6, NULL, NULL, $7)
+     ON CONFLICT DO NOTHING
+     RETURNING *`,
+    [
+      input.orgId,
+      input.repo,
+      input.prNumber,
+      attempt,
+      input.claimType,
+      input.payload,
+      input.headSha ?? null,
+    ],
+  );
+  return result.rows[0] ?? null;
+}
+
+async function insertPendingClaimWithExecutor(
+  input: PendingClaimInput,
+  executor: QueryExecutor,
+): Promise<PendingClaimRow | null> {
+  if (input.attempt !== undefined) {
+    return insertAtAttempt(input, input.attempt, executor);
+  }
+  const lockKey = `claim-attempt:${JSON.stringify([
+    input.orgId,
+    input.repo,
+    input.prNumber,
+    input.claimType,
+  ])}`;
+  await executor.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [lockKey]);
+  for (let retry = 0; retry < 4; retry += 1) {
+    const allocated = await executor.query<{ attempt: number }>(
+      `SELECT COALESCE(MAX(attempt), 0) + 1 AS attempt
+       FROM agent_claims
+       WHERE org_id = $1
+         AND repo = $2
+         AND pr_number IS NOT DISTINCT FROM $3
+         AND claim_type = $4`,
+      [input.orgId, input.repo, input.prNumber, input.claimType],
+    );
+    const inserted = await insertAtAttempt(input, allocated.rows[0].attempt, executor);
+    if (inserted !== null) return inserted;
+  }
+  return null;
+}
+
+export async function insertPendingClaim(
+  input: PendingClaimInput,
+  executor?: QueryExecutor,
+): Promise<PendingClaimRow | null> {
+  if (executor === undefined) {
+    return withClientTransaction((client) => insertPendingClaimWithExecutor(input, client));
+  }
+  if (!(executor instanceof pg.Pool)) {
+    return insertPendingClaimWithExecutor(input, executor);
+  }
+  const client = await executor.connect();
+  try {
+    await client.query('BEGIN');
+    const claim = await insertPendingClaimWithExecutor(input, client);
+    await client.query('COMMIT');
+    return claim;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 export async function getAgentClaims(orgId: string, agentId: string): Promise<Claim[]> {
   const sql = `
