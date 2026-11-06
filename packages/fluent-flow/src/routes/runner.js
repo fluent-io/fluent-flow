@@ -17,9 +17,11 @@ import { dequeue, hasPending } from '../notifications/transports/long-poll.js';
 import { sql } from 'drizzle-orm';
 import {
   ackClaimCommand,
+  cancelClaimRequest,
   appendClaimEvents,
   db,
   leaseClaimCommands,
+  renewClaimCommand,
   upsertClaimRequest,
 } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
@@ -55,6 +57,10 @@ const ClaimPathSchema = z.object({
 
 const ClaimCommandPathSchema = ClaimPathSchema.extend({
   commandId: z.coerce.number().int().positive(),
+});
+
+const ClaimRequestPathSchema = ClaimPathSchema.extend({
+  requestKey: z.string().min(1).max(512),
 });
 
 const ClaimEventsSchema = z.object({
@@ -605,6 +611,28 @@ export async function handleClaimRequest(req, res) {
   }
 }
 
+export async function handleClaimRequestCancellation(req, res) {
+  const path = ClaimRequestPathSchema.safeParse(req.params);
+  const body = ClaimCommandsPollSchema.safeParse(req.body);
+  if (!path.success || !body.success) return validationError(res);
+
+  const { claimId, requestKey } = path.data;
+  const { session_id: sessionId } = body.data;
+  const { org_id: orgId, agent_id: agentId } = req.tokenInfo;
+  try {
+    const cancelled = await withClaimOwner(
+      { orgId, agentId, sessionId, claimId },
+      (client) => cancelClaimRequest({ orgId, claimId, requestKey }, client),
+    );
+    if (!cancelled) {
+      return res.status(409).json({ error: 'Request cancellation conflict' });
+    }
+    return res.json({ ok: true });
+  } catch (error) {
+    return interactionErrorResponse(error, res, 'cancel claim request');
+  }
+}
+
 export async function handleClaimCommandsPoll(req, res) {
   const path = ClaimPathSchema.safeParse(req.params);
   const body = ClaimCommandsPollSchema.safeParse(req.body);
@@ -628,6 +656,25 @@ export async function handleClaimCommandsPoll(req, res) {
     });
   } catch (error) {
     return interactionErrorResponse(error, res, 'lease claim commands');
+  }
+}
+
+export async function handleClaimCommandRenewal(req, res) {
+  const path = ClaimCommandPathSchema.safeParse(req.params);
+  const body = ClaimCommandsPollSchema.safeParse(req.body);
+  if (!path.success || !body.success) return validationError(res);
+
+  const { claimId, commandId } = path.data;
+  const { session_id: sessionId } = body.data;
+  const { org_id: orgId, agent_id: agentId } = req.tokenInfo;
+  try {
+    const renewed = await withClaimOwner(
+      { orgId, agentId, sessionId, claimId },
+      (client) => renewClaimCommand({ orgId, claimId, commandId }, client),
+    );
+    return res.json({ renewed: Boolean(renewed) });
+  } catch (error) {
+    return interactionErrorResponse(error, res, 'renew claim command');
   }
 }
 
@@ -698,7 +745,9 @@ router.post('/runner/heartbeat', handleHeartbeat);
 router.post('/runner/claim', handleClaimResult);
 router.post('/runner/claims/:claimId/events', handleClaimEvents);
 router.post('/runner/claims/:claimId/requests', handleClaimRequest);
+router.post('/runner/claims/:claimId/requests/:requestKey/cancel', handleClaimRequestCancellation);
 router.post('/runner/claims/:claimId/commands/poll', handleClaimCommandsPoll);
+router.post('/runner/claims/:claimId/commands/:commandId/renew', handleClaimCommandRenewal);
 router.post('/runner/claims/:claimId/commands/:commandId/ack', handleClaimCommandAck);
 
 export default router;

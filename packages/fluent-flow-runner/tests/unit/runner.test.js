@@ -28,6 +28,8 @@ function client(overrides = {}) {
     reportClaim: vi.fn(async () => ({ ok: true })),
     postClaimEvents: vi.fn(async () => ({ ok: true })),
     postClaimRequest: vi.fn(async () => ({ ok: true })),
+    cancelClaimRequest: vi.fn(async () => ({ ok: true })),
+    renewClaimCommand: vi.fn(async () => ({ renewed: true })),
     pollClaimCommands: vi.fn(async () => ({ commands: [] })),
     ackClaimCommand: vi.fn(async () => ({ ok: true })),
     ...overrides,
@@ -37,7 +39,10 @@ function client(overrides = {}) {
 function fakeRuntime(result = { sessionId: 'acp-session', messageId: 'message-1', stopReason: 'end_turn' }) {
   return {
     runInitialPrompt: vi.fn(async () => result),
-    prompt: vi.fn(async () => ({ messageId: 'message-2', stopReason: 'end_turn' })),
+    prompt: vi.fn(async (_text, { onAccepted } = {}) => {
+      await onAccepted?.({ messageId: 'message-2' });
+      return { messageId: 'message-2', stopReason: 'end_turn' };
+    }),
     cancel: vi.fn(async () => ({ stopReason: 'cancelled' })),
     answerRequest: vi.fn(async () => undefined),
     close: vi.fn(async () => undefined),
@@ -105,6 +110,7 @@ describe('ACP claim lifecycle', () => {
       env: expect.any(Object),
       onEvent: expect.any(Function),
       onRequest: expect.any(Function),
+      onRequestCancelled: expect.any(Function),
     }));
     expect(runtime.runInitialPrompt).toHaveBeenCalledWith(expect.stringContaining('Fix the bug'));
     expect(JSON.stringify(createAcpRuntime.mock.calls[0][0])).not.toContain('curl attacker');
@@ -168,8 +174,10 @@ describe('ACP events and requests', () => {
     const runtime = fakeRuntime();
     const createAcpRuntime = vi.fn((options) => {
       runtime.runInitialPrompt.mockImplementationOnce(async () => {
-        await options.onEvent({ sessionId: 'acp-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'first gh_secret_value' } } });
-        await options.onEvent({ sessionId: 'acp-session', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'second' } } });
+        await options.onEvent({ sessionId: 'acp-session', update: { sessionUpdate: 'agent_message_chunk', messageId: 'message-1', content: { type: 'text', text: 'first gh_secret_' } } });
+        await options.onEvent({ sessionId: 'acp-session', update: { sessionUpdate: 'agent_message_chunk', messageId: 'message-1', content: { type: 'text', text: 'value second' } } });
+        await options.onEvent({ sessionId: 'acp-session', update: { sessionUpdate: 'terminal_output_chunk', terminalId: 'terminal-1', data: Buffer.from('terminal gh_secret_').toString('base64') } });
+        await options.onEvent({ sessionId: 'acp-session', update: { sessionUpdate: 'terminal_output_chunk', terminalId: 'terminal-1', data: Buffer.from('value end').toString('base64') } });
         await options.onEvent({ sessionId: 'acp-session', update: { sessionUpdate: 'state_update', state: 'idle' } });
         return { sessionId: 'acp-session', messageId: 'm', stopReason: 'end_turn' };
       });
@@ -181,20 +189,37 @@ describe('ACP events and requests', () => {
     await runner.shutdown();
     await started;
     const uploaded = api.postClaimEvents.mock.calls.flatMap((call) => call[2]);
-    expect(uploaded.map((event) => event.seq)).toEqual([1, 2, 3]);
+    expect(uploaded.map((event) => event.seq)).toEqual(uploaded.map((_, index) => index + 1));
+    const message = uploaded.filter((event) => event.kind === 'agent_message')
+      .map((event) => event.payload.raw.content.text).join('');
+    const terminal = uploaded.filter((event) => event.kind === 'terminal_output')
+      .map((event) => Buffer.from(event.payload.raw.data, 'base64').toString('utf8')).join('');
+    expect(message).toBe('first [REDACTED] second');
+    expect(terminal).toBe('terminal [REDACTED] end');
     expect(JSON.stringify(uploaded)).not.toContain('gh_secret_value');
     expect(order.at(-1)[0]).toBe('report');
   });
 
-  it('uploads permission and elicitation requests before exposing them to commands', async () => {
+  it('uploads redacted permission and elicitation requests without mutating runtime input', async () => {
     const seen = [];
+    const secret = 'runner-token-secret-value';
+    const permission = {
+      requestKey: 'perm-1',
+      kind: 'permission',
+      payload: {
+        subject: { command: `printf 'Authorization: Bearer ${secret}'` },
+        access_token: secret,
+        options: ['allow'],
+      },
+    };
     const runtime = fakeRuntime();
     const { api } = await runClaim({
       runtime,
+      runnerOptions: { runnerToken: secret },
       clientOverrides: { postClaimRequest: vi.fn(async (...args) => { seen.push(args); }) },
       runtimeFactory: vi.fn((options) => {
         runtime.runInitialPrompt.mockImplementationOnce(async () => {
-          await options.onRequest({ requestKey: 'perm-1', kind: 'permission', payload: { options: ['allow'] } });
+          await options.onRequest(permission);
           await options.onRequest({ requestKey: 'form-1', kind: 'elicitation', payload: { fields: ['answer'] } });
           return { sessionId: 'acp', messageId: 'm', stopReason: 'end_turn' };
         });
@@ -202,10 +227,46 @@ describe('ACP events and requests', () => {
       }),
     });
     expect(seen).toEqual([
-      ['runner-session', 42, { requestKey: 'perm-1', kind: 'permission', payload: { options: ['allow'] } }],
+      ['runner-session', 42, {
+        requestKey: 'perm-1',
+        kind: 'permission',
+        payload: {
+          subject: { command: "printf 'Authorization: Bearer [REDACTED]'" },
+          access_token: '[REDACTED]',
+          options: ['allow'],
+        },
+      }],
       ['runner-session', 42, { requestKey: 'form-1', kind: 'elicitation', payload: { fields: ['answer'] } }],
     ]);
+    expect(permission.payload.subject.command).toContain(secret);
     expect(api.reportClaim).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists ACP request cancellation through the current runner claim owner', async () => {
+    const order = [];
+    const runtime = fakeRuntime();
+    const { api } = await runClaim({
+      runtime,
+      clientOverrides: {
+        postClaimRequest: vi.fn(async () => {
+          order.push('opened');
+        }),
+        cancelClaimRequest: vi.fn(async () => {
+          order.push('cancelled');
+        }),
+      },
+      runtimeFactory: vi.fn((options) => {
+        runtime.runInitialPrompt.mockImplementationOnce(async () => {
+          await options.onRequest({ requestKey: 'perm-1', kind: 'permission', payload: {} });
+          await options.onRequestCancelled({ requestKey: 'perm-1', kind: 'permission' });
+          return { sessionId: 'acp', messageId: 'm', stopReason: 'end_turn' };
+        });
+        return runtime;
+      }),
+    });
+
+    expect(order).toEqual(['opened', 'cancelled']);
+    expect(api.cancelClaimRequest).toHaveBeenCalledWith('runner-session', 42, 'perm-1');
   });
 
   it.each([
@@ -289,6 +350,35 @@ describe('dashboard commands', () => {
     if (command.kind === 'cancel') expect(api.reportClaim).toHaveBeenCalledWith(expect.objectContaining({ status: 'cancelled' }));
   });
 
+  it('does not apply an immediate command whose acknowledgement deadline elapsed', async () => {
+    const initialTurn = deferred();
+    const runtime = fakeRuntime();
+    runtime.runInitialPrompt.mockImplementationOnce(() => initialTurn.promise);
+    const api = client({
+      poll: vi.fn().mockResolvedValueOnce(WORK).mockResolvedValue(null),
+      pollClaimCommands: vi.fn()
+        .mockResolvedValueOnce({ commands: [{ id: 'expired-cancel', kind: 'cancel', payload: {} }] })
+        .mockResolvedValue({ commands: [] }),
+      renewClaimCommand: vi.fn(async () => ({ renewed: false })),
+    });
+    const runner = createRunner({
+      client: api,
+      log: logger(),
+      createAcpRuntime: vi.fn(() => runtime),
+      cwd: '/repo',
+      acpCommand: 'agent',
+      commandPollMs: 1,
+    });
+    const started = runner.start();
+    await waitFor(() => api.renewClaimCommand.mock.calls.length === 1);
+    expect(runtime.cancel).not.toHaveBeenCalled();
+    expect(api.ackClaimCommand).not.toHaveBeenCalled();
+    initialTurn.resolve({ sessionId: 'acp', messageId: 'initial', stopReason: 'end_turn' });
+    await waitFor(() => api.reportClaim.mock.calls.length === 1);
+    await runner.shutdown();
+    await started;
+  });
+
   it('applies a prompt lease that settles with the initial turn', async () => {
     const initialTurn = deferred();
     const leasedCommands = deferred();
@@ -307,8 +397,9 @@ describe('dashboard commands', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     leasedCommands.resolve({ commands: [{ id: 'settling-prompt', kind: 'prompt', payload: { text: 'continue' } }] });
     await waitFor(() => runtime.prompt.mock.calls.length > 0 || api.ackClaimCommand.mock.calls.length > 0);
-    expect(runtime.prompt).toHaveBeenCalledWith('continue');
-    expect(api.ackClaimCommand).toHaveBeenCalledWith('runner-session', 42, 'settling-prompt', 'acked', { applied: true }, transportOptions());
+    expect(runtime.prompt).toHaveBeenCalledWith('continue', { onAccepted: expect.any(Function) });
+    expect(api.renewClaimCommand).toHaveBeenCalledWith('runner-session', 42, 'settling-prompt');
+    expect(api.ackClaimCommand).toHaveBeenCalledWith('runner-session', 42, 'settling-prompt', 'acked', { applied: true, messageId: 'message-2' }, transportOptions());
     await waitFor(() => api.reportClaim.mock.calls.length === 1);
     await runner.shutdown();
     await started;
@@ -319,7 +410,10 @@ describe('dashboard commands', () => {
     const promptedTurn = deferred();
     const runtime = fakeRuntime();
     runtime.runInitialPrompt.mockImplementationOnce(() => initialTurn.promise);
-    runtime.prompt.mockImplementationOnce(() => promptedTurn.promise);
+    runtime.prompt.mockImplementationOnce(async (_text, { onAccepted }) => {
+      await onAccepted({ messageId: 'prompted' });
+      return promptedTurn.promise;
+    });
     const commands = [
       { id: 'queued-prompt', kind: 'prompt', payload: { text: 'continue after the turn' } },
       { id: 'permission-answer', kind: 'permission', request_key: 'permission-1', payload: { answer: { optionId: 'allow' } } },
@@ -328,53 +422,62 @@ describe('dashboard commands', () => {
       poll: vi.fn().mockResolvedValueOnce(WORK).mockResolvedValue(null),
       pollClaimCommands: vi.fn().mockResolvedValueOnce({ commands }).mockResolvedValue({ commands: [] }),
     });
-    const runner = createRunner({ client: api, log: logger(), createAcpRuntime: vi.fn(() => runtime), cwd: '/repo', acpCommand: 'agent', commandPollMs: 1 });
+    const runner = createRunner({
+      client: api,
+      log: logger(),
+      createAcpRuntime: vi.fn(() => runtime),
+      cwd: '/repo',
+      acpCommand: 'agent',
+      commandPollMs: 1,
+      commandLeaseRenewMs: 5,
+    });
     const started = runner.start();
     await waitFor(() => runtime.answerRequest.mock.calls.length === 1);
     expect(runtime.answerRequest).toHaveBeenCalledWith('permission-1', { optionId: 'allow' });
     expect(api.ackClaimCommand).toHaveBeenCalledWith('runner-session', 42, 'permission-answer', 'acked', { applied: true }, transportOptions());
     expect(runtime.prompt).not.toHaveBeenCalled();
     expect(api.ackClaimCommand).not.toHaveBeenCalledWith('runner-session', 42, 'queued-prompt', expect.anything(), expect.anything(), expect.anything());
+    await waitFor(() => api.renewClaimCommand.mock.calls.length >= 1);
     initialTurn.resolve({ sessionId: 'acp', messageId: 'initial', stopReason: 'end_turn' });
     await waitFor(() => runtime.prompt.mock.calls.length === 1);
-    expect(runtime.prompt).toHaveBeenCalledWith('continue after the turn');
-    expect(api.ackClaimCommand).not.toHaveBeenCalledWith('runner-session', 42, 'queued-prompt', expect.anything(), expect.anything(), expect.anything());
-    promptedTurn.resolve({ messageId: 'prompted', stopReason: 'end_turn' });
+    expect(runtime.prompt).toHaveBeenCalledWith('continue after the turn', { onAccepted: expect.any(Function) });
     await waitFor(() => api.ackClaimCommand.mock.calls.some((call) => call[2] === 'queued-prompt'));
-    expect(api.ackClaimCommand).toHaveBeenCalledWith('runner-session', 42, 'queued-prompt', 'acked', { applied: true }, transportOptions());
+    expect(api.ackClaimCommand).toHaveBeenCalledWith(
+      'runner-session',
+      42,
+      'queued-prompt',
+      'acked',
+      { applied: true, messageId: 'prompted' },
+      transportOptions(),
+    );
+    promptedTurn.resolve({ messageId: 'prompted', stopReason: 'end_turn' });
     await waitFor(() => api.reportClaim.mock.calls.length === 1);
     await runner.shutdown();
     await started;
   });
 
-  it('aborts an outstanding normal poll without aborting an in-flight acknowledgement', async () => {
+
+  it('keeps a same-batch prompt when an answer drives the current turn idle first', async () => {
     const initialTurn = deferred();
-    const promptedTurn = deferred();
-    const acknowledgement = deferred();
-    let pollAborted = false;
-    let acknowledgementAborted = false;
     const runtime = fakeRuntime();
     runtime.runInitialPrompt.mockImplementationOnce(() => initialTurn.promise);
-    runtime.prompt.mockImplementationOnce(() => promptedTurn.promise);
+    let runtimeOptions;
+    runtime.answerRequest.mockImplementationOnce(async () => {
+      await runtimeOptions.onEvent({ sessionId: 'acp', update: { sessionUpdate: 'state_update', state: 'running' } });
+      initialTurn.resolve({ sessionId: 'acp', messageId: 'initial', stopReason: 'end_turn' });
+      await runtimeOptions.onEvent({ sessionId: 'acp', update: { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' } });
+    });
     const api = client({
       poll: vi.fn().mockResolvedValueOnce(WORK).mockResolvedValue(null),
       pollClaimCommands: vi.fn()
-        .mockResolvedValueOnce({ commands: [{ id: 'prompt-with-ack', kind: 'prompt', payload: { text: 'continue' } }] })
-        .mockImplementationOnce((_sessionId, _claimId, { signal }) => new Promise((_resolve, reject) => {
-          signal.addEventListener('abort', () => {
-            pollAborted = true;
-            reject(new Error('poll stopped'));
-          }, { once: true });
-        })),
-      ackClaimCommand: vi.fn((_sessionId, _claimId, _commandId, _status, _result, { signal }) => {
-        signal.addEventListener('abort', () => {
-          acknowledgementAborted = true;
-          acknowledgement.reject(new Error('ack stopped'));
-        }, { once: true });
-        return acknowledgement.promise;
-      }),
+        .mockResolvedValueOnce({
+          commands: [
+            { id: 'answer-first', kind: 'permission', request_key: 'permission-1', payload: { answer: { optionId: 'allow' } } },
+            { id: 'prompt-second', kind: 'prompt', payload: { text: 'continue' } },
+          ],
+        })
+        .mockResolvedValue({ commands: [] }),
     });
-    let runtimeOptions;
     const runner = createRunner({
       client: api,
       log: logger(),
@@ -387,17 +490,56 @@ describe('dashboard commands', () => {
       commandPollMs: 1,
     });
     const started = runner.start();
-    await waitFor(() => api.pollClaimCommands.mock.calls.length === 2);
-    initialTurn.resolve({ sessionId: 'acp', messageId: 'initial', stopReason: 'end_turn' });
     await waitFor(() => runtime.prompt.mock.calls.length === 1);
-    promptedTurn.resolve({ messageId: 'prompted', stopReason: 'end_turn' });
-    await waitFor(() => api.ackClaimCommand.mock.calls.length === 1);
-    await runtimeOptions.onEvent({ sessionId: 'acp', update: { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' } });
-    await waitFor(() => pollAborted);
-    expect(acknowledgementAborted).toBe(false);
-    acknowledgement.resolve({ ok: true });
+
+    expect(runtime.prompt).toHaveBeenCalledWith('continue', { onAccepted: expect.any(Function) });
+    expect(api.ackClaimCommand).toHaveBeenCalledWith(
+      'runner-session',
+      42,
+      'prompt-second',
+      'acked',
+      { applied: true, messageId: 'message-2' },
+      transportOptions(),
+    );
     await waitFor(() => api.reportClaim.mock.calls.length === 1);
-    expect(acknowledgementAborted).toBe(false);
+    await runner.shutdown();
+    await started;
+  });
+
+  it('does not submit a prompt whose command lease expired before ACP acceptance', async () => {
+    const initialTurn = deferred();
+    const runtime = fakeRuntime();
+    runtime.runInitialPrompt.mockImplementationOnce(() => initialTurn.promise);
+    const api = client({
+      poll: vi.fn().mockResolvedValueOnce(WORK).mockResolvedValue(null),
+      pollClaimCommands: vi.fn()
+        .mockResolvedValueOnce({ commands: [{ id: 'expired-prompt', kind: 'prompt', payload: { text: 'too late' } }] })
+        .mockResolvedValue({ commands: [] }),
+      renewClaimCommand: vi.fn(async () => ({ renewed: false })),
+    });
+    const runner = createRunner({
+      client: api,
+      log: logger(),
+      createAcpRuntime: vi.fn(() => runtime),
+      cwd: '/repo',
+      acpCommand: 'agent',
+      commandPollMs: 1,
+    });
+    const started = runner.start();
+    await waitFor(() => api.pollClaimCommands.mock.calls.length >= 1);
+    initialTurn.resolve({ sessionId: 'acp', messageId: 'initial', stopReason: 'end_turn' });
+    await waitFor(() => api.renewClaimCommand.mock.calls.length === 1);
+    await waitFor(() => api.reportClaim.mock.calls.length === 1);
+
+    expect(runtime.prompt).not.toHaveBeenCalled();
+    expect(api.ackClaimCommand).not.toHaveBeenCalledWith(
+      'runner-session',
+      42,
+      'expired-prompt',
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
     await runner.shutdown();
     await started;
   });
@@ -409,7 +551,10 @@ describe('dashboard commands', () => {
     const order = [];
     const runtime = fakeRuntime();
     runtime.runInitialPrompt.mockImplementationOnce(() => initialTurn.promise);
-    runtime.prompt.mockImplementationOnce(() => promptedTurn.promise);
+    runtime.prompt.mockImplementationOnce(async (_text, { onAccepted }) => {
+      await onAccepted({ messageId: 'prompted' });
+      return promptedTurn.promise;
+    });
     runtime.close.mockImplementationOnce(async () => {
       order.push('close');
       promptedTurn.reject(new Error('runtime closed'));

@@ -173,6 +173,33 @@ describe('shutdown mid-claim', () => {
     }));
     await started;
   });
+
+  it('does not start ACP when a claim poll resolves after shutdown', async () => {
+    const polled = deferred();
+    const acpRuntime = runtime();
+    const client = api({
+      poll: vi.fn((_sessionId, { signal }) => {
+        expect(signal).toBeInstanceOf(AbortSignal);
+        return polled.promise;
+      }),
+    });
+    const runner = makeRunner(client, acpRuntime);
+    const started = runner.start();
+    await waitFor(() => client.poll.mock.calls.length === 1);
+
+    await runner.shutdown();
+    polled.resolve(WORK);
+    await started;
+
+    expect(mockPrepareWorktree).not.toHaveBeenCalled();
+    expect(acpRuntime.runInitialPrompt).not.toHaveBeenCalled();
+    expect(client.reportClaim).toHaveBeenCalledWith(expect.objectContaining({
+      claim_id: 42,
+      session_id: 'registration-1',
+      status: 'failed',
+      failure_kind: 'transient',
+    }));
+  });
 });
 
 describe('claim report retry', () => {

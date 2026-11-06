@@ -3,7 +3,12 @@ import {
   ackClaimCommand,
   appendClaimEvents,
   cancelOpenClaimInteractions,
+  cancelClaimRequest,
+  dismissClaim,
+  dismissPipelineClaims,
+  dismissStaleClaims,
   enqueueClaimCommand,
+  renewClaimCommand,
   leaseClaimCommands,
   reserveClaimRequestAnswer,
   resolveClaimRequest,
@@ -73,6 +78,38 @@ describe('claim interaction persistence', () => {
       { seq: 1, kind: 'user_message', payload: { text: 'hello' } },
       { seq: 2, kind: 'agent_message', payload: { text: 'world' } },
     ]);
+  });
+
+  it('repairs a legacy null byte count during an exact event replay', async () => {
+    const claimId = await createClaim();
+    const payload = { text: 'legacy event' };
+    await getPool().query(
+      'ALTER TABLE agent_claim_events DROP CONSTRAINT agent_claim_events_payload_bytes_not_null',
+    );
+    await getPool().query(
+      `INSERT INTO agent_claim_events (org_id, claim_id, seq, kind, payload, payload_bytes)
+       VALUES ($1, $2, 1, 'notice', $3, NULL)`,
+      [orgId, claimId, JSON.stringify(payload)],
+    );
+    await getPool().query(
+      `ALTER TABLE agent_claim_events
+       ADD CONSTRAINT agent_claim_events_payload_bytes_not_null
+       CHECK (payload_bytes IS NOT NULL) NOT VALID`,
+    );
+
+    await expect(appendClaimEvents({
+      orgId,
+      claimId,
+      events: [{ seq: 1, kind: 'notice', payload }],
+    })).resolves.toEqual({ inserted: 0, lastSeq: 1 });
+
+    const { rows } = await getPool().query<{ payload_bytes: number; canonical_bytes: number }>(
+      `SELECT payload_bytes, octet_length(payload::text) AS canonical_bytes
+       FROM agent_claim_events
+       WHERE org_id = $1 AND claim_id = $2 AND seq = 1`,
+      [orgId, claimId],
+    );
+    expect(rows[0].payload_bytes).toBe(rows[0].canonical_bytes);
   });
 
   it('rejects a sequence replayed with a different kind or payload', async () => {
@@ -215,7 +252,7 @@ describe('claim interaction persistence', () => {
     expect(await commandStatus(first.command.id)).toBe('delivered');
   });
 
-  it('keeps an unacknowledged command active until terminal cleanup marks its outcome uncertain', async () => {
+  it('marks a delivered answer and its request uncertain after the acknowledgement deadline', async () => {
     const claimId = await createClaim();
     await upsertClaimRequest({
       orgId,
@@ -234,20 +271,46 @@ describe('claim interaction persistence', () => {
     });
     await leaseClaimCommands({ orgId, claimId, limit: 1 });
     await getPool().query(
-      `UPDATE agent_claim_commands SET delivered_at = NOW() - INTERVAL '1 day' WHERE id = $1`,
+      `UPDATE agent_claim_commands SET delivered_at = NOW() - INTERVAL '91 seconds' WHERE id = $1`,
       [reserved!.command.id],
     );
 
     await expect(leaseClaimCommands({ orgId, claimId, limit: 10 })).resolves.toEqual([]);
-    expect(await commandStatus(reserved!.command.id)).toBe('delivered');
-
-    await cancelOpenClaimInteractions({ orgId, claimId });
     expect(await commandStatus(reserved!.command.id)).toBe('uncertain');
     const { rows } = await getPool().query(
       'SELECT status FROM agent_claim_requests WHERE org_id = $1 AND claim_id = $2 AND request_key = $3',
       [orgId, claimId, 'lost-answer-request'],
     );
     expect(rows).toEqual([{ status: 'uncertain' }]);
+  });
+
+  it('renews only a command whose acknowledgement deadline is still active', async () => {
+    const claimId = await createClaim();
+    const fresh = await enqueueClaimCommand({
+      orgId,
+      claimId,
+      idempotencyKey: 'renew-fresh',
+      kind: 'prompt',
+      payload: { text: 'fresh' },
+    });
+    const stale = await enqueueClaimCommand({
+      orgId,
+      claimId,
+      idempotencyKey: 'renew-stale',
+      kind: 'prompt',
+      payload: { text: 'stale' },
+    });
+    await leaseClaimCommands({ orgId, claimId, limit: 2 });
+    await getPool().query(
+      `UPDATE agent_claim_commands SET delivered_at = NOW() - INTERVAL '91 seconds' WHERE id = $1`,
+      [stale.command.id],
+    );
+
+    await expect(renewClaimCommand({ orgId, claimId, commandId: fresh.command.id }))
+      .resolves.toMatchObject({ id: fresh.command.id, status: 'delivered' });
+    await expect(renewClaimCommand({ orgId, claimId, commandId: stale.command.id }))
+      .resolves.toBeNull();
+    expect(await commandStatus(stale.command.id)).toBe('uncertain');
   });
 
   it('resolves its request when an answer command is acknowledged', async () => {
@@ -360,6 +423,63 @@ describe('claim interaction persistence', () => {
     })).resolves.toBeNull();
   });
 
+  it('cancels a persisted ACP request and makes a late failed answer acknowledgement terminal', async () => {
+    const claimId = await createClaim();
+    await upsertClaimRequest({
+      orgId,
+      claimId,
+      requestKey: 'cancelled-request',
+      kind: 'permission',
+      payload: { action: 'write' },
+    });
+    const reserved = await reserveClaimRequestAnswer({
+      orgId,
+      claimId,
+      requestKey: 'cancelled-request',
+      idempotencyKey: 'cancelled-answer',
+      kind: 'permission',
+      payload: { behavior: 'allow' },
+    });
+    await leaseClaimCommands({ orgId, claimId, limit: 1 });
+
+    await expect(cancelClaimRequest({ orgId, claimId, requestKey: 'cancelled-request' }))
+      .resolves.toMatchObject({ status: 'cancelled' });
+    await ackClaimCommand({
+      orgId,
+      claimId,
+      commandId: reserved!.command.id,
+      status: 'failed',
+      result: { error: 'request closed' },
+    });
+    const { rows } = await getPool().query(
+      'SELECT status FROM agent_claim_requests WHERE org_id = $1 AND claim_id = $2 AND request_key = $3',
+      [orgId, claimId, 'cancelled-request'],
+    );
+    expect(rows).toEqual([{ status: 'cancelled' }]);
+  });
+
+  it('cancels an answer command that has not reached a runner when its ACP request closes', async () => {
+    const claimId = await createClaim();
+    await upsertClaimRequest({
+      orgId,
+      claimId,
+      requestKey: 'cancelled-pending-request',
+      kind: 'elicitation',
+      payload: { prompt: 'Choose' },
+    });
+    const reserved = await reserveClaimRequestAnswer({
+      orgId,
+      claimId,
+      requestKey: 'cancelled-pending-request',
+      idempotencyKey: 'cancelled-pending-answer',
+      kind: 'elicitation',
+      payload: { answer: 'A' },
+    });
+
+    await cancelClaimRequest({ orgId, claimId, requestKey: 'cancelled-pending-request' });
+    expect(await commandStatus(reserved!.command.id)).toBe('cancelled');
+  });
+
   it('cancels only open interactions at terminal transition', async () => {
     const claimId = await createClaim();
     await upsertClaimRequest({
@@ -420,6 +540,79 @@ describe('claim interaction persistence', () => {
     ]);
     expect(await commandStatus(pending.command.id)).toBe('cancelled');
     expect(await commandStatus(acknowledged.command.id)).toBe('acked');
+  });
+
+  it('closes pending interactions atomically when a legacy claim is dismissed', async () => {
+    const claimId = await createClaim();
+    await upsertClaimRequest({
+      orgId,
+      claimId,
+      requestKey: 'single-dismiss-request',
+      kind: 'permission',
+      payload: { action: 'write' },
+    });
+    const command = await enqueueClaimCommand({
+      orgId,
+      claimId,
+      idempotencyKey: 'single-dismiss-command',
+      kind: 'cancel',
+      payload: {},
+    });
+
+    await expect(dismissClaim(claimId, [orgId])).resolves.toBe(true);
+    const { rows: requests } = await getPool().query(
+      'SELECT status FROM agent_claim_requests WHERE org_id = $1 AND claim_id = $2',
+      [orgId, claimId],
+    );
+    expect(requests).toEqual([{ status: 'cancelled' }]);
+    expect(await commandStatus(command.command.id)).toBe('cancelled');
+  });
+
+  it('makes delivered answers uncertain when stale legacy claims are dismissed', async () => {
+    const claimId = await createClaim();
+    await upsertClaimRequest({
+      orgId,
+      claimId,
+      requestKey: 'stale-dismiss-request',
+      kind: 'permission',
+      payload: { action: 'write' },
+    });
+    const reserved = await reserveClaimRequestAnswer({
+      orgId,
+      claimId,
+      requestKey: 'stale-dismiss-request',
+      idempotencyKey: 'stale-dismiss-answer',
+      kind: 'permission',
+      payload: { behavior: 'allow' },
+    });
+    await leaseClaimCommands({ orgId, claimId, limit: 1 });
+    await getPool().query(
+      `UPDATE agent_claims SET created_at = NOW() - INTERVAL '2 days' WHERE id = $1`,
+      [claimId],
+    );
+
+    await expect(dismissStaleClaims([orgId], 1)).resolves.toBeGreaterThan(0);
+    expect(await commandStatus(reserved!.command.id)).toBe('uncertain');
+    const { rows: requests } = await getPool().query(
+      'SELECT status FROM agent_claim_requests WHERE org_id = $1 AND claim_id = $2',
+      [orgId, claimId],
+    );
+    expect(requests).toEqual([{ status: 'uncertain' }]);
+  });
+
+  it('closes pending interactions when a legacy pipeline is dismissed', async () => {
+    const claimId = await createClaim();
+    const command = await enqueueClaimCommand({
+      orgId,
+      claimId,
+      idempotencyKey: 'pipeline-dismiss-command',
+      kind: 'prompt',
+      payload: { text: 'run later' },
+    });
+
+    await expect(dismissPipelineClaims([orgId], 'fluent-io/claim-interactions', 127))
+      .resolves.toBeGreaterThan(0);
+    expect(await commandStatus(command.command.id)).toBe('cancelled');
   });
 
   it('uses an optional external executor so its writes roll back with the caller', async () => {

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
-import { query, dismissClaim } from '@fluent-flow/db';
+import { dismissClaim } from '@fluent-flow/db';
 import { authOptions, getOrgScope } from '@/lib/auth';
 
 type RouteContext = {
@@ -21,22 +21,9 @@ export async function POST(_request: Request, { params }: RouteContext) {
 
   const { orgIds, isSuperadmin } = getOrgScope(session);
 
-  // Verify the claim exists and is within the user's org scope
-  if (!isSuperadmin) {
-    const check = await query(
-      'SELECT id FROM agent_claims WHERE id = $1 AND org_id = ANY($2)',
-      [claimId, orgIds],
-    );
-    if (check.rows.length === 0) {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
-    }
-  } else {
-    const check = await query('SELECT id FROM agent_claims WHERE id = $1', [claimId]);
-    if (check.rows.length === 0) {
-      return NextResponse.json({ error: 'Not found' }, { status: 404 });
-    }
+  const dismissed = await dismissClaim(claimId, orgIds, isSuperadmin);
+  if (!dismissed) {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
-
-  await dismissClaim(claimId);
   return NextResponse.json({ id: claimId, status: 'cancelled' });
 }

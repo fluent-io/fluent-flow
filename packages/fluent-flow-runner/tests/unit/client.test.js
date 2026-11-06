@@ -46,7 +46,9 @@ describe('client', () => {
   it.each([
     ['postClaimEvents', ['runner-session', 9, [{ seq: 1, kind: 'state', payload: {} }]], '/api/runner/claims/9/events', { session_id: 'runner-session', events: [{ seq: 1, kind: 'state', payload: {} }] }],
     ['postClaimRequest', ['runner-session', 9, { requestKey: 'req-1', kind: 'permission', payload: { optionId: 'allow' } }], '/api/runner/claims/9/requests', { session_id: 'runner-session', request: { requestKey: 'req-1', kind: 'permission', payload: { optionId: 'allow' } } }],
+    ['cancelClaimRequest', ['runner-session', 9, 'request/1'], '/api/runner/claims/9/requests/request%2F1/cancel', { session_id: 'runner-session' }],
     ['pollClaimCommands', ['runner-session', 9], '/api/runner/claims/9/commands/poll', { session_id: 'runner-session' }],
+    ['renewClaimCommand', ['runner-session', 9, 'cmd/1'], '/api/runner/claims/9/commands/cmd%2F1/renew', { session_id: 'runner-session' }],
     ['ackClaimCommand', ['runner-session', 9, 'cmd/1', 'uncertain', { reason: 'transport lost' }], '/api/runner/claims/9/commands/cmd%2F1/ack', { session_id: 'runner-session', status: 'uncertain', result: { reason: 'transport lost' } }],
   ])('%s posts the ownership-bound endpoint contract', async (method, args, path, body) => {
     await client[method](...args);
@@ -54,6 +56,7 @@ describe('client', () => {
   });
 
   it.each([
+    ['poll', ['runner-session'], 'Poll'],
     ['pollClaimCommands', ['runner-session', 9], 'Claim commands'],
     ['ackClaimCommand', ['runner-session', 9, 'command-1', 'acked', { applied: true }], 'Claim command acknowledgement'],
   ])('%s forwards external cancellation and keeps its stable operation label', async (method, args, label) => {

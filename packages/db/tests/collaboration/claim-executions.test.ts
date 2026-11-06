@@ -19,8 +19,10 @@ import {
   listCollabClaimExecutions,
   startCollabClaimExecution,
 } from '../../src/collaboration/index.js';
-import { insertPendingClaim } from '../../src/queries/claims.js';
+import { dismissClaim, insertPendingClaim } from '../../src/queries/claims.js';
 import { createClaim as createDashboardClaim } from '../../src/queries/repos.js';
+import { getPipelineDetail, listPipelines } from '../../src/queries/pipelines.js';
+import { deleteAgentIfNoCollaborationClaims } from '../../src/queries/agents.js';
 
 process.env.DATABASE_URL = resolveCollabTestDatabaseUrl();
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -617,5 +619,57 @@ describe('task-linked claim executions', () => {
       .not.toContain(unlinked!.id);
     await expect(getCollabClaimExecution({ actor: collaboratorActor, claimId: unlinked!.id }))
       .rejects.toMatchObject({ status: 404, code: 'not_found' });
+  });
+
+  it('keeps collaboration-linked claims out of legacy pipeline reads and dismissals', async () => {
+    const isolatedTask = await createCollabTask({ actor: managerActor, projectId, title: 'Legacy boundary task' });
+    const started = await startCollabClaimExecution(startInput({
+      taskId: isolatedTask.id,
+      prNumber: 912,
+      idempotencyKey: 'legacy-boundary-key',
+    }));
+
+    await expect(getPipelineDetail([orgId], repo, 912, 'all')).resolves.toEqual([]);
+    const pipelines = await listPipelines([orgId], 'all');
+    expect(pipelines.map((pipeline) => pipeline.pr_number)).not.toContain(912);
+    await expect(dismissClaim(started.claim.id, [orgId])).resolves.toBe(false);
+    const stored = await rows<{ status: string }>('SELECT status FROM agent_claims WHERE id = $1', [started.claim.id]);
+    expect(stored).toEqual([{ status: 'pending' }]);
+  });
+
+  it('preserves an agent whose session owns collaboration execution history', async () => {
+    const isolatedTask = await createCollabTask({ actor: managerActor, projectId, title: 'Agent deletion boundary task' });
+    const started = await startCollabClaimExecution(startInput({
+      taskId: isolatedTask.id,
+      prNumber: 913,
+      idempotencyKey: 'agent-deletion-boundary-key',
+    }));
+    await getPool().query(
+      `INSERT INTO agents (id, org_id, agent_type, transport)
+       VALUES ('collab-history-runner', $1, 'claude-code', 'long_poll')`,
+      [orgId],
+    );
+    const session = await getPool().query<{ id: number }>(
+      `INSERT INTO agent_sessions (org_id, agent_id, status, expires_at)
+       VALUES ($1, 'collab-history-runner', 'busy', NOW() + INTERVAL '1 hour')
+       RETURNING id`,
+      [orgId],
+    );
+    await getPool().query(
+      `UPDATE agent_claims SET session_id = $2 WHERE id = $1`,
+      [started.claim.id, session.rows[0].id],
+    );
+
+    await expect(deleteAgentIfNoCollaborationClaims(orgId, 'collab-history-runner')).resolves.toBe('protected');
+    const agents = await rows<{ id: string }>(
+      `SELECT id FROM agents WHERE org_id = $1 AND id = 'collab-history-runner'`,
+      [orgId],
+    );
+    const links = await rows<{ claim_id: number }>(
+      `SELECT claim_id FROM collab_claim_executions WHERE claim_id = $1`,
+      [started.claim.id],
+    );
+    expect(agents).toEqual([{ id: 'collab-history-runner' }]);
+    expect(links).toEqual([{ claim_id: started.claim.id }]);
   });
 });

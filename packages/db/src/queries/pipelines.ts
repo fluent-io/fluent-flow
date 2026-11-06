@@ -44,6 +44,9 @@ export async function listPipelines(orgIds: string[], filter: 'active' | 'archiv
       ), '[]'::json) AS stages
     FROM agent_claims c
     WHERE 1=1
+      AND NOT EXISTS (
+        SELECT 1 FROM collab_claim_executions execution WHERE execution.claim_id = c.id
+      )
       ${archiveFilter}
       ${isSuper ? '' : 'AND c.org_id = ANY($1)'}
     GROUP BY c.org_id, c.repo, COALESCE(c.pr_number, 0)
@@ -92,11 +95,17 @@ export async function getPipelineDetail(orgIds: string[], repo: string, prNumber
     FROM agent_claims c
     LEFT JOIN agent_sessions s ON c.session_id = s.id
     WHERE ${isSuper ? '' : 'c.org_id = ANY($1) AND '}c.repo = $${isSuper ? 1 : 2} AND c.pr_number ${prNumber != null ? `= $${isSuper ? 2 : 3}` : 'IS NULL'}
+      AND NOT EXISTS (
+        SELECT 1 FROM collab_claim_executions execution WHERE execution.claim_id = c.id
+      )
       ${archivedFilter}
       AND c.attempt = (
         SELECT MAX(c2.attempt)
         FROM agent_claims c2
         WHERE c2.org_id = c.org_id AND c2.repo = c.repo AND c2.pr_number ${prNumber != null ? '= c.pr_number' : 'IS NULL'}
+          AND NOT EXISTS (
+            SELECT 1 FROM collab_claim_executions execution WHERE execution.claim_id = c2.id
+          )
       )
     ORDER BY c.created_at ASC
   `;

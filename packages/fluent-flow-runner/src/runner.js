@@ -3,7 +3,7 @@ import { hostname, platform } from 'node:os';
 import { resolve as resolvePath } from 'node:path';
 import { createAcpRuntime as createDefaultAcpRuntime } from './acp/runtime.js';
 import { resolveAcpCommand } from './acp/command.js';
-import { normalizeAcpUpdate } from './acp/normalize.js';
+import { createAcpStreamRedactor, normalizeAcpUpdate, redactAcpPayload } from './acp/normalize.js';
 import { prepareWorktree } from './worktree.js';
 import { resolvePrompt } from './prompts.js';
 
@@ -13,6 +13,7 @@ const MAX_BACKOFF_MS = 60000;
 const MAX_BACKOFF_TOTAL_MS = 10 * 60 * 1000;
 const DEFAULT_HEARTBEAT_MS = 60_000;
 const DEFAULT_COMMAND_POLL_MS = 1000;
+const DEFAULT_COMMAND_LEASE_RENEW_MS = 30_000;
 const DEFAULT_EVENT_FLUSH_MS = 250;
 const DEFAULT_EVENT_BATCH_SIZE = 25;
 const DEFAULT_AGENT_TEXT_LIMIT_BYTES = 5 * 1024 * 1024;
@@ -79,6 +80,7 @@ export function createRunner({
   acpCommand,
   acpArgs = [],
   commandPollMs = DEFAULT_COMMAND_POLL_MS,
+  commandLeaseRenewMs = DEFAULT_COMMAND_LEASE_RENEW_MS,
   eventFlushMs = DEFAULT_EVENT_FLUSH_MS,
   eventBatchSize = DEFAULT_EVENT_BATCH_SIZE,
   agentTextLimitBytes = DEFAULT_AGENT_TEXT_LIMIT_BYTES,
@@ -92,8 +94,10 @@ export function createRunner({
   let shutdownPromise = null;
   let heartbeatTimer = null;
   let heartbeatDead = false;
+  let claimPollController = null;
   const maxFailures = maxPollFailures ?? DEFAULT_MAX_POLL_FAILURES;
   const heartbeatMs = heartbeatIntervalMs ?? numFromEnv('FLUENT_FLOW_HEARTBEAT_MS', DEFAULT_HEARTBEAT_MS);
+  const leaseRenewMs = Math.max(1, Math.floor(commandLeaseRenewMs));
   const baseCwd = resolvePath(cwd ?? process.cwd());
   const batchSize = Math.max(1, Math.floor(eventBatchSize));
   const textLimit = Math.max(0, Math.floor(agentTextLimitBytes));
@@ -249,6 +253,8 @@ export function createRunner({
     let flushTail = Promise.resolve();
     const redactionValues = [runnerToken, ...secretValues, state.work.githubToken, ...environmentSecrets(runtimeEnvironment)]
       .filter((value) => typeof value === 'string' && value.length > 0);
+    const streamRedactor = createAcpStreamRedactor(redactionValues);
+    let eventSessionId = null;
 
     function appendAgentText(text) {
       if (textLimit === 0 || text.length === 0) return;
@@ -311,14 +317,13 @@ export function createRunner({
       flushTimer.unref?.();
     }
 
-    async function onEvent(params) {
-      if (state.interactionFailure) throw state.interactionFailure;
+    async function queueUpdate(sessionId, update) {
       const nextSequence = sequence + 1;
       const event = normalizeAcpUpdate({
         claimId,
-        sessionId: params.sessionId,
+        sessionId,
         seq: nextSequence,
-        update: params.update,
+        update,
         secretValues: redactionValues,
       });
       sequence = nextSequence;
@@ -331,28 +336,50 @@ export function createRunner({
       if (event.payload.raw.sessionUpdate === 'state_update') {
         if (event.payload.raw.state === 'running' || event.payload.raw.state === 'requires_action') {
           state.turnSawActive = true;
-        } else if (
-          event.payload.raw.state === 'idle'
-          && state.turnSawActive
-          && state.queuedPromptCount === 0
-        ) {
+          state.turnReachedIdle = false;
+        } else if (event.payload.raw.state === 'idle' && state.turnSawActive) {
           state.turnSawActive = false;
-          stopCommandService(state);
+          state.turnReachedIdle = true;
+          if (state.queuedPromptCount === 0 && !state.commandBatchActive) stopCommandService(state);
         }
       }
       if (eventQueue.length >= batchSize) await flushEvents();
       else scheduleFlush();
     }
 
+    async function onEvent(params) {
+      if (state.interactionFailure) throw state.interactionFailure;
+      eventSessionId = params.sessionId;
+      for (const update of streamRedactor.push(params.update)) {
+        await queueUpdate(params.sessionId, update);
+      }
+    }
+
+    async function finalizeEvents() {
+      for (const update of streamRedactor.flush()) {
+        await queueUpdate(eventSessionId, update);
+      }
+      await flushEvents();
+    }
+
     async function onRequest(request) {
-      await client.postClaimRequest(sessionId, claimId, request);
+      await client.postClaimRequest(sessionId, claimId, {
+        ...request,
+        payload: redactAcpPayload(request.payload, redactionValues),
+      });
+    }
+
+    async function onRequestCancelled(request) {
+      await client.cancelClaimRequest(sessionId, claimId, request.requestKey);
     }
 
     return {
       onEvent,
       onRequest,
+      onRequestCancelled,
       flushEvents,
       clearFlushTimer,
+      finalizeEvents,
       agentMessageText: () => Buffer.concat(agentText, agentTextBytes).toString('utf8'),
     };
   }
@@ -409,15 +436,43 @@ export function createRunner({
       if (!queued) return;
       queued = false;
       state.queuedPromptCount -= 1;
+      if (
+        state.queuedPromptCount === 0
+        && state.turnReachedIdle
+        && !state.commandBatchActive
+      ) {
+        stopCommandService(state);
+      }
     };
     const previousTurn = state.turnTail;
     installTurnTail(state, turn);
 
     const task = (async () => {
-      const prior = await Promise.race([
-        previousTurn.then((outcome) => ({ outcome })),
-        state.commandStopPromise.then(() => ({ stopped: true })),
-      ]);
+      let prior;
+      while (!prior) {
+        let renewalTimer;
+        const renewalDue = new Promise((resolve) => {
+          renewalTimer = setTimeout(() => resolve({ renewalDue: true }), leaseRenewMs);
+          renewalTimer.unref?.();
+        });
+        const next = await Promise.race([
+          previousTurn.then((outcome) => ({ outcome })),
+          state.commandStopPromise.then(() => ({ stopped: true })),
+          renewalDue,
+        ]);
+        clearTimeout(renewalTimer);
+        if (!next.renewalDue) {
+          prior = next;
+          continue;
+        }
+        const renewal = await client.renewClaimCommand(sessionId, claimId, commandIdOf(command));
+        if (!renewal?.renewed) {
+          leaveQueue();
+          const outcome = await previousTurn;
+          settleTurn(outcome);
+          return outcome;
+        }
+      }
       if (prior.stopped) {
         leaveQueue();
         const outcome = state.dashboardCancelApplied
@@ -467,16 +522,47 @@ export function createRunner({
         return previousOutcome;
       }
 
+      const renewal = await client.renewClaimCommand(sessionId, claimId, commandId);
+      if (!renewal?.renewed) {
+        leaveQueue();
+        settleTurn(previousOutcome);
+        return previousOutcome;
+      }
+      if (state.dashboardCancelApplied || state.shuttingDown || !state.commandsRunning) {
+        leaveQueue();
+        settleTurn(previousOutcome);
+        await acknowledgeNotApplied(state, claimId, command);
+        return previousOutcome;
+      }
+
+      state.turnReachedIdle = false;
       leaveQueue();
       state.turnSawActive = false;
       let result;
+      let accepted = false;
       try {
-        result = await state.runtime.prompt(text);
+        result = await state.runtime.prompt(text, {
+          onAccepted: async ({ messageId }) => {
+            accepted = true;
+            await client.ackClaimCommand(
+              sessionId,
+              claimId,
+              commandId,
+              'acked',
+              { applied: true, messageId },
+              state.commandTransportOptions,
+            );
+          },
+        });
         settleTurn({ result });
       } catch (error) {
         const uncertain = commandFailureIsUncertain(error);
         const outcome = uncertain ? { error } : previousOutcome;
         settleTurn(outcome);
+        if (accepted) {
+          recordCommandFailure(state, error);
+          return outcome;
+        }
         try {
           await client.ackClaimCommand(
             sessionId,
@@ -493,19 +579,6 @@ export function createRunner({
         if (uncertain) recordCommandFailure(state, error);
         return outcome;
       }
-
-      try {
-        await client.ackClaimCommand(
-          sessionId,
-          claimId,
-          commandId,
-          'acked',
-          { applied: true },
-          state.commandTransportOptions,
-        );
-      } catch (error) {
-        recordCommandFailure(state, error);
-      }
       return { result };
     })().catch((error) => {
       leaveQueue();
@@ -518,6 +591,8 @@ export function createRunner({
 
   async function applyImmediateCommand(state, claimId, command) {
     const commandId = commandIdOf(command);
+    const renewal = await client.renewClaimCommand(sessionId, claimId, commandId);
+    if (!renewal?.renewed) return;
     const payload = command.payload ?? {};
     let cancelBarrierResolve;
     let cancelBarrier;
@@ -605,17 +680,29 @@ export function createRunner({
           break;
         }
 
-        for (let index = 0; index < commands.length; index += 1) {
-          if (!state.commandsRunning || state.shuttingDown) {
-            await acknowledgeNotAppliedBatch(state, claimId, commands.slice(index));
-            break;
+        state.commandBatchActive = true;
+        try {
+          for (let index = 0; index < commands.length; index += 1) {
+            if (!state.commandsRunning || state.shuttingDown) {
+              await acknowledgeNotAppliedBatch(state, claimId, commands.slice(index));
+              break;
+            }
+            const command = commands[index];
+            if (command?.kind === 'prompt') schedulePromptCommand(state, claimId, command);
+            else await applyImmediateCommand(state, claimId, command);
+            if (!state.commandsRunning || state.shuttingDown) {
+              await acknowledgeNotAppliedBatch(state, claimId, commands.slice(index + 1));
+              break;
+            }
           }
-          const command = commands[index];
-          if (command?.kind === 'prompt') schedulePromptCommand(state, claimId, command);
-          else await applyImmediateCommand(state, claimId, command);
-          if (!state.commandsRunning || state.shuttingDown) {
-            await acknowledgeNotAppliedBatch(state, claimId, commands.slice(index + 1));
-            break;
+        } finally {
+          state.commandBatchActive = false;
+          if (
+            state.commandsRunning
+            && state.queuedPromptCount === 0
+            && state.turnReachedIdle
+          ) {
+            stopCommandService(state);
           }
         }
 
@@ -665,12 +752,14 @@ export function createRunner({
       bridge: null,
       commandsRunning: false,
       commandDraining: false,
+      commandBatchActive: false,
       commandWake: null,
       commandLoop: null,
       commandTasks: [],
       queuedPromptCount: 0,
       turnSawActive: false,
       commandPollController: null,
+      turnReachedIdle: false,
       commandTransportController: new AbortController(),
       commandTransportOptions: null,
       turnTail: null,
@@ -750,6 +839,7 @@ export function createRunner({
           env: runtimeEnvironment,
           onEvent: bridge.onEvent,
           onRequest: bridge.onRequest,
+          onRequestCancelled: bridge.onRequestCancelled,
           log: createRuntimeLog(log),
           ...(runtimeLimits && { limits: runtimeLimits }),
         });
@@ -828,7 +918,7 @@ export function createRunner({
           if (bridge) {
             bridge.clearFlushTimer();
             try {
-              await bridge.flushEvents();
+              await bridge.finalizeEvents();
             } catch (error) {
               state.interactionFailure = state.interactionFailure ?? error;
             }
@@ -903,6 +993,7 @@ export function createRunner({
   async function doShutdown() {
     log.info('Shutting down');
     running = false;
+    claimPollController?.abort();
     stopHeartbeat();
     const state = activeState;
     if (!state) return;
@@ -921,7 +1012,7 @@ export function createRunner({
     if (state.bridge) {
       state.bridge.clearFlushTimer();
       try {
-        await state.bridge.flushEvents();
+        await state.bridge.finalizeEvents();
       } catch {
         state.interactionFailure = state.interactionFailure ?? new Error('ACP event delivery failed');
       }
@@ -942,9 +1033,23 @@ export function createRunner({
       let backoffStart = null;
       while (running) {
         try {
-          const work = await client.poll(sessionId);
+          const controller = new AbortController();
+          claimPollController = controller;
+          let work;
+          try {
+            work = await client.poll(sessionId, { signal: controller.signal });
+          } finally {
+            if (claimPollController === controller) claimPollController = null;
+          }
           consecutiveFailures = 0;
           backoffStart = null;
+          if (work && !running) {
+            await reportClaimWithRetry(
+              claimPayload(work, 'failed', { failure_kind: 'transient' }),
+              { delays: [1000] },
+            );
+            break;
+          }
           if (work) await handleWork(work);
           else await delay(100);
         } catch (error) {

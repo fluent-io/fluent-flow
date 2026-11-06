@@ -7,6 +7,24 @@ import { createLogger } from '../src/logger.js';
 import { parseArgs } from '../src/parse-args.js';
 import { resolveToken } from '../src/resolve-token.js';
 
+export function installSignalShutdown(runner, processLike = process) {
+  let shutdownPromise = null;
+  const handleSignal = () => {
+    if (shutdownPromise) {
+      processLike.exitCode = 1;
+      return;
+    }
+    shutdownPromise = Promise.resolve()
+      .then(() => runner.shutdown())
+      .catch(() => {
+        processLike.exitCode = 1;
+      });
+  };
+  processLike.on('SIGTERM', handleSignal);
+  processLike.on('SIGINT', handleSignal);
+  return () => shutdownPromise ?? Promise.resolve();
+}
+
 async function main() {
   let opts;
   try {
@@ -37,25 +55,20 @@ async function main() {
     cwd: opts.cwd,
   });
 
-  let shuttingDown = false;
-  const handleSignal = () => {
-    if (shuttingDown) process.exit(1);
-    shuttingDown = true;
-    runner.shutdown().then(
-      () => process.exit(0),
-      () => process.exit(1),
-    );
-    const cap = setTimeout(() => process.exit(1), 9000);
-    cap.unref();
-  };
-  process.on('SIGTERM', handleSignal);
-  process.on('SIGINT', handleSignal);
+  const waitForSignalShutdown = installSignalShutdown(runner);
 
   try {
     await runner.start();
+    await waitForSignalShutdown();
   } catch (error) {
     log.error('Runner failed', { error: error.message });
-    process.exit(1);
+    process.exitCode = 1;
+    try {
+      await runner.shutdown();
+    } catch (shutdownError) {
+      log.error('Runner shutdown failed', { error: shutdownError.message });
+    }
+    await waitForSignalShutdown();
   }
 }
 

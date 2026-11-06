@@ -174,7 +174,7 @@ Dashboard controls delivered to the active runner:
 
 `(org_id, claim_id, idempotency_key)` is unique. Statuses are `pending`, `delivered`, `acked`, `failed`, `uncertain`, and `cancelled`. Reusing an idempotency key with a different command body is a conflict.
 
-Only `pending` commands are leased. A delivered command is never delivered a second time. If its acknowledgement deadline expires, it becomes `uncertain`; the user may issue a new explicit intent, but the service never silently replays the old prompt or answer.
+Only `pending` commands are leased. A delivered command is never delivered a second time. The runner renews a queued prompt lease every 30 seconds and validates every command immediately before local application. A command that is not acknowledged or renewed within 90 seconds becomes `uncertain`; the user may issue a new explicit intent, but the service never silently replays the old prompt or answer. A prompt is acknowledged as soon as ACP accepts it, before the turn completes.
 
 Queueing a permission or elicitation answer atomically reserves the corresponding open request. A second answer cannot be queued with another idempotency key. Successful acknowledgement resolves the request, definite pre-application failure reopens it, and uncertain delivery makes it terminally uncertain.
 

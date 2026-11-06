@@ -169,6 +169,7 @@ export function createAcpRuntime({
   env,
   onEvent = async () => {},
   onRequest = async () => {},
+  onRequestCancelled = async () => {},
   log = {},
   spawnProcess = spawnAcpProcess,
   now = () => Date.now(),
@@ -182,7 +183,12 @@ export function createAcpRuntime({
     throw safeError('ACP command arguments are invalid');
   }
   if (typeof cwd !== 'string' || !isAbsolute(cwd)) throw safeError('ACP working directory must be absolute');
-  if (typeof onEvent !== 'function' || typeof onRequest !== 'function' || typeof spawnProcess !== 'function') {
+  if (
+    typeof onEvent !== 'function'
+    || typeof onRequest !== 'function'
+    || typeof onRequestCancelled !== 'function'
+    || typeof spawnProcess !== 'function'
+  ) {
     throw safeError('ACP runtime callbacks are invalid');
   }
   if (!timers || typeof timers.setTimeout !== 'function' || typeof timers.clearTimeout !== 'function') {
@@ -203,6 +209,7 @@ export function createAcpRuntime({
   let foreground = null;
   let recoveryUsed = false;
   let eventTail = Promise.resolve();
+  let requestCancellationTail = Promise.resolve();
   let silenceTimer = null;
   let livenessRunning = false;
   let closePromise = null;
@@ -288,16 +295,34 @@ export function createAcpRuntime({
       : { action: 'cancel' };
   }
 
-  function settleRequest(record, response) {
+  function queueRequestCancellation(record) {
+    if (!record.persisted || record.cancellationQueued) return;
+    record.cancellationQueued = true;
+    const operation = requestCancellationTail.then(() => onRequestCancelled({
+      requestKey: record.requestKey,
+      kind: record.kind,
+    }));
+    requestCancellationTail = operation.catch(() => {
+      throw terminalFailure(safeError('ACP request cancellation delivery failed'));
+    });
+    requestCancellationTail.catch(() => undefined);
+  }
+
+  function settleRequest(record, response, cancelled = false) {
     if (record.closed) return;
     record.closed = true;
+    record.cancelled = cancelled;
     record.signal.removeEventListener('abort', record.cancel);
     pendingRequests.delete(record.requestKey);
+    if (cancelled) queueRequestCancellation(record);
     record.reply.resolve(response);
   }
 
   function settlePendingRequests() {
-    for (const record of [...pendingRequests.values()]) settleRequest(record, cancelResponse(record));
+    for (const record of [...pendingRequests.values()]) {
+      settleRequest(record, cancelResponse(record), true);
+    }
+    return requestCancellationTail;
   }
 
   function rejectForeground(error) {
@@ -428,18 +453,23 @@ export function createAcpRuntime({
       signal: context.signal,
       origin,
       closed: false,
+      persisted: false,
+      cancelled: false,
+      cancellationQueued: false,
       cancel: null,
     };
-    record.cancel = () => settleRequest(record, cancelResponse(record));
+    record.cancel = () => settleRequest(record, cancelResponse(record), true);
     pendingRequests.set(requestKey, record);
     context.signal.addEventListener('abort', record.cancel, { once: true });
     try {
       await onRequest({ requestKey, kind, payload: context.params });
+      record.persisted = true;
+      if (record.cancelled) queueRequestCancellation(record);
     } catch {
-      settleRequest(record, cancelResponse(record));
+      settleRequest(record, cancelResponse(record), true);
       throw terminalFailure(safeError('ACP request delivery failed'));
     }
-    if (context.signal.aborted) settleRequest(record, cancelResponse(record));
+    if (context.signal.aborted) settleRequest(record, cancelResponse(record), true);
     return reply.promise;
   }
 
@@ -676,8 +706,9 @@ export function createAcpRuntime({
     if (phase === 'foreground') scheduleSilence(replacement);
   }
 
-  async function submitPrompt(text) {
+  async function submitPrompt(text, { onAccepted = async () => {} } = {}) {
     if (typeof text !== 'string' || text.trim().length === 0) throw safeError('ACP prompt must be non-empty text');
+    if (typeof onAccepted !== 'function') throw safeError('ACP prompt acceptance callback is invalid');
     if (phase !== 'idle' || !current || !sessionId) throw safeError('ACP session is not ready for a prompt');
     const turn = {
       accepted: false,
@@ -698,30 +729,32 @@ export function createAcpRuntime({
       if (foreground !== turn || phase === 'failed') return await turn.completion.promise;
       turn.accepted = true;
       turn.messageId = response.messageId;
+      await onAccepted({ messageId: turn.messageId });
       completeForegroundIfReady();
     } catch {
       if (!turn.accepted) terminalFailure(safeError('ACP prompt acceptance is uncertain'));
+      else throw terminalFailure(safeError('ACP prompt acceptance delivery failed'));
     }
     return turn.completion.promise;
   }
 
-  async function runInitialPrompt(text) {
+  async function runInitialPrompt(text, options) {
     if (initialPromptStarted) throw safeError('ACP initial prompt has already started');
     initialPromptStarted = true;
     await setupWithRetry();
-    return submitPrompt(text);
+    return submitPrompt(text, options);
   }
 
-  async function prompt(text) {
+  async function prompt(text, options) {
     if (!initialPromptStarted) throw safeError('ACP initial prompt has not started');
-    return submitPrompt(text);
+    return submitPrompt(text, options);
   }
 
   async function cancel() {
     if (!current || !sessionId || !foreground || (phase !== 'foreground' && phase !== 'recovering')) {
       throw safeError('ACP foreground work is not active');
     }
-    settlePendingRequests();
+    await settlePendingRequests();
     try {
       await notifyWithDeadline(current.agent, AGENT_METHODS.session_cancel, { sessionId }, 'ACP cancellation failed');
     } catch {
@@ -753,7 +786,10 @@ export function createAcpRuntime({
       controller.abort(safeError('ACP runtime is shutting down'));
     }
     clearSilenceTimer();
-    settlePendingRequests();
+    const cancellationDrain = settlePendingRequests().then(
+      () => null,
+      (error) => error,
+    );
     if (terminalCleanup) await terminalCleanup;
     const record = current;
     if (record && sessionId && foreground && (priorPhase === 'foreground' || priorPhase === 'recovering')) {
@@ -777,6 +813,8 @@ export function createAcpRuntime({
     const result = record ? await shutdownRecord(record) : lastRecord?.exitResult ?? null;
     phase = 'closed';
     if (!finalExit.settled) finalExit.resolve(publicExit(result));
+    const cancellationError = await cancellationDrain;
+    if (cancellationError) throw cancellationError;
   }
 
   function close() {

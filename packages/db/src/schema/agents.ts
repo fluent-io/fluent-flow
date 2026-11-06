@@ -100,7 +100,7 @@ export const agentClaimEvents = pgTable('agent_claim_events', {
   seq: integer('seq').notNull(),
   kind: text('kind').notNull(),
   payload: jsonb('payload').notNull(),
-  payloadBytes: integer('payload_bytes').notNull().generatedAlwaysAs(sql`octet_length(payload::text)`),
+  payloadBytes: integer('payload_bytes'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 }, (t) => ({
   pk: primaryKey({ columns: [t.orgId, t.claimId, t.seq] }),

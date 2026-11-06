@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getServerSession, type Session } from 'next-auth';
-import { getAgentDetail, getAgentSessions, getAgentClaims, getKeyInfo, query } from '@fluent-flow/db';
+import { deleteAgentIfNoCollaborationClaims, getAgentDetail, getAgentSessions, getAgentClaims, getKeyInfo } from '@fluent-flow/db';
 import { authOptions, getOrgScope, hasRole } from '@/lib/auth';
 
 /**
@@ -93,13 +93,16 @@ export async function DELETE(
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   }
 
-  await query(
-    `DELETE FROM agent_claims WHERE org_id = $1 AND session_id IN (
-      SELECT id FROM agent_sessions WHERE org_id = $1 AND agent_id = $2
-    )`,
-    [agent.org_id, agent.id],
-  );
-  await query('DELETE FROM agents WHERE org_id = $1 AND id = $2', [agent.org_id, agent.id]);
+  const result = await deleteAgentIfNoCollaborationClaims(agent.org_id, agent.id);
+  if (result === 'protected') {
+    return NextResponse.json(
+      { error: 'Agent cannot be deleted because execution history must be preserved' },
+      { status: 409 },
+    );
+  }
+  if (result === 'not_found') {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  }
 
   return NextResponse.json({ deleted: true });
 }

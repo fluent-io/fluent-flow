@@ -35,8 +35,8 @@ export function createClient({ serverUrl, token, fetch: fetchFn = globalThis.fet
 
   return {
     register: (meta) => post('/api/runner/register', { meta }, 'Register'),
-    poll: async (sessionId) => {
-      const data = await post('/api/runner/poll', { session_id: sessionId }, 'Poll');
+    poll: async (sessionId, options) => {
+      const data = await post('/api/runner/poll', { session_id: sessionId }, 'Poll', options);
       return data.work ?? null;
     },
     heartbeat: (sessionId, claimId) => post(
@@ -55,11 +55,21 @@ export function createClient({ serverUrl, token, fetch: fetchFn = globalThis.fet
       { session_id: sessionId, request },
       'Claim request',
     ),
+    cancelClaimRequest: (sessionId, claimId, requestKey) => post(
+      `/api/runner/claims/${encodeURIComponent(claimId)}/requests/${encodeURIComponent(requestKey)}/cancel`,
+      { session_id: sessionId },
+      'Claim request cancellation',
+    ),
     pollClaimCommands: (sessionId, claimId, options) => post(
       `/api/runner/claims/${encodeURIComponent(claimId)}/commands/poll`,
       { session_id: sessionId },
       'Claim commands',
       options,
+    ),
+    renewClaimCommand: (sessionId, claimId, commandId) => post(
+      `/api/runner/claims/${encodeURIComponent(claimId)}/commands/${encodeURIComponent(commandId)}/renew`,
+      { session_id: sessionId },
+      'Claim command renewal',
     ),
     ackClaimCommand: (sessionId, claimId, commandId, status, result, options) => post(
       `/api/runner/claims/${encodeURIComponent(claimId)}/commands/${encodeURIComponent(commandId)}/ack`,

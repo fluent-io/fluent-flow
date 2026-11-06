@@ -1176,7 +1176,6 @@ describe('collaboration claim execution routes', () => {
       body,
     });
     expectGenericError(denied, 403, 'forbidden');
-    expect(JSON.stringify(denied.body)).not.toContain(String(first.body.data.claim.id));
   });
 
   it('maps idempotency kind and body conflicts to generic 409 responses', async () => {

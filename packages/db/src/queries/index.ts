@@ -1,4 +1,4 @@
-export { listAgents, getAgentDetail, createAgent } from './agents.js';
+export { listAgents, getAgentDetail, createAgent, deleteAgentIfNoCollaborationClaims } from './agents.js';
 export { getAgentSessions } from './sessions.js';
 export { getAgentClaims, dismissClaim, dismissStaleClaims, dismissPipelineClaims, insertPendingClaim } from './claims.js';
 export type { PendingClaimInput, PendingClaimRow } from './claims.js';
@@ -12,8 +12,11 @@ export {
   ackClaimCommand,
   appendClaimEvents,
   cancelOpenClaimInteractions,
+  cancelClaimRequest,
+  cancelOpenClaimInteractionsForClaims,
   enqueueClaimCommand,
   leaseClaimCommands,
+  renewClaimCommand,
   reserveClaimRequestAnswer,
   resolveClaimRequest,
   upsertClaimRequest,

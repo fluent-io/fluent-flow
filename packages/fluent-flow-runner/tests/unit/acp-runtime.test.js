@@ -75,6 +75,7 @@ function makeHarness(scenario = 'normal', overrides = {}) {
     env: { ...process.env },
     onEvent: overrides.onEvent ?? (async (event) => { events.push(event); }),
     onRequest: overrides.onRequest ?? (async (request) => { requests.push(request); }),
+    onRequestCancelled: overrides.onRequestCancelled ?? (async () => {}),
     log: overrides.log ?? { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     spawnProcess,
     now: overrides.now ?? (() => Date.now()),
@@ -217,6 +218,38 @@ describe('createAcpRuntime', () => {
     await expect(runtime.answerRequest(request.requestKey, {
       outcome: { outcome: 'cancelled' },
     })).rejects.toThrow(/already answered|not open|late/i);
+  });
+
+  it('reports a persisted request cancellation before closing the matching ACP request', async () => {
+    const cancelled = [];
+    const { runtime, requests } = makeHarness('permission', {
+      onRequestCancelled: async (request) => {
+        cancelled.push(request);
+      },
+    });
+    const completion = runtime.runInitialPrompt('Request permission.');
+    const request = await waitFor(() => requests[0]);
+
+    await runtime.cancel();
+    await waitFor(() => cancelled[0]);
+    await completion;
+    expect(cancelled).toEqual([{
+      requestKey: request.requestKey,
+      kind: 'permission',
+    }]);
+  });
+
+  it('reports prompt acceptance before the ACP turn reaches idle', async () => {
+    const accepted = deferred();
+    const { runtime } = makeHarness('long-running');
+    const completion = runtime.runInitialPrompt('Keep running.', {
+      onAccepted: accepted.resolve,
+    });
+
+    await expect(accepted.promise).resolves.toEqual({ messageId: 'fake-user-message-1' });
+    expect(await settleWithin(completion, 25)).toEqual({ status: 'timeout' });
+    await runtime.cancel();
+    await expect(completion).resolves.toMatchObject({ stopReason: 'cancelled' });
   });
 
   it('holds form elicitations until a schema-valid matching answer', async () => {

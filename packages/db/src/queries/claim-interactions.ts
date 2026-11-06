@@ -91,7 +91,7 @@ export async function appendClaimEvents(input: {
       [`claim-events:${input.orgId}:${input.claimId}`],
     );
     const existing = await client.query<{ payload_bytes: string }>(
-      `SELECT COALESCE(SUM(payload_bytes), 0)::text AS payload_bytes
+      `SELECT COALESCE(SUM(COALESCE(payload_bytes, octet_length(payload::text))), 0)::text AS payload_bytes
        FROM agent_claim_events
        WHERE org_id = $1 AND claim_id = $2`,
       [input.orgId, input.claimId],
@@ -101,13 +101,15 @@ export async function appendClaimEvents(input: {
     for (const event of input.events) {
       const serializedPayload = JSON.stringify(event.payload);
       const result = await client.query<{ inserted: boolean; payload_bytes: number }>(
-        `INSERT INTO agent_claim_events (org_id, claim_id, seq, kind, payload)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO agent_claim_events (org_id, claim_id, seq, kind, payload, payload_bytes)
+         VALUES ($1, $2, $3, $4, $5, octet_length($5::jsonb::text))
          ON CONFLICT (org_id, claim_id, seq) DO UPDATE
-           SET kind = agent_claim_events.kind
+           SET kind = agent_claim_events.kind,
+               payload_bytes = COALESCE(agent_claim_events.payload_bytes, EXCLUDED.payload_bytes)
          WHERE agent_claim_events.kind = EXCLUDED.kind
            AND agent_claim_events.payload = EXCLUDED.payload
-         RETURNING xmax = 0 AS inserted, payload_bytes`,
+         RETURNING xmax = 0 AS inserted,
+                   COALESCE(payload_bytes, octet_length(payload::text)) AS payload_bytes`,
         [input.orgId, input.claimId, event.seq, event.kind, serializedPayload],
       );
       if (result.rows.length === 0) throw new Error('Interaction conflict.');
@@ -226,12 +228,39 @@ export async function reserveClaimRequestAnswer(input: {
   });
 }
 
+async function expireDeliveredCommands(
+  client: QueryExecutor,
+  input: { orgId: string; claimId: number; commandId?: number },
+): Promise<void> {
+  await client.query(
+    `WITH expired AS (
+       UPDATE agent_claim_commands
+       SET status = 'uncertain',
+           result = '{"reason":"acknowledgement_deadline_elapsed"}'::jsonb,
+           acked_at = now()
+       WHERE org_id = $1 AND claim_id = $2 AND status = 'delivered'
+         AND delivered_at <= now() - INTERVAL '90 seconds'
+         AND ($3::integer IS NULL OR id = $3)
+       RETURNING org_id, claim_id, request_key, result
+     )
+     UPDATE agent_claim_requests AS request
+     SET status = 'uncertain', response = expired.result, resolved_at = now()
+     FROM expired
+     WHERE request.org_id = expired.org_id
+       AND request.claim_id = expired.claim_id
+       AND request.request_key = expired.request_key
+       AND request.status = 'answer_queued'`,
+    [input.orgId, input.claimId, input.commandId ?? null],
+  );
+}
+
 export async function leaseClaimCommands(input: {
   orgId: string;
   claimId: number;
   limit: number;
 }, executor?: QueryExecutor): Promise<ClaimCommand[]> {
   return atomic(executor, async (client) => {
+    await expireDeliveredCommands(client, input);
     const result = await client.query(
       `WITH selected AS (
          SELECT id FROM agent_claim_commands
@@ -248,6 +277,58 @@ export async function leaseClaimCommands(input: {
       [input.orgId, input.claimId, Math.max(0, input.limit)],
     );
     return result.rows.map(commandFromRow);
+  });
+}
+
+export async function renewClaimCommand(input: {
+  orgId: string;
+  claimId: number;
+  commandId: number;
+}, executor?: QueryExecutor): Promise<ClaimCommand | null> {
+  return atomic(executor, async (client) => {
+    await expireDeliveredCommands(client, input);
+    const renewed = await client.query(
+      `UPDATE agent_claim_commands
+       SET delivered_at = now()
+       WHERE org_id = $1 AND claim_id = $2 AND id = $3 AND status = 'delivered'
+       RETURNING *`,
+      [input.orgId, input.claimId, input.commandId],
+    );
+    return renewed.rows[0] ? commandFromRow(renewed.rows[0]) : null;
+  });
+}
+
+export async function cancelClaimRequest(input: {
+  orgId: string;
+  claimId: number;
+  requestKey: string;
+}, executor?: QueryExecutor): Promise<ClaimRequest | null> {
+  return atomic(executor, async (client) => {
+    const cancelled = await client.query(
+      `UPDATE agent_claim_requests
+       SET status = 'cancelled', response = NULL, resolved_at = now()
+       WHERE org_id = $1 AND claim_id = $2 AND request_key = $3
+         AND status IN ('open', 'answer_queued')
+       RETURNING *`,
+      [input.orgId, input.claimId, input.requestKey],
+    );
+    if (cancelled.rows.length === 0) {
+      const existing = await client.query(
+        `SELECT * FROM agent_claim_requests
+         WHERE org_id = $1 AND claim_id = $2 AND request_key = $3
+           AND status = 'cancelled'`,
+        [input.orgId, input.claimId, input.requestKey],
+      );
+      return existing.rows[0] ? requestFromRow(existing.rows[0]) : null;
+    }
+    await client.query(
+      `UPDATE agent_claim_commands
+       SET status = 'cancelled', acked_at = now()
+       WHERE org_id = $1 AND claim_id = $2 AND request_key = $3
+         AND status = 'pending'`,
+      [input.orgId, input.claimId, input.requestKey],
+    );
+    return requestFromRow(cancelled.rows[0]);
   });
 }
 
@@ -284,39 +365,68 @@ export async function ackClaimCommand(input: {
   });
 }
 
-export async function cancelOpenClaimInteractions(input: {
-  orgId: string;
-  claimId: number;
-}, executor?: QueryExecutor): Promise<void> {
+export async function cancelOpenClaimInteractionsForClaims(
+  inputs: Array<{ orgId: string; claimId: number }>,
+  executor?: QueryExecutor,
+): Promise<void> {
+  if (inputs.length === 0) return;
+  const orgIds = inputs.map((input) => input.orgId);
+  const claimIds = inputs.map((input) => input.claimId);
   await atomic(executor, async (client) => {
     await client.query(
-      `WITH uncertain_commands AS (
-         UPDATE agent_claim_commands
+      `WITH targets AS (
+         SELECT * FROM unnest($1::text[], $2::integer[]) AS target(org_id, claim_id)
+       ),
+       uncertain_commands AS (
+         UPDATE agent_claim_commands AS command
          SET status = 'uncertain',
-             result = COALESCE(result, '{"reason":"claim_ended_before_ack"}'::jsonb),
+             result = COALESCE(command.result, '{"reason":"claim_ended_before_ack"}'::jsonb),
              acked_at = now()
-         WHERE org_id = $1 AND claim_id = $2 AND status = 'delivered'
-         RETURNING request_key, result
+         FROM targets
+         WHERE command.org_id = targets.org_id
+           AND command.claim_id = targets.claim_id
+           AND command.status = 'delivered'
+         RETURNING command.org_id, command.claim_id, command.request_key, command.result
        )
        UPDATE agent_claim_requests AS request
        SET status = 'uncertain', response = command.result, resolved_at = now()
        FROM uncertain_commands AS command
-       WHERE request.org_id = $1 AND request.claim_id = $2
+       WHERE request.org_id = command.org_id
+         AND request.claim_id = command.claim_id
          AND request.status = 'answer_queued'
          AND request.request_key = command.request_key`,
-      [input.orgId, input.claimId],
+      [orgIds, claimIds],
     );
     await client.query(
-      `UPDATE agent_claim_requests
+      `WITH targets AS (
+         SELECT * FROM unnest($1::text[], $2::integer[]) AS target(org_id, claim_id)
+       )
+       UPDATE agent_claim_requests AS request
        SET status = 'cancelled', resolved_at = now()
-       WHERE org_id = $1 AND claim_id = $2 AND status IN ('open', 'answer_queued')`,
-      [input.orgId, input.claimId],
+       FROM targets
+       WHERE request.org_id = targets.org_id
+         AND request.claim_id = targets.claim_id
+         AND request.status IN ('open', 'answer_queued')`,
+      [orgIds, claimIds],
     );
     await client.query(
-      `UPDATE agent_claim_commands
+      `WITH targets AS (
+         SELECT * FROM unnest($1::text[], $2::integer[]) AS target(org_id, claim_id)
+       )
+       UPDATE agent_claim_commands AS command
        SET status = 'cancelled', acked_at = now()
-       WHERE org_id = $1 AND claim_id = $2 AND status = 'pending'`,
-      [input.orgId, input.claimId],
+       FROM targets
+       WHERE command.org_id = targets.org_id
+         AND command.claim_id = targets.claim_id
+         AND command.status = 'pending'`,
+      [orgIds, claimIds],
     );
   });
+}
+
+export async function cancelOpenClaimInteractions(input: {
+  orgId: string;
+  claimId: number;
+}, executor?: QueryExecutor): Promise<void> {
+  await cancelOpenClaimInteractionsForClaims([input], executor);
 }

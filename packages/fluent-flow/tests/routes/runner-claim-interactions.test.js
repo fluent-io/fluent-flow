@@ -36,22 +36,28 @@ vi.mock('../../src/agents/claim-manager.js', () => ({
 vi.mock('@fluent-flow/db', () => ({
   db: {},
   appendClaimEvents: vi.fn(),
+  cancelClaimRequest: vi.fn(),
   upsertClaimRequest: vi.fn(),
   leaseClaimCommands: vi.fn(),
+  renewClaimCommand: vi.fn(),
   ackClaimCommand: vi.fn(),
 }));
 
 import {
   ackClaimCommand,
+  cancelClaimRequest,
   appendClaimEvents,
   leaseClaimCommands,
   upsertClaimRequest,
+  renewClaimCommand,
 } from '@fluent-flow/db';
 import { withClaimOwner } from '../../src/agents/claim-manager.js';
 import {
   handleClaimCommandAck,
+  handleClaimRequestCancellation,
   handleClaimCommandsPoll,
   handleClaimEvents,
+  handleClaimCommandRenewal,
   handleClaimRequest,
 } from '../../src/routes/runner.js';
 
@@ -187,6 +193,37 @@ describe('runner claim interaction replay and delivery', () => {
     expect(first.body.request).not.toHaveProperty('response');
     expect(conflict.statusCode).toBe(409);
     expect(conflict.body).toEqual({ error: 'Interaction conflict' });
+  });
+
+  it('cancels an open request for the current claim owner and treats a terminal request as a conflict', async () => {
+    cancelClaimRequest
+      .mockResolvedValueOnce({ requestKey: '1:permission:4', status: 'cancelled' })
+      .mockResolvedValueOnce(null);
+    const accepted = makeRes();
+    const conflict = makeRes();
+    const req = request({ session_id: 3 }, { claimId: '7', requestKey: '1:permission:4' });
+
+    await handleClaimRequestCancellation(req, accepted);
+    await handleClaimRequestCancellation(req, conflict);
+
+    expect(accepted.body).toEqual({ ok: true });
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.body).toEqual({ error: 'Request cancellation conflict' });
+  });
+
+  it('renews a live command lease and declines one whose acknowledgement deadline elapsed', async () => {
+    renewClaimCommand
+      .mockResolvedValueOnce({ id: 11, status: 'delivered' })
+      .mockResolvedValueOnce(null);
+    const renewed = makeRes();
+    const expired = makeRes();
+    const req = request({ session_id: 3 }, { claimId: '7', commandId: '11' });
+
+    await handleClaimCommandRenewal(req, renewed);
+    await handleClaimCommandRenewal(req, expired);
+
+    expect(renewed.body).toEqual({ renewed: true });
+    expect(expired.body).toEqual({ renewed: false });
   });
 
   it('leases commands in a fixed wire shape and acknowledges a delivered command', async () => {

@@ -296,7 +296,7 @@ On shutdown (`Ctrl+C`), the runner cancels active work, closes the ACP session w
 - Poll failures use bounded exponential backoff, and sustained failure stops the runner so its service manager can restart it.
 - A setup failure may start one fresh child before a prompt is submitted. After an accepted prompt, one child replacement may resume the ACP session without replaying the prompt. Liveness checks and a rolling restart budget prevent spawn loops.
 - Recovery never treats an ambiguous prompt submission as safe to replay. If the runner cannot prove continuation, it reports a transient failure and claim expiry provides the scheduling fallback.
-- Once the server leases a dashboard command, it remains delivered while the claim is active so long turns can finish. If the claim ends before acknowledgement, terminal cleanup records the outcome as `uncertain`; the command is not redelivered because replay could duplicate an already-applied prompt, cancellation, or answer. In-flight acknowledgements use the bounded 35-second HTTP transport deadline rather than the short command-poll wait so persistence is not aborted merely because a turn settled.
+- Once the server leases a dashboard command, it is never delivered a second time. The runner renews queued prompts every 30 seconds and validates each command immediately before applying it. Commands not acknowledged or renewed within 90 seconds become `uncertain`. Prompt commands are acknowledged when ACP accepts them, before the turn completes. In-flight acknowledgements use the bounded 35-second HTTP transport deadline rather than the short command-poll wait.
 - A runner handles one claim and one direct child at a time. Completion of one phase does not reserve the next phase for the same runner.
 - If startup fails, verify the local adapter is installed, authenticated, on `PATH`, and supports ACP v2 sessions. If execution stops, check the runner's structured logs and adapter diagnostics locally. User-facing responses intentionally remain generic; contact the operator when local logs are unavailable.
 
@@ -332,9 +332,9 @@ compose at [`docker-compose.yml`](./docker-compose.yml). Notable, reliability-cr
 - **`gh` CLI is installed** — the review agent prompt depends on it
   (`gh pr diff`, `gh api .../reviews`). Images without `gh` produce reviews
   that are never posted: silent no-op pipelines.
-- **`init: true` in compose** — ACP adapters spawn grandchildren
-  (git/gh/ripgrep); Node as PID 1 does not reap them. Without an init,
-  long-lived runner containers accumulate zombie processes.
+- **`init: true` in compose** — adapters can leave tool processes behind when
+  they exit. The container init process reaps those orphaned descendants without
+  requiring the runner to inspect or manage host processes.
 - **Claude Agent ACP is the default adapter** — the image installs
   `@agentclientprotocol/claude-agent-acp`, which is the adapter selected by a
   `claude-code` registration. Authenticate Claude on the host before starting

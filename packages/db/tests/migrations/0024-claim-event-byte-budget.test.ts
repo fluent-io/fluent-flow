@@ -42,7 +42,7 @@ describe('migration 0024 claim event byte budget', () => {
     }));
   });
 
-  it('stores a nonnegative byte count for every event payload', async () => {
+  it('adds metadata-safe byte storage enforced for new events', async () => {
     const columns = await getPool().query<{
       column_name: string;
       data_type: string;
@@ -55,20 +55,24 @@ describe('migration 0024 claim event byte budget', () => {
          AND table_name = 'agent_claim_events'
          AND column_name = 'payload_bytes'`,
     );
-    const constraints = await getPool().query<{ definition: string }>(
-      `SELECT pg_get_constraintdef(oid) AS definition
+    const constraints = await getPool().query<{ definition: string; validated: boolean }>(
+      `SELECT pg_get_constraintdef(oid) AS definition, convalidated AS validated
        FROM pg_constraint
        WHERE conrelid = 'agent_claim_events'::regclass
-         AND contype = 'c'`,
+         AND contype = 'c'
+         AND conname LIKE 'agent_claim_events_payload_bytes_%'`,
     );
 
     expect(columns.rows).toEqual([{
       column_name: 'payload_bytes',
       data_type: 'integer',
-      is_nullable: 'NO',
-      is_generated: 'ALWAYS',
+      is_nullable: 'YES',
+      is_generated: 'NEVER',
     }]);
-    expect(constraints.rows.some((row) => row.definition.includes('payload_bytes >= 0'))).toBe(true);
+    expect(constraints.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ definition: expect.stringContaining('payload_bytes IS NOT NULL'), validated: false }),
+      expect.objectContaining({ definition: expect.stringContaining('payload_bytes >= 0'), validated: false }),
+    ]));
 
     await getPool().query(`INSERT INTO orgs (id, name) VALUES ('byte-budget-org', 'Byte Budget Org')`);
     const claim = await getPool().query<{ id: number }>(
@@ -77,9 +81,14 @@ describe('migration 0024 claim event byte budget', () => {
        RETURNING id`,
     );
     const payload = { nested: { alpha: 'a: b', beta: [1, true, null] }, text: 'µ' };
-    const event = await getPool().query<{ payload_bytes: number; canonical_bytes: number }>(
+    await expect(getPool().query(
       `INSERT INTO agent_claim_events (org_id, claim_id, seq, kind, payload)
-       VALUES ('byte-budget-org', $1, 1, 'notice', $2)
+       VALUES ('byte-budget-org', $1, 1, 'notice', $2)`,
+      [claim.rows[0].id, JSON.stringify(payload)],
+    )).rejects.toMatchObject({ code: '23514' });
+    const event = await getPool().query<{ payload_bytes: number; canonical_bytes: number }>(
+      `INSERT INTO agent_claim_events (org_id, claim_id, seq, kind, payload, payload_bytes)
+       VALUES ('byte-budget-org', $1, 1, 'notice', $2, octet_length($2::jsonb::text))
        RETURNING payload_bytes, octet_length(payload::text) AS canonical_bytes`,
       [claim.rows[0].id, JSON.stringify(payload)],
     );
