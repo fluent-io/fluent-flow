@@ -358,3 +358,51 @@ export interface PendingRequest {
   choices?: { id: string; label: string }[];
   expiresAt: string | null;
 }
+
+export interface ClaimExecutionBadge {
+  id: number;
+  taskId: string;
+  claimType: string;
+  attempt: number;
+  status: string;
+  rootClaimId: number;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface ClaimExecution extends ClaimExecutionBadge {
+  projectId: string;
+  repo: string;
+  prNumber: number | null;
+  sessionId: number | null;
+  payload: Record<string, unknown>;
+  headSha: string | null;
+}
+
+export interface ClaimExecutionEvent {
+  seq: number;
+  kind: string;
+  payload: unknown;
+  createdAt: string;
+}
+
+export interface ClaimExecutionRequest {
+  requestKey: string;
+  kind: 'permission' | 'elicitation';
+  payload: unknown;
+  status: 'open' | 'answer_queued' | 'resolved' | 'uncertain' | 'cancelled';
+  createdAt: string;
+  resolvedAt: string | null;
+}
+
+export interface StartClaimExecutionResult {
+  claim: ClaimExecution | ClaimExecutionBadge;
+  created: boolean;
+}
+
+export interface SubmitClaimCommandResult {
+  commandId: number | null;
+  kind: 'prompt' | 'cancel' | 'permission' | 'elicitation';
+  status: string;
+  created: boolean;
+}

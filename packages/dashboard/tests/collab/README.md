@@ -5,6 +5,7 @@
 - [api.test.ts](<api.test.ts>) — Behavior regressions for api.
 - [auth.test.ts](<auth.test.ts>) — Behavior regressions for auth.
 - [board.test.ts](<board.test.ts>) — Behavior regressions for board.
+- [claim-execution.test.tsx](claim-execution.test.tsx) — RED-first ACP claim panel coverage for execution states, pagination, event reduction, safe terminal and rich-content rendering, idempotent drafts, cancellation, interactions, capability gates, revocation, loading failures and keyboard semantics.
 - [live.test.ts](<live.test.ts>) — Behavior regressions for live.
 - [proxy.test.ts](<proxy.test.ts>) — Behavior regressions for proxy.
 

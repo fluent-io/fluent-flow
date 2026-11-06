@@ -5,6 +5,24 @@ export default defineConfig({
   oxc: { jsx: { runtime: 'automatic' } },
   test: {
     fileParallelism: false,
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'node',
+          environment: 'node',
+          exclude: ['tests/collab/claim-execution.test.tsx'],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'claim-execution',
+          environment: 'jsdom',
+          include: ['tests/collab/claim-execution.test.tsx'],
+        },
+      },
+    ],
   },
   resolve: {
     alias: {
