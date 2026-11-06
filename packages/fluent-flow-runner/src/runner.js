@@ -172,17 +172,8 @@ export function createRunner({
   function installTurnTail(state, turn) {
     const tail = Promise.resolve(turn);
     state.turnTail = tail;
-    tail.then(
-      () => {
-        if (state.turnTail === tail) stopCommandService(state);
-      },
-      () => {
-        if (state.turnTail === tail) stopCommandService(state);
-      },
-    );
     return tail;
   }
-
 
   function waitForCommandPoll(state) {
     return new Promise((resolve) => {
@@ -584,7 +575,7 @@ export function createRunner({
 
   async function serviceCommands(state, claimId) {
     try {
-      while (state.commandsRunning && !state.shuttingDown) {
+      while (state.commandsRunning && !state.shuttingDown && !state.commandDraining) {
         const pollController = new AbortController();
         state.commandPollController = pollController;
         let response;
@@ -595,7 +586,7 @@ export function createRunner({
             { signal: pollController.signal },
           );
         } catch (error) {
-          if (pollController.signal.aborted && (!state.commandsRunning || state.shuttingDown)) break;
+          if (pollController.signal.aborted && (!state.commandsRunning || state.shuttingDown || state.commandDraining)) break;
           throw error;
         } finally {
           if (state.commandPollController === pollController) state.commandPollController = null;
@@ -673,6 +664,7 @@ export function createRunner({
       closePromise: null,
       bridge: null,
       commandsRunning: false,
+      commandDraining: false,
       commandWake: null,
       commandLoop: null,
       commandTasks: [],
@@ -795,6 +787,27 @@ export function createRunner({
             }
             if (settled.outcome.error) runtimeFailure = runtimeFailure ?? settled.outcome.error;
             else runtimeResult = settled.outcome.result;
+            if (observedTurn === state.turnTail) {
+              state.commandDraining = true;
+              state.commandWake?.();
+              let drainTimer;
+              const commandLoopDrained = state.commandLoop ? await Promise.race([
+                state.commandLoop.then(() => true),
+                new Promise((resolve) => {
+                  drainTimer = setTimeout(() => resolve(false), commandPollMs);
+                  drainTimer.unref?.();
+                }),
+              ]) : true;
+              clearTimeout(drainTimer);
+              if (!commandLoopDrained) {
+                state.commandPollController?.abort();
+                await state.commandLoop;
+              }
+              if (observedTurn !== state.turnTail && state.commandsRunning && !state.shuttingDown) {
+                state.commandDraining = false;
+                state.commandLoop = serviceCommands(state, claimId);
+              }
+            }
           } while (observedTurn !== state.turnTail);
         } finally {
           stopCommandService(state);

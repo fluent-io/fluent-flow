@@ -2,7 +2,7 @@ import { beforeAll, beforeEach, expect, it } from 'vitest';
 import { db, schema } from '@fluent-flow/db';
 import { sql } from 'drizzle-orm';
 import { integrationDescribe, resetDb } from '../helpers/integration-db.js';
-import { claimPendingWork } from '../../src/routes/runner.js';
+import { claimPendingWork, releaseUndeliveredClaim } from '../../src/routes/runner.js';
 
 /**
  * Integration coverage for the `FOR UPDATE SKIP LOCKED` atomic claim path in
@@ -82,6 +82,37 @@ describeDb('claimPendingWork (integration)', () => {
     expect([resA,resB].filter(result=>result===null)).toHaveLength(1);
     const stored=await db.execute(sql`SELECT status,session_id FROM agent_claims WHERE id=${claimId}`);
     expect(stored.rows[0]).toMatchObject({status:'claimed',session_id:winners[0].session_id});
+  });
+
+  it('allows only an online unexpired session to claim work', async () => {
+    await seed();
+    const busy = await makeSession(AGENT_A);
+    const offline = await makeSession(AGENT_A);
+    const expired = await makeSession(AGENT_A);
+    const active = await makeSession(AGENT_A);
+    const claimId = await makePendingClaim('ff-test-org/repo-a', 151);
+    await db.execute(sql`UPDATE agent_sessions SET status = 'busy' WHERE id = ${busy}`);
+    await db.execute(sql`UPDATE agent_sessions SET status = 'offline' WHERE id = ${offline}`);
+    await db.execute(sql`UPDATE agent_sessions SET expires_at = NOW() - INTERVAL '1 second' WHERE id = ${expired}`);
+
+    await expect(claimPendingWork(ORG, AGENT_A, busy)).resolves.toBeNull();
+    await expect(claimPendingWork(ORG, AGENT_A, offline)).resolves.toBeNull();
+    await expect(claimPendingWork(ORG, AGENT_A, expired)).resolves.toBeNull();
+    await expect(claimPendingWork(ORG, AGENT_A, active)).resolves.toMatchObject({ id: claimId, session_id: active });
+    const stored = await db.execute(sql`SELECT status, session_id FROM agent_claims WHERE id = ${claimId}`);
+    expect(stored.rows[0]).toMatchObject({ status: 'claimed', session_id: active });
+  });
+
+  it('returns an undelivered assignment to the pending queue', async () => {
+    await seed();
+    const session = await makeSession(AGENT_A);
+    const claimId = await makePendingClaim('ff-test-org/repo-a', 152);
+    await expect(claimPendingWork(ORG, AGENT_A, session)).resolves.toMatchObject({ id: claimId });
+    await expect(releaseUndeliveredClaim(ORG, AGENT_A, session, claimId)).resolves.toBe(true);
+    const stored = await db.execute(sql`SELECT status, session_id, claimed_at, expires_at FROM agent_claims WHERE id = ${claimId}`);
+    expect(stored.rows[0]).toEqual({ status: 'pending', session_id: null, claimed_at: null, expires_at: null });
+    const sessionState = await db.execute(sql`SELECT status FROM agent_sessions WHERE id = ${session}`);
+    expect(sessionState.rows[0]).toEqual({ status: 'online' });
   });
 
   it('repo-scoped agent skips claims outside its repos[]', async () => {

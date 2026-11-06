@@ -176,6 +176,19 @@ const app = agent()
             messageId: 'uat-agent-message-1',
             content: { type: 'text', text: ' Permission accepted.' },
           });
+          await update(client, { sessionUpdate: 'state_update', state: 'requires_action' });
+          const elicitation = await client.request(CLIENT_METHODS.elicitation_create, {
+            sessionId,
+            mode: 'form',
+            message: 'Choose a deterministic value.',
+            requestedSchema: {
+              type: 'object',
+              properties: { choice: { type: 'string', title: 'Choice' } },
+              required: ['choice'],
+            },
+          });
+          trace('elicitation_answer', { answer: elicitation });
+          await update(client, { sessionUpdate: 'state_update', state: 'running' });
           await waitForClaimBrowserMarker();
           await update(client, { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' });
           return;

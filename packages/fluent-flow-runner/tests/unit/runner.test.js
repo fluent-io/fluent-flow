@@ -289,6 +289,31 @@ describe('dashboard commands', () => {
     if (command.kind === 'cancel') expect(api.reportClaim).toHaveBeenCalledWith(expect.objectContaining({ status: 'cancelled' }));
   });
 
+  it('applies a prompt lease that settles with the initial turn', async () => {
+    const initialTurn = deferred();
+    const leasedCommands = deferred();
+    const runtime = fakeRuntime();
+    runtime.runInitialPrompt.mockImplementationOnce(() => initialTurn.promise);
+    const api = client({
+      poll: vi.fn().mockResolvedValueOnce(WORK).mockResolvedValue(null),
+      pollClaimCommands: vi.fn()
+        .mockImplementationOnce(() => leasedCommands.promise)
+        .mockResolvedValue({ commands: [] }),
+    });
+    const runner = createRunner({ client: api, log: logger(), createAcpRuntime: vi.fn(() => runtime), cwd: '/repo', acpCommand: 'agent', commandPollMs: 50 });
+    const started = runner.start();
+    await waitFor(() => api.pollClaimCommands.mock.calls.length === 1);
+    initialTurn.resolve({ sessionId: 'acp', messageId: 'initial', stopReason: 'end_turn' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    leasedCommands.resolve({ commands: [{ id: 'settling-prompt', kind: 'prompt', payload: { text: 'continue' } }] });
+    await waitFor(() => runtime.prompt.mock.calls.length > 0 || api.ackClaimCommand.mock.calls.length > 0);
+    expect(runtime.prompt).toHaveBeenCalledWith('continue');
+    expect(api.ackClaimCommand).toHaveBeenCalledWith('runner-session', 42, 'settling-prompt', 'acked', { applied: true }, transportOptions());
+    await waitFor(() => api.reportClaim.mock.calls.length === 1);
+    await runner.shutdown();
+    await started;
+  });
+
   it('queues a prompt during the initial turn without blocking later request answers', async () => {
     const initialTurn = deferred();
     const promptedTurn = deferred();

@@ -167,40 +167,79 @@ export async function handleRegister(req, res) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/**
- * Check for unassigned pending claims that match this agent's repo scope.
- * Atomically claims the first match.
- */
 export async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 60 * 1000) {
   const expiresAt = new Date(Date.now() + ttlMs);
-  // UPDATE … WHERE id = (SELECT … FOR UPDATE SKIP LOCKED) — the canonical
-  // atomic claim pattern. Kept as raw SQL because drizzle doesn't express
-  // UPDATE-from-locked-subselect ergonomically.
   const result = await db.execute(sql`
-    UPDATE agent_claims SET
-      session_id = ${sessionId},
-      status = 'claimed',
-      claimed_at = NOW(),
-      expires_at = ${expiresAt}
-    WHERE id = (
-      SELECT c.id FROM agent_claims c
-      JOIN agents a ON a.org_id = c.org_id AND a.id = ${agentId}
-      WHERE c.org_id = ${orgId}
-        AND c.status = 'pending'
-        AND c.session_id IS NULL
-        AND (a.repos = '{}' OR c.repo = ANY(a.repos))
-      ORDER BY c.created_at ASC
-      LIMIT 1
-      FOR UPDATE SKIP LOCKED
+    WITH live_session AS (
+      SELECT session.id
+      FROM agent_sessions session
+      WHERE session.id = ${sessionId}
+        AND session.org_id = ${orgId}
+        AND session.agent_id = ${agentId}
+        AND session.status = 'online'
+        AND session.expires_at > NOW()
+      FOR UPDATE
+    ),
+    claimed AS (
+      UPDATE agent_claims claim SET
+        session_id = ${sessionId},
+        status = 'claimed',
+        claimed_at = NOW(),
+        expires_at = ${expiresAt}
+      WHERE claim.id = (
+        SELECT pending.id
+        FROM agent_claims pending
+        JOIN agents agent ON agent.org_id = pending.org_id AND agent.id = ${agentId}
+        CROSS JOIN live_session
+        WHERE pending.org_id = ${orgId}
+          AND pending.status = 'pending'
+          AND pending.session_id IS NULL
+          AND (agent.repos = '{}' OR pending.repo = ANY(agent.repos))
+        ORDER BY pending.created_at ASC
+        LIMIT 1
+        FOR UPDATE OF pending SKIP LOCKED
+      )
+      RETURNING claim.*
+    ),
+    marked AS (
+      UPDATE agent_sessions session
+      SET status = 'busy'
+      FROM claimed
+      WHERE session.id = claimed.session_id
+      RETURNING session.id
     )
-    RETURNING *
+    SELECT claimed.*
+    FROM claimed
+    JOIN marked ON marked.id = claimed.session_id
   `);
   const rows = result.rows ?? result;
-  const claim = rows[0] ?? null;
-  if (claim) {
-    await setSessionStatus(orgId, agentId, sessionId, 'busy');
-  }
-  return claim;
+  return rows[0] ?? null;
+}
+
+export async function releaseUndeliveredClaim(orgId, agentId, sessionId, claimId) {
+  const result = await db.execute(sql`
+    WITH released AS (
+      UPDATE agent_claims claim
+      SET session_id = NULL,
+          status = 'pending',
+          claimed_at = NULL,
+          expires_at = NULL
+      WHERE claim.id = ${claimId}
+        AND claim.org_id = ${orgId}
+        AND claim.session_id = ${sessionId}
+        AND claim.status = 'claimed'
+      RETURNING claim.id
+    )
+    UPDATE agent_sessions session
+    SET status = 'online'
+    WHERE session.id = ${sessionId}
+      AND session.org_id = ${orgId}
+      AND session.agent_id = ${agentId}
+      AND EXISTS (SELECT 1 FROM released)
+    RETURNING session.id
+  `);
+  const rows = result.rows ?? result;
+  return rows.length > 0;
 }
 
 /**
@@ -234,6 +273,12 @@ export async function handlePoll(req, res, opts = {}) {
   const { org_id, agent_id } = req.tokenInfo;
   const sessionId = parsed.data.session_id;
   const pollTimeoutMs = opts.pollTimeoutMs ?? 30000;
+  let closed = false;
+  const onClose = () => {
+    if (!res.writableFinished) closed = true;
+  };
+  res.on('close', onClose);
+  if (res.destroyed && !res.writableFinished) closed = true;
 
   // Resolve the agent's type once for inclusion in work payloads
   let agentType = 'claude-code'; // default
@@ -247,13 +292,11 @@ export async function handlePoll(req, res, opts = {}) {
 
   let sent = false;
   const respond = (data) => {
-    if (sent || res.headersSent) return;
+    if (closed || res.destroyed || sent || res.headersSent) return false;
     sent = true;
     res.json(data);
+    return true;
   };
-
-  let closed = false;
-  req.on('close', () => { closed = true; });
 
   try {
     const sessionAlive = await touchSession(org_id, agent_id, sessionId);
@@ -277,7 +320,7 @@ export async function handlePoll(req, res, opts = {}) {
 
       const githubToken = await resolveGitHubToken(pendingClaim.repo);
 
-      respond({
+      const delivered = respond({
         work: {
           repo: pendingClaim.repo,
           pr_number: pendingClaim.pr_number,
@@ -289,6 +332,9 @@ export async function handlePoll(req, res, opts = {}) {
           ...payload,
         },
       });
+      if (!delivered) {
+        await releaseUndeliveredClaim(org_id, agent_id, sessionId, pendingClaim.id);
+      }
       return;
     }
 
@@ -307,7 +353,7 @@ export async function handlePoll(req, res, opts = {}) {
         await touchSession(org_id, agent_id, sessionId);
         const lp = typeof loopClaim.payload === 'string' ? JSON.parse(loopClaim.payload) : loopClaim.payload;
         const githubToken = await resolveGitHubToken(loopClaim.repo);
-        respond({
+        const delivered = respond({
           work: {
             repo: loopClaim.repo,
             pr_number: loopClaim.pr_number,
@@ -319,6 +365,9 @@ export async function handlePoll(req, res, opts = {}) {
             ...lp,
           },
         });
+        if (!delivered) {
+          await releaseUndeliveredClaim(org_id, agent_id, sessionId, loopClaim.id);
+        }
         return;
       }
       if (Date.now() - start >= pollTimeoutMs) {
@@ -331,9 +380,11 @@ export async function handlePoll(req, res, opts = {}) {
     }
   } catch (err) {
     logger.error({ msg: 'Failed to poll', error: err.message });
-    if (!sent && !res.headersSent) {
+    if (!closed && !res.destroyed && !sent && !res.headersSent) {
       res.status(500).json({ error: 'Internal server error' });
     }
+  } finally {
+    res.off('close', onClose);
   }
 }
 

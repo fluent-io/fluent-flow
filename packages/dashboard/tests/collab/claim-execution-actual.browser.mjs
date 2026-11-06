@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +32,7 @@ const executablePath = process.env.FF_UI_TEST_CHROMIUM_PATH ?? (existsSync('/opt
 const runnerCli = fileURLToPath(new URL('../../../fluent-flow-runner/bin/fluent-flow-runner.js', import.meta.url));
 const fakeAgent = fileURLToPath(new URL('../../../fluent-flow-runner/tests/unit/fake-acp-agent.js', import.meta.url));
 const runnerCwd = mkdtempSync(join(tmpdir(), 'ff-claim-browser-'));
+const recoveredRunnerCwd = mkdtempSync(join(tmpdir(), 'ff-claim-browser-recovered-'));
 const followUpMarker = join(runnerCwd, '.claim-browser-follow-up-queued');
 const runnerStderrLimitBytes = 16 * 1024;
 
@@ -205,6 +206,7 @@ async function cleanupAll() {
   });
   await attempt(async () => {
     rmSync(runnerCwd, { recursive: true, force: true });
+    rmSync(recoveredRunnerCwd, { recursive: true, force: true });
   });
   return { failed, error: firstError };
 }
@@ -262,47 +264,62 @@ try {
     server.once('listening', resolve);
     server.once('error', reject);
   });
-
-  runner = spawn(process.execPath, [
-    runnerCli,
-    '--server', apiOrigin,
-    '--token', token.plaintext,
-    '--acp-command', process.execPath,
-    '--acp-arg', fakeAgent,
-    '--cwd', runnerCwd,
-  ], {
-    cwd: runnerCwd,
-    env: runnerEnv,
-    stdio: ['ignore', 'ignore', 'pipe'],
-  });
-  runner.stderr.on('data', appendRunnerStderr);
-  runnerExit = new Promise((resolve) => {
-    let settled = false;
-    const finish = (value) => {
-      if (settled) return;
-      settled = true;
-      resolve(value);
-    };
-    runner.once('error', (error) => {
-      runnerSpawnError = error;
-      finish({ error });
-    });
-    runner.once('exit', (code, signal) => finish({ code, signal }));
-  });
-  await waitFor('runner session registration', async () => {
-    const { rows } = await pool.query(
-      `SELECT id FROM agent_sessions
-       WHERE org_id = $1 AND agent_id = $2 AND status = 'online' AND expires_at > NOW()`,
+  const launchRunner = async (scenario) => {
+    const processCwd = scenario === 'accepted-loss-resume-running' ? recoveredRunnerCwd : runnerCwd;
+    const { rows: [priorSession] } = await pool.query(
+      'SELECT COALESCE(MAX(id), 0)::integer AS id FROM agent_sessions WHERE org_id = $1 AND agent_id = $2',
       [orgId, agentId],
     );
-    if (rows[0]) return rows[0];
-    if (runnerSpawnError) {
-      const detail = runnerSpawnError.code ?? runnerSpawnError.message ?? 'unknown error';
-      throw new Error(`Runner failed to start: ${redactDiagnostic(detail)}`);
-    }
-    if (runner.exitCode !== null || runner.signalCode !== null) throw new Error('Runner exited before registering');
-    return null;
-  });
+    const tracePath = join(processCwd, `${scenario}-${priorSession.id + 1}.jsonl`);
+    runnerSpawnError = null;
+    runnerStderr = Buffer.alloc(0);
+    runnerEnv.FAKE_ACP_SCENARIO = scenario;
+    runnerEnv.FAKE_ACP_TRACE = tracePath;
+    runner = spawn(process.execPath, [
+      runnerCli,
+      '--server', apiOrigin,
+      '--token', token.plaintext,
+      '--acp-command', process.execPath,
+      '--acp-arg', fakeAgent,
+      '--cwd', processCwd,
+    ], {
+      cwd: processCwd,
+      env: runnerEnv,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    runner.stderr.on('data', appendRunnerStderr);
+    runnerExit = new Promise((resolve) => {
+      let settled = false;
+      const finish = (value) => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
+      runner.once('error', (error) => {
+        runnerSpawnError = error;
+        finish({ error });
+      });
+      runner.once('exit', (code, signal) => finish({ code, signal }));
+    });
+    const session = await waitFor('runner session registration', async () => {
+      const { rows } = await pool.query(
+        `SELECT id FROM agent_sessions
+         WHERE org_id = $1 AND agent_id = $2 AND id > $3
+           AND status <> 'offline' AND expires_at > NOW()`,
+        [orgId, agentId, priorSession.id],
+      );
+      if (rows[0]) return rows[0];
+      if (runnerSpawnError) {
+        const spawnDetail = runnerSpawnError.code ?? runnerSpawnError.message ?? 'unknown error';
+        throw new Error(`Runner failed to start: ${redactDiagnostic(spawnDetail)}`);
+      }
+      if (runner.exitCode !== null || runner.signalCode !== null) throw new Error('Runner exited before registering');
+      return null;
+    });
+    return { session, tracePath };
+  };
+
+
 
   browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
   context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
@@ -335,6 +352,9 @@ try {
   assert.equal((await startResponse).status(), 202);
 
   const detail = page.getByRole('region', { name: 'Execution detail', exact: true });
+  await expect(detail.locator('[data-claim-status]')).toHaveText('Pending', { timeout: 30_000 });
+  await shot('00-queued');
+  await launchRunner('claim-browser-uat');
   await expect(detail.getByText('Deterministic claim execution started.', { exact: true })).toBeVisible({ timeout: 30_000 });
   await expect(detail.getByText('Inspect deterministic fixture', { exact: true }).first()).toBeVisible();
   await expect(detail.getByText('Wait for operator approval', { exact: true })).toBeVisible();
@@ -347,6 +367,13 @@ try {
   await expect(detail.getByText('Resolved', { exact: true })).toBeVisible({ timeout: 10_000 });
   await expect(detail.getByText('Permission accepted.', { exact: false })).toBeVisible({ timeout: 10_000 });
   await shot('02-permission-answered');
+  await expect(detail.getByText('Choose a deterministic value.', { exact: true })).toBeVisible({ timeout: 10_000 });
+  await detail.getByLabel('Choice', { exact: true }).fill('deterministic');
+  await detail.getByRole('button', { name: 'Accept response', exact: true }).scrollIntoViewIfNeeded();
+  await shot('03-elicitation');
+  const elicitationResponse = page.waitForResponse((response) => response.url().includes('/api/collab/v1/claim-executions/') && response.url().endsWith('/commands') && response.request().method() === 'POST');
+  await detail.getByRole('button', { name: 'Accept response', exact: true }).click();
+  assert.ok([200, 202].includes((await elicitationResponse).status()));
 
   await detail.getByLabel('Prompt', { exact: true }).fill('Continue with the deterministic follow-up and wait.');
   const promptResponse = page.waitForResponse((response) => response.url().includes('/api/collab/v1/claim-executions/') && response.url().endsWith('/commands') && response.request().method() === 'POST');
@@ -371,18 +398,50 @@ try {
   await expect(refreshedDetail.getByText('Deterministic claim execution started.', { exact: true })).toBeVisible({ timeout: 30_000 });
   await expect(refreshedDetail.getByText('Follow-up ACP turn is running.', { exact: true })).toBeVisible({ timeout: 30_000 });
   await expect(refreshedDetail.getByText('Allow deterministic UAT action?', { exact: true })).toBeVisible();
-  await expect(refreshedDetail.getByText('Resolved', { exact: true })).toBeVisible();
-  await shot('03-refreshed-history');
+  await expect(refreshedDetail.getByText('Resolved', { exact: true })).toHaveCount(2);
+  await shot('04-refreshed-history');
 
   const cancelResponse = page.waitForResponse((response) => response.url().includes('/api/collab/v1/claim-executions/') && response.url().endsWith('/commands') && response.request().method() === 'POST');
   await refreshedDetail.getByRole('button', { name: 'Cancel execution', exact: true }).click();
   assert.ok([200, 202].includes((await cancelResponse).status()));
   await expect(refreshedDetail.locator('[data-claim-status]')).toHaveText('Cancelled', { timeout: 30_000 });
-  await shot('04-cancelled');
+  await shot('05-cancelled');
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByText('Collapse', { exact: true }).click();
   assert.equal(await noHorizontalOverflow(), true);
-  await shot('05-narrow-cancelled');
+  const narrowClaims = page.getByRole('region', { name: 'Claims', exact: true });
+  const [claimTitleBox, claimStatusBox] = await Promise.all([
+    narrowClaims.getByText('spec · attempt 1', { exact: true }).boundingBox(),
+    narrowClaims.getByText('Cancelled', { exact: true }).boundingBox(),
+  ]);
+  assert.ok(claimTitleBox && claimStatusBox);
+  const claimLabelsOverlap = claimTitleBox.x < claimStatusBox.x + claimStatusBox.width
+    && claimTitleBox.x + claimTitleBox.width > claimStatusBox.x
+    && claimTitleBox.y < claimStatusBox.y + claimStatusBox.height
+    && claimTitleBox.y + claimTitleBox.height > claimStatusBox.y;
+  assert.equal(claimLabelsOverlap, false);
+  await shot('06-narrow-cancelled');
+  await stopRunner();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const recoveredRunner = await launchRunner('accepted-loss-resume-running');
+  await page.getByRole('button', { name: 'Start execution', exact: true }).click();
+  const recoveredStart = page.getByRole('region', { name: 'Start execution', exact: true });
+  await recoveredStart.getByLabel('Phase', { exact: true }).selectOption('build');
+  await recoveredStart.getByLabel('Repository', { exact: true }).fill(repo);
+  await recoveredStart.getByLabel('Instructions', { exact: true }).fill('Recover one accepted ACP prompt without replay.');
+  const recoveredStartResponse = page.waitForResponse((response) => response.url().includes(`/api/collab/v1/tasks/${task.id}/claim-executions`) && response.request().method() === 'POST');
+  await recoveredStart.getByRole('button', { name: 'Start', exact: true }).click();
+  assert.equal((await recoveredStartResponse).status(), 202);
+  const recoveredClaimCard = page.getByRole('region', { name: 'Claims', exact: true }).getByText('build · attempt 1', { exact: true });
+  await expect(recoveredClaimCard).toBeVisible({ timeout: 30_000 });
+  await recoveredClaimCard.click();
+  await expect(refreshedDetail.locator('[data-claim-status]')).toHaveText('Completed', { timeout: 30_000 });
+  await expect(refreshedDetail.getByText('Resumed without replay.', { exact: true })).toBeVisible();
+  const recoveredTrace = readFileSync(recoveredRunner.tracePath, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(recoveredTrace.filter(({ kind }) => kind === 'session_prompt').length, 1);
+  assert.equal(recoveredTrace.filter(({ kind }) => kind === 'session_resume').length, 1);
+  assert.equal(recoveredTrace.filter(({ kind }) => kind === 'process_start').length, 2);
+  await shot('07-recovered-completed');
 
   const { rows: claims } = await pool.query(
     `SELECT claim.id, claim.org_id, claim.repo, claim.pr_number, claim.attempt,
@@ -393,7 +452,7 @@ try {
      ORDER BY claim.id`,
     [orgId, repo],
   );
-  assert.equal(claims.length, 1);
+  assert.equal(claims.length, 2);
   assert.deepEqual(
     {
       orgId: claims[0].org_id,
@@ -406,6 +465,18 @@ try {
     },
     { orgId, repo, prNumber: null, attempt: 1, claimType: 'spec', status: 'cancelled', agentId },
   );
+  assert.deepEqual(
+    {
+      orgId: claims[1].org_id,
+      repo: claims[1].repo,
+      prNumber: claims[1].pr_number,
+      attempt: claims[1].attempt,
+      claimType: claims[1].claim_type,
+      status: claims[1].status,
+      agentId: claims[1].agent_id,
+    },
+    { orgId, repo, prNumber: null, attempt: 1, claimType: 'build', status: 'completed', agentId },
+  );
   const claimId = claims[0].id;
   const { rows: eventSummary } = await pool.query(
     `SELECT COUNT(*)::integer AS count,
@@ -417,37 +488,55 @@ try {
   assert.ok(eventSummary[0].count >= 10);
   assert.equal(eventSummary[0].distinct_sequences, eventSummary[0].count);
   for (const kind of ['agent_message', 'plan', 'state', 'tool_call']) assert.ok(eventSummary[0].kinds.includes(kind), `missing ${kind} event`);
+  const recoveredClaimId = claims[1].id;
+  const { rows: recoveredEventSummary } = await pool.query(
+    `SELECT COUNT(*)::integer AS count,
+            COUNT(DISTINCT seq)::integer AS distinct_sequences,
+            ARRAY_AGG(DISTINCT kind ORDER BY kind) AS kinds
+     FROM agent_claim_events WHERE org_id = $1 AND claim_id = $2`,
+    [orgId, recoveredClaimId],
+  );
+  assert.ok(recoveredEventSummary[0].count >= 3);
+  assert.equal(recoveredEventSummary[0].distinct_sequences, recoveredEventSummary[0].count);
+  assert.ok(recoveredEventSummary[0].kinds.includes('agent_message'));
+  assert.ok(recoveredEventSummary[0].kinds.includes('state'));
 
   const { rows: requests } = await pool.query(
     `SELECT kind, status, response IS NOT NULL AS has_response
      FROM agent_claim_requests WHERE org_id = $1 AND claim_id = $2 ORDER BY created_at, request_key`,
     [orgId, claimId],
   );
-  assert.deepEqual(requests, [{ kind: 'permission', status: 'resolved', has_response: true }]);
+  assert.deepEqual(requests, [
+    { kind: 'permission', status: 'resolved', has_response: true },
+    { kind: 'elicitation', status: 'resolved', has_response: true },
+  ]);
 
   const { rows: commands } = await pool.query(
     `SELECT kind, status, result IS NOT NULL AS has_result
      FROM agent_claim_commands WHERE org_id = $1 AND claim_id = $2 ORDER BY id`,
     [orgId, claimId],
   );
-  assert.deepEqual(commands.map(({ kind }) => kind), ['permission', 'prompt', 'cancel']);
-  assert.deepEqual(commands.map(({ status }) => status), ['acked', 'acked', 'acked']);
+  assert.deepEqual(commands.map(({ kind }) => kind), ['permission', 'elicitation', 'prompt', 'cancel']);
+  assert.deepEqual(commands.map(({ status }) => status), ['acked', 'acked', 'acked', 'acked']);
   assert.ok(commands.every(({ has_result }) => has_result));
 
   const { rows: links } = await pool.query(
     `SELECT task_id, project_id, claim_id, root_claim_id
-     FROM collab_claim_executions WHERE claim_id = $1`,
-    [claimId],
+     FROM collab_claim_executions WHERE claim_id = ANY($1::integer[]) ORDER BY claim_id`,
+    [[claimId, recoveredClaimId]],
   );
-  assert.deepEqual(links, [{ task_id: task.id, project_id: project.id, claim_id: claimId, root_claim_id: claimId }]);
+  assert.deepEqual(links, [
+    { task_id: task.id, project_id: project.id, claim_id: claimId, root_claim_id: claimId },
+    { task_id: task.id, project_id: project.id, claim_id: recoveredClaimId, root_claim_id: recoveredClaimId },
+  ]);
   const { rows: agentRows } = await pool.query('SELECT agent_type FROM agents WHERE org_id = $1 AND id = $2', [orgId, agentId]);
   assert.deepEqual(agentRows, [{ agent_type: 'test-acp' }]);
 
-  results.flow = ['task selected', 'spec claim started', 'message tool and plan streamed', 'permission answered', 'follow-up prompted', 'history refreshed', 'foreground cancelled'];
+  results.flow = ['task selected', 'claim queued without runner', 'spec claim started', 'message tool and plan streamed', 'permission answered', 'elicitation answered', 'follow-up prompted', 'history refreshed', 'foreground cancelled', 'accepted prompt resumed without replay', 'build claim completed'];
   results.database = {
     claims: claims.length,
-    events: eventSummary[0].count,
-    eventKinds: eventSummary[0].kinds,
+    events: eventSummary[0].count + recoveredEventSummary[0].count,
+    eventKinds: [...new Set([...eventSummary[0].kinds, ...recoveredEventSummary[0].kinds])].sort(),
     requests: requests.length,
     commands: commands.map(({ kind, status }) => ({ kind, status })),
     links: links.length,
