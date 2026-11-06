@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { LatestRequest, pollResource } from '@/lib/collab/live';
 import { collabFetch, ApiError } from '@/lib/collab/api';
-import type { Idea, Session, Visibility } from '@/lib/collab/types';
+import type { Idea, Visibility } from '@/lib/collab/types';
 import { can, type TaskDetail } from './task-detail';
 
 export function IdeasTab({ detail }: { detail: TaskDetail }) {
@@ -16,12 +16,8 @@ export function IdeasTab({ detail }: { detail: TaskDetail }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [followupIdea,setFollowupIdea]=useState<Idea|null>(null);
-  const [sessions,setSessions]=useState<Session[]>([]);
-  const [sessionId,setSessionId]=useState('');
   const ideaRequests=useRef(new LatestRequest());
   const conversionKeys=useRef(new Map<string,string>());
-  const canFollowUp=can(detail,'run.steer')&&can(detail,'internal.read');
   const loadIdeas=useCallback(async(parent?:AbortSignal)=>{
     const signal=ideaRequests.current.begin(parent);
     try{
@@ -30,16 +26,6 @@ export function IdeasTab({ detail }: { detail: TaskDetail }) {
     }catch(err){if(ideaRequests.current.current(signal)){setIdeas([]);setError(err instanceof ApiError?err.message:'Could not load ideas.');}}
   },[detail.id]);
   useEffect(()=>{const stop=pollResource(loadIdeas);return()=>{stop();ideaRequests.current.dispose();};},[loadIdeas]);
-  useEffect(()=>{
-    const controller=new AbortController();
-    setSessions([]);setSessionId('');
-    if(canFollowUp&&detail.execution?.latestRun?.id){
-      void collabFetch<{sessions:Session[]}>(`/runs/${detail.execution.latestRun.id}`,{signal:controller.signal})
-        .then(result=>{if(!controller.signal.aborted){const work=result.data.sessions.filter(s=>s.role==='work');setSessions(work);setSessionId(work[0]?.id??'');}})
-        .catch(err=>{if(!controller.signal.aborted)setError(err instanceof ApiError?err.message:'Could not load sessions.');});
-    }
-    return()=>controller.abort();
-  },[detail.execution?.latestRun?.id,canFollowUp]);
 
   async function addIdea(event: React.FormEvent) {
     event.preventDefault();
@@ -61,11 +47,11 @@ export function IdeasTab({ detail }: { detail: TaskDetail }) {
     }
   }
 
-  async function convert(idea: Idea, kind: 'task' | 'follow_up') {
+  async function convert(idea: Idea) {
     setBusy(true);
     setError(null);
     try {
-      const keyScope=`${idea.id}:${idea.version}:${kind}:${kind==='follow_up'?sessionId:''}`;
+      const keyScope=`${idea.id}:${idea.version}:task`;
       const key=conversionKeys.current.get(keyScope)??crypto.randomUUID();
       conversionKeys.current.set(keyScope,key);
       await collabFetch(`/ideas/${idea.id}/conversions`, {
@@ -73,13 +59,11 @@ export function IdeasTab({ detail }: { detail: TaskDetail }) {
         idempotencyKey: key,
         body: {
           taskId: detail.id,
-          kind,
+          kind: 'task',
           expectedVersion: idea.version,
-          ...(kind==='follow_up'?{sessionId}:{}),
-          ...(kind === 'task' ? { title: idea.title } : {}),
+          title: idea.title,
         },
       });
-      setFollowupIdea(null);
       await loadIdeas();
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
@@ -91,7 +75,6 @@ export function IdeasTab({ detail }: { detail: TaskDetail }) {
       setBusy(false);
     }
   }
-
 
   return (
     <section aria-label="Ideas" className="flex max-w-3xl flex-col gap-4">
@@ -112,30 +95,16 @@ export function IdeasTab({ detail }: { detail: TaskDetail }) {
               </div>
               <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{idea.body}</p>
               {idea.status==='converted'&&idea.conversionTargetTaskId?<a className="mt-1 block text-xs underline" href={`/tasks/${idea.conversionTargetTaskId}`}>Open converted task</a>:null}
-              {idea.conversionCommandId?<p className="mt-1 text-xs text-muted-foreground">Follow-up queued for the selected session.</p>:null}
               {idea.status === 'inbox' ? (
                 <div className="mt-2 flex gap-2">
-                  <Button size="sm" variant="outline" disabled={busy} onClick={() => void convert(idea, 'task')}>
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => void convert(idea)}>
                     Convert to task
                   </Button>
-                  {canFollowUp ? (
-                    <Button size="sm" variant="outline" disabled={busy} onClick={() => setFollowupIdea(idea)}>
-                      Continue session
-                    </Button>
-                  ) : null}
                 </div>
               ) : null}
             </li>
           ))}
         </ul>
-        {followupIdea?<form aria-label="Continue idea in session" className="mt-3 flex flex-col gap-2 rounded-md border border-border p-3" onSubmit={event=>{event.preventDefault();void convert(followupIdea,'follow_up');}}>
-          <p className="text-sm">Continue “{followupIdea.title}” in:</p>
-          <select aria-label="Follow-up session" required className="h-9 rounded border border-border bg-background px-2 text-sm" value={sessionId} onChange={event=>setSessionId(event.target.value)}>
-            {sessions.map(session=><option key={session.id} value={session.id}>{session.title} · {session.state}</option>)}
-          </select>
-          {!sessions.length?<p className="text-xs text-muted-foreground">Create a work session from Execution before continuing this idea.</p>:null}
-          <div className="flex gap-2"><Button type="submit" size="sm" disabled={busy||!sessionId}>Queue follow-up</Button><Button type="button" size="sm" variant="outline" onClick={()=>setFollowupIdea(null)}>Cancel</Button></div>
-        </form>:null}
         {error ? (
           <p role="alert" className="mt-2 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive">
             {error}

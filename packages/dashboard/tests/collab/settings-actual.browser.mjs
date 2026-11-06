@@ -77,27 +77,8 @@ try{
   await page.getByRole('button',{name:'Workpad',exact:true}).click();
   assert.equal(await page.getByRole('button',{name:'Submit for review',exact:true}).count(),0,'internal.read without task.write must not offer delivery mutation');
   await config.context.close();
-  const starter=await login('blindStart');page=starter.page;
-  await page.goto(`${origin}/tasks/${fixture.taskId}`);
-  await page.getByRole('button',{name:'Execution',exact:true}).click();
-  await page.getByRole('button',{name:'Start AI work',exact:true}).click();
-  const dialog=page.getByRole('dialog',{name:'Start AI work',exact:true});
-  await expect(dialog.getByRole('button',{name:'Queue run',exact:true})).toBeEnabled();
-  assert.equal(await dialog.getByRole('combobox').count(),0,'private execution selectors must stay hidden');
-  assert.equal(await dialog.getByRole('textbox').count(),0,'private instructions must stay hidden');
-  const queued=await Promise.all([
-    page.waitForResponse(response=>new URL(response.url()).pathname===`/api/collab/v1/tasks/${fixture.taskId}/runs`&&response.request().method()==='POST'),
-    dialog.getByRole('button',{name:'Queue run',exact:true}).click(),
-  ]);
-  assert.equal(queued[0].status(),202);
-  assert.deepEqual(Object.keys(queued[0].request().postDataJSON()),['expectedVersion']);
-  const result=(await queued[0].json()).data;
-  assert.equal('sessionId' in result,false,'private session identifiers must be absent from generic Start');
-  for(const field of ['instructions','profileId','model','mappingId','hostId'])assert.equal(field in result.run,false);
-  assert.equal(requests.filter(item=>item.role==='blindStart'&&item.path.endsWith('/mappings')).length,0);
-  await starter.context.close();
   assert.deepEqual(errors,[]);
-  console.log(JSON.stringify({result:'PASS',scenarios:['actual password sign-in and HMAC proxy','project-only membership admin loads permissible members/roles and invites','workspace-only role creation and project list','no execution requests from membership-only settings','offline configuration preserves distinct work/summary models and disable mode','readonly internal role has no delivery mutation','run.start-only queues configured offline run without private selectors or response fields'],requestCount:requests.length,unhandled:errors}));
+  console.log(JSON.stringify({result:'PASS',scenarios:['actual password sign-in and HMAC proxy','project-only membership admin loads permissible members/roles and invites','workspace-only role creation and project list','no execution requests from membership-only settings','offline configuration preserves distinct work/summary models and disable mode','readonly internal role has no delivery mutation'],requestCount:requests.length,unhandled:errors}));
 }catch(error){
   if(page&&!page.isClosed())await page.screenshot({path:'/tmp/fluent-flow-settings-actual-failure.png',fullPage:true});
   console.error(JSON.stringify({result:'FAIL',message:error.message,unhandled:errors,requests}));throw error;

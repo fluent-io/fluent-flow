@@ -14,7 +14,6 @@ Password sign-in for a GitHub-linked principal requires an already provisioned p
 - [Collaboration views](src/components/collab/README.md), [browser-safe API helpers](src/lib/collab/README.md), [authenticated proxy](src/app/api/collab/README.md) and [regression tests](tests/collab/README.md).
 - [Shared contracts](../../docs/plans/2026-10-19-collaborative-contracts.md) and [acceptance evidence/UAT](../../docs/plans/2026-10-19-collaborative-status.md).
 
-Start AI work is explicit. Moving a card to Ready creates no run. Requests remain queued for the configured host while it is offline. Session/turn state is separate from task delivery status; only a human delivery decision marks Done. Ambiguous requests expose operator reconciliation of the same durable command.
 
 Workpad checks show source, command, commit, dirty/unknown capture state and history. Unknown or dirty evidence is stale. Delivery acceptance binds the exact reviewed delivery/run/HEAD/dirty/evidence revision. A changed criterion or question at the same ID clears the prior acknowledgment. File previews use a stored reference and an authorized connector read, capped at 512 KiB; text, allowed images and PDFs render safely, while unsupported files download. HTML/SVG are never executed. Summaries use configured profiles/models and a frozen source cursor; disabled summaries queue no model work. Usage displays per-metric coverage and preserves unknown values.
 
