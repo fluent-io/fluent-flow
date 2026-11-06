@@ -42,6 +42,7 @@ function isDenied(error: unknown): boolean {
 }
 
 function pagePath(path: string, cursor: string): string {
+  if (!cursor) return path;
   const joiner = path.includes('?') ? '&' : '?';
   return `${path}${joiner}cursor=${encodeURIComponent(cursor)}`;
 }
@@ -285,7 +286,7 @@ function RequestCard({ request, active, submit }: { request: ClaimExecutionReque
       <div className="rounded-md border border-orange-500/40 bg-orange-500/10 p-3 text-sm">
         <strong>{typeof payload.title === 'string' ? payload.title : 'Permission required'}</strong>
         {typeof payload.description === 'string' && <p className="mt-1 text-muted-foreground">{payload.description}</p>}
-        {subject?.type === 'command' && <div className="mt-2 whitespace-pre-wrap break-words font-mono text-xs">{String(subject.command ?? '')}{typeof subject.cwd === 'string' && <div className="text-muted-foreground">{subject.cwd}</div>}</div>}
+        {subject?.type === 'command' && <div className="mt-2 whitespace-pre-wrap break-words font-mono text-xs">{String(subject.command ?? '')}</div>}
         <div className="mt-3 flex flex-wrap gap-2">{options.map((option) => <Button key={String(option.optionId)} size="sm" variant={typeof option.kind === 'string' && option.kind.startsWith('allow_') ? 'default' : 'outline'} disabled={!active} onClick={() => void submit(request, { outcome: { outcome: 'selected', optionId: option.optionId } })}>{String(option.name ?? option.optionId)}</Button>)}<Button size="sm" variant="outline" disabled={!active} onClick={() => void submit(request, { outcome: { outcome: 'cancelled' } })}>Dismiss</Button></div>
       </div>
     );

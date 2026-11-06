@@ -93,6 +93,10 @@ async function shot(name) {
   await page.screenshot({ path: `${screenshots}/${name}.png`, fullPage: true });
 }
 
+async function noHorizontalOverflow() {
+  return page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
+}
+
 function appendRunnerStderr(chunk) {
   const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
   if (bytes.length >= runnerStderrLimitBytes) {
@@ -348,6 +352,15 @@ try {
   const promptResponse = page.waitForResponse((response) => response.url().includes('/api/collab/v1/claim-executions/') && response.url().endsWith('/commands') && response.request().method() === 'POST');
   await detail.getByRole('button', { name: 'Send prompt', exact: true }).click();
   assert.ok([200, 202].includes((await promptResponse).status()));
+  await waitFor('runner delivery of follow-up prompt', async () => {
+    const { rows } = await pool.query(
+      `SELECT status FROM agent_claim_commands
+       WHERE org_id = $1 AND kind = 'prompt'
+       ORDER BY id DESC LIMIT 1`,
+      [orgId],
+    );
+    return rows[0] && ['delivered', 'acked'].includes(rows[0].status) ? rows[0] : null;
+  });
   writeFileSync(followUpMarker, '', { flag: 'wx', mode: 0o600 });
   await expect(detail.getByText('Follow-up ACP turn is running.', { exact: true })).toBeVisible({ timeout: 30_000 });
 
@@ -366,6 +379,10 @@ try {
   assert.ok([200, 202].includes((await cancelResponse).status()));
   await expect(refreshedDetail.locator('[data-claim-status]')).toHaveText('Cancelled', { timeout: 30_000 });
   await shot('04-cancelled');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByText('Collapse', { exact: true }).click();
+  assert.equal(await noHorizontalOverflow(), true);
+  await shot('05-narrow-cancelled');
 
   const { rows: claims } = await pool.query(
     `SELECT claim.id, claim.org_id, claim.repo, claim.pr_number, claim.attempt,

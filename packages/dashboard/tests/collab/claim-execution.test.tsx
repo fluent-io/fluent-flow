@@ -399,6 +399,18 @@ describe('claim execution states and polling', () => {
     expect(await screen.findByText(label, { selector: '[data-runner-state]' })).toBeTruthy();
   });
 
+  it('omits an empty cursor from initial collection requests', async () => {
+    renderPanel();
+    await waitForClaim();
+    await screen.findByRole('log');
+
+    const collectionReads = api.records.filter((record) =>
+      record.method === 'GET'
+      && (record.url.includes('/claim-executions?') || record.url.includes('/events?') || record.url.includes('/requests?')));
+    expect(collectionReads.length).toBeGreaterThan(0);
+    expect(collectionReads.every((record) => !record.url.includes('cursor='))).toBe(true);
+  });
+
   it('walks claim and event pages and preserves stable event rows', async () => {
     const firstClaim = claim('claimed');
     const secondClaim = claim('completed', { id: 42, claimType: 'build', attempt: 2, rootClaimId: 41, completedAt: createdAt });
@@ -721,6 +733,8 @@ describe('permission and elicitation requests', () => {
     }];
     const user = userEvent.setup();
     renderPanel();
+    expect(await screen.findByText('git status')).toBeTruthy();
+    expect(screen.queryByText('/workspace/repo')).toBeNull();
     await user.click(await screen.findByRole('button', { name: 'Allow once' }));
 
     await waitFor(() => expect(commandRecords('permission')).toHaveLength(1));
