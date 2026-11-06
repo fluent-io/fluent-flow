@@ -155,6 +155,13 @@
       "when": 1778803200000,
       "tag": "0021_collab_project_overviews",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1794009600000,
+      "tag": "0022_agent_claim_acp",
+      "breakpoints": true
     }
   ]
 }

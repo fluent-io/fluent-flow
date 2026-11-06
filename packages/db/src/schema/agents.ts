@@ -1,4 +1,4 @@
-import { pgTable, text, jsonb, timestamp, integer, primaryKey, bigint, index, uniqueIndex, foreignKey } from 'drizzle-orm/pg-core';
+import { pgTable, text, jsonb, timestamp, integer, primaryKey, bigint, index, uniqueIndex, foreignKey, uuid } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 import { orgs } from './orgs.js';
 
@@ -92,4 +92,63 @@ export const agentClaims = pgTable('agent_claims', {
   activeNoPrIdx: index('idx_agent_claims_active_no_pr')
     .on(t.orgId, t.repo)
     .where(sql`${t.status} = ANY (ARRAY['pending', 'claimed']) AND ${t.prNumber} IS NULL`),
+}));
+
+export const agentClaimEvents = pgTable('agent_claim_events', {
+  orgId: text('org_id').notNull().references(() => orgs.id),
+  claimId: integer('claim_id').notNull().references(() => agentClaims.id, { onDelete: 'cascade' }),
+  seq: integer('seq').notNull(),
+  kind: text('kind').notNull(),
+  payload: jsonb('payload').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.orgId, t.claimId, t.seq] }),
+}));
+
+export const agentClaimRequests = pgTable('agent_claim_requests', {
+  orgId: text('org_id').notNull().references(() => orgs.id),
+  claimId: integer('claim_id').notNull().references(() => agentClaims.id, { onDelete: 'cascade' }),
+  requestKey: text('request_key').notNull(),
+  kind: text('kind').notNull(),
+  payload: jsonb('payload').notNull(),
+  status: text('status').notNull().default('open'),
+  response: jsonb('response'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.orgId, t.claimId, t.requestKey] }),
+}));
+
+export const agentClaimCommands = pgTable('agent_claim_commands', {
+  id: integer('id').primaryKey().generatedByDefaultAsIdentity(),
+  orgId: text('org_id').notNull().references(() => orgs.id),
+  claimId: integer('claim_id').notNull().references(() => agentClaims.id, { onDelete: 'cascade' }),
+  idempotencyKey: text('idempotency_key').notNull(),
+  kind: text('kind').notNull(),
+  payload: jsonb('payload').notNull(),
+  requestKey: text('request_key'),
+  status: text('status').notNull().default('pending'),
+  result: jsonb('result'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  deliveredAt: timestamp('delivered_at', { withTimezone: true }),
+  ackedAt: timestamp('acked_at', { withTimezone: true }),
+}, (t) => ({
+  idempotencyKey: uniqueIndex('agent_claim_commands_org_id_claim_id_idempotency_key_key')
+    .on(t.orgId, t.claimId, t.idempotencyKey),
+  pendingIdx: index('agent_claim_commands_pending_idx')
+    .on(t.orgId, t.claimId, t.createdAt, t.id)
+    .where(sql`${t.status} = 'pending'`),
+}));
+
+export const collabClaimExecutions = pgTable('collab_claim_executions', {
+  taskId: uuid('task_id').notNull(),
+  projectId: uuid('project_id').notNull(),
+  claimId: integer('claim_id').notNull().unique().references(() => agentClaims.id, { onDelete: 'cascade' }),
+  rootClaimId: integer('root_claim_id').notNull().references(() => agentClaims.id),
+  createdByPrincipalId: uuid('created_by_principal_id').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.taskId, t.claimId] }),
+  taskIdx: index('collab_claim_executions_task_idx').on(t.taskId, t.createdAt, t.claimId),
+  rootClaimIdx: index('collab_claim_executions_root_claim_idx').on(t.rootClaimId),
 }));

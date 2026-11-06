@@ -1,0 +1,443 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  ackClaimCommand,
+  appendClaimEvents,
+  cancelOpenClaimInteractions,
+  enqueueClaimCommand,
+  leaseClaimCommands,
+  reserveClaimRequestAnswer,
+  resolveClaimRequest,
+  upsertClaimRequest,
+} from '../../src/queries/index.js';
+import { closePool, getPool } from '../../src/pool.js';
+import { runMigrations } from '../../src/migrate.js';
+import {
+  resetCollabSchema,
+  resolveCollabTestDatabaseUrl,
+} from '../helpers/collab-db.js';
+
+process.env.DATABASE_URL = resolveCollabTestDatabaseUrl();
+const databaseUrl = process.env.DATABASE_URL;
+const orgId = 'claim-interactions-test';
+let attempt = 0;
+
+async function createClaim() {
+  attempt += 1;
+  const { rows } = await getPool().query<{ id: number }>(
+    `INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload)
+     VALUES ($1, $2, $3, $4, 'build', 'claimed', '{}'::jsonb)
+     RETURNING id`,
+    [orgId, 'fluent-io/claim-interactions', 127, attempt],
+  );
+  return rows[0].id;
+}
+
+async function commandStatus(commandId: number) {
+  const { rows } = await getPool().query<{ status: string }>(
+    'SELECT status FROM agent_claim_commands WHERE id = $1',
+    [commandId],
+  );
+  return rows[0]?.status ?? null;
+}
+
+describe('claim interaction persistence', () => {
+  beforeAll(async () => {
+    await resetCollabSchema(databaseUrl);
+    await runMigrations();
+    await getPool().query('INSERT INTO orgs (id, name) VALUES ($1, $2)', [orgId, 'Claim interactions']);
+  });
+
+  afterAll(async () => {
+    await closePool();
+  });
+
+  it('replays an identical event batch without inserting duplicates', async () => {
+    const claimId = await createClaim();
+    const input = {
+      orgId,
+      claimId,
+      events: [
+        { seq: 1, kind: 'user_message', payload: { text: 'hello' } },
+        { seq: 2, kind: 'agent_message', payload: { text: 'world' } },
+      ],
+    };
+
+    await expect(appendClaimEvents(input)).resolves.toEqual({ inserted: 2, lastSeq: 2 });
+    await expect(appendClaimEvents(input)).resolves.toEqual({ inserted: 0, lastSeq: 2 });
+
+    const { rows } = await getPool().query(
+      'SELECT seq, kind, payload FROM agent_claim_events WHERE org_id = $1 AND claim_id = $2 ORDER BY seq',
+      [orgId, claimId],
+    );
+    expect(rows).toEqual([
+      { seq: 1, kind: 'user_message', payload: { text: 'hello' } },
+      { seq: 2, kind: 'agent_message', payload: { text: 'world' } },
+    ]);
+  });
+
+  it('rejects a sequence replayed with a different kind or payload', async () => {
+    const claimId = await createClaim();
+    await appendClaimEvents({
+      orgId,
+      claimId,
+      events: [{ seq: 1, kind: 'notice', payload: { text: 'first' } }],
+    });
+
+    await expect(appendClaimEvents({
+      orgId,
+      claimId,
+      events: [{ seq: 1, kind: 'notice', payload: { text: 'changed' } }],
+    })).rejects.toThrow();
+    await expect(appendClaimEvents({
+      orgId,
+      claimId,
+      events: [{ seq: 1, kind: 'agent_message', payload: { text: 'first' } }],
+    })).rejects.toThrow();
+  });
+
+  it('returns the existing request for an exact request replay', async () => {
+    const claimId = await createClaim();
+    const input = {
+      orgId,
+      claimId,
+      requestKey: 'permission-1',
+      kind: 'permission' as const,
+      payload: { title: 'Allow edit?', options: ['allow', 'deny'] },
+    };
+
+    const first = await upsertClaimRequest(input);
+    const replay = await upsertClaimRequest(input);
+
+    expect(replay).toEqual(first);
+    const { rows } = await getPool().query(
+      'SELECT request_key FROM agent_claim_requests WHERE org_id = $1 AND claim_id = $2',
+      [orgId, claimId],
+    );
+    expect(rows).toEqual([{ request_key: 'permission-1' }]);
+  });
+
+  it('atomically reserves one answer and creates one command', async () => {
+    const claimId = await createClaim();
+    await upsertClaimRequest({
+      orgId,
+      claimId,
+      requestKey: 'question-1',
+      kind: 'elicitation',
+      payload: { prompt: 'Choose one' },
+    });
+
+    const [first, second] = await Promise.all([
+      reserveClaimRequestAnswer({
+        orgId,
+        claimId,
+        requestKey: 'question-1',
+        idempotencyKey: 'answer-a',
+        kind: 'elicitation',
+        payload: { answer: 'A' },
+      }),
+      reserveClaimRequestAnswer({
+        orgId,
+        claimId,
+        requestKey: 'question-1',
+        idempotencyKey: 'answer-b',
+        kind: 'elicitation',
+        payload: { answer: 'B' },
+      }),
+    ]);
+
+    expect([first, second].filter(Boolean)).toHaveLength(1);
+    expect([first, second].filter((value) => value === null)).toHaveLength(1);
+    const { rows: requests } = await getPool().query(
+      'SELECT status, response FROM agent_claim_requests WHERE org_id = $1 AND claim_id = $2',
+      [orgId, claimId],
+    );
+    const { rows: commands } = await getPool().query(
+      'SELECT idempotency_key, request_key, status FROM agent_claim_commands WHERE org_id = $1 AND claim_id = $2',
+      [orgId, claimId],
+    );
+    expect(requests).toEqual([{ status: 'answer_queued', response: null }]);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toEqual(expect.objectContaining({
+      request_key: 'question-1',
+      status: 'pending',
+    }));
+  });
+
+  it('replays an identical command and rejects the same key with a changed body', async () => {
+    const claimId = await createClaim();
+    const input = {
+      orgId,
+      claimId,
+      idempotencyKey: 'prompt-1',
+      kind: 'prompt' as const,
+      payload: { text: 'Do the work' },
+    };
+
+    const first = await enqueueClaimCommand(input);
+    const replay = await enqueueClaimCommand(input);
+    expect(first.created).toBe(true);
+    expect(replay).toEqual({ command: first.command, created: false });
+
+    await expect(enqueueClaimCommand({
+      ...input,
+      payload: { text: 'Do different work' },
+    })).rejects.toThrow();
+    await expect(enqueueClaimCommand({
+      ...input,
+      kind: 'cancel',
+    })).rejects.toThrow();
+  });
+
+  it('leases only pending commands', async () => {
+    const claimId = await createClaim();
+    const first = await enqueueClaimCommand({
+      orgId,
+      claimId,
+      idempotencyKey: 'pending-1',
+      kind: 'prompt',
+      payload: { text: 'first' },
+    });
+    const second = await enqueueClaimCommand({
+      orgId,
+      claimId,
+      idempotencyKey: 'pending-2',
+      kind: 'cancel',
+      payload: {},
+    });
+
+    const leased = await leaseClaimCommands({ orgId, claimId, limit: 1 });
+    expect(leased).toHaveLength(1);
+    expect(leased[0].id).toBe(first.command.id);
+    expect(leased[0].status).toBe('delivered');
+
+    const next = await leaseClaimCommands({ orgId, claimId, limit: 10 });
+    expect(next.map((command) => command.id)).toEqual([second.command.id]);
+    expect(await commandStatus(first.command.id)).toBe('delivered');
+  });
+
+  it('marks an expired delivered lease uncertain without redelivery', async () => {
+    const claimId = await createClaim();
+    const queued = await enqueueClaimCommand({
+      orgId,
+      claimId,
+      idempotencyKey: 'lost-ack',
+      kind: 'prompt',
+      payload: { text: 'never repeat me' },
+    });
+    await leaseClaimCommands({ orgId, claimId, limit: 1 });
+    await getPool().query(
+      `UPDATE agent_claim_commands SET delivered_at = NOW() - INTERVAL '1 day' WHERE id = $1`,
+      [queued.command.id],
+    );
+
+    await expect(leaseClaimCommands({ orgId, claimId, limit: 10 })).resolves.toEqual([]);
+    expect(await commandStatus(queued.command.id)).toBe('uncertain');
+    await expect(leaseClaimCommands({ orgId, claimId, limit: 10 })).resolves.toEqual([]);
+  });
+
+  it('resolves its request when an answer command is acknowledged', async () => {
+    const claimId = await createClaim();
+    await upsertClaimRequest({
+      orgId,
+      claimId,
+      requestKey: 'ack-request',
+      kind: 'permission',
+      payload: { action: 'write' },
+    });
+    const reserved = await reserveClaimRequestAnswer({
+      orgId,
+      claimId,
+      requestKey: 'ack-request',
+      idempotencyKey: 'ack-answer',
+      kind: 'permission',
+      payload: { behavior: 'allow' },
+    });
+    await leaseClaimCommands({ orgId, claimId, limit: 1 });
+
+    const command = await ackClaimCommand({
+      orgId,
+      claimId,
+      commandId: reserved!.command.id,
+      status: 'acked',
+      result: { accepted: true },
+    });
+    const { rows } = await getPool().query(
+      'SELECT status, response, resolved_at FROM agent_claim_requests WHERE org_id = $1 AND claim_id = $2',
+      [orgId, claimId],
+    );
+
+    expect(command?.status).toBe('acked');
+    expect(rows[0]).toEqual(expect.objectContaining({ status: 'resolved', response: { accepted: true } }));
+    expect(rows[0].resolved_at).toBeInstanceOf(Date);
+  });
+
+  it('reopens a request after definite answer failure', async () => {
+    const claimId = await createClaim();
+    await upsertClaimRequest({
+      orgId,
+      claimId,
+      requestKey: 'failed-request',
+      kind: 'elicitation',
+      payload: { prompt: 'Answer' },
+    });
+    const reserved = await reserveClaimRequestAnswer({
+      orgId,
+      claimId,
+      requestKey: 'failed-request',
+      idempotencyKey: 'failed-answer',
+      kind: 'elicitation',
+      payload: { answer: 'value' },
+    });
+    await leaseClaimCommands({ orgId, claimId, limit: 1 });
+
+    await ackClaimCommand({
+      orgId,
+      claimId,
+      commandId: reserved!.command.id,
+      status: 'failed',
+      result: { applied: false },
+    });
+    const { rows } = await getPool().query(
+      'SELECT status, response, resolved_at FROM agent_claim_requests WHERE org_id = $1 AND claim_id = $2',
+      [orgId, claimId],
+    );
+    expect(rows).toEqual([{ status: 'open', response: null, resolved_at: null }]);
+  });
+
+  it('makes a request uncertain after ambiguous answer delivery', async () => {
+    const claimId = await createClaim();
+    await upsertClaimRequest({
+      orgId,
+      claimId,
+      requestKey: 'uncertain-request',
+      kind: 'permission',
+      payload: { action: 'execute' },
+    });
+    const reserved = await reserveClaimRequestAnswer({
+      orgId,
+      claimId,
+      requestKey: 'uncertain-request',
+      idempotencyKey: 'uncertain-answer',
+      kind: 'permission',
+      payload: { behavior: 'allow' },
+    });
+    await leaseClaimCommands({ orgId, claimId, limit: 1 });
+
+    await ackClaimCommand({
+      orgId,
+      claimId,
+      commandId: reserved!.command.id,
+      status: 'uncertain',
+      result: { reason: 'connection_lost' },
+    });
+    const { rows } = await getPool().query(
+      'SELECT status, response FROM agent_claim_requests WHERE org_id = $1 AND claim_id = $2',
+      [orgId, claimId],
+    );
+    expect(rows).toEqual([{ status: 'uncertain', response: { reason: 'connection_lost' } }]);
+    await expect(reserveClaimRequestAnswer({
+      orgId,
+      claimId,
+      requestKey: 'uncertain-request',
+      idempotencyKey: 'replacement-answer',
+      kind: 'permission',
+      payload: { behavior: 'deny' },
+    })).resolves.toBeNull();
+  });
+
+  it('cancels only open interactions at terminal transition', async () => {
+    const claimId = await createClaim();
+    await upsertClaimRequest({
+      orgId,
+      claimId,
+      requestKey: 'open-request',
+      kind: 'permission',
+      payload: { action: 'open' },
+    });
+    await upsertClaimRequest({
+      orgId,
+      claimId,
+      requestKey: 'resolved-request',
+      kind: 'elicitation',
+      payload: { prompt: 'done' },
+    });
+    await resolveClaimRequest({
+      orgId,
+      claimId,
+      requestKey: 'resolved-request',
+      response: { answer: 'done' },
+    });
+    const pending = await enqueueClaimCommand({
+      orgId,
+      claimId,
+      idempotencyKey: 'pending-at-terminal',
+      kind: 'cancel',
+      payload: {},
+    });
+    const acknowledged = await enqueueClaimCommand({
+      orgId,
+      claimId,
+      idempotencyKey: 'acked-at-terminal',
+      kind: 'prompt',
+      payload: { text: 'already handled' },
+    });
+    await leaseClaimCommands({ orgId, claimId, limit: 2 });
+    await ackClaimCommand({
+      orgId,
+      claimId,
+      commandId: acknowledged.command.id,
+      status: 'acked',
+      result: { messageId: 'message-1' },
+    });
+    await getPool().query(
+      `UPDATE agent_claim_commands SET status = 'pending', delivered_at = NULL WHERE id = $1`,
+      [pending.command.id],
+    );
+
+    await cancelOpenClaimInteractions({ orgId, claimId });
+    const { rows: requests } = await getPool().query(
+      'SELECT request_key, status FROM agent_claim_requests WHERE org_id = $1 AND claim_id = $2 ORDER BY request_key',
+      [orgId, claimId],
+    );
+    expect(requests).toEqual([
+      { request_key: 'open-request', status: 'cancelled' },
+      { request_key: 'resolved-request', status: 'resolved' },
+    ]);
+    expect(await commandStatus(pending.command.id)).toBe('cancelled');
+    expect(await commandStatus(acknowledged.command.id)).toBe('acked');
+  });
+
+  it('uses an optional external executor so its writes roll back with the caller', async () => {
+    const claimId = await createClaim();
+    const client = await getPool().connect();
+    try {
+      await client.query('BEGIN');
+      await appendClaimEvents({
+        orgId,
+        claimId,
+        events: [{ seq: 91, kind: 'notice', payload: { text: 'rolled back' } }],
+      }, client);
+      await enqueueClaimCommand({
+        orgId,
+        claimId,
+        idempotencyKey: 'rolled-back-command',
+        kind: 'prompt',
+        payload: { text: 'rolled back' },
+      }, client);
+      await client.query('ROLLBACK');
+    } finally {
+      client.release();
+    }
+
+    const { rows: events } = await getPool().query(
+      'SELECT seq FROM agent_claim_events WHERE org_id = $1 AND claim_id = $2 AND seq = 91',
+      [orgId, claimId],
+    );
+    const { rows: commands } = await getPool().query(
+      'SELECT id FROM agent_claim_commands WHERE org_id = $1 AND claim_id = $2 AND idempotency_key = $3',
+      [orgId, claimId, 'rolled-back-command'],
+    );
+    expect(events).toEqual([]);
+    expect(commands).toEqual([]);
+  });
+});
