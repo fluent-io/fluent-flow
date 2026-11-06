@@ -13,8 +13,8 @@ export async function POST(
   }
 
   const { id } = await params;
-  const { orgIds } = getOrgScope(session);
-  const agent = await getAgentDetail(orgIds, id);
+  const { orgIds, isSuperadmin } = getOrgScope(session);
+  const agent = await getAgentDetail(orgIds, id, isSuperadmin);
 
   if (!agent) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });

@@ -40,10 +40,10 @@ export default async function PipelinesPage({ searchParams }: { searchParams: Pr
   const session = await getServerSession(authOptions);
   if (!session) return null;
 
-  const { orgIds } = getOrgScope(session);
+  const { orgIds, isSuperadmin } = getOrgScope(session);
   const params = await searchParams;
   const filter = (params.filter ?? 'active') as 'active' | 'archived' | 'all';
-  const pipelines = await listPipelines(orgIds, filter);
+  const pipelines = await listPipelines(orgIds, filter, isSuperadmin);
 
   return <PipelinesContent pipelines={pipelines} />;
 }

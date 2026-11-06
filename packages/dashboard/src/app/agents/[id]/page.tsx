@@ -13,8 +13,8 @@ export default async function AgentDetailPage({ params }: { params: Promise<{ id
   if (!session) return null;
 
   const { id } = await params;
-  const { orgIds } = getOrgScope(session);
-  const agent = await getAgentDetail(orgIds, id);
+  const { orgIds, isSuperadmin } = getOrgScope(session);
+  const agent = await getAgentDetail(orgIds, id, isSuperadmin);
 
   if (!agent) notFound();
 

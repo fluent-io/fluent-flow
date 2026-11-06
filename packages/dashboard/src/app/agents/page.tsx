@@ -8,8 +8,8 @@ export default async function AgentsPage() {
   const session = await getServerSession(authOptions);
   if (!session) return null;
 
-  const { orgIds } = getOrgScope(session);
-  const agents = await listAgents(orgIds);
+  const { orgIds, isSuperadmin } = getOrgScope(session);
+  const agents = await listAgents(orgIds, isSuperadmin);
 
   return (
     <div>

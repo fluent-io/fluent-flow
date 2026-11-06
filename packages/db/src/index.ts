@@ -7,3 +7,7 @@ export * from './queries/index.js';
 // Drizzle client + schema.
 export { db, pool, schema, sql, withTransaction } from './client.js';
 export { runMigrations } from './migrate.js';
+
+export * from './collaboration/index.js';
+
+export * from './collaboration/evidence.js';

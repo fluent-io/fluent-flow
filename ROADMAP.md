@@ -31,7 +31,8 @@ Rolling view of what's shipped, what's in flight, and what's known-missing.
 
 ## In flight
 
-- None currently tracked in-repo. Next work should target the highest-risk known gaps below.
+- [Collaborative client Kanban with task-linked Paseo execution](docs/plans/2026-10-19-collaborative-spec.md): implemented and locally verified, including canonical client/project/task persistence, non-GitHub invitations, scoped permissions, the board and task detail, an outbound PC connector, and retained Flowly execution features. Existing GitHub review, claims, pipelines and direct runner behavior remain supported. The [acceptance ledger](docs/plans/2026-10-19-collaborative-status.md) records real native/browser evidence and release boundaries; deployment and publication remain pending.
+- Deterministic verification and merge policy remain unreleased targets. Existing review/remediation behavior must not be described as independent deterministic verification.
 
 ## Known gaps / next candidates
 
@@ -39,8 +40,8 @@ Each entry: the gap, the impact, and the rough shape of the fix.
 
 ### Runner distribution
 
-- **`@fluent-flow/runner` not published to npm.** Runner package name is still `fluent-flow-runner` (unscoped). Victor owns the `fluent-flow` npm scope. End users running `npx @fluent-flow/runner@latest` (the dashboard's generated command) will hit 404 until publish lands.
-  - **Fix shape:** rename runner package to `@fluent-flow/runner`, add `publishConfig.access: public`, set up a release workflow (`release: { types: [published] }` + `NPM_TOKEN` secret), cut v0.1.0.
+- **Runner distribution needs release verification.** The package is named `@fluent-flow/runner` with public publishing configuration. This change has not published a package or verified registry availability. The [runner guide](packages/fluent-flow-runner/README.md) documents local commands for the review runner and Paseo connector.
+  - **Next step:** verify the release workflow and registry version before recommending a published install command.
 
 ### Reviewer reliability
 
@@ -102,9 +103,11 @@ Each entry: the gap, the impact, and the rough shape of the fix.
 
 **Decision:** [Product positioning and competitive landscape](docs/product-positioning-and-competitive-landscape.md)
 
-Fluent Flow's target product is an open-source, self-hostable verification and merge-control product for agent-written code. The customer-facing category is **the merge gate for agent-written code**, not a general agent framework or workflow engine. Paid enterprise support covers operational assurance, deployment, security, and commercial terms while the core product remains inspectable and self-hostable.
+On 2026-10-19 the user approved expanding Fluent Flow into an open-source, self-hostable workspace for collaborative planning, agent execution, and delivery. One task connects client discussion and acceptance criteria to PC-side Paseo runs, inspectable evidence, review, and a human delivery decision. This deliberately expands the earlier merge-gate-only positioning.
 
-Near-term product work must strengthen:
+The immediate implementation is the collaborative expansion above. It must retain existing GitHub delivery controls, keep model credentials and execution on customer-controlled hosts, and pass the named browser, persistence, authorization, and Paseo scenarios before it is called complete.
+
+Delivery assurance remains part of the direction. Further work includes:
 
 - deterministic red-before-fix and green-after-fix verification;
 - fail-closed merge policy with explicit Verified, Evidence incomplete, Monitored, Inconclusive, Tampered, and Failed states;
@@ -115,7 +118,7 @@ Near-term product work must strengthen:
 - broader language and framework coverage;
 - enterprise deployment, identity, audit, and support readiness.
 
-The earlier [Loop Engine v2 exploration](docs/specs/2026-06-10-loop-engineering-product-architecture.md) remains useful as internal orchestration research but is superseded as product positioning. Do not build a generic loop designer, arbitrary workflow marketplace, general-purpose agent SDK, or broad review-platform parity. Future automation should ship as curated change-assurance protocols that terminate in executable evidence or human escalation.
+The earlier [Loop Engine v2 exploration](docs/specs/2026-06-10-loop-engineering-product-architecture.md) remains internal orchestration research. The approved Kanban expansion does not require a generic loop designer, workflow marketplace, general-purpose agent SDK, or broad review-platform parity. Automation should produce inspectable work and evidence, with human decisions where required.
 
 ## Longer-horizon work
 

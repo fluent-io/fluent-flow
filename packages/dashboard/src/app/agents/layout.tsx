@@ -1,5 +1,5 @@
-import { DashboardShell } from '@/components/layout/dashboard-shell';
+import { LegacyAdminGate } from '@/components/layout/legacy-admin-gate';
 
 export default function AgentsLayout({ children }: { children: React.ReactNode }) {
-  return <DashboardShell>{children}</DashboardShell>;
+  return <LegacyAdminGate>{children}</LegacyAdminGate>;
 }

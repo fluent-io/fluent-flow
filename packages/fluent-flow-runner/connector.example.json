@@ -1,0 +1,13 @@
+{
+  "serverUrl": "https://flow.example.com",
+  "tokenFile": "~/.fluent-flow/connector-token",
+  "instanceId": "my-linux-pc",
+  "repositories": {
+    "my-project": "/home/me/work/my-project"
+  },
+  "profiles": ["replace-with-an-existing-paseo-profile-id"],
+  "paseo": {
+    "home": "~/.paseo",
+    "cliPath": "/home/me/.local/bin/paseo"
+  }
+}

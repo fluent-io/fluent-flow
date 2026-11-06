@@ -30,10 +30,16 @@ describe('listAgents', () => {
     expect(mockQuery.mock.calls[0][1]).toEqual([['fluent-io']]);
   });
 
-  it('returns all agents for superadmin (no org filter)', async () => {
+  it('returns no agents for empty-org non-superadmin without querying', async () => {
+    const result = await listAgents([]);
+    expect(result).toEqual([]);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('returns all agents for explicit superadmin (no org filter)', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [] });
 
-    const result = await listAgents([]);
+    const result = await listAgents([], true);
     expect(result).toEqual([]);
     expect(mockQuery.mock.calls[0][0]).not.toContain('org_id = ANY');
   });
@@ -75,6 +81,26 @@ describe('getAgentDetail', () => {
 
     const result = await getAgentDetail(['fluent-io'], 'ff-runner');
     expect(result?.id).toBe('ff-runner');
+  });
+
+  it('returns null for empty-org non-superadmin without querying', async () => {
+    const result = await getAgentDetail([], 'ff-runner');
+    expect(result).toBeNull();
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('returns agent across orgs for explicit superadmin', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        id: 'ff-runner', org_id: 'legacy-org', agent_type: 'claude-code',
+        transport: 'long_poll', transport_meta: {}, repos: [],
+        created_at: new Date(), updated_at: new Date(),
+      }],
+    });
+
+    const result = await getAgentDetail([], 'ff-runner', true);
+    expect(result?.id).toBe('ff-runner');
+    expect(mockQuery.mock.calls[0][0]).not.toContain('org_id = ANY');
   });
 });
 

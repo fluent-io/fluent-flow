@@ -9,8 +9,8 @@ export async function GET() {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { orgIds } = getOrgScope(session);
-  const agents = await listAgents(orgIds);
+  const { orgIds, isSuperadmin } = getOrgScope(session);
+  const agents = await listAgents(orgIds, isSuperadmin);
   return NextResponse.json(agents);
 }
 

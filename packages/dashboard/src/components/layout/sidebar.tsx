@@ -3,24 +3,33 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Bot, FolderGit2, GitBranch, Settings, ChevronLeft, ChevronRight } from 'lucide-react';
+import { useSession } from 'next-auth/react';
+import { Bot, FolderGit2, FolderKanban, GitBranch, Settings, ChevronLeft, ChevronRight, Kanban, Bell } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
-const navItems = [
+const INTERNAL_NAV = [
   { label: 'Agents', href: '/agents', icon: Bot },
   { label: 'Repos', href: '/repos', icon: FolderGit2 },
   { label: 'Pipelines', href: '/pipelines', icon: GitBranch },
   { label: 'Settings', href: '/settings', icon: Settings },
 ];
 
+const COLLAB_NAV = [
+  { label: 'Board', href: '/board', icon: Kanban },
+  { label: 'Projects', href: '/projects', icon: FolderKanban },
+  { label: 'Needs attention', href: '/attention', icon: Bell },
+];
+
 export function Sidebar() {
   const pathname = usePathname();
+  const { data: session } = useSession();
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
     const stored = localStorage.getItem('sidebar-collapsed');
     if (stored !== null) setCollapsed(stored === 'true');
+    else if (window.matchMedia('(max-width: 767px)').matches) setCollapsed(true);
   }, []);
 
   function toggle() {
@@ -28,6 +37,9 @@ export function Sidebar() {
     setCollapsed(next);
     localStorage.setItem('sidebar-collapsed', String(next));
   }
+
+  const isInternal = (session?.user.id ?? null) !== null || (session?.user.isSuperadmin ?? false);
+  const navItems = isInternal ? [...COLLAB_NAV, ...INTERNAL_NAV] : COLLAB_NAV;
 
   return (
     <TooltipProvider delayDuration={0}>
@@ -44,6 +56,7 @@ export function Sidebar() {
               <Link
                 key={item.href}
                 href={item.href}
+                aria-label={item.label}
                 className={cn(
                   'flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors',
                   isActive
@@ -70,6 +83,7 @@ export function Sidebar() {
         </nav>
         <button
           onClick={toggle}
+          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           className="flex items-center justify-center gap-1.5 border-t border-border p-2.5 text-xs text-muted-foreground hover:text-foreground"
         >
           {collapsed ? <ChevronRight className="h-3.5 w-3.5" /> : (

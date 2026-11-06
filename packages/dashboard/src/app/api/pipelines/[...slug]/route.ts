@@ -27,7 +27,7 @@ export async function GET(
     return NextResponse.json({ error: 'Invalid PR number' }, { status: 400 });
   }
 
-  const { orgIds } = getOrgScope(session);
-  const claims = await getPipelineDetail(orgIds, `${owner}/${repo}`, prNumber);
+  const { orgIds, isSuperadmin } = getOrgScope(session);
+  const claims = await getPipelineDetail(orgIds, `${owner}/${repo}`, prNumber, 'active', isSuperadmin);
   return NextResponse.json(claims);
 }

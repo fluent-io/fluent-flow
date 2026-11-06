@@ -2,6 +2,46 @@
 
 CLI runner for [Fluent Flow](../fluent-flow/README.md). Connects to a Fluent Flow server, picks up fix claims (work assignments created when a code review fails), spawns the configured AI coding agent, and reports results.
 
+## Collaborative board execution through Paseo
+
+### Local browser testing
+
+For the seeded project-local demo, use two terminals at the repository root:
+
+```bash
+npm run dev
+```
+
+```bash
+npm run runner
+```
+
+The runner command uses the existing local Paseo daemon and real connector. It authenticates the saved demo owner, enrolls one persistent `Local demo runner` host, creates a disposable Git repository and maps Project A1 to an existing coding profile. It prefers your configured OMP AI3 `ai3/qwen38-flash` Coder profile; pass `--profile <id>` to choose another existing profile. No software or provider credentials are installed. AI work starts only when you click Start on a task.
+
+Private credentials, connector config and journal live under `.local/runner/`; keep them across restarts. The original offline fixture host stays offline. Existing repository edits, passwords, project instructions and unrelated execution defaults are preserved. A revoked enrollment or conflicting project configuration needs explicit repair instead of an automatic reset. Ctrl+C stops the connector without deleting agents, worktrees or saved state.
+
+This helper accepts the loopback `ff_demo` database by default and rejects production mode. To use another disposable `ff_*` database with its own matching fixture file, set `FF_LOCAL_RUNNER_DATABASE` to that database's exact name. Concurrent helpers targeting the same project are rejected even from different checkouts. Interrupted one-time enrollment stops for explicit recovery; see [startup errors and recovery](../../scripts/README.md).
+
+In the board, choose Project A1, create a task asking to fix `add` so `npm test` passes, and open its Execution tab to Start. You should see the local host online, the selected profile, and live task output. The demo repository intentionally starts with failing tests. Review and human acceptance remain separate actions.
+
+### Execution host configuration
+
+Use the separate `fluent-flow-connector` command on the Linux execution host for task-linked Paseo work. It requires Node 22+ with native WebSocket support, the existing local Paseo daemon/CLI, and the host-specific enrollment token from Fluent Flow. The review runner described below keeps its Node 20 support.
+
+Copy [connector.example.json](connector.example.json) to a private local config file. Set the Fluent Flow server URL, a private host-token file, a stable instance ID, repository-key to checkout-path mappings, and existing Paseo profile IDs. Only those mappings and profiles can execute. Keep the same instance ID and generated journal directory across restarts; losing the journal removes cleanup authority. A second instance cannot replace an active host lease. Choose profiles in the local Paseo configuration; no provider or model is silently selected.
+
+```bash
+node packages/fluent-flow-runner/bin/fluent-flow-connector.js --config /private/path/connector.json
+```
+
+Installed packages also expose `fluent-flow-connector --config /private/path/connector.json`. The connector discovers the local daemon from `paseo.pid` and `local-credential` under the configured Paseo home. Those credentials never go to Fluent Flow. For an AppImage where FUSE is unavailable, set `paseo.cliPath` to an already extracted `resources/bin/paseo`, or allow the connector to extract the installed AppImage into its private state cache. This does not install or upgrade Paseo.
+
+Observation text replaces known workspace/source/Paseo-home paths and exact known credentials with display placeholders before local journal persistence and upload. Native SDK inputs keep their original values. New session reporting credentials are retained in the private state directory's `redaction-context.json` (0600; directory 0700), separately from the intent journal. For older sessions, optional config `"redactionSecretsFile": "/private/path/redaction-secrets.json"` loads a private 0600 JSON array of credential strings at startup. This file stays local. Redaction covers known values only; it does not detect unknown or encoded secrets, and it does not rewrite acknowledged history. See the [module reference](src/connector/README.md) for seed-file requirements.
+
+The connector polls outbound; the PC needs no public listener. Backlog capture works while it is offline, and a Ready card starts no work. Explicit Start queues execution for the enrolled host. Accepted IDs, a confirmed server grant, and a ready/backfilled observer precede the first prompt. Disconnects retain history and stable bindings; missing history and unconfirmed delivery require reconciliation. Cancellation requests stop only the selected owned agent and await native confirmation. Cleanup preflight refuses uncommitted, untracked, unpushed, foreign or unknown work. Human delivery acceptance remains separate from turn completion.
+
+See [connector modules and limits](src/connector/README.md) and [test/UAT evidence](tests/unit/connector/README.md). The executable reports generic startup/authorization errors locally; command failures use structured codes such as `request_inactive`, `observer_not_ready`, `reporting_unavailable`, and cleanup blockers. These do not expose provider credentials in browser errors.
+
 ## Preferred: register via the dashboard
 
 For typical users, don't use the Admin API below — it requires the server's `MCP_AUTH_TOKEN`, which is a server-admin secret. Instead:

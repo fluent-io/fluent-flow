@@ -56,12 +56,18 @@ describe('dismissStaleClaims', () => {
     expect(mockQuery.mock.calls[0][1][0]).toBe('86400000');
   });
 
-  it('dismisses all stale claims for superadmin', async () => {
+  it('dismisses all stale claims for explicit superadmin', async () => {
     mockQuery.mockResolvedValueOnce({ rowCount: 5 });
-    const count = await dismissStaleClaims([]);
+    const count = await dismissStaleClaims([], undefined, true);
     expect(count).toBe(5);
     const sql = mockQuery.mock.calls[0][0] as string;
     expect(sql).not.toContain('org_id = ANY');
+  });
+
+  it('dismisses nothing for empty-org non-superadmin without querying', async () => {
+    const count = await dismissStaleClaims([]);
+    expect(count).toBe(0);
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
   it('accepts custom olderThanMs threshold', async () => {
@@ -110,11 +116,17 @@ describe('dismissPipelineClaims', () => {
     expect(sql).not.toContain('pr_number');
   });
 
-  it('works for superadmin without org filter', async () => {
+  it('works for explicit superadmin without org filter', async () => {
     mockQuery.mockResolvedValueOnce({ rowCount: 4 });
-    const count = await dismissPipelineClaims([], 'fluent-io/app', 42);
+    const count = await dismissPipelineClaims([], 'fluent-io/app', 42, true);
     expect(count).toBe(4);
     const sql = mockQuery.mock.calls[0][0] as string;
     expect(sql).not.toContain('org_id = ANY');
+  });
+
+  it('dismisses nothing for empty-org non-superadmin without querying', async () => {
+    const count = await dismissPipelineClaims([], 'fluent-io/app', 42);
+    expect(count).toBe(0);
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 });

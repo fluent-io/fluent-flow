@@ -3,8 +3,9 @@ import { agentListItemSchema, agentSchema } from '../schemas/agents.js';
 import type { AgentListItem, Agent } from '../schemas/agents.js';
 import { SESSION_STATUS_AT_READ_TIME } from './_helpers.js';
 
-export async function listAgents(orgIds: string[]): Promise<AgentListItem[]> {
-  const isSuper = orgIds.length === 0;
+export async function listAgents(orgIds: string[], isSuperadmin = false): Promise<AgentListItem[]> {
+  if (orgIds.length === 0 && !isSuperadmin) return [];
+  const isSuper = isSuperadmin && orgIds.length === 0;
 
   // Status is computed at read time: a stored 'online'/'busy' that has
   // outlived its TTL surfaces as 'offline'. Writers keep setting status
@@ -32,8 +33,9 @@ export async function listAgents(orgIds: string[]): Promise<AgentListItem[]> {
   return result.rows.map((row: unknown) => agentListItemSchema.parse(row));
 }
 
-export async function getAgentDetail(orgIds: string[], agentId: string): Promise<Agent | null> {
-  const isSuper = orgIds.length === 0;
+export async function getAgentDetail(orgIds: string[], agentId: string, isSuperadmin = false): Promise<Agent | null> {
+  if (orgIds.length === 0 && !isSuperadmin) return null;
+  const isSuper = isSuperadmin && orgIds.length === 0;
 
   const sql = isSuper
     ? `SELECT * FROM agents WHERE id = $1`

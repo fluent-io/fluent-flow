@@ -47,7 +47,7 @@ describe('GET /api/agents', () => {
     expect(response.status).toBe(200);
     expect(data).toHaveLength(1);
     expect(data[0].id).toBe('ff-runner');
-    expect(mockListAgents).toHaveBeenCalledWith(['fluent-io']);
+    expect(mockListAgents).toHaveBeenCalledWith(['fluent-io'], false);
   });
 
   it('returns all agents for superadmin', async () => {
@@ -58,6 +58,17 @@ describe('GET /api/agents', () => {
 
     const response = await GET();
     expect(response.status).toBe(200);
-    expect(mockListAgents).toHaveBeenCalledWith([]);
+    expect(mockListAgents).toHaveBeenCalledWith([], true);
+  });
+
+  it('passes isSuperadmin=false for empty-org collaborator so legacy agents are not unscoped', async () => {
+    mockGetServerSession.mockResolvedValueOnce({
+      user: { id: 7, login: 'client-user', isSuperadmin: false, orgs: [] },
+    });
+    mockListAgents.mockResolvedValueOnce([]);
+
+    const response = await GET();
+    expect(response.status).toBe(200);
+    expect(mockListAgents).toHaveBeenCalledWith([], false);
   });
 });

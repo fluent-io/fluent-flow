@@ -9,10 +9,10 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const { orgIds } = getOrgScope(session);
+  const { orgIds, isSuperadmin } = getOrgScope(session);
   const { searchParams } = new URL(request.url);
   const filter = (searchParams.get('filter') ?? 'active') as 'active' | 'archived' | 'all';
-  const pipelines = await listPipelines(orgIds, filter);
+  const pipelines = await listPipelines(orgIds, filter, isSuperadmin);
   return NextResponse.json(pipelines);
 }
 
@@ -38,7 +38,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Forbidden: no org membership' }, { status: 403 });
     }
     const olderThanMs = typeof older_than_ms === 'number' ? older_than_ms : undefined;
-    const count = await dismissStaleClaims(orgIds, olderThanMs);
+    const count = await dismissStaleClaims(orgIds, olderThanMs, isSuperadmin);
     return NextResponse.json({ dismissed: count });
   }
 
@@ -53,7 +53,7 @@ export async function POST(request: Request) {
     if (pr_number != null && (typeof pr_number !== 'number' || isNaN(prNum!))) {
       return NextResponse.json({ error: 'pr_number must be a number' }, { status: 400 });
     }
-    const count = await dismissPipelineClaims(orgIds, repo, prNum);
+    const count = await dismissPipelineClaims(orgIds, repo, prNum, isSuperadmin);
     return NextResponse.json({ dismissed: count });
   }
 
