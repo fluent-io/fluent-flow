@@ -308,7 +308,7 @@ describe('verify-transitions — green phase', () => {
   });
 
   it('green SKIPPED with allow_ungated → dispatchReview (re-review with attempt)', async () => {
-    const claim = makeClaim({ 
+    const claim = makeClaim({
       payload: { phase: 'green', verification: { skip_policy: 'allow_ungated' } },
       head_sha: 'def456',
     });
@@ -326,7 +326,7 @@ describe('verify-transitions — green phase', () => {
   });
 
   it('green SKIPPED with require → needs-human + notify', async () => {
-    const claim = makeClaim({ 
+    const claim = makeClaim({
       payload: { phase: 'green', verification: { skip_policy: 'require' } },
     });
     const verification = makeVerification({ phase: 'green', outcome: 'SKIPPED' });
@@ -343,7 +343,7 @@ describe('verify-transitions — green phase', () => {
   });
 
   it('green SKIPPED with manual → pause record', async () => {
-    const claim = makeClaim({ 
+    const claim = makeClaim({
       payload: { phase: 'green', verification: { skip_policy: 'manual' } },
     });
     const verification = makeVerification({ phase: 'green', outcome: 'SKIPPED' });
@@ -518,4 +518,3 @@ describe('sweepStrandedVerifyClaims', () => {
     expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(77);
   });
 });
-

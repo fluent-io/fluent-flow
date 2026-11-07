@@ -54,7 +54,7 @@ const NotificationsConfigSchema = z.object({
 const VerificationConfigBase = z.object({
   enabled: z.boolean().default(true),
   framework: z.enum(['auto', 'vitest', 'jest', 'node', 'custom']).default('auto'),
-  command: z.array(z.string().min(1)).nullable().default(null),      // argv; required for custom
+  command: z.array(z.string().min(1)).nullable().default(null),
   install_command: z.array(z.string().min(1)).nullable().default(null),
   skip_policy: z.enum(['allow_ungated', 'require', 'manual']).default('allow_ungated'),
   flake: z.object({ retries: z.number().int().min(0).max(10).default(2),

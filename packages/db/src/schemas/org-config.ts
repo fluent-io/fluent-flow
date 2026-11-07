@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-const ClaimTypeEnum = z.enum(['review', 'review_fix', 'verify', 'triage', 'test_verify']); // test_verify is deprecated; accepted for stored configs.
+const ClaimTypeEnum = z.enum(['review', 'review_fix', 'verify', 'triage', 'test_verify']);
 
 export const OrgConfigSchema = z.object({
   default_review_model: z.string().optional(),

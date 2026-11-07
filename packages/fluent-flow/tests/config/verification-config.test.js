@@ -15,7 +15,7 @@ describe('verification config', () => {
     const repo = RepoConfigSchema.parse({ verification: { framework: 'custom', command: ['pytest', '-q'], skip_policy: 'require' } });
     expect(repo.verification.framework).toBe('custom');
     expect(() => RepoConfigSchema.parse({ verification: { framework: 'playwright' } })).toThrow();
-    expect(() => RepoConfigSchema.parse({ verification: { command: 'npm test' } })).toThrow(); // must be argv array
+    expect(() => RepoConfigSchema.parse({ verification: { command: 'npm test' } })).toThrow();
   });
   it('rejects custom framework without command (absent key)', () => {
     expect(() => RepoConfigSchema.parse({ verification: { framework: 'custom' } })).toThrow(/verification\.command \(argv\) is required when framework is custom/);
@@ -26,7 +26,7 @@ describe('verification config', () => {
   it('repo override wins via deep merge precedence', () => {
     const defaults = { verification: { enabled: true, framework: 'auto', skip_policy: 'allow_ungated', flake: { retries: 2, blocking: false }, authoring: { retries: 2, max_requirements: 25, red_reproductions: 2 }, timeouts_min: { red: 15, green: 30 } } };
     const repoOverride = { verification: { framework: 'vitest' } };
-    
+
     function deepMerge(base, override) {
       if (!override || typeof override !== 'object') return base;
       const result = { ...base };
@@ -46,13 +46,13 @@ describe('verification config', () => {
       }
       return result;
     }
-    
+
     const merged = deepMerge(defaults, repoOverride);
     const validated = MergedConfigSchema.parse(merged);
-    
+
     expect(validated.verification.framework).toBe('vitest');
-    expect(validated.verification.authoring.max_requirements).toBe(25); // default preserved
-    expect(validated.verification.enabled).toBe(true); // default preserved
-    expect(validated.verification.skip_policy).toBe('allow_ungated'); // default preserved
+    expect(validated.verification.authoring.max_requirements).toBe(25);
+    expect(validated.verification.enabled).toBe(true);
+    expect(validated.verification.skip_policy).toBe('allow_ungated');
   });
 });

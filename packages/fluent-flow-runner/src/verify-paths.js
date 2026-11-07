@@ -74,4 +74,3 @@ export function readPackageJson(dir) {
 export function hasAny(obj, keys) {
   return keys.some((key) => obj && Object.prototype.hasOwnProperty.call(obj, key));
 }
-

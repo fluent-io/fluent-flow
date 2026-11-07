@@ -104,7 +104,7 @@ export async function applyVerifyTransition(claim, verification, ctx, external =
   const { phase, outcome, matrix, test_hashes } = verification;
   const { repo, pr_number, head_sha, payload } = claim;
   const [owner, repoName] = repo.split('/');
-  
+
   const {
     getNextAttempt = nextChainAttempt,
     getCountFixIterations = countCompletedFixIterations,

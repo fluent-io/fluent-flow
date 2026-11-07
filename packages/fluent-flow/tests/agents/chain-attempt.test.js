@@ -413,7 +413,7 @@ describe('createClaimWithRetry', () => {
 
   it('rethrows immediately on DrizzleQueryError with non-23505 cause.code', async () => {
     const err = new Error('query failed');
-    err.cause = { code: '23503' }; // Foreign key violation
+    err.cause = { code: '23503' };
     mockCreateClaim.mockRejectedValue(err);
 
     const mockLimit = vi.fn().mockResolvedValue([{ max: 0 }]);
