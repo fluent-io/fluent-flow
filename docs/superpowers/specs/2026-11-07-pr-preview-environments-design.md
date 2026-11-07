@@ -133,12 +133,16 @@ Deployment smoke checks prove:
 - An unauthenticated protected dashboard API remains unauthorized.
 - The running containers report the expected PR head SHA.
 
-Manual UAT proves:
+The `Preview Full-Stack UAT` workflow is dispatched from `main` for an open same-repository pull request. It uses only trusted UAT code, validates the live containers against the pull-request head SHA, creates isolated state, drives an actual runner and browser, captures database evidence and screenshots, then removes the temporary credentials and scripts.
 
-- GitHub sign-in returns to the correct PR hostname.
-- Database state is isolated between two simultaneous previews.
-- A local runner can register with a preview service and execute a claim.
-- Closing one pull request removes only its stack and volume.
+Full-stack UAT proves:
+
+- Password sign-in returns to the correct PR hostname and protected APIs authorize the test user.
+- An actual runner registers with the preview service, claims work, streams execution events, handles permission and elicitation responses, and accepts a follow-up prompt.
+- Execution history survives a browser reload and cancellation reaches a terminal state.
+- Database rows for the temporary organization, project, task, runner, session, claim, events, requests, and commands match the observed UI flow.
+- GitHub sign-in and a live GitHub App webhook are checked separately because the preview App has one fixed callback and webhook configuration.
+- Closing the pull request removes its stack and volume.
 
 ## Operational Setup
 
