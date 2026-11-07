@@ -6,7 +6,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const PROJECT_PATTERN = /^fluent-flow-preview-[1-9]\d*$/;
-const HOST_PATTERN = /^(?:api-)?pr-[1-9]\d*\.preview\.app\.fluentflow\.tech$/;
+const HOST_PATTERN = /^(?:api-)?pr-[1-9]\d*-preview\.fluentflow\.tech$/;
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
 const SAFE_NETWORK_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/;
 

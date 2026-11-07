@@ -39,8 +39,8 @@ export function previewDeployment(event, repository) {
     number,
     projectName: `fluent-flow-preview-${number}`,
     environmentName: `preview-pr-${number}`,
-    dashboardHost: `pr-${number}.preview.app.fluentflow.tech`,
-    apiHost: `api-pr-${number}.preview.app.fluentflow.tech`,
+    dashboardHost: `pr-${number}-preview.fluentflow.tech`,
+    apiHost: `api-pr-${number}-preview.fluentflow.tech`,
     headSha,
   };
 }

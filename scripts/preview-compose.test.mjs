@@ -7,8 +7,8 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 
 const previewEnvironment = {
   PREVIEW_SOURCE_DIR: root,
-  PREVIEW_DASHBOARD_HOST: 'pr-122.preview.app.fluentflow.tech',
-  PREVIEW_API_HOST: 'api-pr-122.preview.app.fluentflow.tech',
+  PREVIEW_DASHBOARD_HOST: 'pr-122-preview.fluentflow.tech',
+  PREVIEW_API_HOST: 'api-pr-122-preview.fluentflow.tech',
   PREVIEW_ROUTER_PREFIX: 'preview-pr-122',
   PREVIEW_DEPLOY_SHA: 'a'.repeat(40),
   PREVIEW_DATABASE_PASSWORD: 'database-password',
@@ -70,12 +70,12 @@ test('renders an isolated preview application stack', () => {
   const dashboardLabels = config.services.dashboard.labels;
   assert.equal(
     apiLabels['traefik.http.routers.preview-pr-122-api.rule'],
-    'Host(`api-pr-122.preview.app.fluentflow.tech`)',
+    'Host(`api-pr-122-preview.fluentflow.tech`)',
   );
   assert.equal(apiLabels['traefik.http.services.preview-pr-122-api.loadbalancer.server.port'], '3847');
   assert.equal(
     dashboardLabels['traefik.http.routers.preview-pr-122-dashboard.rule'],
-    'Host(`pr-122.preview.app.fluentflow.tech`)',
+    'Host(`pr-122-preview.fluentflow.tech`)',
   );
   assert.equal(dashboardLabels['traefik.http.services.preview-pr-122-dashboard.loadbalancer.server.port'], '3000');
 
@@ -88,8 +88,8 @@ test('renders an isolated preview application stack', () => {
 test('renders different network and volume identities for concurrent pull requests', () => {
   const first = render('docker-compose.preview.yml', 'fluent-flow-preview-122');
   const second = render('docker-compose.preview.yml', 'fluent-flow-preview-123', {
-    PREVIEW_DASHBOARD_HOST: 'pr-123.preview.app.fluentflow.tech',
-    PREVIEW_API_HOST: 'api-pr-123.preview.app.fluentflow.tech',
+    PREVIEW_DASHBOARD_HOST: 'pr-123-preview.fluentflow.tech',
+    PREVIEW_API_HOST: 'api-pr-123-preview.fluentflow.tech',
     PREVIEW_ROUTER_PREFIX: 'preview-pr-123',
   });
 

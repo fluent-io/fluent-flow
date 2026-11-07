@@ -11,8 +11,8 @@ Fluent Flow has CI for pull requests and a production Docker Compose deployment 
 
 - Give every same-repository pull request an isolated full-stack preview.
 - Use stable URLs:
-  - Dashboard: `https://pr-<number>.preview.app.fluentflow.tech`
-  - Service: `https://api-pr-<number>.preview.app.fluentflow.tech`
+  - Dashboard: `https://pr-<number>-preview.fluentflow.tech`
+  - Service: `https://api-pr-<number>-preview.fluentflow.tech`
 - Deploy on pull-request open, reopen, and synchronize.
 - Destroy containers, networks, database volume, and local images when the pull request closes.
 - Post or update one pull-request comment containing the dashboard URL, service URL, commit, and deployment state.
@@ -53,7 +53,7 @@ The organization runner group may be enabled for public repositories only after 
 One permanent edge stack runs on G10:
 
 - Traefik watches Docker labels and routes by `Host`.
-- A named Cloudflare Tunnel forwards `*.preview.app.fluentflow.tech` to Traefik.
+- A named Cloudflare Tunnel forwards `*.fluentflow.tech` to Traefik. Existing exact DNS records take precedence.
 - Both containers use the external Docker network `fluent-flow-preview-edge`.
 - The edge stack has no host-published application ports.
 
@@ -110,7 +110,7 @@ Per-PR workflow concurrency cancels an older deployment for the same pull reques
 
 ## Authentication and GitHub Integration
 
-A dedicated preview GitHub App prevents pull-request runtime code from receiving production credentials. The App's OAuth callback uses `https://preview.app.fluentflow.tech/api/auth/callback/github` with GitHub wildcard callback matching enabled, allowing the same path on `pr-<number>.preview.app.fluentflow.tech`.
+A dedicated preview GitHub App prevents pull-request runtime code from receiving production credentials. The App's OAuth callback uses `https://fluentflow.tech/api/auth/callback/github` with GitHub wildcard callback matching enabled, allowing the same path on `pr-<number>-preview.fluentflow.tech`.
 
 The preview App is installed only on the repository used for Fluent Flow UAT. Its fixed webhook URL may be pointed at the pull request currently undergoing live GitHub-event UAT. Generic preview deployment does not fan webhook events to every stack.
 
@@ -145,7 +145,7 @@ Manual UAT proves:
 One-time external setup:
 
 1. Create the `fluent-flow-preview` Cloudflare Tunnel.
-2. Route `*.preview.app.fluentflow.tech` to the tunnel.
+2. Route `*.fluentflow.tech` to the tunnel.
 3. Create and install the preview GitHub App.
 4. Add the preview-only repository secrets.
 5. Restrict the organization runner group to the production and preview workflows on `main`.

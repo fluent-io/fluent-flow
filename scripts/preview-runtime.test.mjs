@@ -16,8 +16,8 @@ const deployment = {
   number: 122,
   projectName: 'fluent-flow-preview-122',
   environmentName: 'preview-pr-122',
-  dashboardHost: 'pr-122.preview.app.fluentflow.tech',
-  apiHost: 'api-pr-122.preview.app.fluentflow.tech',
+  dashboardHost: 'pr-122-preview.fluentflow.tech',
+  apiHost: 'api-pr-122-preview.fluentflow.tech',
   headSha: 'a'.repeat(40),
 };
 
@@ -122,6 +122,29 @@ test('rejects empty credentials and unsafe project names', () => {
       composeFile: '/trusted/docker-compose.preview.yml',
     }),
     /project name/i,
+  );
+});
+
+test('rejects nested preview hosts outside free certificate coverage', () => {
+  assert.throws(
+    () => previewRuntimeEnvironment({
+      deployment: { ...deployment, dashboardHost: 'pr-122.preview.app.fluentflow.tech' },
+      credentials,
+      stackSecret: 'stack-seed',
+      sourceDir: '/tmp/source',
+      edgeNetwork: 'fluent-flow-preview-edge',
+    }),
+    /dashboard host/i,
+  );
+  assert.throws(
+    () => previewRuntimeEnvironment({
+      deployment: { ...deployment, apiHost: 'api-pr-122.preview.app.fluentflow.tech' },
+      credentials,
+      stackSecret: 'stack-seed',
+      sourceDir: '/tmp/source',
+      edgeNetwork: 'fluent-flow-preview-edge',
+    }),
+    /API host/,
   );
 });
 
