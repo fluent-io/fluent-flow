@@ -8,6 +8,7 @@
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
+    "test:preview": "node --test scripts/preview-*.test.mjs",
     "predev": "node scripts/dev-database.mjs",
     "dev": "turbo run dev",
     "runner": "node scripts/dev-runner.mjs"
