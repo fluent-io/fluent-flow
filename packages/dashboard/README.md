@@ -41,6 +41,7 @@ Next.js 15 (App Router), TypeScript, Tailwind CSS, shadcn/ui, NextAuth.js, @flue
 - Dynamic stages rendered from claim data (spec, build, review_fix, test_verify, or any future types)
 - Pipeline detail with vertical timeline showing per-stage status, duration, agent, and session
 - Links to GitHub PRs
+- Pipeline detail renders red and green verification outcomes, requirement coverage, pinned test hashes, artifact commits, failure diagnostics, and the chain step selected by the deterministic transition policy.
 
 ### Auth & Multi-Tenancy
 - GitHub OAuth via NextAuth.js

@@ -61,6 +61,14 @@ async function githubRequest(path, options = {}, token) {
   return response.text();
 }
 
+export async function createCheckRunSync(owner, repo, input, ctx) {
+  const token = await resolveToken(ctx);
+  return githubRequest(`/repos/${owner}/${repo}/check-runs`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  }, token);
+}
+
 /**
  * Post a comment on an issue or PR.
  * @param {string} owner

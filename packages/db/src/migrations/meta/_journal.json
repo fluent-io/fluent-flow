@@ -176,6 +176,13 @@
       "when": 1794182400000,
       "tag": "0024_claim_event_byte_budget",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1794268800000,
+      "tag": "0025_verification_results",
+      "breakpoints": true
     }
   ]
 }

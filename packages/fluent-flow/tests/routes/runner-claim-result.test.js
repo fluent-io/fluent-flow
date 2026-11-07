@@ -100,7 +100,7 @@ describe('handleClaimResult owner-bound terminal results', () => {
     await handleClaimResult(REQ({ ...RESULT, status: 'completed' }), res);
 
     expect(assertClaimOwner).toHaveBeenCalledWith({ orgId: 'o1', agentId: 'a1', sessionId: 3, claimId: 7 });
-    expect(completeClaimById).toHaveBeenCalledWith('o1', 7, 3);
+    expect(completeClaimById).toHaveBeenCalledWith('o1', 7, 3, null);
     expect(res.body).toEqual({ ok: true, claim_id: 7, status: 'completed' });
   });
 
@@ -120,18 +120,13 @@ describe('handleClaimResult owner-bound terminal results', () => {
     expect(completeClaimById).not.toHaveBeenCalled();
   });
 
-  it('completed review with a fail verdict preserves review-fix chaining after owner-bound finalization', async () => {
+  it('does not duplicate the webhook-owned review-fix transition', async () => {
     completeClaimById.mockResolvedValueOnce({ ...CLAIM_ROW, status: 'completed' });
-    createClaim.mockResolvedValueOnce({ id: 8 });
     const res = makeRes();
 
     await handleClaimResult(REQ({ ...RESULT, status: 'completed', verdict: 'fail' }), res);
 
-    expect(createClaim).toHaveBeenCalledWith(expect.objectContaining({
-      claimType: 'review_fix',
-      attempt: 3,
-      prNumber: 5,
-    }));
+    expect(createClaim).not.toHaveBeenCalled();
   });
 
   it('re-dispatches an owner-bound transient failure only after failed finalization', async () => {
@@ -142,7 +137,7 @@ describe('handleClaimResult owner-bound terminal results', () => {
     await handleClaimResult(REQ({ ...RESULT, status: 'failed', failure_kind: 'transient' }), res);
 
     expect(assertClaimOwner).toHaveBeenCalledWith({ orgId: 'o1', agentId: 'a1', sessionId: 3, claimId: 7 });
-    expect(failClaimById).toHaveBeenCalledWith('o1', 7, 3);
+    expect(failClaimById).toHaveBeenCalledWith('o1', 7, 3, null);
     expect(redispatchClaim).toHaveBeenCalledWith(expect.objectContaining({ id: 7, claim_type: 'review_fix' }));
     expect(res.body.status).toBe('failed');
   });
@@ -163,7 +158,7 @@ describe('handleClaimResult owner-bound terminal results', () => {
     await handleClaimResult(REQ({ ...RESULT, status: 'cancelled', failure_kind: 'transient' }), res);
 
     expect(assertClaimOwner).toHaveBeenCalledWith({ orgId: 'o1', agentId: 'a1', sessionId: 3, claimId: 7 });
-    expect(cancelClaimById).toHaveBeenCalledWith('o1', 7, 3);
+    expect(cancelClaimById).toHaveBeenCalledWith('o1', 7, 3, null);
     expect(completeClaimById).not.toHaveBeenCalled();
     expect(failClaimById).not.toHaveBeenCalled();
     expect(createClaim).not.toHaveBeenCalled();

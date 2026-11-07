@@ -52,3 +52,20 @@ notifications:
   stale_days: 3
   daily_summary: true
   daily_summary_cron: "0 12 * * *"
+
+verification:
+  enabled: true
+  framework: auto
+  command: null
+  install_command: null
+  skip_policy: allow_ungated
+  flake:
+    retries: 2
+    blocking: false
+  authoring:
+    retries: 2
+    max_requirements: 25
+    red_reproductions: 2
+  timeouts_min:
+    red: 15
+    green: 30

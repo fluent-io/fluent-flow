@@ -22,3 +22,10 @@ export {
   upsertClaimRequest,
 } from './claim-interactions.js';
 export type { ClaimCommand, ClaimRequest, QueryExecutor } from './claim-interactions.js';
+export {
+  getVerificationResultByClaim,
+  getVerificationResultsForPR,
+  insertVerificationResult,
+  insertVerificationResultAtomic,
+  markVerificationTransitionApplied,
+} from './verification.js';

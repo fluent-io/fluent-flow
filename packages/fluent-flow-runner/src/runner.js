@@ -5,7 +5,8 @@ import { createAcpRuntime as createDefaultAcpRuntime } from './acp/runtime.js';
 import { resolveAcpCommand } from './acp/command.js';
 import { createAcpStreamRedactor, normalizeAcpUpdate, redactAcpPayload } from './acp/normalize.js';
 import { prepareWorktree } from './worktree.js';
-import { resolvePrompt } from './prompts.js';
+import { CLAIM_TYPES, resolvePrompt } from './prompts.js';
+import { runVerifyClaim } from './verify.js';
 
 const DEFAULT_MAX_POLL_FAILURES = 30;
 const BASE_BACKOFF_MS = 2000;
@@ -69,6 +70,30 @@ function environmentSecrets(environment) {
   return values;
 }
 
+function executeCommand(command, cwd, timeoutMs = 0) {
+  return new Promise((resolve) => {
+    execFileCb(
+      command.bin,
+      command.args ?? [],
+      {
+        cwd,
+        env: process.env,
+        timeout: timeoutMs > 0 ? timeoutMs : undefined,
+        maxBuffer: 16 * 1024 * 1024,
+        windowsHide: true,
+      },
+      (error, stdout, stderr) => {
+        resolve({
+          exitCode: error ? (Number.isInteger(error.code) ? error.code : 1) : 0,
+          stdout: String(stdout ?? ''),
+          stderr: String(stderr ?? ''),
+          timedOut: Boolean(error?.killed && error?.signal),
+        });
+      },
+    );
+  });
+}
+
 export function createRunner({
   client,
   log,
@@ -101,10 +126,13 @@ export function createRunner({
   const baseCwd = resolvePath(cwd ?? process.cwd());
   const batchSize = Math.max(1, Math.floor(eventBatchSize));
   const textLimit = Math.max(0, Math.floor(agentTextLimitBytes));
-  const sessionMeta = meta ?? {
-    hostname: hostname(),
-    os: platform(),
-    ...(cwd && { cwd }),
+  const sessionMeta = {
+    ...(meta ?? {
+      hostname: hostname(),
+      os: platform(),
+      ...(cwd && { cwd }),
+    }),
+    supported_claim_types: CLAIM_TYPES,
   };
 
   function claimIdOf(work) {
@@ -731,6 +759,124 @@ export function createRunner({
     }
   }
 
+  function resetCommandSignals(state) {
+    state.commandStopPromise = new Promise((resolve) => {
+      state.commandStopResolve = resolve;
+    });
+    state.commandFailurePromise = new Promise((resolve) => {
+      state.commandFailureResolve = resolve;
+    });
+    state.interactionFailurePromise = new Promise((resolve) => {
+      state.interactionFailureResolve = resolve;
+    });
+    state.commandFailure = null;
+    state.interactionFailure = null;
+    state.commandDraining = false;
+    state.commandBatchActive = false;
+    state.commandLoop = null;
+    state.commandTasks = [];
+    state.queuedPromptCount = 0;
+    state.turnSawActive = false;
+    state.turnReachedIdle = false;
+    state.turnTail = null;
+    state.cancelBarrier = null;
+    state.closePromise = null;
+  }
+
+  async function runAcpPrompt(state, claimId, { command, prompt, agentCwd, bridge, runtimeEnvironment }) {
+    resetCommandSignals(state);
+    try {
+      state.runtime = createAcpRuntime({
+        command,
+        cwd: agentCwd,
+        env: runtimeEnvironment,
+        onEvent: bridge.onEvent,
+        onRequest: bridge.onRequest,
+        onRequestCancelled: bridge.onRequestCancelled,
+        log: createRuntimeLog(log),
+        ...(runtimeLimits && { limits: runtimeLimits }),
+      });
+    } catch {
+      throw new Error('ACP runtime creation failed');
+    }
+
+    let runtimeResult;
+    let runtimeFailure;
+    state.commandsRunning = true;
+    try {
+      installTurnTail(
+        state,
+        (async () => state.runtime.runInitialPrompt(prompt))().then(
+          (result) => ({ result }),
+          (error) => ({ error }),
+        ),
+      );
+      state.commandLoop = serviceCommands(state, claimId);
+      let observedTurn;
+      do {
+        observedTurn = state.turnTail;
+        const settled = await Promise.race([
+          observedTurn.then((outcome) => ({ outcome })),
+          state.commandFailurePromise.then((error) => ({ commandFailure: error })),
+          state.interactionFailurePromise.then((error) => ({ interactionFailure: error })),
+        ]);
+        if (settled.commandFailure) {
+          runtimeFailure = runtimeFailure ?? settled.commandFailure;
+          break;
+        }
+        if (settled.interactionFailure) {
+          runtimeFailure = runtimeFailure ?? settled.interactionFailure;
+          break;
+        }
+        if (settled.outcome.error) runtimeFailure = runtimeFailure ?? settled.outcome.error;
+        else runtimeResult = settled.outcome.result;
+        if (observedTurn === state.turnTail) {
+          state.commandDraining = true;
+          state.commandWake?.();
+          let drainTimer;
+          const commandLoopDrained = state.commandLoop ? await Promise.race([
+            state.commandLoop.then(() => true),
+            new Promise((resolve) => {
+              drainTimer = setTimeout(() => resolve(false), commandPollMs);
+              drainTimer.unref?.();
+            }),
+          ]) : true;
+          clearTimeout(drainTimer);
+          if (!commandLoopDrained) {
+            state.commandPollController?.abort();
+            await state.commandLoop;
+          }
+          if (observedTurn !== state.turnTail && state.commandsRunning && !state.shuttingDown) {
+            state.commandDraining = false;
+            state.commandLoop = serviceCommands(state, claimId);
+          }
+        }
+      } while (observedTurn !== state.turnTail);
+    } finally {
+      stopCommandService(state);
+      if (state.commandFailure || state.interactionFailure || state.shuttingDown) {
+        try {
+          await closeStateRuntime(state);
+        } catch (error) {
+          runtimeFailure = runtimeFailure ?? error;
+        }
+      }
+      if (state.commandLoop) await state.commandLoop;
+      if (state.commandTasks.length > 0) await Promise.all(state.commandTasks);
+      try {
+        await closeStateRuntime(state);
+      } catch (error) {
+        runtimeFailure = runtimeFailure ?? error;
+      }
+      state.runtime = null;
+      state.closePromise = null;
+    }
+    if (state.shuttingDown || runtimeFailure || state.commandFailure || state.interactionFailure || !runtimeResult) {
+      throw runtimeFailure ?? state.commandFailure ?? state.interactionFailure ?? new Error('ACP turn did not complete');
+    }
+    return runtimeResult;
+  }
+
   async function handleWork(work) {
     let commandStopResolve;
     let commandFailureResolve;
@@ -787,6 +933,51 @@ export function createRunner({
     try {
       log.info('Work received', { claimId, attempt: work.attempt });
       await authenticateClaimGithubToken(work.githubToken);
+
+      const requestedClaimType = work.claim_type ?? work.claimType ?? 'review_fix';
+      if (requestedClaimType === 'verify') {
+        const runtimeEnvironment = { ...process.env };
+        bridge = createInteractionBridge(state, claimId, runtimeEnvironment);
+        state.bridge = bridge;
+        let result;
+        try {
+          result = await runVerifyClaim({
+            work,
+            cwd: baseCwd,
+            execute: executeCommand,
+            author: async ({ worktreePath, prompt: authorPrompt, work: authorWork }) => {
+              if (state.shuttingDown) throw new Error('Runner is shutting down');
+              if (!authorWork.agentType) throw new Error('Claim agent type is missing');
+              const authorCommand = resolveAcpCommand({
+                agentType: authorWork.agentType,
+                command: acpCommand,
+                args: acpArgs,
+              });
+              const turn = await runAcpPrompt(state, claimId, {
+                command: authorCommand,
+                prompt: authorPrompt,
+                agentCwd: resolvePath(worktreePath),
+                bridge,
+                runtimeEnvironment,
+              });
+              if (turn.stopReason !== 'end_turn') throw new Error('ACP authoring turn did not complete');
+            },
+          });
+        } catch {
+          result = { status: 'failed', failure_kind: 'transient' };
+        }
+        try {
+          await bridge.finalizeEvents();
+        } catch {
+          result = { status: 'failed', failure_kind: 'transient' };
+        }
+        stopHeartbeat();
+        await reportState(state, result.status, {
+          ...(result.failure_kind && { failure_kind: result.failure_kind }),
+          ...(result.verification && { verification: result.verification }),
+        });
+        return;
+      }
 
       let prompt;
       let command;

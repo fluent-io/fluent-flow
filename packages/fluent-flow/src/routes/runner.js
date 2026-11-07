@@ -4,9 +4,9 @@ import { validateToken } from '../agents/token-manager.js';
 import { registerSession, touchSession } from '../agents/session-manager.js';
 import {
   assertClaimOwner,
+  assertClaimReporter,
   cancelClaimById,
   completeClaimById,
-  createClaim,
   createFollowOnClaim,
   extendClaim,
   failClaimById,
@@ -20,6 +20,9 @@ import {
   cancelClaimRequest,
   appendClaimEvents,
   db,
+  getVerificationResultByClaim,
+  insertVerificationResultAtomic,
+  markVerificationTransitionApplied,
   leaseClaimCommands,
   renewClaimCommand,
   upsertClaimRequest,
@@ -28,6 +31,14 @@ import { audit } from '../db/client.js';
 import logger from '../logger.js';
 import { getInstallationToken } from '../providers/github/token-cache.js';
 import { installationCtxForRepo } from '../config/loader.js';
+import {
+  applyVerifyTransition,
+  applyVerifyTransitionWithEffects,
+  handleVerifyRedispatchExhausted,
+  VerificationResultSchema,
+} from '../engine/verify-transitions.js';
+import { onClaimStarted } from '../engine/check-run.js';
+import { getProvider } from '../providers/index.js';
 
 const router = Router();
 
@@ -44,6 +55,7 @@ const ClaimResultSchema = z.object({
   claim_id: z.number().int().positive(),
   session_id: z.number().int().positive(),
   failure_kind: z.enum(['transient', 'terminal']).optional(),
+  verification: VerificationResultSchema.optional(),
 });
 
 const HeartbeatSchema = z.object({
@@ -177,7 +189,7 @@ export async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 6
   const expiresAt = new Date(Date.now() + ttlMs);
   const result = await db.execute(sql`
     WITH live_session AS (
-      SELECT session.id
+      SELECT session.id, session.session_meta
       FROM agent_sessions session
       WHERE session.id = ${sessionId}
         AND session.org_id = ${orgId}
@@ -201,6 +213,11 @@ export async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 6
           AND pending.status = 'pending'
           AND pending.session_id IS NULL
           AND (agent.repos = '{}' OR pending.repo = ANY(agent.repos))
+          AND CASE
+            WHEN jsonb_typeof(live_session.session_meta->'supported_claim_types') = 'array'
+              THEN (live_session.session_meta->'supported_claim_types') ? pending.claim_type
+            ELSE pending.claim_type IN ('review', 'review_fix', 'spec', 'build', 'test_verify', 'triage')
+          END
         ORDER BY pending.created_at ASC
         LIMIT 1
         FOR UPDATE OF pending SKIP LOCKED
@@ -250,25 +267,28 @@ export async function releaseUndeliveredClaim(orgId, agentId, sessionId, claimId
   return rows.length > 0;
 }
 
-/**
- * Resolve GitHub App installation token for a repo.
- * Returns the token string or undefined if resolution fails.
- */
-async function resolveGitHubToken(fullRepo) {
-  if (!fullRepo?.includes('/')) return undefined;
+async function resolveGitHubContext(fullRepo) {
+  if (!fullRepo?.includes('/')) return null;
   try {
     const [owner, repoName] = fullRepo.split('/');
-    const ctx = await installationCtxForRepo(owner, repoName);
-    if (ctx?.installation_id) {
-      const token = await getInstallationToken(ctx.installation_id);
-      logger.info({ msg: 'Resolved GitHub App token for runner', repo: fullRepo, installationId: ctx.installation_id });
-      return token;
-    }
-    logger.info({ msg: 'No installation context for repo', repo: fullRepo });
+    return await installationCtxForRepo(owner, repoName);
   } catch (err) {
-    logger.warn({ msg: 'Could not resolve GitHub App token for runner', repo: fullRepo, error: err.message });
+    logger.warn({ msg: 'Could not resolve GitHub App installation context for runner', repo: fullRepo, error: err.message, safeToContinue: true });
+    return null;
   }
-  return undefined;
+}
+
+async function resolveGitHubToken(fullRepo, context) {
+  const ctx = context ?? await resolveGitHubContext(fullRepo);
+  if (!ctx?.installation_id) return undefined;
+  try {
+    const token = await getInstallationToken(ctx.installation_id);
+    logger.info({ msg: 'Resolved GitHub App token for runner', repo: fullRepo, installationId: ctx.installation_id });
+    return token;
+  } catch (err) {
+    logger.warn({ msg: 'Could not resolve GitHub App token for runner', repo: fullRepo, error: err.message, safeToContinue: true });
+    return undefined;
+  }
 }
 
 /**
@@ -312,7 +332,16 @@ export async function handlePoll(req, res, opts = {}) {
         throw new Error('Runner session expired during claim delivery');
       }
       const payload = typeof claim.payload === 'string' ? JSON.parse(claim.payload) : claim.payload;
-      const githubToken = await resolveGitHubToken(claim.repo);
+      const githubContext = await resolveGitHubContext(claim.repo);
+      const githubToken = await resolveGitHubToken(claim.repo, githubContext);
+      if (githubContext?.installation_id) {
+        try {
+          const provider = getProvider({ provider: 'github', installation_id: githubContext.installation_id });
+          await onClaimStarted(provider, claim);
+        } catch (err) {
+          logger.warn({ msg: 'Could not mark claimed check run in progress', claimId: claim.id, error: err.message, safeToContinue: true });
+        }
+      }
       delivered = respond({
         work: {
           repo: claim.repo,
@@ -402,16 +431,69 @@ export async function handleClaimResult(req, res) {
       claim_id: claimId,
       session_id: sessionId,
       failure_kind: failureKind,
+      verification,
     } = parsed.data;
 
-    await assertClaimOwner({ orgId: org_id, agentId: agent_id, sessionId, claimId });
+    let activeClaim;
+    try {
+      activeClaim = await assertClaimOwner({ orgId: org_id, agentId: agent_id, sessionId, claimId });
+    } catch (error) {
+      if (status === 'completed' && verification && error?.statusCode === 409) {
+        const existing = await assertClaimReporter({ orgId: org_id, agentId: agent_id, sessionId, claimId });
+        if (existing?.claim_type === 'verify' && existing.status === 'completed') {
+          const stored = await getVerificationResultByClaim(org_id, claimId);
+          if (!stored) return res.status(409).json({ error: 'Verification result is unavailable' });
+          if (!stored.transitionAppliedAt) {
+            const storedVerification = {
+              phase: stored.phase,
+              framework: stored.framework,
+              outcome: stored.outcome,
+              matrix: stored.matrix,
+              manifest: stored.manifest ?? undefined,
+              test_hashes: stored.testHashes ?? undefined,
+              artifact_sha: stored.artifactSha,
+              red_base_sha: stored.redBaseSha,
+              green_sha: stored.greenSha,
+            };
+            const decision = await applyVerifyTransition(existing, storedVerification, { orgId: org_id });
+            await applyVerifyTransitionWithEffects(existing, storedVerification, { orgId: org_id }, decision);
+            await markVerificationTransitionApplied(claimId);
+          }
+          return res.json({ ok: true, claim_id: existing.id, status: existing.status, note: 'already_resolved' });
+        }
+      }
+      throw error;
+    }
+    if (activeClaim.claim_type === 'verify' && status === 'completed' && !verification) {
+      return validationError(res);
+    }
+    if (verification && activeClaim.claim_type !== 'verify') {
+      return validationError(res);
+    }
 
     const finalize = status === 'completed'
       ? completeClaimById
       : status === 'failed'
         ? failClaimById
         : cancelClaimById;
-    const claim = await finalize(org_id, claimId, sessionId);
+    const onFinalize = status === 'completed' && verification
+      ? async (client, completed) => insertVerificationResultAtomic({
+        orgId: org_id,
+        claimId: completed.id,
+        repo: completed.repo,
+        prNumber: completed.pr_number,
+        phase: verification.phase,
+        framework: verification.framework,
+        outcome: verification.outcome,
+        matrix: verification.matrix,
+        manifest: verification.manifest ?? null,
+        testHashes: verification.test_hashes ?? null,
+        artifactSha: verification.artifact_sha ?? null,
+        redBaseSha: verification.red_base_sha ?? null,
+        greenSha: verification.green_sha ?? null,
+      }, client)
+      : null;
+    const claim = await finalize(org_id, claimId, sessionId, onFinalize);
     if (!claim) return res.status(409).json({ error: 'Claim is not active for this runner' });
 
     if (status === 'cancelled') {
@@ -441,6 +523,9 @@ export async function handleClaimResult(req, res) {
             newAttempt: redispatched ? claim.attempt + 1 : null,
             claimId: redispatched?.id ?? null,
           });
+          if (!redispatched && claim.claim_type === 'verify') {
+            await handleVerifyRedispatchExhausted(claim, { orgId: org_id });
+          }
         } catch (err) {
           logger.error({
             msg: 'Failed to re-dispatch transient-failed claim',
@@ -479,21 +564,10 @@ export async function handleClaimResult(req, res) {
       data: { claimId: claim.id, pr_number, attempt, status, claimType, verdict: verdict ?? null },
     });
 
-    if (claimType === 'review' && verdict === 'fail') {
-      try {
-        await createClaim({
-          orgId: org_id,
-          repo: claim.repo,
-          prNumber: claim.pr_number,
-          attempt: claim.attempt + 1,
-          claimType: 'review_fix',
-          payload: { source_claim_id: claim.id, branch: claim.payload?.branch },
-          headSha: claim.head_sha,
-        });
-        logger.info({ msg: 'Auto-created review_fix claim after FAIL review', repo: claim.repo, prNumber: claim.pr_number, attempt: claim.attempt + 1 });
-      } catch (err) {
-        logger.error({ msg: 'Failed to create review_fix claim', error: err.message, safeToContinue: true });
-      }
+    if (claimType === 'verify' && verification) {
+      await applyVerifyTransitionWithEffects(claim, verification, { orgId: org_id });
+      await markVerificationTransitionApplied(claim.id);
+      return res.json({ ok: true, claim_id: claim.id, status: claim.status });
     }
 
     if (claimType === 'spec' && claim.payload?.auto_chain !== false) {

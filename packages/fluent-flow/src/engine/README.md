@@ -40,6 +40,12 @@ Automated code review dispatch and retry tracking.
 
 **Review result flow:** GitHub Actions posts review with `<!-- reviewer-result: {...} -->` → webhook parses → `handleReviewResult` → agent notified or PR auto-merged.
 
+### verify-transitions.js
+
+Deterministic transition policy for `verify:red` and `verify:green` claims. Review FAIL creates red verification before a fix claim. A successful red proof creates `review_fix`; CI success creates green verification from the server-owned red record. Green PASS dispatches re-review, FAIL creates another fix iteration, TAMPERED escalates, and SKIPPED follows the configured policy.
+
+Claim finalization and result persistence share one database transaction. External effects set `transition_applied_at`; result redelivery and the claim maintenance worker replay only unmarked transitions. Attempt allocation spans every claim type in the PR chain, while transient redispatch keeps its separate retry cap.
+
 ### pause-manager.js
 
 Human-in-the-loop pause/resume with agent notification.

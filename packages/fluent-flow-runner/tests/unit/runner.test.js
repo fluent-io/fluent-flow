@@ -1,4 +1,6 @@
-import { resolve } from 'node:path';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockPrepareWorktree = vi.fn();
@@ -160,6 +162,45 @@ describe('ACP claim lifecycle', () => {
     const { api } = await runClaim({ runtime: fakeRuntime({ sessionId: 'acp', messageId: 'm', stopReason: 'cancelled' }) });
     expect(api.reportClaim).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', failure_kind: 'transient' }));
   });
+  it('advertises verify support during registration', async () => {
+    const { api } = await runClaim();
+    expect(api.register).toHaveBeenCalledWith(expect.objectContaining({
+      supported_claim_types: expect.arrayContaining(['review_fix', 'verify']),
+    }));
+  });
+
+  it('runs green verification deterministically without starting ACP', async () => {
+    const worktreePath = mkdtempSync(join(tmpdir(), 'ff-runner-verify-green-'));
+    mockPrepareWorktree.mockResolvedValueOnce({ worktreePath, cleanup: vi.fn(async () => undefined) });
+    const work = {
+      ...WORK,
+      claim_type: 'verify',
+      phase: 'green',
+      green_sha: '1234567890abcdef1234567890abcdef12345678',
+      verification: {
+        framework: 'custom',
+        command: [process.execPath, '-e', 'process.exit(0)'],
+        timeouts_min: { red: 1, green: 1 },
+      },
+      red_record: {
+        framework: 'custom',
+        red_base_sha: 'abcdef1234567890abcdef1234567890abcdef12',
+      },
+    };
+
+    const { api, createAcpRuntime } = await runClaim({ work });
+
+    expect(createAcpRuntime).not.toHaveBeenCalled();
+    expect(api.reportClaim).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'completed',
+      verification: expect.objectContaining({
+        phase: 'green',
+        framework: 'custom',
+        outcome: 'PASS',
+      }),
+    }));
+  });
+
 });
 
 describe('ACP events and requests', () => {

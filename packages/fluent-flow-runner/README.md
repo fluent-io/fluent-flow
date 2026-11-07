@@ -80,6 +80,12 @@ The review runner starts a local ACP v2 adapter. Install and authenticate the ad
 
 The runner uses the official `@agentclientprotocol/sdk@2.4.0` v2 API. It requires the adapter to support ACP v2 sessions and the baseline session methods; incompatible adapters fail before a claim prompt is submitted.
 
+### Deterministic verification claims
+
+Current runners advertise `verify` capability when registering. Red verification uses the same locally configured ACP adapter as other claims to author requirement tests at the reviewed commit. The runner then proves those tests fail by assertion twice, records their hashes, and publishes the red artifact commit. Green verification starts no model process: it checks the server-owned hashes, runs the pinned tests, then runs the full suite.
+
+Each phase is an independent claim. Any current runner may claim it and prepare the required repository ref. Heartbeats, event streaming, permission requests, cancellation, shutdown, and direct-child reaping remain the normal ACP runner behavior during red authoring. Deterministic subprocesses use argv execution without a shell and phase-specific timeouts.
+
 ### Admin API Authentication
 
 In production, Admin API calls require `MCP_AUTH_TOKEN` — the shared secret configured on the Fluent Flow server. In development (when `MCP_AUTH_TOKEN` is not set on the server), the Admin API allows unauthenticated access. For production, find the token in your server's environment (e.g. `docker-compose.yml` or `.env`), then export it locally:
