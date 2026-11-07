@@ -8,12 +8,14 @@ function sanitize(line) {
     .replace(/https?:\/\/[^\s"']+/gu, (value) => {
       if (!URL.canParse(value)) return '[REDACTED_URL]';
       const url = new URL(value);
+      url.username = '';
+      url.password = '';
       url.search = '';
       url.hash = '';
       return url.toString();
     })
-    .replace(/((?:secret|token|password|authorization|cookie|code|state)["'\s:=]+)[^,\s}"']+/giu, '$1[REDACTED]')
-    .replace(/\b(?:gh[opsu]_[A-Za-z0-9_]+|ff_[A-Za-z0-9_-]+|[A-Fa-f0-9]{64})\b/gu, '[REDACTED]');
+    .replace(/((?:secret|token|password|authorization|cookie|code|state|private[_-]?key|api[_-]?key|database[_-]?url|encryption[_-]?key)["'\s:=]+)[^,\s}"']+/giu, '$1[REDACTED]')
+    .replace(/\b(?:gh[opsu]_[A-Za-z0-9_]+|ff_[A-Za-z0-9_-]+|[A-Fa-f0-9]{32,}|(?=[A-Za-z0-9+/_=-]{24,}\b)(?=[A-Za-z0-9+/_=-]*[A-Z])(?=[A-Za-z0-9+/_=-]*\d)[A-Za-z0-9+/_=-]+)\b/gu, '[REDACTED]');
 }
 
 const lines = readFileSync(sourcePath, 'utf8').split(/\r?\n/u);

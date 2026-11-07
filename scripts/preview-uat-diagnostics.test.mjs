@@ -24,12 +24,14 @@ test('retains OAuth error context without credentials or callback query values',
     'request started',
     '[next-auth][error][OAUTH_CALLBACK_ERROR] https://pr-134-preview.fluentflow.tech/api/auth/callback/github?code=authorization-code&state=session-state',
     'client_secret=oauth-secret token=ghp_exampletoken password=preview-password',
+    'error DATABASE_URL=https://db-user:db-password@postgres:5432/fluentflow ENCRYPTION_KEY=0123456789abcdefghijklmnopqrstuv',
+    'GITHUB_APP_PRIVATE_KEY=abcdefghijklmnopqrstuvwxyz0123456789ABCD',
     'unrelated successful request',
   ].join('\n'));
   const text = JSON.stringify(report);
   assert.match(text, /OAUTH_CALLBACK_ERROR/u);
   assert.match(text, /https:\/\/pr-134-preview\.fluentflow\.tech\/api\/auth\/callback\/github/u);
-  assert.doesNotMatch(text, /authorization-code|session-state|oauth-secret|ghp_exampletoken|preview-password/u);
+  assert.doesNotMatch(text, /authorization-code|session-state|oauth-secret|ghp_exampletoken|preview-password|db-user|db-password|0123456789abcdefghijklmnopqrstuv|abcdefghijklmnopqrstuvwxyz0123456789ABCD/u);
 });
 
 test('returns no diagnostics when the runtime log has no error signal', () => {
