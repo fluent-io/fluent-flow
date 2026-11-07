@@ -30,6 +30,9 @@ vi.mock('../../src/agents/claim-manager.js', () => ({
   createClaim: vi.fn(),
   createFollowOnClaim: vi.fn(),
   redispatchClaim: vi.fn(),
+  nextChainAttempt: vi.fn(),
+  countCompletedFixIterations: vi.fn(),
+  createClaimWithRetry: vi.fn(),
 }));
 
 vi.mock('../../src/notifications/transports/long-poll.js', () => ({
@@ -40,6 +43,15 @@ vi.mock('../../src/notifications/transports/long-poll.js', () => ({
 vi.mock('../../src/config/loader.js', () => ({
   installationCtxForRepo: vi.fn().mockResolvedValue(null),
 }));
+
+vi.mock('../../src/engine/check-run.js', () => ({
+  onClaimStarted: vi.fn(),
+}));
+
+vi.mock('../../src/providers/index.js', () => ({
+  getProvider: vi.fn((ctx) => ({ ctx })),
+}));
+
 
 vi.mock('../../src/providers/github/token-cache.js', () => ({
   getInstallationToken: vi.fn(),
@@ -60,6 +72,9 @@ vi.mock('@fluent-flow/db', async (importOriginal) => {
 import { db } from '@fluent-flow/db';
 import { sql } from 'drizzle-orm';
 import { hasPending, dequeue } from '../../src/notifications/transports/long-poll.js';
+import { installationCtxForRepo } from '../../src/config/loader.js';
+import { onClaimStarted } from '../../src/engine/check-run.js';
+import { getProvider } from '../../src/providers/index.js';
 import { handlePoll } from '../../src/routes/runner.js';
 
 function makeRes() {
@@ -89,8 +104,8 @@ const DB_CLAIM = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // db.execute call order in handlePoll: (1) agent_type SELECT, (2) claimPendingWork UPDATE.
-  db.execute.mockImplementation(async () => ({ rows: [{ agent_type: 'claude-code' }] }));
+  vi.mocked(installationCtxForRepo).mockResolvedValue({ installation_id: 456 });
+  vi.mocked(getProvider).mockImplementation((ctx) => ({ ctx }));
 });
 
 describe('handlePoll — long-poll hints are wake-up signals only', () => {
@@ -99,8 +114,8 @@ describe('handlePoll — long-poll hints are wake-up signals only', () => {
     dequeue.mockReturnValueOnce({ agentId: 'a1', event: 'review', repo: 'o/r', prNumber: 5, session_id: 3 });
 
     db.execute
-      .mockResolvedValueOnce({ rows: [{ agent_type: 'claude-code' }] })   // agent type lookup
-      .mockResolvedValueOnce({ rows: [DB_CLAIM] });                        // claimPendingWork
+      .mockResolvedValueOnce({ rows: [{ agent_type: 'claude-code' }] })
+      .mockResolvedValueOnce({ rows: [DB_CLAIM] });
 
     const res = makeRes();
     await handlePoll({ ...REQ, on: vi.fn() }, res, { pollTimeoutMs: 0 });
@@ -120,13 +135,38 @@ describe('handlePoll — long-poll hints are wake-up signals only', () => {
     expect(res.body.work.attempt).toBe(2);
   });
 
+  it('starts a claimed check run using the repo installation context', async () => {
+    hasPending.mockReturnValueOnce(false);
+    const verifyClaim = {
+      ...DB_CLAIM,
+      claim_type: 'verify',
+      head_sha: 'abc123',
+      check_run_external_id: 321,
+    };
+
+    db.execute
+      .mockResolvedValueOnce({ rows: [{ agent_type: 'claude-code' }] })
+      .mockResolvedValueOnce({ rows: [verifyClaim] });
+
+    const res = makeRes();
+    await handlePoll({ ...REQ, on: vi.fn() }, res, { pollTimeoutMs: 0 });
+
+    expect(installationCtxForRepo).toHaveBeenCalledWith('o', 'r');
+    expect(getProvider).toHaveBeenCalledWith({ provider: 'github', installation_id: 456 });
+    expect(onClaimStarted).toHaveBeenCalledWith(
+      { ctx: { provider: 'github', installation_id: 456 } },
+      verifyClaim,
+    );
+    expect(res.body.work.claim_id).toBe(7);
+  });
+
   it('falls through to work:null when a hint wakes the runner but nothing is claimable', async () => {
     hasPending.mockReturnValueOnce(true);
     dequeue.mockReturnValueOnce({ agentId: 'a1', event: 'review' });
 
     db.execute
       .mockResolvedValueOnce({ rows: [{ agent_type: 'claude-code' }] })
-      .mockResolvedValueOnce({ rows: [] }); // no claimable work
+      .mockResolvedValueOnce({ rows: [] });
 
     const res = makeRes();
     await handlePoll({ ...REQ, on: vi.fn() }, res, { pollTimeoutMs: 0 });

@@ -44,18 +44,22 @@ vi.mock('../../src/config/loader.js', () => ({
 
 const mockDispatchWorkflow = vi.fn();
 const mockGetReviews = vi.fn().mockResolvedValue([]);
+const mockGetPR = vi.fn().mockResolvedValue({ head: { sha: 'abc123' } });
 const mockDismissReview = vi.fn();
 const mockPostComment = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../src/providers/github/rest.js', () => ({
   dispatchWorkflow: (...a) => mockDispatchWorkflow(...a),
   addLabel: vi.fn(),
+  getPR: (...a) => mockGetPR(...a),
   getReviews: (...a) => mockGetReviews(...a),
   dismissReview: (...a) => mockDismissReview(...a),
   postComment: (...a) => mockPostComment(...a),
 }));
+const mockEnablePullRequestAutoMerge = vi.fn();
+const mockGetPRNodeId = vi.fn().mockResolvedValue('PR_node');
 vi.mock('../../src/providers/github/graphql.js', () => ({
-  enablePullRequestAutoMerge: vi.fn(),
-  getPRNodeId: vi.fn(),
+  enablePullRequestAutoMerge: (...a) => mockEnablePullRequestAutoMerge(...a),
+  getPRNodeId: (...a) => mockGetPRNodeId(...a),
 }));
 vi.mock('../../src/engine/pause-manager.js', () => ({
   recordPause: vi.fn(),
@@ -68,11 +72,17 @@ vi.mock('../../src/notifications/dispatcher.js', () => ({
   dispatch: (...a) => mockDispatch(...a),
 }));
 
-const mockCreateClaim = vi.fn();
+const mockCreateClaim = vi.fn().mockResolvedValue({ id: 1, claim_type: 'review', attempt: 1 });
+const mockCreateClaimWithRetry = vi.fn().mockImplementation(async (opts, fn) => {
+  const result = await fn(opts);
+  return { ...result, attempt: opts.attempt || 2 };
+});
 vi.mock('../../src/agents/claim-manager.js', () => ({
   createClaim: (...a) => mockCreateClaim(...a),
   completeClaim: vi.fn(),
   getActiveClaim: vi.fn(),
+  nextChainAttempt: vi.fn().mockResolvedValue(2),
+  createClaimWithRetry: (...a) => mockCreateClaimWithRetry(...a),
 }));
 
 const mockOnClaimDispatched = vi.fn().mockResolvedValue(undefined);
@@ -88,12 +98,16 @@ vi.mock('../../src/providers/index.js', () => ({
 import { dispatchReview, handleReviewResult } from '../../src/engine/review-manager.js';
 
 beforeEach(() => {
-  mockCreateClaim.mockReset();
-  // Real toSnakeClaim does NOT include installation_id — align mock with actual shape.
-  // installation_id must come from config.installation_id (the fallback path).
-  mockCreateClaim.mockResolvedValue({ id: 1, claim_type: 'review' });
+  mockCreateClaim.mockReset().mockResolvedValue({ id: 1, claim_type: 'review', attempt: 1 });
+  mockCreateClaimWithRetry.mockClear().mockImplementation(async (opts, fn) => {
+    const result = await fn(opts);
+    return { ...result, attempt: opts.attempt || 2 };
+  });
   mockDispatchWorkflow.mockReset();
   mockGetReviews.mockClear();
+  mockGetPR.mockReset().mockResolvedValue({ head: { sha: 'abc123' } });
+  mockEnablePullRequestAutoMerge.mockReset().mockResolvedValue(undefined);
+  mockGetPRNodeId.mockReset().mockResolvedValue('PR_node');
   mockDismissReview.mockClear();
   mockOnClaimDispatched.mockClear();
   mockGetProvider.mockClear();
@@ -314,6 +328,8 @@ describe('dispatchReview (runner-claim based)', () => {
 
 describe('handleReviewResult', () => {
   it('creates review_fix claim at attempt+1 on FAIL, preserving the original review claim', async () => {
+    mockCreateClaim.mockResolvedValue({ id: 2, claim_type: 'review_fix' });
+
     await handleReviewResult({
       owner: 'fluent-io',
       repo: 'fluent-flow',
@@ -325,9 +341,8 @@ describe('handleReviewResult', () => {
       headBranch: 'main',
     });
 
-    expect(mockCreateClaim).toHaveBeenCalledTimes(1);
-    const call = mockCreateClaim.mock.calls[0][0];
-    expect(call.attempt).toBe(2); // attempt + 1, not 1
+    expect(mockCreateClaimWithRetry).toHaveBeenCalled();
+    const call = mockCreateClaimWithRetry.mock.calls[0][0];
     expect(call.claimType).toBe('review_fix');
     expect(call.repo).toBe('fluent-io/fluent-flow');
     expect(call.prNumber).toBe(42);
@@ -345,10 +360,39 @@ describe('handleReviewResult', () => {
     });
 
     expect(result.action).toBe('pass');
-    expect(mockCreateClaim).not.toHaveBeenCalled();
+    expect(mockCreateClaimWithRetry).not.toHaveBeenCalled();
+    expect(mockEnablePullRequestAutoMerge).toHaveBeenCalledWith(
+      'PR_node',
+      'SQUASH',
+      { installation_id: 99 },
+    );
   });
 
+  it('does not auto-merge or create advisory work when the reviewed SHA is stale', async () => {
+    mockGetPR.mockResolvedValue({ head: { sha: 'new-head' } });
+
+    const result = await handleReviewResult({
+      owner: 'fluent-io',
+      repo: 'fluent-flow',
+      prNumber: 42,
+      issueNumber: 10,
+      result: {
+        status: 'PASS',
+        blocking: [],
+        advisory: [{ file: 'a.ts', line: 1, issue: 'style nit' }],
+        attempt: 1,
+      },
+      reviewSha: 'abc123',
+      headBranch: 'main',
+    });
+
+    expect(result.action).toBe('pass');
+    expect(mockEnablePullRequestAutoMerge).not.toHaveBeenCalled();
+    expect(mockCreateClaim).not.toHaveBeenCalled();
+  });
   it('posts a fix status comment on FAIL when claim is created', async () => {
+    mockCreateClaim.mockResolvedValue({ id: 2, claim_type: 'review_fix', attempt: 2 });
+
     await handleReviewResult({
       owner: 'fluent-io',
       repo: 'fluent-flow',

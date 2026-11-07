@@ -2,14 +2,15 @@ import { expireClaims, redispatchClaim } from '../agents/claim-manager.js';
 import { installationCtxForRepo } from '../config/loader.js';
 import { getProvider } from '../providers/index.js';
 import { onClaimDispatched } from '../engine/check-run.js';
+import { sweepStrandedVerifyClaims } from '../engine/verify-transitions.js';
+import { db } from '@fluent-flow/db';
 import logger from '../logger.js';
 
 const SLEEP_MS = 60_000;
 
 export async function expireClaimsTick() {
   try {
-    const expired = await expireClaims();
-    if (!expired || expired.length === 0) return expired;
+    const expired = await expireClaims() ?? [];
 
     // Re-dispatch: for each expired claim, create a new claim at attempt + 1
     // (shared with the transient-failure path in the claim-result route).
@@ -53,6 +54,7 @@ export async function expireClaimsTick() {
         });
       }
     }
+    await sweepStrandedVerifyClaims(db);
     return expired;
   } catch (err) {
     // Safe to continue: worker tick failure — log and continue the loop.

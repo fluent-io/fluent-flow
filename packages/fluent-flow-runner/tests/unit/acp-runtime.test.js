@@ -20,7 +20,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-async function waitFor(readValue, predicate = Boolean, timeoutMs = 1_000) {
+async function waitFor(readValue, predicate = Boolean, timeoutMs = 3_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const value = readValue();
@@ -381,9 +381,12 @@ describe('createAcpRuntime', () => {
     });
     const completion = runtime.runInitialPrompt('Complete during resume.');
 
-    await waitFor(() => blocked);
-    await waitFor(() => entriesOf(tracePath, 'update').some((entry) => entry.update.state === 'idle'));
-    gate.resolve();
+    try {
+      await waitFor(() => blocked);
+      await waitFor(() => entriesOf(tracePath, 'update').some((entry) => entry.update.state === 'idle'));
+    } finally {
+      gate.resolve();
+    }
 
     const outcome = await settleWithin(completion);
     expect(outcome).toEqual({

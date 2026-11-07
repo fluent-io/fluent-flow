@@ -264,6 +264,28 @@ export async function assertClaimOwner(
   }
 }
 
+export async function assertClaimReporter({ orgId, agentId, sessionId, claimId }) {
+  const result = await getPool().query(
+    `SELECT claim.*
+     FROM agent_claims claim
+     JOIN agent_sessions session
+       ON session.id = claim.session_id
+      AND session.org_id = claim.org_id
+     WHERE claim.id = $4
+       AND claim.org_id = $1
+       AND session.agent_id = $2
+       AND claim.session_id = $3`,
+    [orgId, agentId, sessionId, claimId],
+  );
+  if (result.rows.length > 0) return toSnakeClaim(result.rows[0]);
+  const currentOrg = await getPool().query(
+    'SELECT id FROM agent_claims WHERE id = $1 AND org_id = $2',
+    [claimId, orgId],
+  );
+  const statusCode = currentOrg.rows.length === 0 ? 404 : 409;
+  throw Object.assign(new Error(statusCode === 404 ? 'Claim not found' : 'Claim ownership is stale'), { statusCode });
+}
+
 export async function withClaimOwner(input, operation) {
   const client = await getPool().connect();
   try {
@@ -280,7 +302,7 @@ export async function withClaimOwner(input, operation) {
   }
 }
 
-async function finalizeClaimById(orgId, claimId, sessionId, finalStatus) {
+async function finalizeClaimById(orgId, claimId, sessionId, finalStatus, onFinalize = null) {
   const client = await getPool().connect();
   let row;
   try {
@@ -300,7 +322,10 @@ async function finalizeClaimById(orgId, claimId, sessionId, finalStatus) {
       [orgId, claimId, sessionId, finalStatus],
     );
     row = result.rows[0] ?? null;
-    if (row) await cancelOpenClaimInteractions({ orgId, claimId }, client);
+    if (row) {
+      await cancelOpenClaimInteractions({ orgId, claimId }, client);
+      await onFinalize?.(client, toSnakeClaim(row));
+    }
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
@@ -313,8 +338,8 @@ async function finalizeClaimById(orgId, claimId, sessionId, finalStatus) {
   return toSnakeClaim(row);
 }
 
-export async function completeClaimById(orgId, claimId, sessionId) {
-  return finalizeClaimById(orgId, claimId, sessionId, 'completed');
+export async function completeClaimById(orgId, claimId, sessionId, onFinalize = null) {
+  return finalizeClaimById(orgId, claimId, sessionId, 'completed', onFinalize);
 }
 
 export async function failClaimById(orgId, claimId, sessionId) {
@@ -440,4 +465,46 @@ export async function getClaimByAttempt(orgId, repo, prNumber, attempt, claimTyp
     .where(and(...conditions))
     .limit(1);
   return toSnakeClaim(row) ?? null;
+}
+
+export async function nextChainAttempt(orgId, repo, prNumber) {
+  const conditions = [
+    eq(agentClaims.orgId, orgId),
+    eq(agentClaims.repo, repo),
+    prNumber != null ? eq(agentClaims.prNumber, prNumber) : sql`${agentClaims.prNumber} IS NULL`,
+  ];
+  const [row] = await db
+    .select({ max: sql`COALESCE(MAX(${agentClaims.attempt}), 0)` })
+    .from(agentClaims)
+    .where(and(...conditions))
+    .limit(1);
+  return Number(row?.max ?? 0) + 1;
+}
+
+export async function countCompletedFixIterations(orgId, repo, prNumber) {
+  const [row] = await db
+    .select({ count: sql`COUNT(*)` })
+    .from(agentClaims)
+    .where(and(
+      eq(agentClaims.orgId, orgId),
+      eq(agentClaims.repo, repo),
+      eq(agentClaims.prNumber, prNumber),
+      eq(agentClaims.claimType, 'review_fix'),
+      eq(agentClaims.status, 'completed'),
+    ))
+    .limit(1);
+  return Number(row?.count ?? 0);
+}
+
+export async function createClaimWithRetry(opts, createClaimFn = createClaim) {
+  for (let retries = 0; retries < 3; retries += 1) {
+    const attempt = await nextChainAttempt(opts.orgId, opts.repo, opts.prNumber);
+    try {
+      const claim = await createClaimFn({ ...opts, attempt });
+      if (claim) return claim;
+    } catch (error) {
+      if (error?.code !== '23505' && error?.cause?.code !== '23505') throw error;
+    }
+  }
+  throw new Error('Failed to create claim after multiple unique constraint violations');
 }

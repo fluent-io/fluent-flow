@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-const ClaimTypeEnum = z.enum(['review', 'review_fix', 'test_verify', 'triage']);
+const ClaimTypeEnum = z.enum(['review', 'review_fix', 'verify', 'triage', 'test_verify']);
 
 export const OrgConfigSchema = z.object({
   default_review_model: z.string().optional(),

@@ -204,7 +204,7 @@ beforeEach(() => {
 });
 
 describe('handleClaimResult auto-chain head SHA persistence', () => {
-  it('persists the completed review head SHA on the next review_fix claim', async () => {
+  it('leaves review-fix creation to the review-result coordinator', async () => {
     completeClaimById.mockResolvedValueOnce(REVIEW_CLAIM);
     const response = makeResponse();
 
@@ -220,16 +220,7 @@ describe('handleClaimResult auto-chain head SHA persistence', () => {
       response,
     );
 
-    expect(insertedClaims).toEqual([
-      expect.objectContaining({
-        orgId: 'org-1',
-        repo: 'acme/widgets',
-        prNumber: 17,
-        attempt: 4,
-        claimType: 'review_fix',
-        headSha: 'review-head-sha',
-      }),
-    ]);
+    expect(insertedClaims).toEqual([]);
     expect(response.statusCode).toBe(200);
     expect(response.body).toEqual({ ok: true, claim_id: 41, status: 'completed' });
   });
@@ -338,7 +329,7 @@ describe('handleClaimResult auto-chain head SHA persistence', () => {
     expect(response.body).toEqual({ ok: true, claim_id: SPEC_CLAIM.id, status: 'completed' });
   });
 
-  it('leaves the unlinked review-to-review-fix path non-transactional', async () => {
+  it('keeps review completion out of the follow-on claim transaction', async () => {
     completeClaimById.mockResolvedValueOnce(REVIEW_CLAIM);
 
     await handleClaimResult(
@@ -353,12 +344,9 @@ describe('handleClaimResult auto-chain head SHA persistence', () => {
       makeResponse(),
     );
 
-    expect(insertPendingClaim).toHaveBeenCalledWith(expect.objectContaining({
-      claimType: 'review_fix',
-      attempt: REVIEW_CLAIM.attempt + 1,
-    }));
+    expect(insertPendingClaim).not.toHaveBeenCalled();
     expect(transactionPool.connect).not.toHaveBeenCalled();
     expect(transaction.linkCopies).toEqual([]);
-    expect(transaction.committedClaims).toHaveLength(1);
+    expect(transaction.committedClaims).toHaveLength(0);
   });
 });

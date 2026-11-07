@@ -3,6 +3,7 @@ import { getServerSession } from 'next-auth';
 import { getPipelineDetail } from '@fluent-flow/db';
 import { authOptions, getOrgScope } from '@/lib/auth';
 import { PipelineTimeline } from '@/components/pipelines/pipeline-timeline';
+import { VerificationPanel } from '@/components/pipelines/verification-panel';
 import { Badge } from '@/components/ui/badge';
 import { notFound } from 'next/navigation';
 import { DismissButton } from '@/components/pipelines/dismiss-button';
@@ -93,6 +94,8 @@ export default async function PipelineDetailPage({ params }: { params: Promise<{
           </div>
         </div>
       </div>
+
+      <VerificationPanel claims={claims} />
 
       <PipelineTimeline claims={claims} />
     </div>

@@ -24,16 +24,26 @@ vi.mock('../../src/engine/check-run.js', () => ({
   onClaimDispatched: vi.fn(),
 }));
 
+vi.mock('../../src/engine/verify-transitions.js', () => ({
+  sweepStrandedVerifyClaims: vi.fn(),
+}));
+
+vi.mock('@fluent-flow/db', () => ({
+  db: { execute: vi.fn() },
+}));
+
 import logger from '../../src/logger.js';
 import { expireClaims, redispatchClaim } from '../../src/agents/claim-manager.js';
 import { installationCtxForRepo } from '../../src/config/loader.js';
 import { getProvider } from '../../src/providers/index.js';
 import { onClaimDispatched } from '../../src/engine/check-run.js';
+import { sweepStrandedVerifyClaims } from '../../src/engine/verify-transitions.js';
 import { expireClaimsTick } from '../../src/workers/claim-expiry.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
   expireClaims.mockResolvedValue([]);
+  sweepStrandedVerifyClaims.mockResolvedValue(undefined);
   redispatchClaim.mockResolvedValue({ id: 99, attempt: 4 });
   installationCtxForRepo.mockResolvedValue({ installation_id: 42 });
   getProvider.mockReturnValue(providerClient);
@@ -43,6 +53,11 @@ describe('expireClaimsTick', () => {
   it('calls expireClaims() once', async () => {
     await expireClaimsTick();
     expect(expireClaims).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers stranded verification transitions when no claims expire', async () => {
+    await expireClaimsTick();
+    expect(sweepStrandedVerifyClaims).toHaveBeenCalledTimes(1);
   });
 
   it('swallows errors and logs them so the loop keeps running', async () => {

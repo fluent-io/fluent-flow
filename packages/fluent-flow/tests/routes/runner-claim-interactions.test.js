@@ -33,7 +33,8 @@ vi.mock('../../src/agents/claim-manager.js', () => ({
   extendClaim: vi.fn(),
 }));
 
-vi.mock('@fluent-flow/db', () => ({
+vi.mock('@fluent-flow/db', async (importOriginal) => ({
+  ...(await importOriginal()),
   db: {},
   appendClaimEvents: vi.fn(),
   cancelClaimRequest: vi.fn(),
@@ -41,6 +42,10 @@ vi.mock('@fluent-flow/db', () => ({
   leaseClaimCommands: vi.fn(),
   renewClaimCommand: vi.fn(),
   ackClaimCommand: vi.fn(),
+  getVerificationResultByClaim: vi.fn(),
+  insertVerificationResult: vi.fn(),
+  insertVerificationResultAtomic: vi.fn(),
+  markVerificationTransitionApplied: vi.fn(),
 }));
 
 import {

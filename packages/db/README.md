@@ -33,6 +33,10 @@ All query functions that accept `orgIds` follow the same pattern: pass an array 
 | `getKeyInfo(orgId, agentId)` | Active key creation date |
 | `listPipelines(orgIds, filter?, isSuperadmin?)` | Pipelines grouped by PR with stages |
 | `getPipelineDetail(orgIds, repo, prNumber, filter?, isSuperadmin?)` | Full claims for a PR pipeline |
+| `getVerificationResultByClaim(orgId, claimId)` | Persisted red or green verification evidence for one claim |
+| `getVerificationResultsForPR(orgId, repo, prNumber)` | Ordered verification history for a PR |
+| `insertVerificationResultAtomic(row, client)` | Store mutable verification evidence inside claim finalization; applied results reject replacement |
+| `markVerificationTransitionApplied(claimId)` | Conditionally mark previously-unapplied transition effects complete |
 | `dismissStaleClaims(orgIds, olderThanMs?, isSuperadmin?)` | Cancel/archive stale claims; 0 for empty non-superadmin |
 | `dismissPipelineClaims(orgIds, repo, prNumber?, isSuperadmin?)` | Cancel/archive a pipeline's claims; 0 for empty non-superadmin |
 
@@ -41,6 +45,8 @@ All query functions that accept `orgIds` follow the same pattern: pass an array 
 Zod schemas for all database row types, exported as both schemas and TypeScript types:
 
 `Agent`, `AgentListItem`, `Session`, `Claim`, `User`, `UserOrg`, `PipelineListItem`, `PipelineStage`, `PipelineDetailClaim`
+
+`verification_results` stores the server-owned requirement matrix, manifest, pinned test hashes, artifact commits, and transition completion marker. Migration `0025_verification_results` adds the table and prevents concurrent active green claims for the same PR commit.
 
 ## Testing
 

@@ -16,7 +16,9 @@ vi.mock('node:os', () => ({
   homedir: (...args) => mockHomedir(...args),
 }));
 
-const { prepareWorktree } = await import('../../src/worktree.js');
+const { prepareWorktree, WorktreeRefUnavailableError } = await import('../../src/worktree.js');
+
+const RESOLVED_SHA = '0123456789abcdef0123456789abcdef01234567';
 
 describe('worktree', () => {
   let savedEnv;
@@ -40,6 +42,325 @@ describe('worktree', () => {
   });
 
   describe('prepareWorktree', () => {
+    it('fetches a symbolic branch ref and resolves it before creating a detached worktree', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        if (typeof opts === 'function') { opts(null, '', ''); return; }
+        if (args[0] === 'fetch' && args[1] === 'origin' && args[2] === 'feature/test') {
+          cb(null, '', '');
+          return;
+        }
+        if (args[0] === 'rev-parse') {
+          cb(null, `${RESOLVED_SHA}\n`, '');
+          return;
+        }
+        cb(null, '', '');
+      });
+
+      const result = await prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        ref: 'feature/test',
+      });
+
+      expect(result.worktreePath).toContain('pr-40-claim-123');
+
+      const fetchIndex = mockExecFile.mock.calls.findIndex(c => c[1][0] === 'fetch' && c[1][1] === 'origin' && c[1][2] === 'feature/test');
+      const revParseCall = mockExecFile.mock.calls.find(c => c[1][0] === 'rev-parse');
+      const worktreeCall = mockExecFile.mock.calls.find(c => c[1][0] === 'worktree' && c[1][1] === 'add');
+      expect(fetchIndex).toBeGreaterThan(-1);
+      expect(revParseCall[1]).toEqual(['rev-parse', '--verify', 'FETCH_HEAD^{commit}']);
+      expect(worktreeCall[1]).toEqual(['worktree', 'add', '--detach', result.worktreePath, RESOLVED_SHA]);
+      expect(fetchIndex).toBeLessThan(mockExecFile.mock.calls.indexOf(worktreeCall));
+    });
+
+    it('accepts refs/pull refs and resolves them to a detached commit', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        if (typeof opts === 'function') { opts(null, '', ''); return; }
+        if (args[0] === 'fetch' && args[1] === 'origin' && args[2] === 'refs/pull/123/head') {
+          cb(null, '', '');
+          return;
+        }
+        if (args[0] === 'rev-parse') {
+          cb(null, `${RESOLVED_SHA}\n`, '');
+          return;
+        }
+        cb(null, '', '');
+      });
+
+      const result = await prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        ref: 'refs/pull/123/head',
+      });
+
+      expect(result.worktreePath).toContain('pr-40-claim-123');
+      const worktreeCall = mockExecFile.mock.calls.find(c => c[1][0] === 'worktree' && c[1][1] === 'add');
+      expect(worktreeCall[1]).toContain(RESOLVED_SHA);
+    });
+
+    it('appends name to claim-based worktree paths', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        if (typeof opts === 'function') { opts(null, '', ''); return; }
+        if (args[0] === 'rev-parse') {
+          cb(null, `${RESOLVED_SHA}\n`, '');
+          return;
+        }
+        cb(null, '', '');
+      });
+
+      const result = await prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        name: 'verify-red',
+        ref: 'abc123def456',
+      });
+
+      expect(result.worktreePath).toContain('pr-40-claim-123-verify-red');
+    });
+
+    it('rejects when retry explicit fetch resolves but rev-parse fails', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      let firstExplicitFetch = true;
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        if (typeof opts === 'function') { opts(null, '', ''); return; }
+        if (args[0] === 'fetch' && args[1] === 'origin' && args[2] === 'abc123def456') {
+          if (firstExplicitFetch) {
+            firstExplicitFetch = false;
+            cb(new Error('couldn\'t find remote ref abc123def456'));
+            return;
+          }
+          cb(null, '', '');
+          return;
+        }
+        if (args[0] === 'rev-parse') {
+          cb(new Error('rev-parse failed'));
+          return;
+        }
+        cb(null, '', '');
+      });
+
+      await expect(prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        ref: 'abc123def456',
+      })).rejects.toBeInstanceOf(WorktreeRefUnavailableError);
+
+      const fetchCalls = mockExecFile.mock.calls.filter(c => c[1][0] === 'fetch');
+      expect(fetchCalls.map(c => c[1].join(' '))).toEqual([
+        'fetch origin abc123def456',
+        'fetch origin',
+        'fetch origin abc123def456',
+      ]);
+    });
+
+    it('rethrows retry explicit fetch auth errors raw', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      let firstExplicitFetch = true;
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        if (typeof opts === 'function') { opts(null, '', ''); return; }
+        if (args[0] === 'fetch' && args[1] === 'origin' && args[2] === 'abc123def456') {
+          if (firstExplicitFetch) {
+            firstExplicitFetch = false;
+            cb(new Error('couldn\'t find remote ref abc123def456'));
+            return;
+          }
+          cb(new Error('remote: Repository not found'));
+          return;
+        }
+        if (args[0] === 'fetch' && args[1] === 'origin' && args.length === 2) {
+          cb(null, '', '');
+          return;
+        }
+        cb(null, '', '');
+      });
+
+      await expect(prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        ref: 'abc123def456',
+      })).rejects.toThrow('Repository not found');
+      await expect(prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        ref: 'abc123def456',
+      })).rejects.not.toBeInstanceOf(WorktreeRefUnavailableError);
+    });
+
+    it('wraps missing remote ref errors from the retry explicit fetch', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      let firstExplicitFetch = true;
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        if (typeof opts === 'function') { opts(null, '', ''); return; }
+        if (args[0] === 'fetch' && args[1] === 'origin' && args[2] === 'abc123def456') {
+          if (firstExplicitFetch) {
+            firstExplicitFetch = false;
+            cb(new Error('couldn\'t find remote ref abc123def456'));
+            return;
+          }
+          cb(new Error('couldn\'t find remote ref abc123def456'));
+          return;
+        }
+        cb(null, '', '');
+      });
+
+      await expect(prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        ref: 'abc123def456',
+      })).rejects.toBeInstanceOf(WorktreeRefUnavailableError);
+    });
+
+    it('rethrows retry explicit fetch transport errors raw', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      let firstExplicitFetch = true;
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        if (typeof opts === 'function') { opts(null, '', ''); return; }
+        if (args[0] === 'fetch' && args[1] === 'origin' && args[2] === 'abc123def456') {
+          if (firstExplicitFetch) {
+            firstExplicitFetch = false;
+            cb(new Error('couldn\'t find remote ref abc123def456'));
+            return;
+          }
+          cb(new Error('missing credentials'));
+          return;
+        }
+        cb(null, '', '');
+      });
+
+      await expect(prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        ref: 'abc123def456',
+      })).rejects.toThrow('missing credentials');
+      await expect(prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        ref: 'abc123def456',
+      })).rejects.not.toBeInstanceOf(WorktreeRefUnavailableError);
+    });
+
+    it('rejects when explicit ref fetch resolves to an empty sha', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      mockExecFile.mockImplementation((cmd, args, opts, cb) => {
+        if (typeof opts === 'function') { opts(null, '', ''); return; }
+        if (args[0] === 'fetch' && args[1] === 'origin' && args[2] === 'abc123def456') {
+          cb(null, '', '');
+          return;
+        }
+        if (args[0] === 'rev-parse') {
+          cb(null, '\n', '');
+          return;
+        }
+        cb(null, '', '');
+      });
+
+      await expect(prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        ref: 'abc123def456',
+      })).rejects.toBeInstanceOf(WorktreeRefUnavailableError);
+    });
+
+    it('rejects unsafe worktree names containing slashes or dot segments', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      await expect(prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        name: 'bad/name',
+        ref: 'abc123def456',
+      })).rejects.toThrow(/Unsafe worktree name/);
+
+      await expect(prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        claimId: 123,
+        name: '..',
+        ref: 'abc123def456',
+      })).rejects.toThrow(/Unsafe worktree name/);
+    });
+
+    it('keeps attempt-based worktree names and branch checkout for back-compat', async () => {
+      mockExistsSync.mockImplementation((p) => {
+        if (p.endsWith('.git')) return true;
+        return false;
+      });
+
+      const result = await prepareWorktree({
+        workDir: '/work',
+        repo: 'fluent-io/fluent-flow',
+        prNumber: 40,
+        attempt: 1,
+        branch: 'fix/something',
+      });
+
+      expect(result.worktreePath).toContain('pr-40-attempt-1');
+
+      const worktreeCall = mockExecFile.mock.calls.find(c => c[1][0] === 'worktree' && c[1][1] === 'add');
+      expect(worktreeCall[1]).toContain('origin/fix/something');
+    });
+
     it('clones repo when base clone does not exist (plain HTTPS fallback)', async () => {
       mockExistsSync.mockReturnValue(false);
       delete process.env.SSH_AUTH_SOCK;

@@ -28,20 +28,21 @@ describeDb('claimPendingWork (integration)', () => {
     ]);
   }
 
-  async function makeSession(agentId) {
+  async function makeSession(agentId, sessionMeta = {}) {
     const [row] = await db
       .insert(schema.agentSessions)
       .values({
         orgId: ORG,
         agentId,
         status: 'online',
+        sessionMeta,
         expiresAt: sql`NOW() + INTERVAL '1 hour'`,
       })
       .returning({ id: schema.agentSessions.id });
     return row.id;
   }
 
-  async function makePendingClaim(repo, prNumber) {
+  async function makePendingClaim(repo, prNumber, claimType = 'review_fix') {
     const [row] = await db
       .insert(schema.agentClaims)
       .values({
@@ -49,6 +50,7 @@ describeDb('claimPendingWork (integration)', () => {
         repo,
         prNumber,
         attempt: 1,
+        claimType,
         status: 'pending',
         sessionId: null,
       })
@@ -198,6 +200,29 @@ describeDb('claimPendingWork (integration)', () => {
     expect(res).not.toBeNull();
     expect(res.id).toBe(claimId);
     expect(res.status).toBe('claimed');
+  });
+
+  it('claims only work advertised by the runner session', async () => {
+    await seed();
+    const session = await makeSession(AGENT_A, { supported_claim_types: ['review_fix'] });
+    await makePendingClaim('ff-test-org/repo-a', 401, 'verify');
+    const reviewId = await makePendingClaim('ff-test-org/repo-a', 402, 'review_fix');
+
+    const claimed = await claimPendingWork(ORG, AGENT_A, session);
+    expect(claimed).toMatchObject({ id: reviewId, claim_type: 'review_fix' });
+  });
+
+  it('lets current runners claim verify work while legacy sessions skip it', async () => {
+    await seed();
+    const legacySession = await makeSession(AGENT_A);
+    const currentSession = await makeSession(AGENT_A, { supported_claim_types: ['verify'] });
+    const verifyId = await makePendingClaim('ff-test-org/repo-a', 403, 'verify');
+
+    await expect(claimPendingWork(ORG, AGENT_A, legacySession)).resolves.toBeNull();
+    await expect(claimPendingWork(ORG, AGENT_A, currentSession)).resolves.toMatchObject({
+      id: verifyId,
+      claim_type: 'verify',
+    });
   });
 
   it('returns a claim to pending when its payload cannot be delivered', async () => {

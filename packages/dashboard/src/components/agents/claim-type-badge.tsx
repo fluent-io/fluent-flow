@@ -6,6 +6,7 @@ const claimTypeColors: Record<string, string> = {
   review: 'border-violet-800 bg-violet-950 text-violet-400',
   review_fix: 'border-indigo-800 bg-indigo-950 text-indigo-400',
   test_verify: 'border-cyan-800 bg-cyan-950 text-cyan-400',
+  verify: 'border-sky-800 bg-sky-950 text-sky-400',
 };
 
 export function ClaimTypeBadge({ type }: { type: string }) {
