@@ -23,7 +23,6 @@ vi.mock('@fluent-flow/db', async (importOriginal) => {
     ...actual,
     getVerificationResultByClaim: vi.fn(),
     insertVerificationResultAtomic: vi.fn(),
-    markVerificationTransitionApplied: vi.fn(),
   };
 });
 
@@ -31,8 +30,7 @@ vi.mock('../../src/engine/verify-transitions.js', async (importOriginal) => {
   const actual = await importOriginal();
   return {
     ...actual,
-    applyVerifyTransition: vi.fn(),
-    applyVerifyTransitionWithEffects: vi.fn(),
+    applyVerifyTransitionOnce: vi.fn(),
     handleVerifyRedispatchExhausted: vi.fn(),
   };
 });
@@ -46,11 +44,9 @@ import {
 import {
   getVerificationResultByClaim,
   insertVerificationResultAtomic,
-  markVerificationTransitionApplied,
 } from '@fluent-flow/db';
 import {
-  applyVerifyTransition,
-  applyVerifyTransitionWithEffects,
+  applyVerifyTransitionOnce,
 } from '../../src/engine/verify-transitions.js';
 
 const ACTIVE_VERIFY = {
@@ -113,6 +109,7 @@ function response() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  insertVerificationResultAtomic.mockResolvedValue({});
   assertClaimOwner.mockResolvedValue(ACTIVE_VERIFY);
   getVerificationResultByClaim.mockResolvedValue({
     phase: VERIFICATION.phase,
@@ -130,8 +127,7 @@ beforeEach(() => {
     await onFinalize?.({ tx: true }, completed);
     return completed;
   });
-  applyVerifyTransition.mockResolvedValue({ action: 'dispatch_review' });
-  applyVerifyTransitionWithEffects.mockResolvedValue({ action: 'create_claim' });
+  applyVerifyTransitionOnce.mockResolvedValue({ applied: true, decision: { action: 'create_claim' } });
 });
 
 describe('handleClaimResult verification results', () => {
@@ -149,15 +145,26 @@ describe('handleClaimResult verification results', () => {
       }),
       { tx: true },
     );
-    expect(applyVerifyTransitionWithEffects).toHaveBeenCalledWith(
+    expect(applyVerifyTransitionOnce).toHaveBeenCalledWith(
       expect.objectContaining({ id: 7, status: 'completed' }),
       VERIFICATION,
       { orgId: 'o1' },
     );
-    expect(markVerificationTransitionApplied).toHaveBeenCalledWith(7);
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({ ok: true, claim_id: 7, status: 'completed' });
   });
+
+  it('rejects a result overwrite after transition finalization', async () => {
+    insertVerificationResultAtomic.mockResolvedValue(null);
+    const res = response();
+
+    await handleClaimResult(request({ verification: VERIFICATION }), res);
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toEqual({ error: 'Internal server error' });
+    expect(applyVerifyTransitionOnce).not.toHaveBeenCalled();
+  });
+
 
   it('rejects a completed verify claim without verification evidence', async () => {
     const res = response();
@@ -181,19 +188,15 @@ describe('handleClaimResult verification results', () => {
     ownershipError.statusCode = 409;
     assertClaimOwner.mockRejectedValue(ownershipError);
     assertClaimReporter.mockResolvedValue({ ...ACTIVE_VERIFY, status: 'completed' });
-    const decision = { action: 'dispatch_review' };
-    applyVerifyTransition.mockResolvedValue(decision);
     const res = response();
 
     await handleClaimResult(request({ verification: VERIFICATION }), res);
 
-    expect(applyVerifyTransitionWithEffects).toHaveBeenCalledWith(
+    expect(applyVerifyTransitionOnce).toHaveBeenCalledWith(
       expect.objectContaining({ id: 7, status: 'completed' }),
       expect.objectContaining({ phase: 'red', outcome: 'PASS' }),
       { orgId: 'o1' },
-      decision,
     );
-    expect(markVerificationTransitionApplied).toHaveBeenCalledWith(7);
     expect(completeClaimById).not.toHaveBeenCalled();
     expect(res.body.note).toBe('already_resolved');
   });

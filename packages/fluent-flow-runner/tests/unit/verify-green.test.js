@@ -138,7 +138,10 @@ function makeExecuteForGreen({ pinnedRuns = [], fullRuns = [], diffOutput = '', 
       if (payload.timedOut) {
         return { exitCode: payload.exitCode ?? 124, stdout: payload.stdout ?? '', timedOut: true };
       }
-      return { exitCode: payload.exitCode ?? 0, stdout: JSON.stringify(payload) };
+      return {
+        exitCode: payload.exitCode ?? 0,
+        stdout: payload.rawStdout ?? JSON.stringify(payload),
+      };
     }
     throw new Error(`Unexpected command: ${cmd.bin}`);
   });
@@ -456,6 +459,50 @@ describe('runVerifyClaim green phase', () => {
 
     expect(result.verification.outcome).toBe('FAIL');
     expect(result.verification.matrix.requirements[0].status).toBe('FAIL');
+  });
+
+  it('fails when the stored red matrix omits a manifest requirement', async () => {
+    const greenWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-green-'));
+    setupRepo(greenWorktree);
+    const redRecord = buildRedRecord(greenWorktree, {
+      matrix: {
+        requirements: [],
+        suite: { total: 1, passed: 0, failed: 1, flaky: 0, skipped: 0 },
+        schema_version: 1,
+      },
+    });
+
+    const result = await runVerifyClaim(makeContext({
+      work: makeWork({ red_record: redRecord }),
+      execute: makeExecuteForGreen({
+        pinnedRuns: [{ results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'pass', message: '' }] }],
+        fullRuns: [{ results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'pass', message: '' }] }],
+      }),
+      prepareWorktree: vi.fn().mockResolvedValue({ worktreePath: greenWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(greenWorktree, 'packages', 'app') })),
+      adapters: new Map([['vitest', makeAdapter()]]),
+    }));
+
+    expect(result.verification.outcome).toBe('FAIL');
+    expect(result.verification.matrix.requirements[0].red.status).toBe('MISSING');
+  });
+
+  it('classifies invalid reporter output as a terminal verification failure', async () => {
+    const greenWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-green-'));
+    setupRepo(greenWorktree);
+    const redRecord = buildRedRecord(greenWorktree);
+
+    const result = await runVerifyClaim(makeContext({
+      work: makeWork({ red_record: redRecord }),
+      execute: makeExecuteForGreen({
+        pinnedRuns: [{ rawStdout: 'diagnostic before json\n{"results":[]}' }],
+      }),
+      prepareWorktree: vi.fn().mockResolvedValue({ worktreePath: greenWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(greenWorktree, 'packages', 'app') })),
+      adapters: new Map([['vitest', makeAdapter()]]),
+    }));
+
+    expect(result).toEqual({ status: 'failed', failure_kind: 'terminal' });
   });
 
   it('keeps newly pinned test flakes blocking even when a retry passes', async () => {

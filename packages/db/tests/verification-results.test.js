@@ -86,11 +86,12 @@ describe.skipIf(!hasDatabaseUrl)('verification results queries', () => {
 
     const marked = await markVerificationTransitionApplied(testClaimId1);
     expect(marked.transitionAppliedAt).toBeInstanceOf(Date);
+    expect(await markVerificationTransitionApplied(testClaimId1)).toBeNull();
     const fetchedAfterMark = await getVerificationResultByClaim(testOrgId, testClaimId1);
     expect(fetchedAfterMark.transitionAppliedAt).toBeInstanceOf(Date);
   });
 
-  it('onConflictDoUpdate on same claim_id replaces', async () => {
+  it('replaces a result before its transition and preserves it after the transition', async () => {
     await db.execute(`INSERT INTO orgs (id, name) VALUES ('${testOrgId}', 'Test Org')`);
 
     const claimResult = await db.execute(
@@ -132,6 +133,18 @@ describe.skipIf(!hasDatabaseUrl)('verification results queries', () => {
     const fetched = await getVerificationResultByClaim(testOrgId, testClaimId1);
     expect(fetched.outcome).toBe('FAIL');
     expect(fetched.matrix).toEqual({ error: 'test failed' });
+
+    await markVerificationTransitionApplied(testClaimId1);
+    const rejected = await insertVerificationResult({
+      ...updatedRow,
+      outcome: 'PASS',
+      matrix: { changed: true },
+    });
+    expect(rejected).toBeNull();
+
+    const preserved = await getVerificationResultByClaim(testOrgId, testClaimId1);
+    expect(preserved.outcome).toBe('FAIL');
+    expect(preserved.matrix).toEqual({ error: 'test failed' });
   });
 
   it('cascade delete - deleting claim removes result', async () => {

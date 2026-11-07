@@ -281,6 +281,11 @@ describe('path safety', () => {
     symlinkSync(outside, join(repo, 'linked'));
     expect(containsRealPath(repo, inner)).toBe(true);
     expect(containsRealPath(repo, join(repo, 'linked'))).toBe(false);
+
+    const dotted = join(repo, '..fixtures');
+    mkdirSync(dotted, { recursive: true });
+    expect(assertSafeRelPath('..fixtures/data.json')).toBe('..fixtures/data.json');
+    expect(containsRealPath(repo, dotted)).toBe(true);
   });
 });
 

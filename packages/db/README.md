@@ -35,8 +35,8 @@ All query functions that accept `orgIds` follow the same pattern: pass an array 
 | `getPipelineDetail(orgIds, repo, prNumber, filter?, isSuperadmin?)` | Full claims for a PR pipeline |
 | `getVerificationResultByClaim(orgId, claimId)` | Persisted red or green verification evidence for one claim |
 | `getVerificationResultsForPR(orgId, repo, prNumber)` | Ordered verification history for a PR |
-| `insertVerificationResultAtomic(row, client)` | Store verification evidence inside claim finalization |
-| `markVerificationTransitionApplied(claimId)` | Mark the persisted transition effects complete |
+| `insertVerificationResultAtomic(row, client)` | Store mutable verification evidence inside claim finalization; applied results reject replacement |
+| `markVerificationTransitionApplied(claimId)` | Conditionally mark previously-unapplied transition effects complete |
 | `dismissStaleClaims(orgIds, olderThanMs?, isSuperadmin?)` | Cancel/archive stale claims; 0 for empty non-superadmin |
 | `dismissPipelineClaims(orgIds, repo, prNumber?, isSuperadmin?)` | Cancel/archive a pipeline's claims; 0 for empty non-superadmin |
 

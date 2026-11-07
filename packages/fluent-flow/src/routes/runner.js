@@ -22,7 +22,6 @@ import {
   db,
   getVerificationResultByClaim,
   insertVerificationResultAtomic,
-  markVerificationTransitionApplied,
   leaseClaimCommands,
   renewClaimCommand,
   upsertClaimRequest,
@@ -32,8 +31,7 @@ import logger from '../logger.js';
 import { getInstallationToken } from '../providers/github/token-cache.js';
 import { installationCtxForRepo } from '../config/loader.js';
 import {
-  applyVerifyTransition,
-  applyVerifyTransitionWithEffects,
+  applyVerifyTransitionOnce,
   handleVerifyRedispatchExhausted,
   VerificationResultSchema,
 } from '../engine/verify-transitions.js';
@@ -443,22 +441,18 @@ export async function handleClaimResult(req, res) {
         if (existing?.claim_type === 'verify' && existing.status === 'completed') {
           const stored = await getVerificationResultByClaim(org_id, claimId);
           if (!stored) return res.status(409).json({ error: 'Verification result is unavailable' });
-          if (!stored.transitionAppliedAt) {
-            const storedVerification = {
-              phase: stored.phase,
-              framework: stored.framework,
-              outcome: stored.outcome,
-              matrix: stored.matrix,
-              manifest: stored.manifest ?? undefined,
-              test_hashes: stored.testHashes ?? undefined,
-              artifact_sha: stored.artifactSha,
-              red_base_sha: stored.redBaseSha,
-              green_sha: stored.greenSha,
-            };
-            const decision = await applyVerifyTransition(existing, storedVerification, { orgId: org_id });
-            await applyVerifyTransitionWithEffects(existing, storedVerification, { orgId: org_id }, decision);
-            await markVerificationTransitionApplied(claimId);
-          }
+          const storedVerification = {
+            phase: stored.phase,
+            framework: stored.framework,
+            outcome: stored.outcome,
+            matrix: stored.matrix,
+            manifest: stored.manifest ?? undefined,
+            test_hashes: stored.testHashes ?? undefined,
+            artifact_sha: stored.artifactSha,
+            red_base_sha: stored.redBaseSha,
+            green_sha: stored.greenSha,
+          };
+          await applyVerifyTransitionOnce(existing, storedVerification, { orgId: org_id });
           return res.json({ ok: true, claim_id: existing.id, status: existing.status, note: 'already_resolved' });
         }
       }
@@ -477,21 +471,25 @@ export async function handleClaimResult(req, res) {
         ? failClaimById
         : cancelClaimById;
     const onFinalize = status === 'completed' && verification
-      ? async (client, completed) => insertVerificationResultAtomic({
-        orgId: org_id,
-        claimId: completed.id,
-        repo: completed.repo,
-        prNumber: completed.pr_number,
-        phase: verification.phase,
-        framework: verification.framework,
-        outcome: verification.outcome,
-        matrix: verification.matrix,
-        manifest: verification.manifest ?? null,
-        testHashes: verification.test_hashes ?? null,
-        artifactSha: verification.artifact_sha ?? null,
-        redBaseSha: verification.red_base_sha ?? null,
-        greenSha: verification.green_sha ?? null,
-      }, client)
+      ? async (client, completed) => {
+          const inserted = await insertVerificationResultAtomic({
+            orgId: org_id,
+            claimId: completed.id,
+            repo: completed.repo,
+            prNumber: completed.pr_number,
+            phase: verification.phase,
+            framework: verification.framework,
+            outcome: verification.outcome,
+            matrix: verification.matrix,
+            manifest: verification.manifest ?? null,
+            testHashes: verification.test_hashes ?? null,
+            artifactSha: verification.artifact_sha ?? null,
+            redBaseSha: verification.red_base_sha ?? null,
+            greenSha: verification.green_sha ?? null,
+          }, client);
+          if (!inserted) throw new Error('Verification result is already finalized');
+          return inserted;
+        }
       : null;
     const claim = await finalize(org_id, claimId, sessionId, onFinalize);
     if (!claim) return res.status(409).json({ error: 'Claim is not active for this runner' });
@@ -565,8 +563,7 @@ export async function handleClaimResult(req, res) {
     });
 
     if (claimType === 'verify' && verification) {
-      await applyVerifyTransitionWithEffects(claim, verification, { orgId: org_id });
-      await markVerificationTransitionApplied(claim.id);
+      await applyVerifyTransitionOnce(claim, verification, { orgId: org_id });
       return res.json({ ok: true, claim_id: claim.id, status: claim.status });
     }
 

@@ -8,11 +8,14 @@ vi.mock('../../src/logger.js', async () => {
 const mockGetVerificationResultByClaim = vi.fn().mockResolvedValue(null);
 const mockInsertVerificationResult = vi.fn().mockResolvedValue({ transitionAppliedAt: null });
 const mockMarkVerificationTransitionApplied = vi.fn().mockResolvedValue({});
+const mockTransitionTx = { execute: vi.fn() };
+const mockWithTransaction = vi.fn((fn) => fn(mockTransitionTx));
 vi.mock('@fluent-flow/db', async (importOriginal) => ({
   ...(await importOriginal()),
   getVerificationResultByClaim: (...a) => mockGetVerificationResultByClaim(...a),
   insertVerificationResult: (...a) => mockInsertVerificationResult(...a),
   markVerificationTransitionApplied: (...a) => mockMarkVerificationTransitionApplied(...a),
+  withTransaction: (...a) => mockWithTransaction(...a),
 }));
 
 
@@ -50,7 +53,13 @@ vi.mock('../../src/engine/check-run.js', () => ({
   renderMatrixSummary: vi.fn(() => ({ title: 'Verification Matrix', summary: 'retry limit exhausted', annotations: [] })),
 }));
 
-import { sweepStrandedVerifyClaims, applyVerifyTransition, applyVerifyTransitionWithEffects, handleVerifyRedispatchExhausted } from '../../src/engine/verify-transitions.js';
+import {
+  sweepStrandedVerifyClaims,
+  applyVerifyTransition,
+  applyVerifyTransitionOnce,
+  applyVerifyTransitionWithEffects,
+  handleVerifyRedispatchExhausted,
+} from '../../src/engine/verify-transitions.js';
 import { createClaimWithRetry, nextChainAttempt, countCompletedFixIterations } from '../../src/agents/claim-manager.js';
 import { dispatchReview } from '../../src/engine/review-manager.js';
 import { dispatch as notifyDispatch } from '../../src/notifications/dispatcher.js';
@@ -86,6 +95,8 @@ beforeEach(() => {
   mockGetVerificationResultByClaim.mockReset().mockResolvedValue(null);
   mockInsertVerificationResult.mockReset().mockResolvedValue({ transitionAppliedAt: null });
   mockMarkVerificationTransitionApplied.mockReset().mockResolvedValue({});
+  mockTransitionTx.execute.mockReset().mockResolvedValue({ rows: [{ transition_applied_at: null }] });
+  mockWithTransaction.mockClear();
   vi.clearAllMocks();
   createClaimWithRetry.mockResolvedValue({ id: 10, attempt: 3 });
   nextChainAttempt.mockResolvedValue(3);
@@ -220,6 +231,28 @@ describe('verify-transitions — red phase', () => {
     expect(decision.claimSpec.payload.source_claim_id).toBe(10);
     expect(decision.claimSpec.payload.findings).toEqual([{ id: 'F-3', issue: 'Unhandled error' }]);
     expect(decision.claimSpec.payload.immutability).toEqual([]);
+  });
+});
+
+describe('verification transition delivery', () => {
+  it('applies effects only while the persisted result remains unapplied', async () => {
+    const claim = makeClaim();
+    const verification = makeVerification();
+    const decision = { action: 'none' };
+
+    mockTransitionTx.execute.mockResolvedValueOnce({ rows: [{ transition_applied_at: null }] });
+    await applyVerifyTransitionOnce(claim, verification, { orgId: 'o1' }, decision);
+
+    expect(onClaimResolved).toHaveBeenCalledTimes(1);
+    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(1, mockTransitionTx);
+
+    vi.clearAllMocks();
+    mockTransitionTx.execute.mockResolvedValueOnce({ rows: [{ transition_applied_at: new Date() }] });
+    const replay = await applyVerifyTransitionOnce(claim, verification, { orgId: 'o1' }, decision);
+
+    expect(replay).toEqual({ applied: false, decision });
+    expect(onClaimResolved).not.toHaveBeenCalled();
+    expect(mockMarkVerificationTransitionApplied).not.toHaveBeenCalled();
   });
 });
 
@@ -419,7 +452,7 @@ describe('verify redispatch exhaustion', () => {
     expect(mockInsertVerificationResult).toHaveBeenCalledWith(
       expect.objectContaining({ claimId: 77, phase: 'red', outcome: 'FAIL' }),
     );
-    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(77);
+    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(77, mockTransitionTx);
   });
 });
 
@@ -439,7 +472,7 @@ describe('sweepStrandedVerifyClaims', () => {
     await sweepStrandedVerifyClaims(db);
 
     expect(dispatchReview).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 5 }));
-    expect(db.execute).toHaveBeenCalledTimes(4);
+    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(42, mockTransitionTx);
   });
 
   it('does not duplicate a successor when the chain already advanced', async () => {
@@ -458,7 +491,7 @@ describe('sweepStrandedVerifyClaims', () => {
 
     expect(dispatchReview).not.toHaveBeenCalled();
     expect(onClaimResolved).toHaveBeenCalled();
-    expect(db.execute).toHaveBeenCalledTimes(4);
+    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(44, mockTransitionTx);
   });
 
   it('replays terminal notification effects before marking the result', async () => {
@@ -489,7 +522,26 @@ describe('sweepStrandedVerifyClaims', () => {
       agentId: 'agent-1',
       payload: expect.objectContaining({ type: 'escalation' }),
     }));
-    expect(db.execute).toHaveBeenCalledTimes(4);
+    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(43, mockTransitionTx);
+  });
+
+  it('attempts every stranded transition before reporting aggregate failure', async () => {
+    const claims = [
+      { id: 61, org_id: 'o1', repo: 'owner/repo', pr_number: 5, attempt: 3, payload: { phase: 'green' }, head_sha: 'abc', status: 'completed' },
+      { id: 62, org_id: 'o1', repo: 'owner/repo', pr_number: 6, attempt: 3, payload: { phase: 'green' }, head_sha: 'def', status: 'completed' },
+    ];
+    const resultRow = { phase: 'green', framework: 'vitest', outcome: 'PASS', matrix: null, test_hashes: null, artifact_sha: null, red_base_sha: null, green_sha: 'def' };
+    const db = {
+      execute: vi.fn()
+        .mockResolvedValueOnce({ rows: claims })
+        .mockResolvedValueOnce({ rows: [resultRow] })
+        .mockResolvedValueOnce({ rows: [resultRow] })
+        .mockResolvedValueOnce({ rows: [] }),
+    };
+    mockTransitionTx.execute.mockRejectedValue(new Error('lock unavailable'));
+
+    await expect(sweepStrandedVerifyClaims(db)).rejects.toThrow(AggregateError);
+    expect(mockWithTransaction).toHaveBeenCalledTimes(2);
   });
 
   it('recovers a capped failed verification with no result', async () => {
@@ -515,6 +567,6 @@ describe('sweepStrandedVerifyClaims', () => {
     expect(mockInsertVerificationResult).toHaveBeenCalledWith(
       expect.objectContaining({ claimId: 77, outcome: 'FAIL' }),
     );
-    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(77);
+    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(77, mockTransitionTx);
   });
 });

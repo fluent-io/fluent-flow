@@ -1,4 +1,4 @@
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, isNull } from 'drizzle-orm';
 import { db, schema } from '../client.js';
 
 const { verificationResults } = schema;
@@ -7,9 +7,13 @@ type VerificationResultInsert = typeof verificationResults.$inferInsert;
 export async function insertVerificationResult(row: VerificationResultInsert, executor: typeof db = db) {
   const [inserted] = await executor.insert(verificationResults)
     .values(row)
-    .onConflictDoUpdate({ target: verificationResults.claimId, set: { ...row } })
+    .onConflictDoUpdate({
+      target: verificationResults.claimId,
+      set: { ...row },
+      setWhere: isNull(verificationResults.transitionAppliedAt),
+    })
     .returning();
-  return inserted;
+  return inserted ?? null;
 }
 
 type QueryClient = {
@@ -32,6 +36,7 @@ export async function insertVerificationResultAtomic(row: VerificationResultInse
        artifact_sha = EXCLUDED.artifact_sha,
        red_base_sha = EXCLUDED.red_base_sha,
        green_sha = EXCLUDED.green_sha
+     WHERE verification_results.transition_applied_at IS NULL
      RETURNING *`,
     [
       row.orgId,
@@ -56,7 +61,10 @@ export async function markVerificationTransitionApplied(claimId: number, executo
   const [updated] = await executor
     .update(verificationResults)
     .set({ transitionAppliedAt: new Date() })
-    .where(eq(verificationResults.claimId, claimId))
+    .where(and(
+      eq(verificationResults.claimId, claimId),
+      isNull(verificationResults.transitionAppliedAt),
+    ))
     .returning();
   return updated ?? null;
 }

@@ -4,6 +4,7 @@ import {
   getVerificationResultByClaim,
   insertVerificationResult,
   markVerificationTransitionApplied,
+  withTransaction,
 } from '@fluent-flow/db';
 import { createClaim, createClaimWithRetry, nextChainAttempt, countCompletedFixIterations } from '../agents/claim-manager.js';
 import { dispatchReview } from './review-manager.js';
@@ -355,6 +356,33 @@ export async function applyVerifyTransitionWithEffects(claim, verification, ctx,
   return decision;
 }
 
+export async function applyVerifyTransitionOnce(claim, verification, ctx, precomputedDecision = null) {
+  return withTransaction(async (tx) => {
+    const locked = await tx.execute(sql`
+      SELECT transition_applied_at
+      FROM verification_results
+      WHERE claim_id = ${claim.id}
+      FOR UPDATE
+    `);
+    const row = (locked.rows ?? locked)[0];
+    if (!row) throw new Error('Verification result is unavailable');
+    if (row.transition_applied_at) {
+      return { applied: false, decision: precomputedDecision };
+    }
+    const decision = precomputedDecision ?? await applyVerifyTransition(claim, verification, ctx);
+
+    const appliedDecision = await applyVerifyTransitionWithEffects(
+      claim,
+      verification,
+      ctx,
+      decision,
+    );
+    const marked = await markVerificationTransitionApplied(claim.id, tx);
+    if (!marked) throw new Error('Verification transition could not be finalized');
+    return { applied: true, decision: appliedDecision };
+  });
+}
+
 
 export async function handleVerifyRedispatchExhausted(claim, ctx) {
   const verification = buildRedispatchExhaustedVerification(claim);
@@ -375,13 +403,11 @@ export async function handleVerifyRedispatchExhausted(claim, ctx) {
       redBaseSha: verification.red_base_sha ?? null,
       greenSha: verification.green_sha ?? null,
     });
+    if (!stored) stored = await getVerificationResultByClaim(claim.org_id, claim.id);
   }
+  if (!stored) throw new Error('Verification result is unavailable');
 
-  const decision = await applyVerifyTransition(claim, verification, ctx);
-  if (!stored.transitionAppliedAt) {
-    await applyVerifyTransitionWithEffects(claim, verification, ctx, decision);
-    await markVerificationTransitionApplied(claim.id);
-  }
+  const applied = await applyVerifyTransitionOnce(claim, verification, ctx);
 
   logger.warn({
     msg: 'Verify re-dispatch exhausted; created terminal follow-up',
@@ -390,9 +416,10 @@ export async function handleVerifyRedispatchExhausted(claim, ctx) {
     claimId: claim.id,
     phase: verification.phase,
   });
-  return { decision, verification };
+  return { decision: applied.decision, verification };
 }
 export async function sweepStrandedVerifyClaims(db) {
+  const errors = [];
   logger.info({ msg: 'Starting sweep for stranded verify claims' });
 
   const strandedWithResult = await db.execute(sql`
@@ -425,17 +452,22 @@ export async function sweepStrandedVerifyClaims(db) {
         green_sha: resultRow.green_sha,
       };
 
-      const decision = await applyVerifyTransition(claim, verification, { orgId: claim.org_id });
-      await applyVerifyTransitionWithEffects(claim, verification, { orgId: claim.org_id }, decision);
-      await db.execute(sql`
-        UPDATE verification_results
-        SET transition_applied_at = NOW()
-        WHERE claim_id = ${claim.id}
-          AND transition_applied_at IS NULL
-      `);
-      logger.info({ msg: 'Replayed transition for stranded verify claim', claimId: claim.id });
+      const applied = await applyVerifyTransitionOnce(
+        claim,
+        verification,
+        { orgId: claim.org_id },
+      );
+      if (applied.applied) {
+        logger.info({ msg: 'Replayed transition for stranded verify claim', claimId: claim.id });
+      }
     } catch (err) {
-      logger.error({ msg: 'Failed to replay transition for stranded verify claim', claimId: claim.id, error: err.message });
+      errors.push(err);
+      logger.error({
+        msg: 'Failed to replay transition for stranded verify claim',
+        claimId: claim.id,
+        error: err,
+        safeToContinue: true,
+      });
     }
   }
 
@@ -461,8 +493,18 @@ export async function sweepStrandedVerifyClaims(db) {
     try {
       await handleVerifyRedispatchExhausted(claim, { orgId: claim.org_id });
     } catch (err) {
-      logger.error({ msg: 'Failed to recover exhausted verify claim', claimId: claim.id, error: err.message });
+      errors.push(err);
+      logger.error({
+        msg: 'Failed to recover exhausted verify claim',
+        claimId: claim.id,
+        error: err,
+        safeToContinue: true,
+      });
     }
+  }
+
+  if (errors.length > 0) {
+    throw new AggregateError(errors, 'Verification transition sweep failed');
   }
 
   logger.info({ msg: 'Completed sweep for stranded verify claims' });

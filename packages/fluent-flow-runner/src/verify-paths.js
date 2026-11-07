@@ -1,6 +1,6 @@
 import { realpathSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 
 export function assertSafeRelPath(p) {
   if (typeof p !== 'string' || p.length === 0) {
@@ -31,7 +31,7 @@ export function containsRealPath(root, candidate) {
   const rootReal = realpathSync(root);
   const candidateReal = realpathSync(candidate);
   const rel = relative(rootReal, candidateReal);
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
 export function readJsonIfExists(path) {

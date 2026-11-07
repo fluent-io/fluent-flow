@@ -82,6 +82,14 @@ async function runSuiteWithTimeoutClassification(context, argv, cwd, timeoutMs) 
   return { ok: true, result: second };
 }
 
+function parseReporterOutput(stdout) {
+  try {
+    return { ok: true, value: JSON.parse(stdout || '{}') };
+  } catch {
+    return { ok: false, failureKind: 'terminal' };
+  }
+}
+
 function customVerificationCommand(verification) {
   return Array.isArray(verification?.command) && verification.command.length > 0
     ? verification.command
@@ -371,7 +379,7 @@ function destinationPathFromRoot(worktreeRoot, file) {
   const safe = assertSafeRelPath(file);
   const abs = resolve(worktreeRoot, safe);
   const rel = relative(resolve(worktreeRoot), abs);
-  if (rel.startsWith('..') || isAbsolute(rel)) {
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
     throw new Error(`Path escapes worktree: ${file}`);
   }
   return { rel: safe, abs };
@@ -397,11 +405,12 @@ function getMandatoryFiles({ frameworkId, packageManager, packageRoot, worktreeR
 }
 
 function packageRelativePrefix(worktreeRoot, packageRoot) {
-  const rel = relative(resolve(worktreeRoot), resolve(packageRoot)).split(sep).join('/');
-  if (rel.startsWith('..') || isAbsolute(rel)) {
+  const rel = relative(resolve(worktreeRoot), resolve(packageRoot));
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
     throw new Error('Detected package root escapes worktree');
   }
-  return rel ? `${rel}/` : '';
+  const normalized = rel.split(sep).join('/');
+  return normalized ? `${normalized}/` : '';
 }
 
 function pathWithinPackage(relPath, packagePrefix) {
@@ -628,8 +637,9 @@ async function runRedPhase(context) {
           );
           if (!suiteRun.ok) return { status: 'failed', failure_kind: suiteRun.kind };
           const testRun = suiteRun.result;
-          const parsed = JSON.parse(testRun.stdout || '{}');
-          const rows = normalizeRows(worktreePath, adapter.parseResults(parsed));
+          const parsed = parseReporterOutput(testRun.stdout);
+          if (!parsed.ok) return { status: 'failed', failure_kind: parsed.failureKind };
+          const rows = normalizeRows(worktreePath, adapter.parseResults(parsed.value));
           const evaluation = evaluateRedRows(manifest, rows);
           lastEvaluation = evaluation;
           if (!evaluation.valid) {
@@ -929,8 +939,9 @@ async function runGreenPhase(context) {
       );
       if (!suiteRun.ok) return { status: 'failed', failure_kind: suiteRun.kind };
       const run = suiteRun.result;
-      const parsed = JSON.parse(run.stdout || '{}');
-      const rows = normalizeRows(worktreePath, adapter.parseResults(parsed));
+      const parsed = parseReporterOutput(run.stdout);
+      if (!parsed.ok) return { status: 'failed', failure_kind: parsed.failureKind };
+      const rows = normalizeRows(worktreePath, adapter.parseResults(parsed.value));
       const evaluation = evaluateGreenRows(manifest, rows);
       pinnedRuns.push(evaluation);
       const allPassed = [...evaluation.byRequirement.values()].every((entry) => entry.passed);
@@ -950,13 +961,15 @@ async function runGreenPhase(context) {
       });
       const finalState = runStates.at(-1);
       const flaky = runStates.some((state) => state.failed) && runStates.some((state) => state.passed);
-      const status = finalState.passed && !flaky ? 'PASS' : 'FAIL';
+      const red = (redRecord.matrix?.requirements ?? [])
+        .find((req) => req.id === entry.requirement.id) ?? { status: 'MISSING' };
+      const status = finalState.passed && !flaky && red.status === 'PASS' ? 'PASS' : 'FAIL';
       return {
         id: entry.requirement.id,
         source_finding_id: entry.requirement.source_finding_id,
         tests: entry.tests,
         status,
-        red: (redRecord.matrix?.requirements ?? []).find((req) => req.id === entry.requirement.id) ?? { status: 'PASS' },
+        red,
         green: {
           status,
           flaky,
@@ -981,8 +994,9 @@ async function runGreenPhase(context) {
       );
       if (!suiteRun.ok) return { status: 'failed', failure_kind: suiteRun.kind };
       const run = suiteRun.result;
-      const parsed = JSON.parse(run.stdout || '{}');
-      const rows = normalizeRows(worktreePath, adapter.parseResults(parsed));
+      const parsed = parseReporterOutput(run.stdout);
+      if (!parsed.ok) return { status: 'failed', failure_kind: parsed.failureKind };
+      const rows = normalizeRows(worktreePath, adapter.parseResults(parsed.value));
       fullRuns.push(rows);
       if (rows.every((row) => row.status === 'pass')) break;
     }
