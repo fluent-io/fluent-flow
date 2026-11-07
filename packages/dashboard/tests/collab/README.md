@@ -5,6 +5,8 @@
 - [api.test.ts](<api.test.ts>) — Behavior regressions for api.
 - [auth.test.ts](<auth.test.ts>) — Behavior regressions for auth.
 - [board.test.ts](<board.test.ts>) — Behavior regressions for board.
+- [claim-execution.test.tsx](claim-execution.test.tsx) — RED-first ACP claim panel coverage for execution states, pagination, event reduction, safe terminal and rich-content rendering, idempotent drafts, cancellation, interactions, capability gates, revocation, loading failures and keyboard semantics.
+- [claim-execution-actual.browser.mjs](claim-execution-actual.browser.mjs) — disposable PostgreSQL, actual password session, HMAC dashboard proxy, in-process service, spawned runner CLI and deterministic ACP v2 child acceptance for claim creation, streaming, permission, follow-up, refresh, cancellation and persisted interaction rows. It has no HTTP product mocks.
 - [live.test.ts](<live.test.ts>) — Behavior regressions for live.
 - [proxy.test.ts](<proxy.test.ts>) — Behavior regressions for proxy.
 
@@ -53,3 +55,43 @@ FF_COLLAB_AUTH_SECRET=$(cat /tmp/collab-secret) FF_COLLAB_TEST_DB_OPTIN=1 \
 Set `FF_PROJECTS_SCREENSHOT_DIR` to save screenshots. Use a separate copy of the dashboard source when another dashboard is running from this checkout, so the two do not share `.next` output or `.env.local`.
 
 For the Settings drafts script, write a fresh fixture with the [mounted Settings suite](../../../fluent-flow/tests/routes/README.md) (`FF_SETTINGS_BROWSER_FIXTURE_PATH=/tmp/…json`, mode 0600), start a dedicated dashboard with that fixture's database, NextAuth secret and assertion secret, with `FF_COLLAB_API_URL` pointing at the script's API port, then run `FF_SETTINGS_BROWSER_FIXTURE_PATH=/tmp/…json FF_UI_TEST_ORIGIN=http://127.0.0.1:3192 FF_SETTINGS_DRAFTS_API_PORT=3193 node tests/collab/settings-drafts.browser.mjs`. The script mounts its own API and refuses non-loopback or non-`ff_*_test` databases.
+
+## ACP claim execution actual-browser acceptance
+
+Prerequisites are installed workspace dependencies, an installed Chromium browser, two free loopback ports, and a disposable local PostgreSQL database created specifically for this run. Run the dashboard and script from `packages/dashboard` in two shells. The dashboard and script must use the same database and collaboration assertion secret.
+
+First shell:
+
+```bash
+umask 077
+openssl rand -hex 32 > /tmp/ff-claim-nextauth-secret
+openssl rand -hex 32 > /tmp/ff-claim-collab-secret
+DB=postgres://user@127.0.0.1:5432/ff_claim_execution_browser_test
+DATABASE_URL=$DB NEXTAUTH_URL=http://127.0.0.1:3194 \
+  NEXTAUTH_SECRET=$(cat /tmp/ff-claim-nextauth-secret) \
+  FF_COLLAB_AUTH_SECRET=$(cat /tmp/ff-claim-collab-secret) \
+  FF_COLLAB_API_URL=http://127.0.0.1:3195 \
+  GITHUB_CLIENT_ID=unused GITHUB_CLIENT_SECRET=unused \
+  npx next dev --hostname 127.0.0.1 --port 3194
+```
+
+Second shell:
+
+```bash
+DB=postgres://user@127.0.0.1:5432/ff_claim_execution_browser_test
+FF_COLLAB_TEST_DB_OPTIN=1 \
+  FF_CLAIM_EXECUTION_DATABASE_URL=$DB \
+  FF_COLLAB_AUTH_SECRET=$(cat /tmp/ff-claim-collab-secret) \
+  FF_UI_TEST_ORIGIN=http://127.0.0.1:3194 \
+  FF_CLAIM_EXECUTION_API_PORT=3195 \
+  FF_CLAIM_EXECUTION_SCREENSHOT_DIR=/tmp/ff-claim-execution-shots \
+  node tests/collab/claim-execution-actual.browser.mjs
+```
+
+`FF_CLAIM_EXECUTION_DATABASE_URL` is rejected unless it uses `postgres://` or `postgresql://`, has a loopback host, has no query string or fragment, and names an exact `ff_*_test` database without `demo`, `prod` or `production` segments. `FF_COLLAB_TEST_DB_OPTIN=1` is mandatory. The script drops and recreates only the target database's `public` and `drizzle` schemas, runs migrations, seeds volatile credentials, and removes its disposable runner directories. Context, browser, runners, in-process API, database pool and temporary-directory cleanup are isolated so every cleanup is attempted; the original test failure wins over cleanup failures, each asynchronous shutdown is bounded, and runner spawn errors are handled. Do not connect another process to this database.
+
+The fixture registers a `test-acp` long-poll agent scoped to `fixture/claim-browser`, creates its one-hour runner token directly through the shared database service, queues the claim through the UI while no runner session exists, captures that state, then starts the real CLI with `--acp-command` set to the current Node executable and one `--acp-arg` pointing to `packages/fluent-flow-runner/tests/unit/fake-acp-agent.js`. The first run uses `FAKE_ACP_SCENARIO=claim-browser-uat`. After the follow-up command POST succeeds, the browser script creates an owner-only marker in the runner directory; the fake ACP child waits boundedly for that marker before ending the initial turn, so the follow-up is queued before claim completion. A second run uses `accepted-loss-resume-running` and proves one prompt, one resume, two child starts, and a completed claim. Generated passwords and tokens stay in memory and are not printed or included in screenshots; temporary traces stay under the disposable runner directories.
+
+The acceptance screenshots are `00-queued.png`, `01-streaming-permission.png`, `02-permission-answered.png`, `03-elicitation.png`, `04-refreshed-history.png`, `05-cancelled.png`, the overflow-checked narrow viewport `06-narrow-cancelled.png`, and `07-recovered-completed.png`. When the screenshot directory is configured, the first failure also attempts `failure.png`. Failure output includes only the bounded, in-memory runner stderr tail after generated credentials, tokens and bearer values are redacted; stderr is never written to a fixture file. The final database checks require one cancelled `spec` claim, one recovered and completed `build` claim, unique ordered events containing message, tool, plan and state updates, resolved permission and elicitation requests with responses, acknowledged permission/elicitation/prompt/cancel commands with results, and one matching `collab_claim_executions` link per claim.
+
+The task Execution tab mounts the claim-backed ACP panel after the legacy Paseo execution UI removal in PR #128. A missing `Start execution` button is a fixture failure.

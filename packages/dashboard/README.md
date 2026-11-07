@@ -31,7 +31,7 @@ Next.js 15 (App Router), TypeScript, Tailwind CSS, shadcn/ui, NextAuth.js, @flue
 ## Features
 
 ### Agent Management
-- Agent list with status badges (online/offline/busy) and type badges (claude-code/codex/aider)
+- Agent list with status badges (online/offline/busy) and type badges for named ACP adapters
 - Agent detail with sessions tab, claims tab, and API key management
 - Role-gated admin actions: delete agent, regenerate API key (admin+ only)
 - API key one-time reveal on regeneration (hash-only storage)
@@ -73,7 +73,7 @@ NEXT_PUBLIC_FLUENT_FLOW_URL=http://127.0.0.1:3847
 ```
 
 Use the same development database as the server. Configure the server's [required environment](../fluent-flow/README.md#environment-variables) separately, including its GitHub App settings.
-`NEXT_PUBLIC_FLUENT_FLOW_URL` supplies the server URL in legacy runner registration commands generated from Agents.
+`NEXT_PUBLIC_FLUENT_FLOW_URL` supplies the server URL in runner registration commands generated from Agents.
 
 GitHub OAuth app settings:
 - Homepage URL: `http://localhost:3000`
@@ -88,15 +88,15 @@ The root command first ensures the existing project demo database at `127.0.0.1:
 ### Registering your first agent
 
 1. Sign in and install the Fluent Flow GitHub App on your org — the install webhook creates the `orgs` row and links you as admin automatically.
-2. On the Agents page, click **+ New agent**. Enter an ID (e.g. `laptop-1`) and pick the agent type (`claude-code` by default — see [Agent types](#agent-types) below).
-3. Copy the `npx @fluent-flow/runner@latest run ...` command shown in the dialog and run it on the machine where the runner should live.
-4. The modal auto-detects when the runner connects and flips to the **Connected** step. Click Done.
+2. On the Agents page, click **+ New agent**. Enter an ID (e.g. `laptop-1`) and choose `claude-code`, `codex`, or `opencode`.
+3. Install and authenticate the matching ACP adapter on the machine where the runner will live, then copy and run the generated `npx @fluent-flow/runner@latest ...` command.
+4. The modal detects when the runner connects and advances to **Connected**. Click Done.
 
 The runner token is shown exactly once. If you lose it, delete the agent from the detail page and create a new one, or regenerate the key via `POST /api/agents/[id]/key`.
 
 ### Agent types
 
-`agent_type` is a routing hint — which CLI tool the runner invokes when it claims work (`claude`, `aider`, `codex`, etc.). It is **not** the task role (`claim_type`: `spec`/`build`/`review_fix`/`test_verify`), which is decided per-claim by the server.
+Dashboard-created agents always use `long_poll`. The available types map to local ACP adapters: `claude-code` → `claude-agent-acp`, `codex` → `codex-acp`, and `opencode` → `opencode acp`. The runner chooses the executable locally; the server does not provide a command or AI provider credentials. Authenticate the selected adapter locally before starting the runner. `agent_type` is not the task role (`claim_type`), which the server decides per claim.
 
 ## API Routes
 

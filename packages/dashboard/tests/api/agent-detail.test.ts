@@ -5,6 +5,7 @@ const mockGetAgentDetail = vi.fn();
 const mockGetAgentSessions = vi.fn();
 const mockGetAgentClaims = vi.fn();
 const mockGetKeyInfo = vi.fn();
+const mockDeleteAgentIfNoCollaborationClaims = vi.fn();
 
 vi.mock('next-auth', () => ({
   getServerSession: (...args: unknown[]) => mockGetServerSession(...args),
@@ -15,17 +16,19 @@ vi.mock('@fluent-flow/db', () => ({
   getAgentSessions: (...args: unknown[]) => mockGetAgentSessions(...args),
   getAgentClaims: (...args: unknown[]) => mockGetAgentClaims(...args),
   getKeyInfo: (...args: unknown[]) => mockGetKeyInfo(...args),
+  deleteAgentIfNoCollaborationClaims: (...args: unknown[]) => mockDeleteAgentIfNoCollaborationClaims(...args),
 }));
 
 vi.mock('@/lib/auth', () => ({
   authOptions: {},
+  hasRole: vi.fn(() => true),
   getOrgScope: vi.fn((session: { user: { isSuperadmin: boolean; orgs: { org_id: string }[] } }) => {
     if (session.user.isSuperadmin) return { orgIds: [], isSuperadmin: true };
     return { orgIds: session.user.orgs.map((o) => o.org_id), isSuperadmin: false };
   }),
 }));
 
-const { GET } = await import('../../src/app/api/agents/[id]/route.js');
+const { DELETE, GET } = await import('../../src/app/api/agents/[id]/route.js');
 
 describe('GET /api/agents/[id]', () => {
   beforeEach(() => {
@@ -99,5 +102,29 @@ describe('GET /api/agents/[id]', () => {
     const response = await GET(request, { params: Promise.resolve({ id: 'ff-runner' }) });
     expect(response.status).toBe(200);
     expect(mockGetAgentDetail).toHaveBeenCalledWith(['legacy-org'], 'ff-runner', true);
+  });
+});
+
+describe('DELETE /api/agents/[id]', () => {
+  beforeEach(() => {
+    mockGetServerSession.mockReset();
+    mockGetAgentDetail.mockReset();
+    mockDeleteAgentIfNoCollaborationClaims.mockReset();
+  });
+
+  it('preserves agents that own collaboration execution history', async () => {
+    mockGetServerSession.mockResolvedValueOnce({
+      user: { id: 1, isSuperadmin: false, orgs: [{ org_id: 'fluent-io', role: 'admin' }] },
+    });
+    mockGetAgentDetail.mockResolvedValueOnce({ id: 'ff-runner', org_id: 'fluent-io' });
+    mockDeleteAgentIfNoCollaborationClaims.mockResolvedValueOnce('protected');
+
+    const request = new Request('http://localhost/api/agents/ff-runner');
+    const response = await DELETE(request, { params: Promise.resolve({ id: 'ff-runner' }) });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: 'Agent cannot be deleted because execution history must be preserved',
+    });
   });
 });

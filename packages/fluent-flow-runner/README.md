@@ -47,9 +47,9 @@ See [connector modules and limits](src/connector/README.md) and [test/UAT eviden
 For typical users, don't use the Admin API below — it requires the server's `MCP_AUTH_TOKEN`, which is a server-admin secret. Instead:
 
 1. Sign in to the dashboard and install the Fluent Flow GitHub App on your org.
-2. Click **+ New agent** on the Agents page. Name the agent, pick a harness.
-3. Copy the displayed `npx @fluent-flow/runner@latest …` command (token pre-filled) and run it on the machine where your AI CLI lives.
-4. Modal auto-confirms when the runner connects.
+2. Click **+ New agent** on the Agents page. Name the agent and choose `claude-code`, `codex`, or `opencode`.
+3. Install and authenticate the matching ACP adapter locally, then run the displayed `npx @fluent-flow/runner@latest …` command.
+4. The modal confirms when the runner connects.
 
 The rest of this README covers the **ops/CI path** — registering agents directly against the server without going through the dashboard. Use this when provisioning from CI, from scripts, or when acting as the server admin.
 
@@ -76,13 +76,9 @@ If neither is available, cloning public repos still works via plain HTTPS.
 
 ### AI Agent Authentication
 
-The runner spawns AI coding agents (claude-code, codex, aider, etc.) as subprocesses. These agents need their own API keys:
+The review runner starts a local ACP v2 adapter. Install and authenticate the adapter for the registered agent type on the runner machine. Adapter credentials and configuration stay local; the server never supplies an executable, arguments, or environment values.
 
-- Set `ANTHROPIC_API_KEY` for Claude Code
-- Set `OPENAI_API_KEY` for Codex/OpenAI-based agents
-- Any other keys your chosen agent requires
-
-The runner passes all environment variables through to spawned agents.
+The runner uses the official `@agentclientprotocol/sdk@2.4.0` v2 API. It requires the adapter to support ACP v2 sessions and the baseline session methods; incompatible adapters fail before a claim prompt is submitted.
 
 ### Admin API Authentication
 
@@ -115,20 +111,13 @@ curl -X POST http://flow.fluenthive.io/api/agents \
 | Field | Required | Description |
 |-------|----------|-------------|
 | `id` | Yes | Unique agent identifier |
-| `agent_type` | Yes | `claude-code`, `codex`, `devin`, `openclaw`, `aider`, or `custom` |
+| `agent_type` | Yes | Local ACP adapter mapping: `claude-code` or `claude-agent-acp`, `codex` or `codex-acp`, or `opencode`. Other values require a local `--acp-command` |
 | `transport` | Yes | Must be `long_poll` for runner usage |
-| `transport_meta` | No | Transport-specific config (see below) |
 | `repos` | No | Repos this agent can work on (e.g. `["fluent-io/fluent-hive", "fluent-io/api"]`). Omit or `[]` for all repos |
-
-**`transport_meta`** is a JSON object with transport-specific settings. For `long_poll`:
-
-| Key | Description |
-|-----|-------------|
-| `command` | Custom command template. Use `{prompt}` as placeholder for the review feedback. Overrides the default command for the `agent_type` |
 
 #### Examples
 
-Minimal — uses the default `claude-code` command, all repos:
+Minimal — uses the local `claude-agent-acp` mapping, all repos:
 
 ```bash
 curl -X POST http://flow.fluenthive.io/api/agents \
@@ -152,23 +141,6 @@ curl -X POST http://flow.fluenthive.io/api/agents \
     "agent_type": "claude-code",
     "transport": "long_poll",
     "repos": ["fluent-io/fluent-hive"]
-  }'
-```
-
-Custom command template (e.g. wrapping codex with extra flags):
-
-```bash
-curl -X POST http://flow.fluenthive.io/api/agents \
-  -H "Authorization: Bearer $MCP_AUTH_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "id": "codex-runner",
-    "agent_type": "custom",
-    "transport": "long_poll",
-    "transport_meta": {
-      "command": "codex --approval full-auto -q \"{prompt}\""
-    },
-    "repos": ["fluent-io/api"]
   }'
 ```
 
@@ -205,6 +177,33 @@ npm install
 npm link
 ```
 
+### Install an ACP adapter
+
+Use Node.js 20 or newer for the review runner. Install one adapter on every runner machine:
+
+```bash
+npm install -g @agentclientprotocol/claude-agent-acp
+npm install -g @agentclientprotocol/codex-acp
+npm install -g opencode-ai
+```
+
+The named mappings are `claude-code` or `claude-agent-acp` → `claude-agent-acp`, `codex` or `codex-acp` → `codex-acp`, and `opencode` → `opencode acp`. Install only the adapter you use and complete its local authentication setup.
+
+On Windows, the runner does not execute npm `.cmd` shims. For these known packages it resolves the adjacent package's declared JavaScript bin and launches it with Node. Native `.exe` and extensionless executables run directly; arbitrary `.cmd` wrappers are rejected.
+
+For another ACP v2 adapter, configure one executable locally:
+
+```bash
+fluent-flow-runner \
+  --token ff_<your-token> \
+  --server http://flow.fluenthive.io \
+  --acp-command /absolute/path/to/adapter \
+  --acp-arg first-value \
+  --acp-arg second-value
+```
+
+`--acp-command` is a single executable name or path, not shell text. Each `--acp-arg` adds one literal argument. The former `--command` prompt-template option is unsupported.
+
 ### 4. Run
 
 ```bash
@@ -229,16 +228,17 @@ node packages/fluent-flow-runner/bin/fluent-flow-runner.js \
 |------|----------|-------------|
 | `--token` | Yes | Agent token from step 2 |
 | `--server` | Yes | Fluent Flow server URL |
-| `--command` | No | Override the default agent command template |
-| `--cwd` | No | Working directory for spawned agent processes |
+| `--acp-command` | No | Local ACP v2 adapter executable for an agent type without a named mapping |
+| `--acp-arg` | No | Literal adapter argument; repeat the flag for multiple arguments |
+| `--cwd` | No | Working directory for the claim worktree |
 | `--verbose` | No | Enable debug-level JSON logging to stdout |
 
 ## Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FLUENT_FLOW_ALERT_WEBHOOK_URL` | unset | Webhook (Slack/Discord-style) that receives **runner cannot run** alerts — failed startup health checks, harness error results (e.g. claude "Not logged in"), health-state changes. Always paired with an error-level log; delivery is best-effort. |
-| `FLUENT_FLOW_HEALTH_INTERVAL_MS` | `300000` | How often the runner re-checks that it can actually run (harness present + authenticated, `gh` usable). While unhealthy the runner **stops claiming work** — its session expires and the server marks it offline instead of routing claims it would silently no-op. `0` disables the periodic check (startup gate always runs). |
+| `FLUENT_FLOW_ALERT_WEBHOOK_URL` | unset | Webhook (Slack/Discord-style) that receives **runner cannot run** alerts — failed startup health checks, ACP adapter error results (for example, "Not logged in"), health-state changes. Always paired with an error-level log; delivery is best-effort. |
+| `FLUENT_FLOW_HEALTH_INTERVAL_MS` | `300000` | How often the runner re-checks that it can actually run (ACP adapter present and authenticated, `gh` usable). While unhealthy the runner **stops claiming work** — its session expires and the server marks it offline instead of routing claims it would silently no-op. `0` disables the periodic check (startup gate always runs). |
 | `FLUENT_FLOW_HEARTBEAT_MS` | `60000` | Claim heartbeat interval while an agent executes — extends the session TTL and the claim's expiry server-side so long runs aren't re-dispatched mid-flight. |
 | `FLUENT_FLOW_AGENT_TIMEOUT_MS` | `3600000` | Hard cap on a single agent execution: SIGTERM, then SIGKILL after 10s; the claim is reported as a transient failure and re-dispatched. |
 
@@ -251,7 +251,7 @@ sequenceDiagram
     participant GH as GitHub
     participant FF as Fluent Flow Server
     participant R as Runner (your PC)
-    participant A as Agent (e.g. claude-code)
+    participant A as Local ACP v2 adapter
 
     R->>FF: Register session
     FF-->>R: session_id
@@ -266,10 +266,12 @@ sequenceDiagram
     FF->>FF: Review fails → create claim
 
     R->>FF: Poll for work
-    FF-->>R: Claim (fix prompt + PR details)
-    R->>A: Spawn agent with fix prompt
-    A->>GH: Push fix commit
-    A-->>R: Exit (success/failure)
+    FF-->>R: Claim (prompt + repository details)
+    R->>A: Start one direct child and one ACP session
+    A-->>R: Stream updates and requests
+    R->>FF: Persist events and permission or elicitation requests
+    FF-->>R: Forward prompt, cancel, or request-answer commands
+    A-->>R: Return to idle or fail
     R->>FF: Report result
 
     FF->>FF: Re-review triggered
@@ -280,22 +282,25 @@ sequenceDiagram
     end
 ```
 
-1. **Register** — Connects to the server and registers an ephemeral session (5min TTL)
-2. **Poll** — Continuously checks the server for pending fix claims (~1s interval, extends session TTL on each poll)
-3. **Execute** — When a review fails and work is assigned, automatically spawns the agent (e.g. `claude-code`) with the fix prompt
-4. **Report** — After the agent finishes, reports the result (completed or failed) back to the server
-5. **Repeat** — Returns to polling for the next claim
+1. **Register** — Connects to the server and registers an ephemeral session.
+2. **Poll** — Claims one pending phase of work and keeps its ownership alive with heartbeats.
+3. **Execute** — Prepares the worktree, starts one direct ACP child, opens one ACP v2 session, and submits the claim prompt.
+4. **Interact** — Streams updates through Web streams and forwards claim-scoped prompts, cancellation, permission answers, and elicitation answers.
+5. **Report** — Reports the claim only after the session returns to idle or reaches a classified failure, then closes and awaits the owned direct child.
+6. **Repeat** — Polls for another claim. Each pipeline phase is a separate claim, so any compatible runner may execute the next phase.
 
-On shutdown (`Ctrl+C`), the runner reports any active claim as failed before exiting.
+On shutdown (`Ctrl+C`), the runner cancels active work, closes the ACP session within bounded deadlines, awaits or terminates only its direct child, and reports unfinished work as a transient failure. If the runner crashes, the server relies on claim expiry and redispatch; the runner does not manage descendants or host-wide processes.
 
-### Resilience
+### Resilience and troubleshooting
 
-- **Exponential backoff** — on poll failures, retries with increasing delay (2s → 4s → 8s → ... up to 60s)
-- **Watchdog timer** — if total time spent in consecutive backoff exceeds 10 minutes, the runner force-exits (`process.exit(1)`). This lets the container orchestrator (Docker, systemd) restart it.
-- **Max failure limit** — after 30 consecutive poll failures, the runner stops (prevents infinite retry loops against a down server)
-- **Stale session detection** — if the session expires or goes offline, the server returns 410 and the runner re-registers
+- Poll failures use bounded exponential backoff, and sustained failure stops the runner so its service manager can restart it.
+- A setup failure may start one fresh child before a prompt is submitted. After an accepted prompt, one child replacement may resume the ACP session without replaying the prompt. Liveness checks and a rolling restart budget prevent spawn loops.
+- Recovery never treats an ambiguous prompt submission as safe to replay. If the runner cannot prove continuation, it reports a transient failure and claim expiry provides the scheduling fallback.
+- Once the server leases a dashboard command, it is never delivered a second time. The runner renews queued prompts every 30 seconds and validates each command immediately before applying it. Commands not acknowledged or renewed within 90 seconds become `uncertain`. Prompt commands are acknowledged when ACP accepts them, before the turn completes. In-flight acknowledgements use the bounded 35-second HTTP transport deadline rather than the short command-poll wait.
+- A runner handles one claim and one direct child at a time. Completion of one phase does not reserve the next phase for the same runner.
+- If startup fails, verify the local adapter is installed, authenticated, on `PATH`, and supports ACP v2 sessions. If execution stops, check the runner's structured logs and adapter diagnostics locally. User-facing responses intentionally remain generic; contact the operator when local logs are unavailable.
 
-Built-in agent types (`claude-code`, `codex`, `aider`) spawn with `shell: false` — the prompt is passed as a discrete argument with no injection risk. Custom commands (`--command`) use `shell: true` with shell-character escaping.
+All adapter processes use `shell: false`. Prompts and service data are protocol messages, never command text.
 
 ## Docker Deployment
 
@@ -327,18 +332,22 @@ compose at [`docker-compose.yml`](./docker-compose.yml). Notable, reliability-cr
 - **`gh` CLI is installed** — the review agent prompt depends on it
   (`gh pr diff`, `gh api .../reviews`). Images without `gh` produce reviews
   that are never posted: silent no-op pipelines.
-- **`init: true` in compose** — the harness CLIs spawn grandchildren
-  (git/gh/ripgrep); Node as PID 1 does not reap them. Without an init,
-  long-lived runner containers accumulate zombie processes.
-- **Writable `~/.claude` and `~/.config/gh`** (named volumes) — claude-code
-  persists session state under `~/.claude`, and the runner re-runs
-  `gh auth login --with-token` per claim, writing `~/.config/gh`. Mounting the
-  host home read-only breaks both.
+- **`init: true` in compose** — adapters can leave tool processes behind when
+  they exit. The container init process reaps those orphaned descendants without
+  requiring the runner to inspect or manage host processes.
+- **Claude Agent ACP is the default adapter** — the image installs
+  `@agentclientprotocol/claude-agent-acp`, which is the adapter selected by a
+  `claude-code` registration. Authenticate Claude on the host before starting
+  compose; the shipped compose file mounts that local state into the container.
 
 **Key decisions:**
 - Runs as `USER node` (uid 1000) to match host user for volume permissions. The `node:24-bookworm` image already has uid 1000 as the `node` user.
 - Installs `openssh-client` so SSH git auth works.
-- All host config (`.claude`, `.ssh`, `.gitconfig`) must be mounted at `/home/node/` — **not** `/home/runner/` — because that's the `node` user's actual home directory.
+- Mount only the local adapter state and Git credentials the selected adapter needs under `/home/node/`.
+
+Before `docker compose up`, authenticate Claude Code and run `gh auth login` on
+the host. Confirm that `~/.claude`, `~/.claude.json`, and `~/.config/gh` exist;
+Docker otherwise creates missing bind sources with the wrong ownership or type.
 
 ### docker-compose.yml
 
@@ -347,7 +356,7 @@ services:
   runner:
     build:
       context: /path/to/fluent-flow   # Server repo (for runner source)
-      dockerfile: /path/to/fluent-flow-runner/Dockerfile
+      dockerfile: packages/fluent-flow-runner/Dockerfile
     container_name: fluent-flow-runner
     env_file: .env
     environment:
@@ -362,9 +371,9 @@ services:
       - --verbose
     volumes:
       - ./work:/work                                    # Agent worktrees
-      - ~/.claude:/home/node/.claude                    # Claude Code auth
-      - ~/.claude.json:/home/node/.claude.json          # Claude Code config
-      - ~/.codex:/home/node/.codex:ro                   # Codex config
+      - ~/.claude:/home/node/.claude                    # Claude Agent ACP auth
+      - ~/.claude.json:/home/node/.claude.json          # Claude Agent ACP config
+      - ~/.config/gh:/home/node/.config/gh
       - ~/.gitconfig:/home/node/.gitconfig:ro           # Git identity
       - ~/.ssh:/home/node/.ssh:ro                       # SSH keys for git clone
     networks:
@@ -386,10 +395,14 @@ FLUENT_FLOW_RUNNER_TOKEN=ff_xxxx
 # doesn't have access to the target org. The runner tries SSH first,
 # then HTTPS with this token via x-access-token URL auth.
 GITHUB_TOKEN=ghp_xxxx
-
-# AI agent API keys are also passed through
-ANTHROPIC_API_KEY=sk-ant-xxxx
 ```
+
+The default image supports `claude-code` and `claude-agent-acp`. To use
+`codex`, `codex-acp`, or `opencode`, extend the image to install the matching
+adapter described in [Install an ACP adapter](#install-an-acp-adapter), then
+mount that adapter's local authentication state. The server never sends AI
+provider credentials to the runner. The adapter uses its local login state and
+inherits the runner process environment.
 
 ### Git Auth Flow
 

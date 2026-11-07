@@ -1,4 +1,4 @@
-import { query } from '../pool.js';
+import { getPool, query } from '../pool.js';
 import { agentListItemSchema, agentSchema } from '../schemas/agents.js';
 import type { AgentListItem, Agent } from '../schemas/agents.js';
 import { SESSION_STATUS_AT_READ_TIME } from './_helpers.js';
@@ -77,4 +77,52 @@ export async function createAgent(input: CreateAgentInput): Promise<Agent> {
     input.repos ?? [],
   ]);
   return agentSchema.parse(result.rows[0]);
+}
+
+export async function deleteAgentIfNoCollaborationClaims(
+  orgId: string,
+  agentId: string,
+): Promise<'deleted' | 'not_found' | 'protected'> {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const agent = await client.query(
+      `SELECT id FROM agents WHERE org_id = $1 AND id = $2 FOR UPDATE`,
+      [orgId, agentId],
+    );
+    if (agent.rows.length === 0) {
+      await client.query('COMMIT');
+      return 'not_found';
+    }
+    const claims = await client.query<{ id: number }>(
+      `SELECT claim.id
+       FROM agent_claims claim
+       JOIN agent_sessions session ON session.id = claim.session_id AND session.org_id = claim.org_id
+       WHERE session.org_id = $1 AND session.agent_id = $2
+       FOR UPDATE OF claim`,
+      [orgId, agentId],
+    );
+    const claimIds = claims.rows.map((claim) => claim.id);
+    if (claimIds.length > 0) {
+      const linked = await client.query<{ linked: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM collab_claim_executions WHERE claim_id = ANY($1::integer[])
+         ) AS linked`,
+        [claimIds],
+      );
+      if (linked.rows[0].linked) {
+        await client.query('COMMIT');
+        return 'protected';
+      }
+      await client.query(`DELETE FROM agent_claims WHERE id = ANY($1::integer[])`, [claimIds]);
+    }
+    await client.query(`DELETE FROM agents WHERE org_id = $1 AND id = $2`, [orgId, agentId]);
+    await client.query('COMMIT');
+    return 'deleted';
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }

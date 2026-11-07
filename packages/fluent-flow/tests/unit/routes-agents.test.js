@@ -56,6 +56,24 @@ describe('agent routes', () => {
       expect(mockCreateAgent).toHaveBeenCalledWith(expect.objectContaining({ id: 'a1', orgId: 'acme' }));
       expect(res.status).toHaveBeenCalledWith(201);
     });
+
+    it.each(['claude-agent-acp', 'codex-acp', 'opencode'])('accepts and forwards the %s agent type', async (agentType) => {
+      const res = fakeRes();
+
+      await handleCreateAgent(adminReq({
+        id: `${agentType}-runner`,
+        agent_type: agentType,
+        transport: 'long_poll',
+      }), res);
+
+      expect(mockCreateAgent).toHaveBeenCalledWith(expect.objectContaining({
+        id: `${agentType}-runner`,
+        orgId: 'acme',
+        agentType,
+        transport: 'long_poll',
+      }));
+      expect(res.status).toHaveBeenCalledWith(201);
+    });
   });
 
   describe('handleGetAgent', () => {

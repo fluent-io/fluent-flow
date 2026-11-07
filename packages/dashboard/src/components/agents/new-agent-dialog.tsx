@@ -8,9 +8,14 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
 type Step = 1 | 2 | 3;
-type AgentType = 'claude-code' | 'codex' | 'devin' | 'openclaw' | 'aider' | 'custom';
+type AgentType = 'claude-code' | 'codex' | 'opencode';
 
-const AGENT_TYPES: AgentType[] = ['claude-code', 'codex', 'devin', 'openclaw', 'aider', 'custom'];
+const AGENT_TYPES: AgentType[] = ['claude-code', 'codex', 'opencode'];
+const ADAPTER_PACKAGES: Record<AgentType, string> = {
+  'claude-code': '@agentclientprotocol/claude-agent-acp',
+  'codex': '@agentclientprotocol/codex-acp',
+  'opencode': 'opencode-ai',
+};
 
 export function NewAgentDialog() {
   const { data: session } = useSession();
@@ -154,7 +159,7 @@ export function NewAgentDialog() {
                 {AGENT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
               <span className="text-xs text-muted-foreground">
-                Which CLI tool this runner will invoke when it claims work.
+                Select the local ACP adapter this runner will use for claims.
               </span>
             </label>
             {error && <p className="text-sm text-destructive">{error}</p>}
@@ -184,7 +189,7 @@ export function NewAgentDialog() {
               The token is shown once. Copy it before closing — if lost, delete the agent and create a new one.
             </p>
 
-            <SetupInstructions />
+            <SetupInstructions agentType={agentType} />
           </div>
         )}
 
@@ -203,7 +208,7 @@ export function NewAgentDialog() {
   );
 }
 
-function SetupInstructions() {
+function SetupInstructions({ agentType }: { agentType: AgentType }) {
   const [open, setOpen] = useState(false);
   const id = useId();
   const toggleId = `${id}-toggle`;
@@ -241,26 +246,9 @@ function SetupInstructions() {
             </ul>
           </div>
           <div>
-            <p className="text-xs font-medium mb-1">AI agent API keys</p>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              The spawned coding agent needs its own API key.
-            </p>
-            <ul className="mt-1 list-disc list-inside text-xs text-muted-foreground space-y-0.5">
-              <li>
-                Claude Code → <code className="rounded bg-muted px-1 py-0.5 text-[11px]">ANTHROPIC_API_KEY</code>
-              </li>
-              <li>
-                Codex → <code className="rounded bg-muted px-1 py-0.5 text-[11px]">OPENAI_API_KEY</code>
-              </li>
-              <li>
-                Aider / OpenClaw → set the corresponding provider key
-              </li>
-            </ul>
-          </div>
-          <div className="rounded bg-muted p-2">
-            <p className="text-xs text-muted-foreground">
-              Pass env vars when running the command, e.g.:{' '}
-              <code className="rounded bg-background px-1 py-0.5 text-[11px]">GITHUB_TOKEN=ghp_… ANTHROPIC_API_KEY=sk-ant-… npx @fluent-flow/runner@latest …</code>
+            <p className="mb-1 text-xs font-medium">Local ACP adapter</p>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              Install <code className="rounded bg-muted px-1 py-0.5 text-[11px]">{ADAPTER_PACKAGES[agentType]}</code> on this machine, then complete its local authentication setup before starting the runner. The Fluent Flow service does not send AI provider credentials. The adapter uses its local login state and inherits the runner process environment.
             </p>
           </div>
         </div>

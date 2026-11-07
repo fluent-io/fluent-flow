@@ -1,32 +1,40 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../src/logger.js', async () => {
   const { createMockLogger } = await import('../helpers/mock-logger.js');
   return { default: createMockLogger() };
 });
 
-vi.mock('../../src/db/client.js', () => ({
-  audit: vi.fn(),
+vi.mock('../../src/db/client.js', () => ({ audit: vi.fn() }));
+
+vi.mock('../../src/agents/session-manager.js', () => ({
+  registerSession: vi.fn(),
+  touchSession: vi.fn(),
+  setSessionStatus: vi.fn(),
 }));
 
 vi.mock('../../src/agents/claim-manager.js', () => ({
+  assertClaimOwner: vi.fn(),
+  withClaimOwner: vi.fn(),
   completeClaim: vi.fn(),
   failClaim: vi.fn(),
   completeClaimById: vi.fn(),
   failClaimById: vi.fn(),
+  cancelClaimById: vi.fn(),
   getClaimById: vi.fn(),
   getClaimByAttempt: vi.fn(),
   createClaim: vi.fn(),
+  createFollowOnClaim: vi.fn(),
   redispatchClaim: vi.fn(),
+  extendClaim: vi.fn(),
 }));
 
 import {
+  assertClaimOwner,
+  cancelClaimById,
   completeClaimById,
-  failClaim,
-  failClaimById,
-  getClaimById,
-  getClaimByAttempt,
   createClaim,
+  failClaimById,
   redispatchClaim,
 } from '../../src/agents/claim-manager.js';
 import { handleClaimResult } from '../../src/routes/runner.js';
@@ -36,7 +44,7 @@ function makeRes() {
     headersSent: false,
     statusCode: 200,
     body: null,
-    status(code) { this.statusCode = code; this.headersSent = true; return this; },
+    status(code) { this.statusCode = code; return this; },
     json(payload) { this.body = payload; this.headersSent = true; return this; },
   };
 }
@@ -49,41 +57,75 @@ const CLAIM_ROW = {
   repo: 'o/r',
   pr_number: 5,
   attempt: 2,
+  session_id: 3,
   claim_type: 'review',
   payload: { branch: 'fix/x' },
   head_sha: 'abc123',
   status: 'claimed',
 };
 
+const RESULT = {
+  repo: 'o/r',
+  pr_number: 5,
+  attempt: 2,
+  claim_id: 7,
+  session_id: 3,
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
+  assertClaimOwner.mockResolvedValue(CLAIM_ROW);
 });
 
-describe('handleClaimResult — claim_id path', () => {
-  it('completes by id without any natural-key lookup (no cross-type ambiguity)', async () => {
+describe('handleClaimResult owner-bound terminal results', () => {
+  it('requires both claim_id and session_id', async () => {
+    for (const body of [
+      { ...RESULT, status: 'completed', claim_id: undefined },
+      { ...RESULT, status: 'completed', session_id: undefined },
+    ]) {
+      const res = makeRes();
+      await handleClaimResult(REQ(body), res);
+      expect(res.statusCode).toBe(400);
+      expect(res.body).toEqual({ error: 'Validation failed' });
+      expect(res.body).not.toHaveProperty('details');
+    }
+    expect(assertClaimOwner).not.toHaveBeenCalled();
+    expect(completeClaimById).not.toHaveBeenCalled();
+  });
+
+  it('completes only the claim currently owned by the token agent and runner session', async () => {
     completeClaimById.mockResolvedValueOnce({ ...CLAIM_ROW, status: 'completed' });
     const res = makeRes();
 
-    await handleClaimResult(
-      REQ({ status: 'completed', repo: 'o/r', pr_number: 5, attempt: 2, claim_id: 7 }),
-      res,
-    );
+    await handleClaimResult(REQ({ ...RESULT, status: 'completed' }), res);
 
-    expect(completeClaimById).toHaveBeenCalledWith('o1', 7);
-    expect(getClaimByAttempt).not.toHaveBeenCalled();
-    expect(res.statusCode).toBe(200);
-    expect(res.body.claim_id).toBe(7);
+    expect(assertClaimOwner).toHaveBeenCalledWith({ orgId: 'o1', agentId: 'a1', sessionId: 3, claimId: 7 });
+    expect(completeClaimById).toHaveBeenCalledWith('o1', 7, 3);
+    expect(res.body).toEqual({ ok: true, claim_id: 7, status: 'completed' });
   });
 
-  it('completed review with FAIL verdict still auto-chains review_fix at attempt+1', async () => {
+  it.each([
+    [404, 'foreign claim', { error: 'Claim not found' }],
+    [409, 'wrong runner session or agent', { error: 'Claim is not active for this runner' }],
+    [409, 'already completed claim', { error: 'Claim is not active for this runner' }],
+  ])('rejects ownership failure with generic %i instead of treating %s as success', async (statusCode, detail, expectedBody) => {
+    assertClaimOwner.mockRejectedValueOnce(Object.assign(new Error(detail), { statusCode }));
+    const res = makeRes();
+
+    await handleClaimResult(REQ({ ...RESULT, status: 'completed' }), res);
+
+    expect(res.statusCode).toBe(statusCode);
+    expect(res.body).toEqual(expectedBody);
+    expect(JSON.stringify(res.body)).not.toContain(detail);
+    expect(completeClaimById).not.toHaveBeenCalled();
+  });
+
+  it('completed review with a fail verdict preserves review-fix chaining after owner-bound finalization', async () => {
     completeClaimById.mockResolvedValueOnce({ ...CLAIM_ROW, status: 'completed' });
     createClaim.mockResolvedValueOnce({ id: 8 });
     const res = makeRes();
 
-    await handleClaimResult(
-      REQ({ status: 'completed', repo: 'o/r', pr_number: 5, attempt: 2, claim_id: 7, verdict: 'fail' }),
-      res,
-    );
+    await handleClaimResult(REQ({ ...RESULT, status: 'completed', verdict: 'fail' }), res);
 
     expect(createClaim).toHaveBeenCalledWith(expect.objectContaining({
       claimType: 'review_fix',
@@ -92,61 +134,51 @@ describe('handleClaimResult — claim_id path', () => {
     }));
   });
 
-  it('already-resolved claim by id returns 200 already_resolved', async () => {
-    completeClaimById.mockResolvedValueOnce(null);
-    getClaimById.mockResolvedValueOnce({ ...CLAIM_ROW, status: 'completed' });
-    const res = makeRes();
-
-    await handleClaimResult(
-      REQ({ status: 'completed', repo: 'o/r', pr_number: 5, attempt: 2, claim_id: 7 }),
-      res,
-    );
-
-    expect(res.statusCode).toBe(200);
-    expect(res.body.note).toBe('already_resolved');
-  });
-
-  it('transient failure fails by id and re-dispatches at attempt+1', async () => {
+  it('re-dispatches an owner-bound transient failure only after failed finalization', async () => {
     failClaimById.mockResolvedValueOnce({ ...CLAIM_ROW, claim_type: 'review_fix', status: 'failed' });
     redispatchClaim.mockResolvedValueOnce({ id: 8, attempt: 3 });
     const res = makeRes();
 
-    await handleClaimResult(
-      REQ({ status: 'failed', repo: 'o/r', pr_number: 5, attempt: 2, claim_id: 7, failure_kind: 'transient' }),
-      res,
-    );
+    await handleClaimResult(REQ({ ...RESULT, status: 'failed', failure_kind: 'transient' }), res);
 
-    expect(failClaimById).toHaveBeenCalledWith('o1', 7);
-    expect(redispatchClaim).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 7, claim_type: 'review_fix', payload: CLAIM_ROW.payload, head_sha: 'abc123' }),
-    );
+    expect(assertClaimOwner).toHaveBeenCalledWith({ orgId: 'o1', agentId: 'a1', sessionId: 3, claimId: 7 });
+    expect(failClaimById).toHaveBeenCalledWith('o1', 7, 3);
+    expect(redispatchClaim).toHaveBeenCalledWith(expect.objectContaining({ id: 7, claim_type: 'review_fix' }));
     expect(res.body.status).toBe('failed');
   });
 
-  it('terminal failure (default) does NOT re-dispatch', async () => {
+  it('does not re-dispatch a terminal failure', async () => {
     failClaimById.mockResolvedValueOnce({ ...CLAIM_ROW, status: 'failed' });
     const res = makeRes();
 
-    await handleClaimResult(
-      REQ({ status: 'failed', repo: 'o/r', pr_number: 5, attempt: 2, claim_id: 7 }),
-      res,
-    );
+    await handleClaimResult(REQ({ ...RESULT, status: 'failed' }), res);
 
     expect(redispatchClaim).not.toHaveBeenCalled();
   });
 
-  it('payloads without claim_id keep the legacy natural-key path', async () => {
-    getClaimByAttempt.mockResolvedValueOnce({ ...CLAIM_ROW, claim_type: 'review_fix', status: 'claimed' });
-    failClaim.mockResolvedValueOnce({ ...CLAIM_ROW, status: 'failed' });
+  it('finalizes cancellation, frees the claim, creates no follow-on, and never re-dispatches', async () => {
+    cancelClaimById.mockResolvedValueOnce({ ...CLAIM_ROW, status: 'cancelled' });
     const res = makeRes();
 
-    await handleClaimResult(
-      REQ({ status: 'failed', repo: 'o/r', pr_number: 5, attempt: 2, failure_kind: 'transient' }),
-      res,
-    );
+    await handleClaimResult(REQ({ ...RESULT, status: 'cancelled', failure_kind: 'transient' }), res);
 
-    expect(failClaim).toHaveBeenCalledWith('o1', 'o/r', 5, 2, 'review_fix');
+    expect(assertClaimOwner).toHaveBeenCalledWith({ orgId: 'o1', agentId: 'a1', sessionId: 3, claimId: 7 });
+    expect(cancelClaimById).toHaveBeenCalledWith('o1', 7, 3);
+    expect(completeClaimById).not.toHaveBeenCalled();
     expect(failClaimById).not.toHaveBeenCalled();
-    expect(redispatchClaim).toHaveBeenCalled();
+    expect(createClaim).not.toHaveBeenCalled();
+    expect(redispatchClaim).not.toHaveBeenCalled();
+    expect(res.body).toEqual({ ok: true, claim_id: 7, status: 'cancelled' });
+  });
+
+  it('returns a generic 409 when the ownership-predicated terminal update loses a race', async () => {
+    completeClaimById.mockResolvedValueOnce(null);
+    const res = makeRes();
+
+    await handleClaimResult(REQ({ ...RESULT, status: 'completed' }), res);
+
+    expect(res.statusCode).toBe(409);
+    expect(res.body).toEqual({ error: 'Claim is not active for this runner' });
+    expect(res.body).not.toHaveProperty('note');
   });
 });

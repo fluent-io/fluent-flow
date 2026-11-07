@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { EventEmitter } from 'node:events';
 
 vi.mock('../../src/logger.js', async () => {
   const { createMockLogger } = await import('../helpers/mock-logger.js');
@@ -16,13 +17,18 @@ vi.mock('../../src/agents/session-manager.js', () => ({
 }));
 
 vi.mock('../../src/agents/claim-manager.js', () => ({
+  assertClaimOwner: vi.fn(),
+  withClaimOwner: vi.fn(),
   completeClaim: vi.fn(),
   failClaim: vi.fn(),
   completeClaimById: vi.fn(),
   failClaimById: vi.fn(),
+  cancelClaimById: vi.fn(),
+  extendClaim: vi.fn(),
   getClaimById: vi.fn(),
   getClaimByAttempt: vi.fn(),
   createClaim: vi.fn(),
+  createFollowOnClaim: vi.fn(),
   redispatchClaim: vi.fn(),
 }));
 
@@ -44,6 +50,10 @@ vi.mock('@fluent-flow/db', async (importOriginal) => {
   return {
     db: { execute: vi.fn() },
     schema: real.schema,
+    appendClaimEvents: vi.fn(),
+    upsertClaimRequest: vi.fn(),
+    leaseClaimCommands: vi.fn(),
+    ackClaimCommand: vi.fn(),
   };
 });
 
@@ -53,13 +63,16 @@ import { hasPending, dequeue } from '../../src/notifications/transports/long-pol
 import { handlePoll } from '../../src/routes/runner.js';
 
 function makeRes() {
-  return {
+  const res = new EventEmitter();
+  return Object.assign(res, {
+    destroyed: false,
+    writableFinished: false,
     headersSent: false,
     statusCode: 200,
     body: null,
     status(code) { this.statusCode = code; this.headersSent = true; return this; },
-    json(payload) { this.body = payload; this.headersSent = true; return this; },
-  };
+    json(payload) { this.body = payload; this.headersSent = true; this.writableFinished = true; return this; },
+  });
 }
 
 const REQ = { body: { session_id: 3 }, tokenInfo: { org_id: 'o1', agent_id: 'a1' }, on: vi.fn() };
@@ -119,5 +132,31 @@ describe('handlePoll — long-poll hints are wake-up signals only', () => {
     await handlePoll({ ...REQ, on: vi.fn() }, res, { pollTimeoutMs: 0 });
 
     expect(res.body).toEqual({ work: null });
+  });
+
+  it('releases work claimed after the polling client disconnects', async () => {
+    let resolveClaim;
+    let markClaimStarted;
+    const claimStarted = new Promise((resolve) => {
+      markClaimStarted = resolve;
+    });
+    db.execute
+      .mockResolvedValueOnce({ rows: [{ agent_type: 'claude-code' }] })
+      .mockImplementationOnce(() => {
+        markClaimStarted();
+        return new Promise((resolve) => {
+          resolveClaim = resolve;
+        });
+      })
+      .mockResolvedValueOnce({ rows: [{ id: 3 }] });
+
+    const res = makeRes();
+    const polling = handlePoll(REQ, res, { pollTimeoutMs: 0 });
+    await claimStarted;
+    res.emit('close');
+    resolveClaim({ rows: [DB_CLAIM] });
+    await polling;
+
+    expect(res.body).toBeNull();
   });
 });

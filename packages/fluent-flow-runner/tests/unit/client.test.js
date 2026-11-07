@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createClient } from '../../src/client.js';
 
 describe('client', () => {
@@ -6,159 +6,98 @@ describe('client', () => {
   let client;
 
   beforeEach(() => {
-    fetchMock = vi.fn();
-    client = createClient({
-      serverUrl: 'https://flow.example.com',
-      token: 'ff_testtoken',
-      fetch: fetchMock,
-    });
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }), text: async () => '' });
+    client = createClient({ serverUrl: 'https://flow.example.com/', token: 'ff_test', fetch: fetchMock });
   });
 
-  describe('register()', () => {
-    it('POSTs to /api/runner/register with meta and auth header', async () => {
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ ok: true, session_id: 42, status: 'online' }),
-      });
-      const result = await client.register({ hostname: 'dev', os: 'linux' });
-      expect(fetchMock).toHaveBeenCalledWith(
-        'https://flow.example.com/api/runner/register',
-        expect.objectContaining({
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer ff_testtoken',
-          },
-          body: JSON.stringify({ meta: { hostname: 'dev', os: 'linux' } }),
-        })
-      );
-      expect(result).toEqual({ ok: true, session_id: 42, status: 'online' });
-    });
-
-    it('throws on non-ok response', async () => {
-      fetchMock.mockResolvedValueOnce({
-        ok: false,
-        status: 403,
-        text: async () => 'Forbidden',
-      });
-      await expect(client.register({})).rejects.toThrow('Register failed: 403');
-    });
+  it('registers with metadata and bearer authentication', async () => {
+    await client.register({ hostname: 'runner-1' });
+    expect(fetchMock).toHaveBeenCalledWith('https://flow.example.com/api/runner/register', expect.objectContaining({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ff_test' },
+      body: JSON.stringify({ meta: { hostname: 'runner-1' } }),
+    }));
   });
 
-  describe('poll()', () => {
-    it('POSTs to /api/runner/poll with session_id', async () => {
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ work: { event: 'review_failed', message: 'fix it' } }),
-      });
-      const result = await client.poll(42);
-      expect(fetchMock).toHaveBeenCalledWith(
-        'https://flow.example.com/api/runner/poll',
-        expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({ session_id: 42 }),
-        })
-      );
-      expect(result).toEqual({ event: 'review_failed', message: 'fix it' });
-    });
-
-    it('returns null when work is null', async () => {
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ work: null }),
-      });
-      const result = await client.poll(42);
-      expect(result).toBeNull();
-    });
-
-    it('throws on non-ok response', async () => {
-      fetchMock.mockResolvedValueOnce({
-        ok: false,
-        status: 500,
-        text: async () => 'Internal error',
-      });
-      await expect(client.poll(42)).rejects.toThrow('Poll failed: 500');
-    });
+  it('polls with the runner registration session and returns work', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ work: { claim_id: 9 } }), text: async () => '' });
+    await expect(client.poll('runner-session')).resolves.toEqual({ claim_id: 9 });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ session_id: 'runner-session' });
   });
 
-  describe('reportClaim()', () => {
-    it('POSTs to /api/runner/claim with claim data', async () => {
-      fetchMock.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ ok: true, claim_id: 1, status: 'completed' }),
-      });
-      const result = await client.reportClaim({
-        status: 'completed',
-        repo: 'org/repo',
-        pr_number: 7,
-        attempt: 1,
-      });
-      expect(fetchMock).toHaveBeenCalledWith(
-        'https://flow.example.com/api/runner/claim',
-        expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({ status: 'completed', repo: 'org/repo', pr_number: 7, attempt: 1 }),
-        })
-      );
-      expect(result).toEqual({ ok: true, claim_id: 1, status: 'completed' });
-    });
-
-    it('throws on non-ok response', async () => {
-      fetchMock.mockResolvedValueOnce({
-        ok: false,
-        status: 404,
-        text: async () => 'Not found',
-      });
-      await expect(client.reportClaim({ status: 'failed', repo: 'x/y', pr_number: 1, attempt: 1 }))
-        .rejects.toThrow('Claim report failed: 404');
-    });
+  it('returns null when polling has no work', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ work: null }), text: async () => '' });
+    await expect(client.poll('runner-session')).resolves.toBeNull();
   });
 
-  describe('timeout / network errors', () => {
-    it('throws with label and timeout duration on abort (timeout)', async () => {
-      // Mock fetch to hang until aborted by the internal AbortController signal
-      fetchMock.mockImplementationOnce((_url, opts) =>
-        new Promise((_, reject) => {
-          opts.signal.addEventListener('abort', () => {
-            reject(new DOMException('The operation was aborted', 'AbortError'));
-          });
-        })
-      );
-      vi.useFakeTimers();
-      const p = client.register({ hostname: 'dev' });
-      // Prevent unhandled rejection while advancing timers
-      p.catch(() => {});
-      // Advance past the 35_000ms timeout so the AbortController fires
-      await vi.advanceTimersByTimeAsync(40_000);
-      try {
-        await p;
-        expect.unreachable('should have thrown');
-      } catch (e) {
-        expect(e.message).toMatch(/Register request failed after 35000ms/);
-      }
-      vi.useRealTimers();
-    });
-
-    it('throws without timeout duration on non-timeout fetch error', async () => {
-      const connErr = new TypeError('fetch failed');
-      connErr.cause = new Error('ECONNREFUSED');
-      fetchMock.mockRejectedValueOnce(connErr);
-      try {
-        await client.register({ hostname: 'dev' });
-        expect.unreachable('should have thrown');
-      } catch (e) {
-        expect(e.message).toMatch(/Register request failed/);
-        expect(e.message).not.toMatch(/after \d+ms/);
-      }
-    });
+  it('heartbeats the owned claim', async () => {
+    await client.heartbeat('runner-session', 9);
+    expect(fetchMock).toHaveBeenCalledWith('https://flow.example.com/api/runner/heartbeat', expect.objectContaining({
+      body: JSON.stringify({ session_id: 'runner-session', claim_id: 9 }),
+    }));
   });
 
-  describe('URL normalization', () => {
-    it('strips trailing slash from serverUrl', async () => {
-      const c = createClient({ serverUrl: 'https://flow.example.com/', token: 't', fetch: fetchMock });
-      fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true, session_id: 1, status: 'online' }) });
-      await c.register({});
-      expect(fetchMock.mock.calls[0][0]).toBe('https://flow.example.com/api/runner/register');
-    });
+  it('reports the claim with its runner registration session', async () => {
+    const claim = { claim_id: 9, session_id: 'runner-session', status: 'completed' };
+    await client.reportClaim(claim);
+    expect(fetchMock).toHaveBeenCalledWith('https://flow.example.com/api/runner/claim', expect.objectContaining({ body: JSON.stringify(claim) }));
+  });
+
+  it.each([
+    ['postClaimEvents', ['runner-session', 9, [{ seq: 1, kind: 'state', payload: {} }]], '/api/runner/claims/9/events', { session_id: 'runner-session', events: [{ seq: 1, kind: 'state', payload: {} }] }],
+    ['postClaimRequest', ['runner-session', 9, { requestKey: 'req-1', kind: 'permission', payload: { optionId: 'allow' } }], '/api/runner/claims/9/requests', { session_id: 'runner-session', request: { requestKey: 'req-1', kind: 'permission', payload: { optionId: 'allow' } } }],
+    ['cancelClaimRequest', ['runner-session', 9, 'request/1'], '/api/runner/claims/9/requests/request%2F1/cancel', { session_id: 'runner-session' }],
+    ['pollClaimCommands', ['runner-session', 9], '/api/runner/claims/9/commands/poll', { session_id: 'runner-session' }],
+    ['renewClaimCommand', ['runner-session', 9, 'cmd/1'], '/api/runner/claims/9/commands/cmd%2F1/renew', { session_id: 'runner-session' }],
+    ['ackClaimCommand', ['runner-session', 9, 'cmd/1', 'uncertain', { reason: 'transport lost' }], '/api/runner/claims/9/commands/cmd%2F1/ack', { session_id: 'runner-session', status: 'uncertain', result: { reason: 'transport lost' } }],
+  ])('%s posts the ownership-bound endpoint contract', async (method, args, path, body) => {
+    await client[method](...args);
+    expect(fetchMock).toHaveBeenCalledWith(`https://flow.example.com${path}`, expect.objectContaining({ method: 'POST', body: JSON.stringify(body) }));
+  });
+
+  it.each([
+    ['poll', ['runner-session'], 'Poll'],
+    ['pollClaimCommands', ['runner-session', 9], 'Claim commands'],
+    ['ackClaimCommand', ['runner-session', 9, 'command-1', 'acked', { applied: true }], 'Claim command acknowledgement'],
+  ])('%s forwards external cancellation and keeps its stable operation label', async (method, args, label) => {
+    const controller = new AbortController();
+    fetchMock.mockImplementationOnce((_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(new Error('runner stopped')), { once: true });
+    }));
+    const rejection = expect(client[method](...args, { signal: controller.signal }))
+      .rejects.toThrow(`${label} request failed: runner stopped`);
+    controller.abort();
+    await rejection;
+  });
+
+  it.each([
+    ['postClaimEvents', ['s', 1, []], 'Claim events'],
+    ['postClaimRequest', ['s', 1, { requestKey: 'r' }], 'Claim request'],
+    ['pollClaimCommands', ['s', 1], 'Claim commands'],
+    ['ackClaimCommand', ['s', 1, 'c', 'failed', {}], 'Claim command acknowledgement'],
+  ])('%s gives HTTP failures a stable operation label', async (method, args, label) => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 409, text: async () => 'stale' });
+    await expect(client[method](...args)).rejects.toThrow(`${label} failed: 409`);
+  });
+
+  it('labels register HTTP failures', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 401, text: async () => 'nope' });
+    await expect(client.register({})).rejects.toThrow('Register failed: 401');
+  });
+
+  it('labels timeout errors with the timeout duration', async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementation((_url, init) => new Promise((_resolve, reject) => {
+      init.signal.addEventListener('abort', () => reject(new Error('aborted')));
+    }));
+    const rejection = expect(client.poll('s')).rejects.toThrow('Poll request failed after 35000ms: aborted');
+    await vi.advanceTimersByTimeAsync(35_000);
+    await rejection;
+    vi.useRealTimers();
+  });
+
+  it('labels network errors without calling them timeouts', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('offline'));
+    await expect(client.poll('s')).rejects.toThrow('Poll request failed: offline');
   });
 });

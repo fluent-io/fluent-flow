@@ -15,7 +15,13 @@ export async function GET() {
 }
 
 const AGENT_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
-const ALLOWED_AGENT_TYPES = new Set(['claude-code', 'codex', 'devin', 'openclaw', 'aider', 'custom']);
+const ALLOWED_AGENT_TYPES: Record<string, true> = {
+  'claude-code': true,
+  'claude-agent-acp': true,
+  'codex': true,
+  'codex-acp': true,
+  'opencode': true,
+};
 
 // Strict validator for NEXT_PUBLIC_FLUENT_FLOW_URL. The generated CLI
 // command interpolates this value into a shell line, so we must reject
@@ -82,8 +88,8 @@ export async function POST(req: Request) {
   if (typeof agent_id !== 'string' || !AGENT_ID_RE.test(agent_id)) {
     return NextResponse.json({ error: 'agent_id must be alphanumeric; letters, digits, _, - only' }, { status: 400 });
   }
-  if (typeof agent_type !== 'string' || !ALLOWED_AGENT_TYPES.has(agent_type)) {
-    return NextResponse.json({ error: `agent_type must be one of: ${[...ALLOWED_AGENT_TYPES].join(', ')}` }, { status: 400 });
+  if (typeof agent_type !== 'string' || !Object.hasOwn(ALLOWED_AGENT_TYPES, agent_type)) {
+    return NextResponse.json({ error: `agent_type must be one of: ${Object.keys(ALLOWED_AGENT_TYPES).join(', ')}` }, { status: 400 });
   }
   if (!hasRole(session, org_id, 'admin')) {
     return NextResponse.json({ error: 'Forbidden: must be admin of the target org' }, { status: 403 });

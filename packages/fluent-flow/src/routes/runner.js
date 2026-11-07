@@ -1,21 +1,29 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { validateToken } from '../agents/token-manager.js';
-import { registerSession, touchSession, setSessionStatus } from '../agents/session-manager.js';
+import { registerSession, touchSession } from '../agents/session-manager.js';
 import {
-  completeClaim,
-  failClaim,
-  getClaimByAttempt,
-  getClaimById,
+  assertClaimOwner,
+  cancelClaimById,
   completeClaimById,
-  failClaimById,
-  extendClaim,
-  redispatchClaim,
   createClaim,
+  createFollowOnClaim,
+  extendClaim,
+  failClaimById,
+  redispatchClaim,
+  withClaimOwner,
 } from '../agents/claim-manager.js';
 import { dequeue, hasPending } from '../notifications/transports/long-poll.js';
 import { sql } from 'drizzle-orm';
-import { db } from '@fluent-flow/db';
+import {
+  ackClaimCommand,
+  cancelClaimRequest,
+  appendClaimEvents,
+  db,
+  leaseClaimCommands,
+  renewClaimCommand,
+  upsertClaimRequest,
+} from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 import logger from '../logger.js';
 import { getInstallationToken } from '../providers/github/token-cache.js';
@@ -28,19 +36,101 @@ const PollSchema = z.object({
 });
 
 const ClaimResultSchema = z.object({
-  status: z.enum(['completed', 'failed']),
+  status: z.enum(['completed', 'failed', 'cancelled']),
   repo: z.string().min(1),
   pr_number: z.number().int().positive().nullable(),
   attempt: z.number().int().positive(),
-  verdict: z.enum(['pass', 'fail']).optional(), // review verdict for chaining
-  claim_id: z.number().int().positive().optional(), // unambiguous claim identity
-  failure_kind: z.enum(['transient', 'terminal']).optional(), // transient → server re-dispatches
+  verdict: z.enum(['pass', 'fail']).optional(),
+  claim_id: z.number().int().positive(),
+  session_id: z.number().int().positive(),
+  failure_kind: z.enum(['transient', 'terminal']).optional(),
 });
 
 const HeartbeatSchema = z.object({
   session_id: z.number().int().positive(),
   claim_id: z.number().int().positive().optional(),
 });
+
+const ClaimPathSchema = z.object({
+  claimId: z.coerce.number().int().positive(),
+});
+
+const ClaimCommandPathSchema = ClaimPathSchema.extend({
+  commandId: z.coerce.number().int().positive(),
+});
+
+const ClaimRequestPathSchema = ClaimPathSchema.extend({
+  requestKey: z.string().min(1).max(512),
+});
+
+const ClaimEventsSchema = z.object({
+  session_id: z.number().int().positive(),
+  events: z.array(z.object({
+    seq: z.number().int().positive(),
+    kind: z.enum([
+      'user_message',
+      'agent_message',
+      'agent_thought',
+      'state',
+      'tool_call',
+      'tool_output',
+      'terminal',
+      'terminal_output',
+      'plan',
+      'commands',
+      'config',
+      'session_info',
+      'usage',
+      'notice',
+      'compaction',
+      'unknown',
+    ]),
+    payload: z.record(z.any()),
+  })).min(1),
+});
+
+const ClaimRequestSchema = z.object({
+  session_id: z.number().int().positive(),
+  request: z.object({
+    requestKey: z.string().min(1).max(512),
+    kind: z.enum(['permission', 'elicitation']),
+    payload: z.record(z.any()),
+  }),
+});
+
+const ClaimCommandsPollSchema = z.object({
+  session_id: z.number().int().positive(),
+});
+
+const ClaimCommandAckSchema = z.object({
+  session_id: z.number().int().positive(),
+  status: z.enum(['acked', 'failed', 'uncertain']),
+  result: z.record(z.any()),
+});
+
+const MAX_EVENT_COUNT = 100;
+const MAX_INTERACTION_BYTES = 256 * 1024;
+const MAX_EVENT_BATCH_BYTES = 1024 * 1024;
+const MAX_ACK_BYTES = 64 * 1024;
+const COMMAND_LEASE_LIMIT = 25;
+
+function serializedBytes(value) {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8');
+}
+
+function validationError(res) {
+  return res.status(400).json({ error: 'Validation failed' });
+}
+
+function payloadTooLarge(res) {
+  return res.status(413).json({ error: 'Payload too large' });
+}
+
+function ownershipErrorResponse(error, res) {
+  if (error?.statusCode === 404) return res.status(404).json({ error: 'Claim not found' });
+  if (error?.statusCode === 409) return res.status(409).json({ error: 'Claim is not active for this runner' });
+  return null;
+}
 
 /** How far a heartbeat extends a claimed claim's expiry. Env: CLAIM_TTL_MS. */
 const CLAIM_TTL_MS = Number(process.env.CLAIM_TTL_MS) || 15 * 60 * 1000;
@@ -83,40 +173,81 @@ export async function handleRegister(req, res) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/**
- * Check for unassigned pending claims that match this agent's repo scope.
- * Atomically claims the first match.
- */
 export async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 60 * 1000) {
   const expiresAt = new Date(Date.now() + ttlMs);
-  // UPDATE … WHERE id = (SELECT … FOR UPDATE SKIP LOCKED) — the canonical
-  // atomic claim pattern. Kept as raw SQL because drizzle doesn't express
-  // UPDATE-from-locked-subselect ergonomically.
   const result = await db.execute(sql`
-    UPDATE agent_claims SET
-      session_id = ${sessionId},
-      status = 'claimed',
-      claimed_at = NOW(),
-      expires_at = ${expiresAt}
-    WHERE id = (
-      SELECT c.id FROM agent_claims c
-      JOIN agents a ON a.org_id = c.org_id AND a.id = ${agentId}
-      WHERE c.org_id = ${orgId}
-        AND c.status = 'pending'
-        AND c.session_id IS NULL
-        AND (a.repos = '{}' OR c.repo = ANY(a.repos))
-      ORDER BY c.created_at ASC
-      LIMIT 1
-      FOR UPDATE SKIP LOCKED
+    WITH live_session AS (
+      SELECT session.id
+      FROM agent_sessions session
+      WHERE session.id = ${sessionId}
+        AND session.org_id = ${orgId}
+        AND session.agent_id = ${agentId}
+        AND session.status = 'online'
+        AND session.expires_at > NOW()
+      FOR UPDATE
+    ),
+    claimed AS (
+      UPDATE agent_claims claim SET
+        session_id = ${sessionId},
+        status = 'claimed',
+        claimed_at = NOW(),
+        expires_at = ${expiresAt}
+      WHERE claim.id = (
+        SELECT pending.id
+        FROM agent_claims pending
+        JOIN agents agent ON agent.org_id = pending.org_id AND agent.id = ${agentId}
+        CROSS JOIN live_session
+        WHERE pending.org_id = ${orgId}
+          AND pending.status = 'pending'
+          AND pending.session_id IS NULL
+          AND (agent.repos = '{}' OR pending.repo = ANY(agent.repos))
+        ORDER BY pending.created_at ASC
+        LIMIT 1
+        FOR UPDATE OF pending SKIP LOCKED
+      )
+      RETURNING claim.*
+    ),
+    marked AS (
+      UPDATE agent_sessions session
+      SET status = 'busy'
+      FROM claimed
+      WHERE session.id = claimed.session_id
+      RETURNING session.id
     )
-    RETURNING *
+    SELECT claimed.*
+    FROM claimed
+    JOIN marked ON marked.id = claimed.session_id
   `);
   const rows = result.rows ?? result;
-  const claim = rows[0] ?? null;
-  if (claim) {
-    await setSessionStatus(orgId, agentId, sessionId, 'busy');
-  }
-  return claim;
+  return rows[0] ?? null;
+}
+
+export async function releaseUndeliveredClaim(orgId, agentId, sessionId, claimId) {
+  const result = await db.execute(sql`
+    WITH released AS (
+      UPDATE agent_claims claim
+      SET session_id = NULL,
+          status = 'pending',
+          claimed_at = NULL,
+          expires_at = NULL
+      WHERE claim.id = ${claimId}
+        AND claim.org_id = ${orgId}
+        AND claim.session_id = ${sessionId}
+        AND claim.status = 'claimed'
+      RETURNING claim.id
+    )
+    UPDATE agent_sessions session
+    SET status = 'online'
+    WHERE session.id = ${sessionId}
+      AND session.org_id = ${orgId}
+      AND session.agent_id = ${agentId}
+      AND session.status = 'busy'
+      AND session.expires_at > NOW()
+      AND EXISTS (SELECT 1 FROM released)
+    RETURNING session.id
+  `);
+  const rows = result.rows ?? result;
+  return rows.length > 0;
 }
 
 /**
@@ -150,6 +281,12 @@ export async function handlePoll(req, res, opts = {}) {
   const { org_id, agent_id } = req.tokenInfo;
   const sessionId = parsed.data.session_id;
   const pollTimeoutMs = opts.pollTimeoutMs ?? 30000;
+  let closed = false;
+  const onClose = () => {
+    if (!res.writableFinished) closed = true;
+  };
+  res.on('close', onClose);
+  if (res.destroyed && !res.writableFinished) closed = true;
 
   // Resolve the agent's type once for inclusion in work payloads
   let agentType = 'claude-code'; // default
@@ -163,13 +300,37 @@ export async function handlePoll(req, res, opts = {}) {
 
   let sent = false;
   const respond = (data) => {
-    if (sent || res.headersSent) return;
+    if (closed || res.destroyed || sent || res.headersSent) return false;
     sent = true;
     res.json(data);
+    return true;
   };
-
-  let closed = false;
-  req.on('close', () => { closed = true; });
+  const deliverClaim = async (claim, refreshSession = false) => {
+    let delivered = false;
+    try {
+      if (refreshSession && !(await touchSession(org_id, agent_id, sessionId))) {
+        throw new Error('Runner session expired during claim delivery');
+      }
+      const payload = typeof claim.payload === 'string' ? JSON.parse(claim.payload) : claim.payload;
+      const githubToken = await resolveGitHubToken(claim.repo);
+      delivered = respond({
+        work: {
+          repo: claim.repo,
+          pr_number: claim.pr_number,
+          attempt: claim.attempt,
+          claim_id: claim.id,
+          claim_type: claim.claim_type,
+          agentType,
+          ...(githubToken ? { githubToken } : {}),
+          ...payload,
+        },
+      });
+    } finally {
+      if (!delivered) {
+        await releaseUndeliveredClaim(org_id, agent_id, sessionId, claim.id);
+      }
+    }
+  };
 
   try {
     const sessionAlive = await touchSession(org_id, agent_id, sessionId);
@@ -187,24 +348,7 @@ export async function handlePoll(req, res, opts = {}) {
     // Check for unassigned pending claims in the DB
     const pendingClaim = await claimPendingWork(org_id, agent_id, sessionId);
     if (pendingClaim) {
-      const payload = typeof pendingClaim.payload === 'string'
-        ? JSON.parse(pendingClaim.payload)
-        : pendingClaim.payload;
-
-      const githubToken = await resolveGitHubToken(pendingClaim.repo);
-
-      respond({
-        work: {
-          repo: pendingClaim.repo,
-          pr_number: pendingClaim.pr_number,
-          attempt: pendingClaim.attempt,
-          claim_id: pendingClaim.id,
-          claim_type: pendingClaim.claim_type,
-          agentType,
-          ...(githubToken ? { githubToken } : {}),
-          ...payload,
-        },
-      });
+      await deliverClaim(pendingClaim);
       return;
     }
 
@@ -220,21 +364,7 @@ export async function handlePoll(req, res, opts = {}) {
       }
       const loopClaim = await claimPendingWork(org_id, agent_id, sessionId);
       if (loopClaim) {
-        await touchSession(org_id, agent_id, sessionId);
-        const lp = typeof loopClaim.payload === 'string' ? JSON.parse(loopClaim.payload) : loopClaim.payload;
-        const githubToken = await resolveGitHubToken(loopClaim.repo);
-        respond({
-          work: {
-            repo: loopClaim.repo,
-            pr_number: loopClaim.pr_number,
-            attempt: loopClaim.attempt,
-            claim_id: loopClaim.id,
-            claim_type: loopClaim.claim_type,
-            agentType,
-            ...(githubToken ? { githubToken } : {}),
-            ...lp,
-          },
-        });
+        await deliverClaim(loopClaim, true);
         return;
       }
       if (Date.now() - start >= pollTimeoutMs) {
@@ -247,9 +377,11 @@ export async function handlePoll(req, res, opts = {}) {
     }
   } catch (err) {
     logger.error({ msg: 'Failed to poll', error: err.message });
-    if (!sent && !res.headersSent) {
+    if (!closed && !res.destroyed && !sent && !res.headersSent) {
       res.status(500).json({ error: 'Internal server error' });
     }
+  } finally {
+    res.off('close', onClose);
   }
 }
 
@@ -258,150 +390,47 @@ export async function handlePoll(req, res, opts = {}) {
  */
 export async function handleClaimResult(req, res) {
   const parsed = ClaimResultSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
+  if (!parsed.success) return validationError(res);
 
   try {
-    const { org_id } = req.tokenInfo;
-    const { status, repo, pr_number, attempt, claim_id, failure_kind } = parsed.data;
+    const { org_id, agent_id } = req.tokenInfo;
+    const {
+      status,
+      repo,
+      pr_number,
+      attempt,
+      claim_id: claimId,
+      session_id: sessionId,
+      failure_kind: failureKind,
+    } = parsed.data;
 
-    if (status === 'completed') {
-      // Resolve the claim by id when the runner sent one — the id path can
-      // never collide two claim types sharing an attempt number. Fall back
-      // to the natural key only for older runners.
-      let claim;
-      let alreadyResolved = null;
-      if (claim_id != null) {
-        claim = await completeClaimById(org_id, claim_id);
-        if (!claim) {
-          const existing = await getClaimById(org_id, claim_id);
-          if (existing?.status === 'completed' || existing?.status === 'failed') {
-            alreadyResolved = existing;
-          }
-        }
-      } else {
-        const existingClaim = await getClaimByAttempt(org_id, repo, pr_number, attempt);
-        claim = await completeClaim(org_id, repo, pr_number, attempt, existingClaim?.claim_type ?? 'review_fix');
-        if (!claim && (existingClaim?.status === 'completed' || existingClaim?.status === 'failed')) {
-          alreadyResolved = existingClaim;
-        }
-      }
-      if (!claim) {
-        if (alreadyResolved) {
-          // Claim may already be completed via webhook (pull_request_review) — treat as success
-          return res.json({ ok: true, claim_id: alreadyResolved.id, status: alreadyResolved.status, note: 'already_resolved' });
-        }
-        return res.status(404).json({ error: 'Claim not found or already resolved' });
-      }
-      const claimType = claim.claim_type ?? 'review_fix';
+    await assertClaimOwner({ orgId: org_id, agentId: agent_id, sessionId, claimId });
 
-      // Verdict fallback: review agents that post via `gh api` put the marker
-      // in the GitHub review body, not stdout. Fetch the latest review and
-      // parse it before treating this result as verdict-less — otherwise the
-      // review→review_fix chain and auto-merge silently never fire.
-      let verdict = parsed.data.verdict;
-      if (claimType === 'review' && !verdict && pr_number != null) {
-        try {
-          const [owner, repoName] = repo.split('/');
-          const { fetchLatestReviewVerdict } = await import('../engine/review-manager.js');
-          verdict = await fetchLatestReviewVerdict({ owner, repo: repoName, prNumber: pr_number });
-          if (verdict) {
-            logger.info({ msg: 'Review verdict resolved from GitHub review body', repo, prNumber: pr_number, verdict });
-          }
-        } catch (err) {
-          // Safe to continue: the posted review is already on the PR; the
-          // auto-chain simply doesn't fire for this attempt.
-          logger.warn({ msg: 'Verdict fallback failed', repo, prNumber: pr_number, error: err.message });
-        }
-      }
+    const finalize = status === 'completed'
+      ? completeClaimById
+      : status === 'failed'
+        ? failClaimById
+        : cancelClaimById;
+    const claim = await finalize(org_id, claimId, sessionId);
+    if (!claim) return res.status(409).json({ error: 'Claim is not active for this runner' });
 
-      audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status, claimType, verdict: verdict ?? null } });
+    if (status === 'cancelled') {
+      audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status } });
+      return res.json({ ok: true, claim_id: claim.id, status: claim.status });
+    }
 
-      // Auto-chain: review FAIL → review_fix
-      if (claimType === 'review' && verdict === 'fail') {
-        try {
-          await createClaim({
-            orgId: org_id,
-            repo: claim.repo,
-            prNumber: claim.pr_number,
-            attempt: claim.attempt + 1,
-            claimType: 'review_fix',
-            payload: { source_claim_id: claim.id, branch: claim.payload?.branch },
-            headSha: claim.head_sha,
-          });
-          logger.info({ msg: 'Auto-created review_fix claim after FAIL review', repo: claim.repo, prNumber: claim.pr_number, attempt: claim.attempt + 1 });
-        } catch (err) {
-          // Safe to continue: review_fix claim creation failure — the
-          // original review result is already recorded. The agent can
-          // manually pick up the work via polling.
-          logger.error({ msg: 'Failed to create review_fix claim', error: err.message });
-        }
-      }
-
-      // Auto-chain: spec → build (only if payload.auto_chain !== false)
-      if (claimType === 'spec' && claim.payload?.auto_chain !== false) {
-        try {
-          await createClaim({
-            orgId: org_id,
-            repo: claim.repo,
-            prNumber: claim.pr_number,
-            attempt: claim.attempt + 1,
-            claimType: 'build',
-            payload: { source_claim_id: claim.id },
-            headSha: claim.head_sha,
-          });
-          logger.info({ msg: 'Auto-created build claim after spec completion', repo: claim.repo, prNumber: claim.pr_number, attempt: claim.attempt + 1 });
-        } catch (err) {
-          // Safe to continue: build claim creation failure — the spec
-          // completion is already recorded. The build can be manually
-          // triggered via the API.
-          logger.error({ msg: 'Failed to create follow-on build claim', error: err.message });
-        }
-      }
-
-      // Auto-chain: test_verify → re-review
-      if (claimType === 'test_verify') {
-        try {
-          const [owner, repoName] = repo.split('/');
-          const { dispatchReview } = await import('../engine/review-manager.js');
-          // test_verify claim stores the PR head branch in payload.branch (see check-run-handler);
-          // fall back to 'main' only if it's missing for some reason.
-          const headBranch = claim.payload?.branch ?? 'main';
-          const headSha = claim.head_sha;
-          const issueNumber = claim.payload?.issueNumber;
-          await dispatchReview({ owner, repo: repoName, prNumber: pr_number, ref: headBranch, headSha, attempt: attempt + 1, issueNumber });
-          logger.info({ msg: 'Triggered re-review after test_verify completion', repo, prNumber: pr_number, ref: headBranch, headSha });
-        } catch (err) {
-          // Safe to continue: re-review dispatch failure — the test_verify
-          // completion is already recorded. A manual review can be
-          // triggered via the API.
-          logger.error({ msg: 'Failed to trigger re-review after test_verify', error: err.message });
-        }
-      }
-
-      res.json({ ok: true, claim_id: claim.id, status: claim.status });
-    } else {
-      // Failed claim — transient failures are re-dispatched at attempt + 1;
-      // terminal failures (default) stay final, as before.
-      let claim;
-      if (claim_id != null) {
-        claim = await failClaimById(org_id, claim_id);
-      } else {
-        // Narrow the natural-key update by claim type so a failure report
-        // can't mark BOTH claim types sharing this attempt number as failed.
-        const existing = await getClaimByAttempt(org_id, repo, pr_number, attempt);
-        claim = await failClaim(org_id, repo, pr_number, attempt, existing?.claim_type ?? null);
-      }
-      if (!claim) {
-        const existingClaim = claim_id != null
-          ? await getClaimById(org_id, claim_id)
-          : await getClaimByAttempt(org_id, repo, pr_number, attempt);
-        if (existingClaim?.status === 'completed' || existingClaim?.status === 'failed') {
-          return res.json({ ok: true, claim_id: existingClaim.id, status: existingClaim.status, note: 'already_resolved' });
-        }
-        return res.status(404).json({ error: 'Claim not found or already resolved' });
-      }
-      audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status: 'failed', failure_kind: failure_kind ?? 'terminal' } });
-      if (failure_kind === 'transient') {
+    if (status === 'failed') {
+      audit('claim_result', {
+        repo,
+        data: {
+          claimId: claim.id,
+          pr_number,
+          attempt,
+          status,
+          failure_kind: failureKind ?? 'terminal',
+        },
+      });
+      if (failureKind === 'transient') {
         try {
           const redispatched = await redispatchClaim(claim);
           logger.info({
@@ -413,17 +442,262 @@ export async function handleClaimResult(req, res) {
             claimId: redispatched?.id ?? null,
           });
         } catch (err) {
-          // Safe to continue: the failure is already durably recorded; a lost
-          // re-dispatch leaves the pipeline paused for manual dispatch rather
-          // than corrupting state.
-          logger.error({ msg: 'Failed to re-dispatch transient-failed claim', error: err.message, claimId: claim.id });
+          logger.error({
+            msg: 'Failed to re-dispatch transient-failed claim',
+            error: err.message,
+            claimId: claim.id,
+            safeToContinue: true,
+          });
         }
       }
-      res.json({ ok: true, claim_id: claim.id, status: claim.status });
+      return res.json({ ok: true, claim_id: claim.id, status: claim.status });
     }
+
+    const claimType = claim.claim_type ?? 'review_fix';
+    let verdict = parsed.data.verdict;
+    if (claimType === 'review' && !verdict && pr_number != null) {
+      try {
+        const [owner, repoName] = repo.split('/');
+        const { fetchLatestReviewVerdict } = await import('../engine/review-manager.js');
+        verdict = await fetchLatestReviewVerdict({ owner, repo: repoName, prNumber: pr_number });
+        if (verdict) {
+          logger.info({ msg: 'Review verdict resolved from GitHub review body', repo, prNumber: pr_number, verdict });
+        }
+      } catch (err) {
+        logger.warn({
+          msg: 'Verdict fallback failed',
+          repo,
+          prNumber: pr_number,
+          error: err.message,
+          safeToContinue: true,
+        });
+      }
+    }
+
+    audit('claim_result', {
+      repo,
+      data: { claimId: claim.id, pr_number, attempt, status, claimType, verdict: verdict ?? null },
+    });
+
+    if (claimType === 'review' && verdict === 'fail') {
+      try {
+        await createClaim({
+          orgId: org_id,
+          repo: claim.repo,
+          prNumber: claim.pr_number,
+          attempt: claim.attempt + 1,
+          claimType: 'review_fix',
+          payload: { source_claim_id: claim.id, branch: claim.payload?.branch },
+          headSha: claim.head_sha,
+        });
+        logger.info({ msg: 'Auto-created review_fix claim after FAIL review', repo: claim.repo, prNumber: claim.pr_number, attempt: claim.attempt + 1 });
+      } catch (err) {
+        logger.error({ msg: 'Failed to create review_fix claim', error: err.message, safeToContinue: true });
+      }
+    }
+
+    if (claimType === 'spec' && claim.payload?.auto_chain !== false) {
+      try {
+        const nextClaim = await createFollowOnClaim({
+          parentClaimId: claim.id,
+          orgId: org_id,
+          repo: claim.repo,
+          prNumber: claim.pr_number,
+          claimType: 'build',
+          payload: { source_claim_id: claim.id },
+          headSha: claim.head_sha,
+        });
+        if (nextClaim) {
+          logger.info({ msg: 'Auto-created build claim after spec completion', repo: claim.repo, prNumber: claim.pr_number, attempt: nextClaim.attempt });
+        }
+      } catch (err) {
+        logger.error({ msg: 'Failed to create follow-on build claim', error: err.message, safeToContinue: true });
+      }
+    }
+
+    if (claimType === 'test_verify') {
+      try {
+        const [owner, repoName] = repo.split('/');
+        const { dispatchReview } = await import('../engine/review-manager.js');
+        const headBranch = claim.payload?.branch ?? 'main';
+        const headSha = claim.head_sha;
+        const issueNumber = claim.payload?.issueNumber;
+        await dispatchReview({ owner, repo: repoName, prNumber: pr_number, ref: headBranch, headSha, attempt: attempt + 1, issueNumber });
+        logger.info({ msg: 'Triggered re-review after test_verify completion', repo, prNumber: pr_number, ref: headBranch, headSha });
+      } catch (err) {
+        logger.error({ msg: 'Failed to trigger re-review after test_verify', error: err.message, safeToContinue: true });
+      }
+    }
+
+    return res.json({ ok: true, claim_id: claim.id, status: claim.status });
   } catch (err) {
     logger.error({ msg: 'Failed to report claim result', error: err.message });
-    res.status(500).json({ error: 'Internal server error' });
+    const ownershipResponse = ownershipErrorResponse(err, res);
+    if (ownershipResponse) return ownershipResponse;
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+function interactionErrorResponse(error, res, operation) {
+  logger.error({ msg: `Failed to ${operation}`, error: error.message });
+  const ownershipResponse = ownershipErrorResponse(error, res);
+  if (ownershipResponse) return ownershipResponse;
+  if (error.message === 'Claim event payload limit exceeded.') {
+    return payloadTooLarge(res);
+  }
+  if (error.message?.startsWith('Interaction conflict')) {
+    return res.status(409).json({ error: 'Interaction conflict' });
+  }
+  return res.status(500).json({ error: 'Internal server error' });
+}
+
+export async function handleClaimEvents(req, res) {
+  const path = ClaimPathSchema.safeParse(req.params);
+  const body = ClaimEventsSchema.safeParse(req.body);
+  if (!path.success || !body.success) return validationError(res);
+  if (body.data.events.length > MAX_EVENT_COUNT) return payloadTooLarge(res);
+  if (
+    serializedBytes(body.data.events) > MAX_EVENT_BATCH_BYTES
+    || body.data.events.some((event) => serializedBytes(event.payload) > MAX_INTERACTION_BYTES)
+  ) {
+    return payloadTooLarge(res);
+  }
+
+  const { claimId } = path.data;
+  const { session_id: sessionId, events } = body.data;
+  const { org_id: orgId, agent_id: agentId } = req.tokenInfo;
+  try {
+    const result = await withClaimOwner(
+      { orgId, agentId, sessionId, claimId },
+      (client) => appendClaimEvents({ orgId, claimId, events }, client),
+    );
+    return res.json({ ok: true, inserted: result.inserted, lastSeq: result.lastSeq });
+  } catch (error) {
+    return interactionErrorResponse(error, res, 'append claim events');
+  }
+}
+
+export async function handleClaimRequest(req, res) {
+  const path = ClaimPathSchema.safeParse(req.params);
+  const body = ClaimRequestSchema.safeParse(req.body);
+  if (!path.success || !body.success) return validationError(res);
+  if (serializedBytes(body.data.request.payload) > MAX_INTERACTION_BYTES) return payloadTooLarge(res);
+
+  const { claimId } = path.data;
+  const { session_id: sessionId, request } = body.data;
+  const { org_id: orgId, agent_id: agentId } = req.tokenInfo;
+  try {
+    const stored = await withClaimOwner(
+      { orgId, agentId, sessionId, claimId },
+      (client) => upsertClaimRequest({
+        orgId,
+        claimId,
+        requestKey: request.requestKey,
+        kind: request.kind,
+        payload: request.payload,
+      }, client),
+    );
+    return res.json({
+      ok: true,
+      request: {
+        request_key: stored.requestKey,
+        kind: stored.kind,
+        payload: stored.payload,
+        status: stored.status,
+      },
+    });
+  } catch (error) {
+    return interactionErrorResponse(error, res, 'upsert claim request');
+  }
+}
+
+export async function handleClaimRequestCancellation(req, res) {
+  const path = ClaimRequestPathSchema.safeParse(req.params);
+  const body = ClaimCommandsPollSchema.safeParse(req.body);
+  if (!path.success || !body.success) return validationError(res);
+
+  const { claimId, requestKey } = path.data;
+  const { session_id: sessionId } = body.data;
+  const { org_id: orgId, agent_id: agentId } = req.tokenInfo;
+  try {
+    const cancelled = await withClaimOwner(
+      { orgId, agentId, sessionId, claimId },
+      (client) => cancelClaimRequest({ orgId, claimId, requestKey }, client),
+    );
+    if (!cancelled) {
+      return res.status(409).json({ error: 'Request cancellation conflict' });
+    }
+    return res.json({ ok: true });
+  } catch (error) {
+    return interactionErrorResponse(error, res, 'cancel claim request');
+  }
+}
+
+export async function handleClaimCommandsPoll(req, res) {
+  const path = ClaimPathSchema.safeParse(req.params);
+  const body = ClaimCommandsPollSchema.safeParse(req.body);
+  if (!path.success || !body.success) return validationError(res);
+
+  const { claimId } = path.data;
+  const { session_id: sessionId } = body.data;
+  const { org_id: orgId, agent_id: agentId } = req.tokenInfo;
+  try {
+    const commands = await withClaimOwner(
+      { orgId, agentId, sessionId, claimId },
+      (client) => leaseClaimCommands({ orgId, claimId, limit: COMMAND_LEASE_LIMIT }, client),
+    );
+    return res.json({
+      commands: commands.map((command) => ({
+        id: command.id,
+        kind: command.kind,
+        payload: command.payload,
+        request_key: command.requestKey,
+      })),
+    });
+  } catch (error) {
+    return interactionErrorResponse(error, res, 'lease claim commands');
+  }
+}
+
+export async function handleClaimCommandRenewal(req, res) {
+  const path = ClaimCommandPathSchema.safeParse(req.params);
+  const body = ClaimCommandsPollSchema.safeParse(req.body);
+  if (!path.success || !body.success) return validationError(res);
+
+  const { claimId, commandId } = path.data;
+  const { session_id: sessionId } = body.data;
+  const { org_id: orgId, agent_id: agentId } = req.tokenInfo;
+  try {
+    const renewed = await withClaimOwner(
+      { orgId, agentId, sessionId, claimId },
+      (client) => renewClaimCommand({ orgId, claimId, commandId }, client),
+    );
+    return res.json({ renewed: Boolean(renewed) });
+  } catch (error) {
+    return interactionErrorResponse(error, res, 'renew claim command');
+  }
+}
+
+export async function handleClaimCommandAck(req, res) {
+  const path = ClaimCommandPathSchema.safeParse(req.params);
+  const body = ClaimCommandAckSchema.safeParse(req.body);
+  if (!path.success || !body.success) return validationError(res);
+  if (serializedBytes(body.data.result) > MAX_ACK_BYTES) return payloadTooLarge(res);
+
+  const { claimId, commandId } = path.data;
+  const { session_id: sessionId, status, result } = body.data;
+  const { org_id: orgId, agent_id: agentId } = req.tokenInfo;
+  try {
+    const acknowledged = await withClaimOwner(
+      { orgId, agentId, sessionId, claimId },
+      (client) => ackClaimCommand({ orgId, claimId, commandId, status, result }, client),
+    );
+    if (!acknowledged) {
+      return res.status(409).json({ error: 'Command acknowledgement conflict' });
+    }
+    return res.json({ ok: true });
+  } catch (error) {
+    return interactionErrorResponse(error, res, 'acknowledge claim command');
   }
 }
 
@@ -469,5 +743,11 @@ router.post('/runner/register', handleRegister);
 router.post('/runner/poll', handlePoll);
 router.post('/runner/heartbeat', handleHeartbeat);
 router.post('/runner/claim', handleClaimResult);
+router.post('/runner/claims/:claimId/events', handleClaimEvents);
+router.post('/runner/claims/:claimId/requests', handleClaimRequest);
+router.post('/runner/claims/:claimId/requests/:requestKey/cancel', handleClaimRequestCancellation);
+router.post('/runner/claims/:claimId/commands/poll', handleClaimCommandsPoll);
+router.post('/runner/claims/:claimId/commands/:commandId/renew', handleClaimCommandRenewal);
+router.post('/runner/claims/:claimId/commands/:commandId/ack', handleClaimCommandAck);
 
 export default router;

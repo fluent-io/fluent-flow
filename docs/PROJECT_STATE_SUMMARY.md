@@ -17,7 +17,7 @@ Fluent Flow is an agent orchestration service for autonomous development workflo
 | Package | Purpose |
 |---------|---------|
 | `fluent-flow` (server) | Express.js server — claim dispatch, agent registry, webhook handler, MCP server, review pipeline, check-run lifecycle |
-| `fluent-flow-runner` | CLI runner — connects to server via long-poll, claims work, spawns AI harnesses locally (claude-code, codex, aider), reports results |
+| `fluent-flow-runner` | CLI runner — connects to the server via long-poll, claims work, launches a locally installed ACP adapter, reports results |
 | `dashboard` | Next.js 15 admin UI — agent management, pipeline status, repo onboarding, workflow initiation |
 | `db` | Shared data access — pg pool, Drizzle ORM schemas, Zod schemas, org-scoped query functions |
 
@@ -36,7 +36,7 @@ Fluent Flow is an agent orchestration service for autonomous development workflo
 - Token-based authentication with hashed storage
 - Session management with heartbeat and TTL-based expiry
 - Multi-agent routing via PR body markers or repo config
-- Agent types: `claude-code`, `codex`, `aider`, `custom`
+- Named ACP agent types: `claude-code`, `claude-agent-acp`, `codex`, `codex-acp`, `opencode`; legacy types remain available to non-long-poll transports
 
 **Claim Pipeline**
 - Claim types: `spec`, `build`, `review`, `review_fix`, `test_verify`
@@ -81,7 +81,7 @@ Fluent Flow is an agent orchestration service for autonomous development workflo
 - Git worktree management per claim (isolated checkout)
 - SSH key detection with HTTPS+token fallback for cloning
 - `gh` CLI auto-authentication with GitHub App token
-- Environment pass-through to agent subprocesses
+- Local ACP adapter discovery and authentication; no server-supplied executable, command template, or AI provider credentials
 - Graceful shutdown with claim failure reporting
 - Session re-registration on expiry (410)
 
@@ -136,7 +136,7 @@ fluent-flow/
 │   │   ├── src/
 │   │   │   ├── runner.js     # Main runner loop (poll → execute → report)
 │   │   │   ├── client.js     # HTTP client (register, poll, reportClaim)
-│   │   │   ├── commands.js   # Agent command resolution (claude, codex, aider)
+│   │   │   ├── acp/          # ACP adapter resolution, process lifecycle and session runtime
 │   │   │   ├── prompts.js    # Prompt templates by claim_type
 │   │   │   ├── worktree.js   # Git worktree management
 │   │   │   └── credentials.js # Token resolution
@@ -248,8 +248,8 @@ No PRs were actively in-flight at the time of this summary. The last merged work
 
 ## 5. Key Design Decisions
 
-### 5.1 BYOK / Bring Your Own Subscription
-Fluent Flow never holds API keys for AI models. The runner invokes the model locally with whatever credentials it already has. This was a foundational choice: no per-user billing, no server-side model calls, no key management overhead.
+### 5.1 Bring Your Own Subscription
+Fluent Flow never holds API keys for AI models. The runner starts a locally installed ACP adapter that the operator has already authenticated. This avoids server-side model calls, per-user billing, and AI credential management or passthrough.
 
 ### 5.2 Runner-Claim Architecture (Not Webhook-Dispatch)
 Early versions used `workflow_dispatch` to trigger GitHub Actions for reviews. This was replaced by the runner-claim path: the server creates a `pending` claim, and an online runner picks it up via `FOR UPDATE SKIP LOCKED`. This eliminates per-repo workflow files and allows any runner to claim any matching work.

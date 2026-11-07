@@ -83,6 +83,23 @@ describe('expireClaimsTick', () => {
     );
   });
 
+  it('does not redispatch until atomic interaction cancellation in expireClaims has completed', async () => {
+    const order = [];
+    const expiredClaim = { id: 'c1', org_id: 'o1', repo: 'o/r', pr_number: 1, attempt: 3, claim_type: 'review', payload: {}, head_sha: null };
+    expireClaims.mockImplementationOnce(async () => {
+      order.push('interactions-cancelled');
+      return [expiredClaim];
+    });
+    redispatchClaim.mockImplementationOnce(async () => {
+      order.push('redispatched');
+      return { ...expiredClaim, id: 'c2', attempt: 4 };
+    });
+
+    await expireClaimsTick();
+
+    expect(order).toEqual(['interactions-cancelled', 'redispatched']);
+  });
+
   it('emits a Check Run for the replacement claim using its head SHA and installation', async () => {
     expireClaims.mockResolvedValueOnce([
       { id: 'c1', org_id: 'o1', repo: 'owner/repo', pr_number: 1, attempt: 3, claim_type: 'review', payload: { branch: 'fix/x' }, head_sha: 'replacement-sha' },
