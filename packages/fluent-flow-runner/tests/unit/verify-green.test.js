@@ -487,6 +487,41 @@ describe('runVerifyClaim green phase', () => {
     expect(result.verification.matrix.requirements[0].red.status).toBe('MISSING');
   });
 
+  it('fails when any declared green test file produces no result rows', async () => {
+    const greenWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-green-'));
+    setupRepo(greenWorktree);
+    const secondTest = 'packages/app/tests/verify/session.red.test.js';
+    writeFileSync(join(greenWorktree, secondTest), 'it("session", () => {});\n');
+    const baseRecord = buildRedRecord(greenWorktree);
+    const redRecord = {
+      ...baseRecord,
+      manifest: {
+        ...baseRecord.manifest,
+        requirements: [{
+          ...baseRecord.manifest.requirements[0],
+          tests: [baseRecord.manifest.requirements[0].tests[0], secondTest],
+        }],
+      },
+      test_hashes: [
+        ...baseRecord.test_hashes,
+        { path: secondTest, sha256: hashFile(greenWorktree, secondTest) },
+      ],
+    };
+
+    const result = await runVerifyClaim(makeContext({
+      work: makeWork({ red_record: redRecord }),
+      execute: makeExecuteForGreen({
+        pinnedRuns: [{ results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'pass', message: '' }] }],
+        fullRuns: [{ results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'pass', message: '' }] }],
+      }),
+      prepareWorktree: vi.fn().mockResolvedValue({ worktreePath: greenWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(greenWorktree, 'packages', 'app') })),
+      adapters: new Map([['vitest', makeAdapter()]]),
+    }));
+
+    expect(result.verification.outcome).toBe('FAIL');
+  });
+
   it('classifies invalid reporter output as a terminal verification failure', async () => {
     const greenWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-green-'));
     setupRepo(greenWorktree);

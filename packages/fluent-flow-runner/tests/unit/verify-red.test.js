@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { runVerifyClaim } from '../../src/verify.js';
@@ -203,7 +203,9 @@ describe('runVerifyClaim red phase', () => {
 
   it('classifies repeated identical install failures as terminal', async () => {
     const redWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-red-'));
+    const pushWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-push-'));
     setupRepo(redWorktree);
+    setupRepo(pushWorktree);
     const execute = makeExecuteForRed({
       worktreePath: redWorktree,
       manifestFactory: () => ({
@@ -219,7 +221,9 @@ describe('runVerifyClaim red phase', () => {
     const result = await runVerifyClaim(makeContext({
       execute,
       resolveCommand: vi.fn(() => ({ bin: 'claude', args: ['author'] })),
-      prepareWorktree: vi.fn().mockResolvedValueOnce({ worktreePath: redWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      prepareWorktree: vi.fn()
+        .mockResolvedValueOnce({ worktreePath: redWorktree, cleanup: vi.fn().mockResolvedValue() })
+        .mockResolvedValue({ worktreePath: pushWorktree, cleanup: vi.fn().mockResolvedValue() }),
       detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(redWorktree, 'packages', 'app') })),
       adapters: new Map([['vitest', makeVitestAdapter()]]),
       work: makeWork({ findings: [{ id: 'F-1', blocking: true }] }),
@@ -231,7 +235,9 @@ describe('runVerifyClaim red phase', () => {
 
   it('classifies repeated red suite timeouts as terminal', async () => {
     const redWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-red-'));
+    const pushWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-push-'));
     setupRepo(redWorktree);
+    setupRepo(pushWorktree);
     const execute = makeExecuteForRed({
       worktreePath: redWorktree,
       manifestFactory: () => ({
@@ -247,7 +253,9 @@ describe('runVerifyClaim red phase', () => {
     const result = await runVerifyClaim(makeContext({
       execute,
       resolveCommand: vi.fn(() => ({ bin: 'claude', args: ['author'] })),
-      prepareWorktree: vi.fn().mockResolvedValueOnce({ worktreePath: redWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      prepareWorktree: vi.fn()
+        .mockResolvedValueOnce({ worktreePath: redWorktree, cleanup: vi.fn().mockResolvedValue() })
+        .mockResolvedValue({ worktreePath: pushWorktree, cleanup: vi.fn().mockResolvedValue() }),
       detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(redWorktree, 'packages', 'app') })),
       adapters: new Map([['vitest', makeVitestAdapter()]]),
       work: makeWork({
@@ -410,7 +418,7 @@ describe('runVerifyClaim red phase', () => {
         status: 'PASS',
       }),
     ]);
-    expect(adapter.installCommand).toHaveBeenCalledWith(join(redWorktree, 'packages', 'app'), 'npm');
+    expect(adapter.installCommand).toHaveBeenCalledWith(join(pushWorktree, 'packages', 'app'), 'npm');
     expect(adapter.testCommand).toHaveBeenCalledTimes(2);
   });
 
@@ -434,7 +442,7 @@ describe('runVerifyClaim red phase', () => {
     });
     const prepareWorktree = vi.fn()
       .mockResolvedValueOnce({ worktreePath: redWorktree, cleanup: vi.fn().mockResolvedValue() })
-      .mockResolvedValueOnce({ worktreePath: pushWorktree, cleanup: vi.fn().mockResolvedValue() });
+      .mockResolvedValue({ worktreePath: pushWorktree, cleanup: vi.fn().mockResolvedValue() });
 
     const result = await runVerifyClaim(makeContext({
       execute,
@@ -445,6 +453,50 @@ describe('runVerifyClaim red phase', () => {
     }));
 
     expect(result.verification.outcome).toBe('PASS');
+  });
+
+  it('requires output from every declared red test file', async () => {
+    const redWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-red-'));
+    const pushWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-push-'));
+    setupRepo(redWorktree);
+    setupRepo(pushWorktree);
+    const secondTest = 'packages/app/tests/verify/session.red.test.js';
+    const manifest = makeManifest({
+      requirements: [{
+        requirement: {
+          id: 'REQ-1',
+          form: 'when',
+          text: 'When login is invalid, the request fails.',
+          source_finding_id: 'F-1',
+        },
+        tests: ['packages/app/tests/verify/login.red.test.js', secondTest],
+        dependency_files: [],
+        framework: 'vitest',
+      }],
+    });
+    const execute = makeExecuteForRed({
+      worktreePath: redWorktree,
+      manifestFactory: () => ({
+        manifest,
+        createdFiles: ['packages/app/tests/verify/login.red.test.js', secondTest],
+      }),
+      redRuns: [
+        { results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'assertion-fail', message: 'expected failure' }] },
+        { results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'assertion-fail', message: 'expected failure' }] },
+      ],
+    });
+
+    const result = await runVerifyClaim(makeContext({
+      execute,
+      prepareWorktree: vi.fn()
+        .mockResolvedValueOnce({ worktreePath: redWorktree, cleanup: vi.fn().mockResolvedValue() })
+        .mockResolvedValue({ worktreePath: pushWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(redWorktree, 'packages', 'app') })),
+      adapters: new Map([['vitest', makeVitestAdapter()]]),
+      work: makeWork({ findings: [{ id: 'F-1', blocking: true }] }),
+    }));
+
+    expect(result.verification.outcome).toBe('FAIL');
   });
 
   it('retries authoring when a red run returns suite errors', async () => {
@@ -469,7 +521,7 @@ describe('runVerifyClaim red phase', () => {
       execute,
       prepareWorktree: vi.fn()
         .mockResolvedValueOnce({ worktreePath: redWorktree, cleanup: vi.fn().mockResolvedValue() })
-        .mockResolvedValueOnce({ worktreePath: pushWorktree, cleanup: vi.fn().mockResolvedValue() }),
+        .mockResolvedValue({ worktreePath: pushWorktree, cleanup: vi.fn().mockResolvedValue() }),
       detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(redWorktree, 'packages', 'app') })),
       adapters: new Map([['vitest', makeVitestAdapter()]]),
       work: makeWork({ findings: [{ id: 'F-1', blocking: true }] }),
@@ -914,6 +966,52 @@ describe('runVerifyClaim red phase', () => {
         outcome: 'FAIL',
       }),
     });
+  });
+
+  it('rejects a symlinked publication parent without writing outside the worktree', async () => {
+    const redWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-red-'));
+    const pushWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-push-'));
+    const outside = mkdtempSync(join(tmpdir(), 'ff-verify-outside-'));
+    setupRepo(redWorktree);
+    setupRepo(pushWorktree);
+    const testPath = 'packages/app/__tests__/proof.test.js';
+    const outsideFile = join(outside, 'proof.test.js');
+    writeFileSync(outsideFile, 'sentinel\n');
+    symlinkSync(outside, join(pushWorktree, 'packages', 'app', '__tests__'));
+    const manifest = makeManifest({
+      requirements: [{
+        requirement: {
+          id: 'REQ-1',
+          form: 'when',
+          text: 'When login is invalid, the request fails.',
+          source_finding_id: 'F-1',
+        },
+        tests: [testPath],
+        dependency_files: [],
+        framework: 'vitest',
+      }],
+    });
+    const execute = makeExecuteForRed({
+      worktreePath: redWorktree,
+      manifestFactory: () => ({ manifest, createdFiles: [testPath] }),
+      redRuns: [
+        { results: [{ file: testPath, name: 'REQ-1', status: 'assertion-fail', message: 'expected failure' }] },
+        { results: [{ file: testPath, name: 'REQ-1', status: 'assertion-fail', message: 'expected failure' }] },
+      ],
+    });
+
+    const result = await runVerifyClaim(makeContext({
+      execute,
+      prepareWorktree: vi.fn()
+        .mockResolvedValueOnce({ worktreePath: redWorktree, cleanup: vi.fn().mockResolvedValue() })
+        .mockResolvedValueOnce({ worktreePath: pushWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(redWorktree, 'packages', 'app') })),
+      adapters: new Map([['vitest', makeVitestAdapter()]]),
+      work: makeWork({ findings: [{ id: 'F-1', blocking: true }] }),
+    }));
+
+    expect(result).toEqual({ status: 'failed', failure_kind: 'terminal' });
+    expect(readFileSync(outsideFile, 'utf8')).toBe('sentinel\n');
   });
 
   it('fails deterministically when manifest test paths escape the allowed test scopes', async () => {

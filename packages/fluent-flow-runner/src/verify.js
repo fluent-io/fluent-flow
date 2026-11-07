@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { resolvePrompt } from './prompts.js';
 import { assertSafeRelPath, containsRealPath, sha256File } from './verify-paths.js';
@@ -143,33 +143,37 @@ function artifactPaths(worktreeRoot, data) {
   };
 }
 
-function manifestTestPaths(manifest) {
-  return uniquePaths(manifest?.requirements?.flatMap((entry) => entry.tests ?? []) ?? []);
+function manifestPublishedPaths(manifest, packagePrefix) {
+  return uniquePaths(manifest?.requirements?.flatMap((entry) => [
+    ...(entry.tests ?? []),
+    ...(entry.dependency_files ?? []).filter((path) => pathInsideTestScope(path, packagePrefix)),
+  ]) ?? []);
 }
 
-function priorRecordTestPaths(record, validation) {
+function priorRecordPublishedPaths(record, validation) {
   try {
     if (!record || record.phase !== 'red') return [];
     const hashes = record.test_hashes ?? record.testHashes;
     if (!Array.isArray(hashes)) return [];
     validateManifest(record.manifest, validation);
-    const declaredTests = new Set(manifestTestPaths(record.manifest));
+    const packagePrefix = packageRelativePrefix(validation.worktreeRoot, validation.packageRoot);
+    const declaredPaths = new Set(manifestPublishedPaths(record.manifest, packagePrefix));
     return uniquePaths(
       hashes
         .map((entry) => (typeof entry?.path === 'string' ? assertSafeRelPath(entry.path) : ''))
-        .filter((path) => path && declaredTests.has(path)),
+        .filter((path) => path && declaredPaths.has(path)),
     );
   } catch {
     return [];
   }
 }
 
-function collectPriorRedTests(records, validation) {
-  const priorTests = [];
+function collectPriorRedFiles(records, validation) {
+  const priorFiles = [];
   for (const record of records ?? []) {
-    priorTests.push(...priorRecordTestPaths(record, validation));
+    priorFiles.push(...priorRecordPublishedPaths(record, validation));
   }
-  return uniquePaths(priorTests);
+  return uniquePaths(priorFiles);
 }
 
 function buildSkippedVerification({ phase, redBaseSha, greenSha, reason }) {
@@ -207,9 +211,7 @@ function safeReadJson(path) {
   }
 }
 
-function ensureDirForFile(path) {
-  mkdirSync(dirname(path), { recursive: true });
-}
+class UnsafeVerificationPathError extends Error {}
 
 function normalizeResultFile(worktreeRoot, file) {
   if (typeof file !== 'string' || file.length === 0) return '';
@@ -306,10 +308,12 @@ function evaluateRedRows(manifest, rows) {
 
   for (const entry of manifest.requirements) {
     const relevant = rows.filter((row) => entry.tests.includes(row.file));
+    const observedFiles = new Set(relevant.map((row) => row.file));
+    const missingFiles = entry.tests.filter((file) => !observedFiles.has(file));
     const hasSuiteError = relevant.some((row) => row.status === 'suite-error');
     const hasAssertionFail = relevant.some((row) => row.status === 'assertion-fail');
     const hasSkip = relevant.some((row) => row.status === 'skip');
-    const status = hasAssertionFail && !hasSuiteError ? 'PASS' : 'FAIL';
+    const status = hasAssertionFail && !hasSuiteError && missingFiles.length === 0 ? 'PASS' : 'FAIL';
     const detail = {
       id: entry.requirement.id,
       source_finding_id: entry.requirement.source_finding_id,
@@ -328,7 +332,7 @@ function evaluateRedRows(manifest, rows) {
     requirements.push(detail);
 
     if (hasSuiteError) invalidReason = invalidReason ?? 'suite-error';
-    else if (relevant.length === 0 || hasSkip) invalidReason = invalidReason ?? 'missing';
+    else if (missingFiles.length > 0 || hasSkip) invalidReason = invalidReason ?? 'missing';
     else if (!hasAssertionFail) invalidReason = invalidReason ?? 'pass-at-base';
   }
 
@@ -344,10 +348,12 @@ function evaluateGreenRows(manifest, rows) {
   const byRequirement = new Map();
   for (const entry of manifest.requirements) {
     const relevant = rows.filter((row) => entry.tests.includes(row.file));
+    const observedFiles = new Set(relevant.map((row) => row.file));
+    const missingFiles = entry.tests.filter((file) => !observedFiles.has(file));
     const hasPass = relevant.some((row) => row.status === 'pass');
     const hasFailure = relevant.some((row) => row.status === 'assertion-fail' || row.status === 'suite-error');
     const hasSkip = relevant.some((row) => row.status === 'skip');
-    const missing = relevant.length === 0;
+    const missing = missingFiles.length > 0;
     byRequirement.set(entry.requirement.id, {
       id: entry.requirement.id,
       source_finding_id: entry.requirement.source_finding_id,
@@ -380,7 +386,7 @@ function destinationPathFromRoot(worktreeRoot, file) {
   const abs = resolve(worktreeRoot, safe);
   const rel = relative(resolve(worktreeRoot), abs);
   if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-    throw new Error(`Path escapes worktree: ${file}`);
+    throw new UnsafeVerificationPathError(`Path escapes worktree: ${file}`);
   }
   return { rel: safe, abs };
 }
@@ -449,20 +455,20 @@ function isProtectedAdditionPath(relPath, { frameworkId, packageManager, package
     || isMandatoryAdapterPath(relPath, { frameworkId, packageManager, packagePrefix });
 }
 
-function isAllowedRedArtifactStatus(entry, { specRel, manifestRel, nextTests, priorTests }) {
+function isAllowedRedArtifactStatus(entry, { specRel, manifestRel, nextFiles, priorFiles }) {
   if (entry.path === specRel || entry.path === manifestRel) {
     return ['A', 'M', '??'].includes(entry.status);
   }
 
-  const isNextTest = nextTests.includes(entry.path);
-  const isPriorTest = priorTests.includes(entry.path);
-  if (isNextTest && isPriorTest) {
+  const isNextFile = nextFiles.includes(entry.path);
+  const isPriorFile = priorFiles.includes(entry.path);
+  if (isNextFile && isPriorFile) {
     return ['A', 'M', '??'].includes(entry.status);
   }
-  if (isNextTest) {
+  if (isNextFile) {
     return ['A', '??'].includes(entry.status);
   }
-  if (isPriorTest) {
+  if (isPriorFile) {
     return entry.status === 'D';
   }
   return false;
@@ -495,11 +501,69 @@ function parseGitStatus(stdout) {
     });
 }
 
+function assertSafeDestinationParent(worktreeRoot, target) {
+  const root = resolve(worktreeRoot);
+  const rootStat = lstatSync(root);
+  if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    throw new UnsafeVerificationPathError('Verification worktree root is not a directory');
+  }
+  const parent = dirname(target);
+  const rel = relative(root, parent);
+  const parts = rel ? rel.split(sep) : [];
+  let current = root;
+  for (const part of parts) {
+    current = join(current, part);
+    try {
+      const stat = lstatSync(current);
+      if (stat.isSymbolicLink() || !stat.isDirectory()) {
+        throw new UnsafeVerificationPathError('Verification artifact parent is not a directory');
+      }
+    } catch (err) {
+      if (err?.code !== 'ENOENT') throw err;
+      mkdirSync(current);
+    }
+  }
+  if (!containsRealPath(root, realpathSync(parent))) {
+    throw new UnsafeVerificationPathError('Verification artifact parent escapes worktree');
+  }
+}
+
+function safeRemoveArtifact(worktreeRoot, relPath) {
+  const target = destinationPathFromRoot(worktreeRoot, relPath).abs;
+  assertSafeDestinationParent(worktreeRoot, target);
+  try {
+    const stat = lstatSync(target);
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      throw new UnsafeVerificationPathError('Verification artifact is not a regular file');
+    }
+    rmSync(target);
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+}
+
 function copyArtifact(sourceRoot, targetRoot, relPath) {
   const source = repoRelativeFromRoot(sourceRoot, relPath).abs;
   const target = destinationPathFromRoot(targetRoot, relPath).abs;
-  ensureDirForFile(target);
-  copyFileSync(source, target);
+  assertSafeDestinationParent(targetRoot, target);
+  try {
+    const stat = lstatSync(target);
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      throw new UnsafeVerificationPathError('Verification artifact is not a regular file');
+    }
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+  const fd = openSync(
+    target,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | (constants.O_NOFOLLOW ?? 0),
+    0o600,
+  );
+  try {
+    writeFileSync(fd, readFileSync(source));
+  } finally {
+    closeSync(fd);
+  }
 }
 
 async function withPreparedWorktree(context, opts, fn) {
@@ -616,44 +680,11 @@ async function runRedPhase(context) {
           };
         }
 
-        const install = await runInstallWithClassification(
-          context,
-          installCommandFor(adapter, detected, data.verification),
-          detected.root,
-          redTimeoutMs,
-        );
-        if (!install.ok) {
-          return { status: 'failed', failure_kind: install.kind };
-        }
-
-        let reproduced = true;
-        for (let runIndex = 0; runIndex < data.verification.authoring.red_reproductions; runIndex++) {
-          const files = uniquePaths(manifest.requirements.flatMap((entry) => entry.tests));
-          const suiteRun = await runSuiteWithTimeoutClassification(
-            context,
-            adapter.testCommand({ files, root: detected.root, worktreeRoot: worktreePath }),
-            detected.root,
-            redTimeoutMs,
-          );
-          if (!suiteRun.ok) return { status: 'failed', failure_kind: suiteRun.kind };
-          const testRun = suiteRun.result;
-          const parsed = parseReporterOutput(testRun.stdout);
-          if (!parsed.ok) return { status: 'failed', failure_kind: parsed.failureKind };
-          const rows = normalizeRows(worktreePath, adapter.parseResults(parsed.value));
-          const evaluation = evaluateRedRows(manifest, rows);
-          lastEvaluation = evaluation;
-          if (!evaluation.valid) {
-            reproduced = false;
-            break;
-          }
-        }
-
-        if (!reproduced) continue;
-
-        return await withPreparedWorktree(context, { branch: data.branch, name: 'verify-push' }, async (pushWorktreePath) => {
+        const proof = await withPreparedWorktree(context, { ref: data.red_base_sha, name: 'verify-push' }, async (pushWorktreePath) => {
           const pushRoot = resolve(pushWorktreePath, relative(worktreePath, detected.root));
-          const pushArtifacts = artifactPaths(pushWorktreePath, data);
-          const priorTests = collectPriorRedTests(data.prior_red_records ?? data.priorRedRecords, {
+          const proofDetected = { ...detected, root: pushRoot };
+          const packagePrefix = packageRelativePrefix(pushWorktreePath, pushRoot);
+          const priorFiles = collectPriorRedFiles(data.prior_red_records ?? data.priorRedRecords, {
             expectedPrNumber: data.prNumber ?? data.pr_number,
             findings: [],
             frameworkId: detected.id,
@@ -662,66 +693,111 @@ async function runRedPhase(context) {
             worktreeRoot: pushWorktreePath,
           });
           const nextTests = uniquePaths(manifest.requirements.flatMap((entry) => entry.tests));
-          for (const testPath of priorTests) {
-            if (!nextTests.includes(testPath)) {
-              rmSync(join(pushWorktreePath, assertSafeRelPath(testPath)), { force: true });
+          const nextFiles = manifestPublishedPaths(manifest, packagePrefix);
+          for (const file of priorFiles) {
+            if (!nextFiles.includes(file)) {
+              safeRemoveArtifact(pushWorktreePath, file);
             }
           }
 
           copyArtifact(worktreePath, pushWorktreePath, specRel);
           copyArtifact(worktreePath, pushWorktreePath, manifestRel);
-          for (const testPath of nextTests) {
-            copyArtifact(worktreePath, pushWorktreePath, testPath);
+          for (const file of nextFiles) {
+            copyArtifact(worktreePath, pushWorktreePath, file);
+          }
+
+          const install = await runInstallWithClassification(
+            context,
+            installCommandFor(adapter, proofDetected, data.verification),
+            pushRoot,
+            redTimeoutMs,
+          );
+          if (!install.ok) {
+            return { result: { status: 'failed', failure_kind: install.kind } };
+          }
+
+          let evaluation = null;
+          for (let runIndex = 0; runIndex < data.verification.authoring.red_reproductions; runIndex++) {
+            const suiteRun = await runSuiteWithTimeoutClassification(
+              context,
+              adapter.testCommand({ files: nextTests, root: pushRoot, worktreeRoot: pushWorktreePath }),
+              pushRoot,
+              redTimeoutMs,
+            );
+            if (!suiteRun.ok) {
+              return { result: { status: 'failed', failure_kind: suiteRun.kind } };
+            }
+            const parsed = parseReporterOutput(suiteRun.result.stdout);
+            if (!parsed.ok) {
+              return { result: { status: 'failed', failure_kind: parsed.failureKind } };
+            }
+            const rows = normalizeRows(pushWorktreePath, adapter.parseResults(parsed.value));
+            evaluation = evaluateRedRows(manifest, rows);
+            if (!evaluation.valid) {
+              return { retry: true, evaluation };
+            }
           }
 
           const statusResult = await executeArgv(context.execute, ['git', 'status', '--porcelain', '--untracked-files=all'], pushWorktreePath);
           if (statusResult.exitCode !== 0) {
-            return { status: 'failed', failure_kind: 'transient' };
+            return { result: { status: 'failed', failure_kind: 'transient' }, evaluation };
           }
           const invalidStatus = parseGitStatus(statusResult.stdout).find((entry) => !isAllowedRedArtifactStatus(entry, {
             specRel,
             manifestRel,
-            nextTests,
-            priorTests,
+            nextFiles,
+            priorFiles,
           }));
           if (invalidStatus) {
             return {
-              status: 'completed',
-              verification: {
-                phase: 'red',
-                framework: detected.id,
-                outcome: 'FAIL',
-                matrix: buildMatrix(lastEvaluation?.requirements ?? [], lastEvaluation?.suite ?? {}),
-                manifest,
-                red_base_sha: data.red_base_sha,
+              result: {
+                status: 'completed',
+                verification: {
+                  phase: 'red',
+                  framework: detected.id,
+                  outcome: 'FAIL',
+                  matrix: buildMatrix(evaluation?.requirements ?? [], evaluation?.suite ?? {}),
+                  manifest,
+                  red_base_sha: data.red_base_sha,
+                },
               },
+              evaluation,
             };
           }
 
           const gitAdd = await executeArgv(context.execute, ['git', 'add', '-A'], pushWorktreePath);
-          if (gitAdd.exitCode !== 0) return { status: 'failed', failure_kind: 'transient' };
+          if (gitAdd.exitCode !== 0) {
+            return { result: { status: 'failed', failure_kind: 'transient' }, evaluation };
+          }
           const gitCommit = await executeArgv(
             context.execute,
             ['git', 'commit', '-m', `test(verify): pin PR #${data.prNumber ?? data.pr_number} requirements (red) [skip ci]`],
             pushWorktreePath,
           );
-          if (gitCommit.exitCode !== 0) return { status: 'failed', failure_kind: 'transient' };
+          if (gitCommit.exitCode !== 0) {
+            return { result: { status: 'failed', failure_kind: 'transient' }, evaluation };
+          }
           const gitPush = await executeArgv(context.execute, ['git', 'push', 'origin', `HEAD:${data.branch}`], pushWorktreePath);
           if (gitPush.exitCode !== 0) {
             return {
-              status: 'completed',
-              verification: {
-                ...buildSkippedVerification({
-                  phase: 'red',
-                  redBaseSha: data.red_base_sha,
-                  reason: 'red verification artifacts could not be pushed to the PR branch',
-                }),
-                framework: detected.id,
+              result: {
+                status: 'completed',
+                verification: {
+                  ...buildSkippedVerification({
+                    phase: 'red',
+                    redBaseSha: data.red_base_sha,
+                    reason: 'red verification artifacts could not be pushed to the PR branch',
+                  }),
+                  framework: detected.id,
+                },
               },
+              evaluation,
             };
           }
           const revParse = await executeArgv(context.execute, ['git', 'rev-parse', 'HEAD'], pushWorktreePath);
-          if (revParse.exitCode !== 0 || revParse.stdout.trim() === '') return { status: 'failed', failure_kind: 'transient' };
+          if (revParse.exitCode !== 0 || revParse.stdout.trim() === '') {
+            return { result: { status: 'failed', failure_kind: 'transient' }, evaluation };
+          }
           const artifactSha = revParse.stdout.trim();
 
           const hashPaths = uniquePaths([
@@ -740,19 +816,26 @@ async function runRedPhase(context) {
           }));
 
           return {
-            status: 'completed',
-            verification: {
-              phase: 'red',
-              framework: detected.id,
-              outcome: 'PASS',
-              matrix: buildMatrix(lastEvaluation.requirements, lastEvaluation.suite),
-              manifest,
-              test_hashes: testHashes,
-              artifact_sha: artifactSha,
-              red_base_sha: data.red_base_sha,
+            result: {
+              status: 'completed',
+              verification: {
+                phase: 'red',
+                framework: detected.id,
+                outcome: 'PASS',
+                matrix: buildMatrix(evaluation.requirements, evaluation.suite),
+                manifest,
+                test_hashes: testHashes,
+                artifact_sha: artifactSha,
+                red_base_sha: data.red_base_sha,
+              },
             },
+            evaluation,
           };
         });
+
+        lastEvaluation = proof.evaluation ?? lastEvaluation;
+        if (proof.retry) continue;
+        return proof.result;
       }
 
       return {
@@ -776,6 +859,9 @@ async function runRedPhase(context) {
           redBaseSha: data.red_base_sha,
         }),
       };
+    }
+    if (err instanceof UnsafeVerificationPathError) {
+      return { status: 'failed', failure_kind: 'terminal' };
     }
     throw err;
   }
