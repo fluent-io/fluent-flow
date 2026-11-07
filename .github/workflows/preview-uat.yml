@@ -72,6 +72,7 @@ jobs:
         run: |
           set -euo pipefail
           npm ci --workspace packages/db --workspace packages/fluent-flow-runner --workspace packages/dashboard
+          npx playwright install chromium
           npm run build --workspace packages/db
 
       - name: Wait for matching preview deployment
@@ -121,7 +122,6 @@ jobs:
           PREVIEW_UAT_SCREENSHOTS: ${{ github.workspace }}/preview-uat-evidence
           PREVIEW_UAT_ORIGIN: ${{ steps.preview.outputs.dashboard_origin }}
           PREVIEW_UAT_API_ORIGIN: ${{ steps.preview.outputs.api_origin }}
-          PREVIEW_UAT_CHROMIUM: /opt/google/chrome/chrome
         run: node scripts/preview-uat-browser.mjs
 
       - name: Capture database evidence
