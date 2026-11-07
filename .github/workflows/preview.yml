@@ -97,7 +97,7 @@ jobs:
           set -euo pipefail
           ready=0
           for _ in $(seq 1 60); do
-            if curl --fail --silent --show-error --connect-timeout 3 --max-time 10 "$API_URL/api/health" >/dev/null && curl --fail --silent --show-error --location --connect-timeout 3 --max-time 10 "$DASHBOARD_URL/login" >/dev/null; then
+            if curl --fail --silent --show-error --connect-timeout 3 --max-time 10 "$API_URL/api/health" >/dev/null && curl --fail --silent --show-error --connect-timeout 3 --max-time 10 "$DASHBOARD_URL/login" >/dev/null; then
               ready=1
               break
             fi

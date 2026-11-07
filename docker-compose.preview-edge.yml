@@ -7,8 +7,14 @@ services:
       - --providers.docker.exposedbydefault=false
       - --providers.docker.network=${PREVIEW_EDGE_NETWORK}
       - --entrypoints.web.address=:80
+      - --ping=true
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: [CMD, traefik, healthcheck, --ping=true]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     networks:
       - preview-edge
     restart: unless-stopped
@@ -24,7 +30,8 @@ services:
       - http://traefik:80
       - run
     depends_on:
-      - traefik
+      traefik:
+        condition: service_healthy
     networks:
       - preview-edge
     restart: unless-stopped

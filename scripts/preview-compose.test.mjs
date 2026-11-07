@@ -47,6 +47,7 @@ test('renders an isolated preview application stack', () => {
 
   for (const service of Object.values(config.services)) {
     assert.equal(service.container_name, undefined);
+    assert.equal(service.restart, undefined);
   }
   assert.equal(config.services['fluent-flow'].ports, undefined);
   assert.equal(config.services.dashboard.ports, undefined);
@@ -104,6 +105,8 @@ test('renders a private shared edge from Cloudflare Tunnel to Traefik', () => {
 
   assert.deepEqual(Object.keys(config.services).sort(), ['cloudflared', 'traefik']);
   assert.equal(config.services.traefik.image, 'traefik:v3.6.6');
+  assert.deepEqual(config.services.traefik.healthcheck.test, ['CMD', 'traefik', 'healthcheck', '--ping=true']);
+  assert.equal(config.services.cloudflared.depends_on.traefik.condition, 'service_healthy');
   assert.equal(config.services.traefik.ports, undefined);
   assert.equal(config.services.cloudflared.ports, undefined);
   assert.deepEqual(config.services.cloudflared.command, [
