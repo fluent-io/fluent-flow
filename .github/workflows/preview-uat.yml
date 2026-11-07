@@ -1,0 +1,108 @@
+name: Disposable Preview UAT
+
+on:
+  push:
+    branches: [test/preview-uat]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-uat-134
+  cancel-in-progress: true
+
+jobs:
+  uat:
+    name: Preview UAT 134
+    runs-on:
+      group: Fluent Flow trusted deployments
+      labels: [Linux, X64, g10]
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out UAT source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install UAT dependencies
+        run: |
+          set -euo pipefail
+          npm ci --workspace packages/db --workspace packages/fluent-flow-runner --workspace packages/dashboard
+          npm run build --workspace packages/db
+
+      - name: Wait for matching preview deployment
+        run: |
+          set -euo pipefail
+          ready=0
+          for _ in $(seq 1 120); do
+            server=$(docker ps --quiet --filter label=com.docker.compose.project=fluent-flow-preview-134 --filter label=com.docker.compose.service=fluent-flow)
+            dashboard=$(docker ps --quiet --filter label=com.docker.compose.project=fluent-flow-preview-134 --filter label=com.docker.compose.service=dashboard)
+            if [ -n "$server" ] && [ -n "$dashboard" ] \
+              && docker inspect "$server" | jq --exit-status --arg expected "DEPLOY_SHA=$GITHUB_SHA" '.[0].Config.Env | index($expected) != null' >/dev/null \
+              && docker inspect "$dashboard" | jq --exit-status --arg expected "DEPLOY_SHA=$GITHUB_SHA" '.[0].Config.Env | index($expected) != null' >/dev/null \
+              && curl --fail --silent --show-error --connect-timeout 3 --max-time 10 https://api-pr-134-preview.fluentflow.tech/api/health >/dev/null \
+              && curl --fail --silent --show-error --connect-timeout 3 --max-time 10 https://pr-134-preview.fluentflow.tech/login >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "Matching preview deployment did not become ready"
+            exit 1
+          fi
+
+      - name: Seed isolated UAT state
+        run: |
+          set -euo pipefail
+          server=$(docker ps --quiet --filter label=com.docker.compose.project=fluent-flow-preview-134 --filter label=com.docker.compose.service=fluent-flow)
+          docker cp scripts/preview-uat-seed.mjs "$server:/app/packages/fluent-flow/preview-uat-seed.mjs"
+          docker cp scripts/preview-uat-report.mjs "$server:/app/packages/fluent-flow/preview-uat-report.mjs"
+          docker exec --env UAT_PR_NUMBER=134 --workdir /app/packages/fluent-flow "$server" node preview-uat-seed.mjs
+          docker cp "$server:/tmp/preview-uat-state.json" "$RUNNER_TEMP/preview-uat-state.json"
+          chmod 600 "$RUNNER_TEMP/preview-uat-state.json"
+
+      - name: Exercise login, execution, runner, and interactions
+        env:
+          PREVIEW_UAT_STATE: ${{ runner.temp }}/preview-uat-state.json
+          PREVIEW_UAT_SCREENSHOTS: ${{ github.workspace }}/preview-uat-evidence
+          PREVIEW_UAT_ORIGIN: https://pr-134-preview.fluentflow.tech
+          PREVIEW_UAT_API_ORIGIN: https://api-pr-134-preview.fluentflow.tech
+          PREVIEW_UAT_CHROMIUM: /opt/google/chrome/chrome
+        run: node scripts/preview-uat-browser.mjs
+
+      - name: Capture database evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p preview-uat-evidence
+          server=$(docker ps --quiet --filter label=com.docker.compose.project=fluent-flow-preview-134 --filter label=com.docker.compose.service=fluent-flow)
+          if [ -n "$server" ] && docker exec --workdir /app/packages/fluent-flow "$server" node preview-uat-report.mjs; then
+            docker cp "$server:/tmp/preview-uat-report.json" preview-uat-evidence/database-report.json
+            cat preview-uat-evidence/database-report.json
+          fi
+
+      - name: Remove UAT secrets and scaffolds
+        if: always()
+        run: |
+          set -euo pipefail
+          server=$(docker ps --quiet --filter label=com.docker.compose.project=fluent-flow-preview-134 --filter label=com.docker.compose.service=fluent-flow)
+          if [ -n "$server" ]; then
+            docker exec "$server" rm -f /app/packages/fluent-flow/preview-uat-seed.mjs /app/packages/fluent-flow/preview-uat-report.mjs /tmp/preview-uat-state.json /tmp/preview-uat-report.json
+          fi
+          rm -f "$RUNNER_TEMP/preview-uat-state.json"
+
+      - name: Upload UAT evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preview-uat-134
+          path: preview-uat-evidence
+          if-no-files-found: error
+          retention-days: 7
