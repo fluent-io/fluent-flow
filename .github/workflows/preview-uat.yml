@@ -137,6 +137,22 @@ jobs:
             cat preview-uat-evidence/database-report.json
           fi
 
+      - name: Capture sanitized runtime diagnostics
+        if: always() && steps.preview.outcome == 'success'
+        env:
+          PROJECT_NAME: ${{ steps.preview.outputs.project_name }}
+        run: |
+          set -euo pipefail
+          mkdir -p preview-uat-evidence
+          runtime_log="$RUNNER_TEMP/preview-dashboard.log"
+          : >"$runtime_log"
+          trap 'rm -f "$runtime_log"' EXIT
+          dashboard=$(docker ps --quiet --filter "label=com.docker.compose.project=$PROJECT_NAME" --filter label=com.docker.compose.service=dashboard)
+          if [ -n "$dashboard" ]; then
+            docker logs --since 1h "$dashboard" >"$runtime_log" 2>&1 || true
+          fi
+          node scripts/preview-uat-diagnostics.mjs "$runtime_log" preview-uat-evidence/runtime-diagnostics.json
+
       - name: Remove UAT secrets and scaffolds
         if: always() && steps.preview.outcome == 'success'
         env:

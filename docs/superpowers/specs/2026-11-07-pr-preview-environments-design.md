@@ -133,7 +133,7 @@ Deployment smoke checks prove:
 - An unauthenticated protected dashboard API remains unauthorized.
 - The running containers report the expected PR head SHA.
 
-The `Preview Full-Stack UAT` workflow is dispatched from `main` for an open same-repository pull request. It uses only trusted UAT code, validates the live containers against the pull-request head SHA, creates isolated state, drives an actual runner and browser, captures database evidence and screenshots, then removes the temporary credentials and scripts.
+The `Preview Full-Stack UAT` workflow is dispatched from `main` for an open same-repository pull request. It uses only trusted UAT code, validates the live containers against the pull-request head SHA, creates isolated state, drives an actual runner and browser, captures database evidence, screenshots, and sanitized runtime errors, then removes the temporary credentials and scripts.
 
 Full-stack UAT proves:
 
