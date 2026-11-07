@@ -14,7 +14,9 @@ jobs:
   reconcile:
     if: github.ref == 'refs/heads/main'
     name: Reconcile preview edge
-    runs-on: [self-hosted, Linux, X64, g10]
+    runs-on:
+      group: Fluent Flow trusted deployments
+      labels: [Linux, X64, g10]
     timeout-minutes: 15
 
     steps:

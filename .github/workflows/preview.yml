@@ -17,7 +17,9 @@ jobs:
   lifecycle:
     if: github.event.pull_request.head.repo.full_name == github.repository
     name: Preview PR ${{ github.event.pull_request.number }}
-    runs-on: [self-hosted, Linux, X64, g10]
+    runs-on:
+      group: Fluent Flow trusted deployments
+      labels: [Linux, X64, g10]
     timeout-minutes: 45
 
     steps:
