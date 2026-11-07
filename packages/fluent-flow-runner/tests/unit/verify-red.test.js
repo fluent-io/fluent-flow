@@ -896,7 +896,7 @@ describe('runVerifyClaim red phase', () => {
     expect(result).toEqual({ status: 'failed', failure_kind: 'transient' });
   });
 
-  it('skips red verification when the red artifact push cannot publish to the PR branch', async () => {
+  it('fails transiently when red artifacts cannot publish to the PR branch', async () => {
     const redWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-red-'));
     const pushWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-push-'));
     setupRepo(redWorktree);
@@ -925,15 +925,7 @@ describe('runVerifyClaim red phase', () => {
       work: makeWork({ findings: [{ id: 'F-1', blocking: true }] }),
     }));
 
-    expect(result).toEqual({
-      status: 'completed',
-      verification: expect.objectContaining({
-        phase: 'red',
-        framework: 'vitest',
-        outcome: 'SKIPPED',
-        red_base_sha: 'a'.repeat(40),
-      }),
-    });
+    expect(result).toEqual({ status: 'failed', failure_kind: 'transient' });
   });
 
   it('retries malformed manifests and fails deterministically when authoring never produces a valid manifest', async () => {

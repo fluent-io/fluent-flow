@@ -779,20 +779,7 @@ async function runRedPhase(context) {
           }
           const gitPush = await executeArgv(context.execute, ['git', 'push', 'origin', `HEAD:${data.branch}`], pushWorktreePath);
           if (gitPush.exitCode !== 0) {
-            return {
-              result: {
-                status: 'completed',
-                verification: {
-                  ...buildSkippedVerification({
-                    phase: 'red',
-                    redBaseSha: data.red_base_sha,
-                    reason: 'red verification artifacts could not be pushed to the PR branch',
-                  }),
-                  framework: detected.id,
-                },
-              },
-              evaluation,
-            };
+            return { result: { status: 'failed', failure_kind: 'transient' }, evaluation };
           }
           const revParse = await executeArgv(context.execute, ['git', 'rev-parse', 'HEAD'], pushWorktreePath);
           if (revParse.exitCode !== 0 || revParse.stdout.trim() === '') {
