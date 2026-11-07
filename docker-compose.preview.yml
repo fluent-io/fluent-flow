@@ -1,0 +1,89 @@
+services:
+  fluent-flow:
+    build:
+      context: ${PREVIEW_SOURCE_DIR}
+      dockerfile: packages/fluent-flow/Dockerfile
+    environment:
+      DATABASE_URL: postgres://fluentflow:${PREVIEW_DATABASE_PASSWORD}@postgres:5432/fluentflow
+      FF_GITHUB_APP_ID: ${PREVIEW_GITHUB_APP_ID}
+      FF_GITHUB_APP_PRIVATE_KEY: ${PREVIEW_GITHUB_APP_PRIVATE_KEY}
+      FF_GITHUB_APP_WEBHOOK_SECRET: ${PREVIEW_GITHUB_APP_WEBHOOK_SECRET}
+      FF_COLLAB_AUTH_SECRET: ${PREVIEW_COLLAB_AUTH_SECRET}
+      MCP_AUTH_TOKEN: ${PREVIEW_MCP_AUTH_TOKEN}
+      PORT: 3847
+      CONFIG_CACHE_TTL_MS: 300000
+      DEPLOY_SHA: ${PREVIEW_DEPLOY_SHA}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3847/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks:
+      - default
+      - preview-edge
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${PREVIEW_EDGE_NETWORK}"
+      - "traefik.http.routers.${PREVIEW_ROUTER_PREFIX}-api.entrypoints=web"
+      - "traefik.http.routers.${PREVIEW_ROUTER_PREFIX}-api.rule=Host(`${PREVIEW_API_HOST}`)"
+      - "traefik.http.routers.${PREVIEW_ROUTER_PREFIX}-api.service=${PREVIEW_ROUTER_PREFIX}-api"
+      - "traefik.http.services.${PREVIEW_ROUTER_PREFIX}-api.loadbalancer.server.port=3847"
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ${PREVIEW_SOURCE_DIR}
+      dockerfile: packages/dashboard/Dockerfile
+    environment:
+      DATABASE_URL: postgres://fluentflow:${PREVIEW_DATABASE_PASSWORD}@postgres:5432/fluentflow
+      GITHUB_CLIENT_ID: ${PREVIEW_GITHUB_CLIENT_ID}
+      GITHUB_CLIENT_SECRET: ${PREVIEW_GITHUB_CLIENT_SECRET}
+      NEXTAUTH_SECRET: ${PREVIEW_NEXTAUTH_SECRET}
+      NEXTAUTH_URL: https://${PREVIEW_DASHBOARD_HOST}
+      FF_COLLAB_AUTH_SECRET: ${PREVIEW_COLLAB_AUTH_SECRET}
+      FF_COLLAB_API_URL: http://fluent-flow:3847
+      NEXT_PUBLIC_FLUENT_FLOW_URL: https://${PREVIEW_API_HOST}
+      DEPLOY_SHA: ${PREVIEW_DEPLOY_SHA}
+      NODE_ENV: production
+    depends_on:
+      fluent-flow:
+        condition: service_healthy
+    networks:
+      - default
+      - preview-edge
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${PREVIEW_EDGE_NETWORK}"
+      - "traefik.http.routers.${PREVIEW_ROUTER_PREFIX}-dashboard.entrypoints=web"
+      - "traefik.http.routers.${PREVIEW_ROUTER_PREFIX}-dashboard.rule=Host(`${PREVIEW_DASHBOARD_HOST}`)"
+      - "traefik.http.routers.${PREVIEW_ROUTER_PREFIX}-dashboard.service=${PREVIEW_ROUTER_PREFIX}-dashboard"
+      - "traefik.http.services.${PREVIEW_ROUTER_PREFIX}-dashboard.loadbalancer.server.port=3000"
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fluentflow
+      POSTGRES_PASSWORD: ${PREVIEW_DATABASE_PASSWORD}
+      POSTGRES_DB: fluentflow
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U fluentflow -d fluentflow]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - default
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+
+networks:
+  preview-edge:
+    external: true
+    name: ${PREVIEW_EDGE_NETWORK}

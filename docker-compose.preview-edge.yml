@@ -1,0 +1,35 @@
+services:
+  traefik:
+    image: traefik:v3.5
+    command:
+      - --api.dashboard=false
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=${PREVIEW_EDGE_NETWORK}
+      - --entrypoints.web.address=:80
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - preview-edge
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.0
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --url
+      - http://traefik:80
+      - run
+      - --token
+      - ${PREVIEW_TUNNEL_TOKEN}
+    depends_on:
+      - traefik
+    networks:
+      - preview-edge
+    restart: unless-stopped
+
+networks:
+  preview-edge:
+    external: true
+    name: ${PREVIEW_EDGE_NETWORK}
