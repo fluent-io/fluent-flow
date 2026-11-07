@@ -19,7 +19,9 @@ jobs:
   deploy:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     name: Deploy to G10
-    runs-on: [self-hosted, linux, x64, g10]
+    runs-on:
+      group: Fluent Flow trusted deployments
+      labels: [Linux, X64, g10]
     timeout-minutes: 30
 
     steps:
