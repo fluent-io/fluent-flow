@@ -323,18 +323,20 @@ describe('createAcpRuntime', () => {
 
   it('closes during blocked setup without restarting, prompting, reviving, or leaking a child', async () => {
     const { runtime, tracePath, processes } = makeHarness('blocked-setup');
-    const initialPrompt = settleWithin(runtime.runInitialPrompt('Must never be submitted.'), 350);
+    const initialPrompt = runtime.runInitialPrompt('Must never be submitted.').then(
+      (value) => ({ status: 'resolved', value }),
+      (error) => ({ status: 'rejected', error }),
+    );
     await waitFor(() => entriesOf(tracePath, 'session_new').length === 1);
 
     await finish(runtime);
     const outcome = await initialPrompt;
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await expect(processes[0].exited).resolves.toMatchObject({ code: 0, signal: null, error: null });
 
     expect(outcome.status).toBe('rejected');
     expect(entriesOf(tracePath, 'process_start')).toHaveLength(1);
     expect(entriesOf(tracePath, 'session_prompt')).toHaveLength(0);
     expect(processes).toHaveLength(1);
-    await expect(processes[0].exited).resolves.toMatchObject({ code: 0, signal: null, error: null });
     await expect(runtime.exited).resolves.toMatchObject({ code: 0, signal: null, error: null });
   });
 
