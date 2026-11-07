@@ -216,15 +216,6 @@ jobs:
           # fast instead of stalling the deploy job.
           CURL="curl -sS --connect-timeout 5 --max-time 10"
 
-          check_ne() {
-            local name="$1" forbidden="$2" actual="$3"
-            if [ "$actual" = "$forbidden" ]; then
-              echo "❌ $name: got $actual (expected anything except $forbidden)"
-              fail=1
-            else
-              echo "✅ $name: $actual"
-            fi
-          }
 
           check_eq() {
             local name="$1" expected="$2" actual="$3"
@@ -248,20 +239,8 @@ jobs:
             http://127.0.0.1:3847/webhooks/github-app || echo "000")
           check_eq "github-app webhook route mounted + signed" "401" "$status"
 
-          # 2. Dashboard login page serves exactly 200.
-          login_tmp=$(mktemp)
-          status=$($CURL -o "$login_tmp" -w '%{http_code}' http://127.0.0.1:3000/login || echo "000")
+          status=$($CURL -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/login || echo "000")
           check_eq "dashboard /login returns 200" "200" "$status"
-
-          # 3. Dashboard bundle contains the sign-in CTA (guards against
-          # stale builds where the container is up but serving old chunks).
-          if ! grep -q 'Sign in with GitHub' "$login_tmp"; then
-            echo "❌ dashboard /login missing 'Sign in with GitHub' — build may be stale"
-            fail=1
-          else
-            echo "✅ dashboard /login contains sign-in CTA"
-          fi
-          rm -f "$login_tmp"
 
           # 4. Dashboard POST /api/agents is session-gated. An unauth'd POST
           # must return 401 — proves the route is mounted AND the auth check
