@@ -1,0 +1,175 @@
+name: Pull Request Preview
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, synchronize, closed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: preview-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: ${{ github.event.action != 'closed' }}
+
+jobs:
+  lifecycle:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    name: Preview PR ${{ github.event.pull_request.number }}
+    runs-on: [self-hosted, Linux, X64, g10]
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out trusted deployment controls
+        uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+          path: control
+          persist-credentials: false
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Resolve preview identity
+        id: preview
+        working-directory: control
+        run: node scripts/preview-deployment.mjs
+
+      - name: Validate preview credentials
+        env:
+          PREVIEW_GITHUB_APP_ID: ${{ vars.PREVIEW_GITHUB_APP_ID }}
+          PREVIEW_GITHUB_APP_PRIVATE_KEY: ${{ secrets.PREVIEW_GITHUB_APP_PRIVATE_KEY }}
+          PREVIEW_GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.PREVIEW_GITHUB_APP_WEBHOOK_SECRET }}
+          PREVIEW_GITHUB_CLIENT_ID: ${{ secrets.PREVIEW_GITHUB_CLIENT_ID }}
+          PREVIEW_GITHUB_CLIENT_SECRET: ${{ secrets.PREVIEW_GITHUB_CLIENT_SECRET }}
+          PREVIEW_STACK_SECRET: ${{ secrets.PREVIEW_STACK_SECRET }}
+        run: |
+          set -euo pipefail
+          for name in PREVIEW_GITHUB_APP_ID PREVIEW_GITHUB_APP_PRIVATE_KEY PREVIEW_GITHUB_APP_WEBHOOK_SECRET PREVIEW_GITHUB_CLIENT_ID PREVIEW_GITHUB_CLIENT_SECRET PREVIEW_STACK_SECRET; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is required"
+              exit 1
+            fi
+          done
+
+      - name: Check out pull request source
+        if: steps.preview.outputs.operation == 'deploy'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.preview.outputs.head_sha }}
+          path: source
+          persist-credentials: false
+
+      - name: Apply preview operation
+        id: operation
+        working-directory: control
+        env:
+          PREVIEW_OPERATION: ${{ steps.preview.outputs.operation }}
+          PREVIEW_PR_NUMBER: ${{ steps.preview.outputs.number }}
+          PREVIEW_PROJECT_NAME: ${{ steps.preview.outputs.project_name }}
+          PREVIEW_ENVIRONMENT_NAME: ${{ steps.preview.outputs.environment_name }}
+          PREVIEW_DASHBOARD_HOST: ${{ steps.preview.outputs.dashboard_host }}
+          PREVIEW_API_HOST: ${{ steps.preview.outputs.api_host }}
+          PREVIEW_HEAD_SHA: ${{ steps.preview.outputs.head_sha }}
+          PREVIEW_SOURCE_DIR: ${{ steps.preview.outputs.operation == 'deploy' && format('{0}/source', github.workspace) || format('{0}/control', github.workspace) }}
+          PREVIEW_COMPOSE_FILE: ${{ github.workspace }}/control/docker-compose.preview.yml
+          PREVIEW_EDGE_NETWORK: fluent-flow-preview-edge
+          PREVIEW_GITHUB_APP_ID: ${{ vars.PREVIEW_GITHUB_APP_ID }}
+          PREVIEW_GITHUB_APP_PRIVATE_KEY: ${{ secrets.PREVIEW_GITHUB_APP_PRIVATE_KEY }}
+          PREVIEW_GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.PREVIEW_GITHUB_APP_WEBHOOK_SECRET }}
+          PREVIEW_GITHUB_CLIENT_ID: ${{ secrets.PREVIEW_GITHUB_CLIENT_ID }}
+          PREVIEW_GITHUB_CLIENT_SECRET: ${{ secrets.PREVIEW_GITHUB_CLIENT_SECRET }}
+          PREVIEW_STACK_SECRET: ${{ secrets.PREVIEW_STACK_SECRET }}
+        run: node scripts/preview-runtime.mjs
+
+      - name: Smoke test public preview
+        id: smoke
+        if: steps.preview.outputs.operation == 'deploy'
+        env:
+          API_URL: https://${{ steps.preview.outputs.api_host }}
+          DASHBOARD_URL: https://${{ steps.preview.outputs.dashboard_host }}
+          PROJECT_NAME: ${{ steps.preview.outputs.project_name }}
+          DEPLOY_SHA: ${{ steps.preview.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          ready=0
+          for _ in $(seq 1 60); do
+            if curl --fail --silent --show-error --connect-timeout 3 --max-time 10 "$API_URL/api/health" >/dev/null && curl --fail --silent --show-error --connect-timeout 3 --max-time 10 "$DASHBOARD_URL/login" >/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 5
+          done
+          if [ "$ready" -ne 1 ]; then
+            echo "Preview did not become reachable"
+            exit 1
+          fi
+          status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --connect-timeout 3 --max-time 10 --request POST --header 'content-type: application/json' --data '{}' "$DASHBOARD_URL/api/agents")
+          if [ "$status" != "401" ]; then
+            echo "Protected dashboard API returned $status"
+            exit 1
+          fi
+          for service in fluent-flow dashboard; do
+            container=$(docker ps --quiet --filter "label=com.docker.compose.project=$PROJECT_NAME" --filter "label=com.docker.compose.service=$service")
+            if [ -z "$container" ]; then
+              echo "Missing $service container"
+              exit 1
+            fi
+            docker inspect "$container" | jq --exit-status --arg expected "DEPLOY_SHA=$DEPLOY_SHA" '.[0].Config.Env | index($expected) != null' >/dev/null
+          done
+
+      - name: Show preview logs on failure
+        if: failure() && steps.preview.outputs.operation == 'deploy'
+        env:
+          PROJECT_NAME: ${{ steps.preview.outputs.project_name }}
+        run: |
+          set +e
+          for container in $(docker ps --all --quiet --filter "label=com.docker.compose.project=$PROJECT_NAME"); do
+            docker logs --tail 200 "$container"
+          done
+
+      - name: Update preview comment
+        if: always() && steps.preview.outputs.number != ''
+        uses: actions/github-script@v7
+        env:
+          OPERATION: ${{ steps.preview.outputs.operation }}
+          DASHBOARD_URL: https://${{ steps.preview.outputs.dashboard_host }}
+          API_URL: https://${{ steps.preview.outputs.api_host }}
+          DEPLOY_SHA: ${{ steps.preview.outputs.head_sha }}
+          OPERATION_OUTCOME: ${{ steps.operation.outcome }}
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+        with:
+          script: |
+            const marker = '<!-- fluent-flow-preview -->'
+            const deploy = process.env.OPERATION === 'deploy'
+            const succeeded = process.env.OPERATION_OUTCOME === 'success' && (!deploy || process.env.SMOKE_OUTCOME === 'success')
+            const state = succeeded ? (deploy ? 'Ready' : 'Removed') : 'Failed'
+            const links = deploy && succeeded
+              ? `\n\n- Dashboard: ${process.env.DASHBOARD_URL}\n- Service: ${process.env.API_URL}`
+              : ''
+            const body = `${marker}\n## Pull request preview: ${state}${links}\n\nCommit: \`${process.env.DEPLOY_SHA}\`\n\n[Workflow run](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              per_page: 100,
+            })
+            const existing = comments.find((comment) => comment.user.type === 'Bot' && comment.body.includes(marker))
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              })
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              })
+            }

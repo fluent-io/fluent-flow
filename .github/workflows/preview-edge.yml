@@ -1,0 +1,57 @@
+name: Preview Edge
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-edge
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: github.ref == 'refs/heads/main'
+    name: Reconcile preview edge
+    runs-on: [self-hosted, Linux, X64, g10]
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out trusted deployment controls
+        uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+
+      - name: Validate tunnel credential
+        env:
+          PREVIEW_TUNNEL_TOKEN: ${{ secrets.PREVIEW_TUNNEL_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PREVIEW_TUNNEL_TOKEN" ]; then
+            echo "::error::PREVIEW_TUNNEL_TOKEN is required"
+            exit 1
+          fi
+
+      - name: Ensure shared preview network
+        run: docker network inspect fluent-flow-preview-edge >/dev/null 2>&1 || docker network create fluent-flow-preview-edge
+
+      - name: Validate edge configuration
+        env:
+          PREVIEW_TUNNEL_TOKEN: ${{ secrets.PREVIEW_TUNNEL_TOKEN }}
+          PREVIEW_EDGE_NETWORK: fluent-flow-preview-edge
+        run: docker compose --project-name fluent-flow-preview-edge --file docker-compose.preview-edge.yml config >/dev/null
+
+      - name: Reconcile edge services
+        env:
+          PREVIEW_TUNNEL_TOKEN: ${{ secrets.PREVIEW_TUNNEL_TOKEN }}
+          PREVIEW_EDGE_NETWORK: fluent-flow-preview-edge
+        run: docker compose --project-name fluent-flow-preview-edge --file docker-compose.preview-edge.yml up --detach --remove-orphans --wait
+
+      - name: Show edge services
+        if: always()
+        env:
+          PREVIEW_TUNNEL_TOKEN: ${{ secrets.PREVIEW_TUNNEL_TOKEN }}
+          PREVIEW_EDGE_NETWORK: fluent-flow-preview-edge
+        run: docker compose --project-name fluent-flow-preview-edge --file docker-compose.preview-edge.yml ps

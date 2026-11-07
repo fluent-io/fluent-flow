@@ -134,6 +134,19 @@ Docker:
 docker compose up -d --build
 ```
 
+## Pull request previews
+
+Every pull request whose branch belongs to this repository receives an isolated full-stack preview:
+
+- Dashboard: `https://pr-<number>.preview.app.fluentflow.tech`
+- Service: `https://api-pr-<number>.preview.app.fluentflow.tech`
+
+Opening, reopening, or updating the pull request deploys its current head. Closing it removes that pull request's containers, network, images, and PostgreSQL volume. Fork pull requests are excluded before a self-hosted runner is assigned.
+
+The preview stack uses a dedicated preview GitHub App and preview-only repository secrets: `PREVIEW_GITHUB_APP_ID`, `PREVIEW_GITHUB_APP_PRIVATE_KEY`, `PREVIEW_GITHUB_APP_WEBHOOK_SECRET`, `PREVIEW_GITHUB_CLIENT_ID`, `PREVIEW_GITHUB_CLIENT_SECRET`, `PREVIEW_STACK_SECRET`, and `PREVIEW_TUNNEL_TOKEN`. Never populate these names with production credentials. The stack seed derives separate PostgreSQL, NextAuth, MCP, and collaboration secrets for each pull request.
+
+`Pull Request Preview` manages application stacks. `Preview Edge` is a manual workflow that reconciles the shared Traefik and Cloudflare Tunnel edge after the `fluent-flow-preview` tunnel and wildcard DNS route have been created. The preview comment on each pull request is the authoritative URL and deployment-state record.
+
 ## Documentation
 
 - [Documentation index](docs/README.md) — product direction, architecture specifications, implementation plans, and project history

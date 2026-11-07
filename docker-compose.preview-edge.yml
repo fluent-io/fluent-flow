@@ -1,0 +1,42 @@
+services:
+  traefik:
+    image: traefik:v3.6.6
+    command:
+      - --api.dashboard=false
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=${PREVIEW_EDGE_NETWORK}
+      - --entrypoints.web.address=:80
+      - --ping=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: [CMD, traefik, healthcheck, --ping=true]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - preview-edge
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.0
+    environment:
+      TUNNEL_TOKEN: ${PREVIEW_TUNNEL_TOKEN}
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --url
+      - http://traefik:80
+      - run
+    depends_on:
+      traefik:
+        condition: service_healthy
+    networks:
+      - preview-edge
+    restart: unless-stopped
+
+networks:
+  preview-edge:
+    external: true
+    name: ${PREVIEW_EDGE_NETWORK}
