@@ -4,7 +4,6 @@ import {
   getVerificationResultByClaim,
   insertVerificationResult,
   markVerificationTransitionApplied,
-  withTransaction,
 } from '@fluent-flow/db';
 import { createClaim, createClaimWithRetry, nextChainAttempt, countCompletedFixIterations } from '../agents/claim-manager.js';
 import { dispatchReview } from './review-manager.js';
@@ -357,30 +356,26 @@ export async function applyVerifyTransitionWithEffects(claim, verification, ctx,
 }
 
 export async function applyVerifyTransitionOnce(claim, verification, ctx, precomputedDecision = null) {
-  return withTransaction(async (tx) => {
-    const locked = await tx.execute(sql`
-      SELECT transition_applied_at
-      FROM verification_results
-      WHERE claim_id = ${claim.id}
-      FOR UPDATE
-    `);
-    const row = (locked.rows ?? locked)[0];
-    if (!row) throw new Error('Verification result is unavailable');
-    if (row.transition_applied_at) {
-      return { applied: false, decision: precomputedDecision };
-    }
-    const decision = precomputedDecision ?? await applyVerifyTransition(claim, verification, ctx);
-
-    const appliedDecision = await applyVerifyTransitionWithEffects(
-      claim,
-      verification,
-      ctx,
-      decision,
-    );
-    const marked = await markVerificationTransitionApplied(claim.id, tx);
-    if (!marked) throw new Error('Verification transition could not be finalized');
-    return { applied: true, decision: appliedDecision };
-  });
+  // markVerificationTransitionApplied is a compare-and-set that moves
+  // transition_applied_at from NULL to now(). We set the marker BEFORE running
+  // side effects so replays can never re-run them — the effects (createClaim,
+  // addLabel, postComment, dispatch) call external systems that are not
+  // transactional and cannot be rolled back. Only one caller wins the CAS;
+  // concurrent or retried callers see no row returned and skip the effects.
+  const marker = await markVerificationTransitionApplied(claim.id);
+  if (!marker) {
+    const existing = await getVerificationResultByClaim(ctx.orgId, claim.id);
+    if (!existing) throw new Error('Verification result is unavailable');
+    return { applied: false, decision: precomputedDecision };
+  }
+  const decision = precomputedDecision ?? await applyVerifyTransition(claim, verification, ctx);
+  const appliedDecision = await applyVerifyTransitionWithEffects(
+    claim,
+    verification,
+    ctx,
+    decision,
+  );
+  return { applied: true, decision: appliedDecision };
 }
 
 

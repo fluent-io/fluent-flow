@@ -522,7 +522,10 @@ describe('runVerifyClaim green phase', () => {
     expect(result.verification.outcome).toBe('FAIL');
   });
 
-  it('classifies invalid reporter output as a terminal verification failure', async () => {
+  it('extracts valid JSON from reporter output that is prefixed with diagnostic lines', async () => {
+    // Real reporters sometimes emit deprecation warnings or progress lines before
+    // the JSON envelope. The parser should tolerate this rather than failing the
+    // whole phase — unguarded JSON.parse would otherwise crash on non-JSON input.
     const greenWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-green-'));
     setupRepo(greenWorktree);
     const redRecord = buildRedRecord(greenWorktree);
@@ -530,7 +533,26 @@ describe('runVerifyClaim green phase', () => {
     const result = await runVerifyClaim(makeContext({
       work: makeWork({ red_record: redRecord }),
       execute: makeExecuteForGreen({
-        pinnedRuns: [{ rawStdout: 'diagnostic before json\n{"results":[]}' }],
+        pinnedRuns: [{ rawStdout: 'diagnostic before json\n{"results":[{"file":"packages/app/tests/verify/login.red.test.js","name":"REQ-1","status":"pass","message":""}]}' }],
+        fullRuns: [{ rawStdout: 'diagnostic\n{"results":[{"file":"packages/app/tests/verify/login.red.test.js","name":"REQ-1","status":"pass","message":""}]}' }],
+      }),
+      prepareWorktree: vi.fn().mockResolvedValue({ worktreePath: greenWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(greenWorktree, 'packages', 'app') })),
+      adapters: new Map([['vitest', makeAdapter()]]),
+    }));
+
+    expect(result.status).toBe('completed');
+  });
+
+  it('classifies truly non-JSON reporter output (no JSON object at all) as a terminal verification failure', async () => {
+    const greenWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-green-'));
+    setupRepo(greenWorktree);
+    const redRecord = buildRedRecord(greenWorktree);
+
+    const result = await runVerifyClaim(makeContext({
+      work: makeWork({ red_record: redRecord }),
+      execute: makeExecuteForGreen({
+        pinnedRuns: [{ rawStdout: 'FATAL error: no tests detected\n' }],
       }),
       prepareWorktree: vi.fn().mockResolvedValue({ worktreePath: greenWorktree, cleanup: vi.fn().mockResolvedValue() }),
       detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(greenWorktree, 'packages', 'app') })),
@@ -636,6 +658,42 @@ describe('runVerifyClaim green phase', () => {
 
     expect(result.verification.outcome).toBe('FAIL');
     expect(result.verification.matrix.suite.failed).toBe(1);
+  });
+
+  it('does NOT misclassify a regression that happens to pass on the first retry as a flake', async () => {
+    // Regression scenario: the pinned requirement passes on the first run
+    // (by luck or ordering), then fails on later runs. The pre-fix implementation
+    // broke the retry loop on first all-pass and reported PASS. The fix forces
+    // the full retry budget so flaky detection catches the subsequent failures.
+    const greenWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-green-'));
+    setupRepo(greenWorktree);
+    const redRecord = buildRedRecord(greenWorktree);
+
+    const result = await runVerifyClaim(makeContext({
+      work: makeWork({
+        red_record: redRecord,
+        verification: { flake: { retries: 2, blocking: false }, timeouts_min: { red: 15, green: 30 } },
+      }),
+      execute: makeExecuteForGreen({
+        pinnedRuns: [
+          { results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'pass', message: '' }] },
+          { results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'assertion-fail', message: 'intermittent' }] },
+          { results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'assertion-fail', message: 'intermittent' }] },
+        ],
+        fullRuns: [
+          { results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'pass', message: '' }] },
+          { results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'assertion-fail', message: 'intermittent' }] },
+          { results: [{ file: 'packages/app/tests/verify/login.red.test.js', name: 'REQ-1', status: 'assertion-fail', message: 'intermittent' }] },
+        ],
+      }),
+      prepareWorktree: vi.fn().mockResolvedValue({ worktreePath: greenWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(greenWorktree, 'packages', 'app') })),
+      adapters: new Map([['vitest', makeAdapter()]]),
+    }));
+
+    expect(result.verification.outcome).toBe('FAIL');
+    expect(result.verification.matrix.requirements[0].status).toBe('FAIL');
+    expect(result.verification.matrix.requirements[0].green.flaky).toBe(true);
   });
 
   it('downgrades orphan full-suite failures outside the manifest to warnings', async () => {

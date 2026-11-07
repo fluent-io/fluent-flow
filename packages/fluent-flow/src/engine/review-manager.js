@@ -239,6 +239,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   if (status === 'PASS') {
     let isCurrentHead = false;
     let passCtx;
+    let headVerificationFailed = false;
     try {
       passCtx = ctx ?? await installationCtxForRepo(owner, repo);
       const pullRequest = await getPR(owner, repo, prNumber, passCtx);
@@ -269,6 +270,11 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
         },
       });
     } catch (err) {
+      // Fail-closed: if we could not confirm the review ran against the current
+      // head OR could not enable auto-merge, we cannot claim the review passed.
+      // Returning 'pass' here would let callers treat the PR as merge-ready
+      // without the head check succeeding.
+      headVerificationFailed = true;
       logger.error({ msg: 'Failed to verify the PR head or enable auto-merge', repo: repoKey, prNumber, error: err.message });
     }
 
@@ -357,6 +363,12 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
       }
     }
 
+    if (headVerificationFailed) {
+      // Auto-merge / head verification failed earlier. Do NOT claim pass —
+      // escalate so the PR gets human attention rather than being falsely
+      // marked merge-ready.
+      return { action: 'escalate' };
+    }
     return { action: 'pass' };
   }
 

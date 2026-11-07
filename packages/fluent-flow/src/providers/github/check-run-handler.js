@@ -365,7 +365,18 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
 
     logger.info({ msg: 'No green claim created (no review_fix linkage or missing red record), falling back to review dispatch', repo: repoKey, prNumber: pr.number });
   } catch (err) {
-    logger.error({ msg: 'Failed to create green claim, falling back to review', error: err.message });
+    // Fail-closed: if we cannot determine whether a red record exists,
+    // we must NOT fall through to dispatchReview. Doing so would enable
+    // auto-merge without the green-gate on a PR that may have a red record,
+    // bypassing the verification contract. Skip review dispatch — a future
+    // check_run event will retry.
+    logger.error({
+      msg: 'Green claim creation failed; skipping review dispatch to preserve green-gating',
+      repo: repoKey,
+      prNumber: pr.number,
+      error: err.message,
+    });
+    return;
   }
 
   try {

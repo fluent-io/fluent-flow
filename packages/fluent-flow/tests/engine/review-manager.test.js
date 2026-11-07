@@ -368,6 +368,41 @@ describe('handleReviewResult', () => {
     );
   });
 
+  it('escalates (does not return pass) when head verification throws', async () => {
+    // getPR throws — we cannot confirm whether reviewSha is the current head.
+    // We must NOT claim pass because callers treat 'pass' as "merge-ready".
+    mockGetPR.mockRejectedValueOnce(new Error('transient GitHub API error'));
+
+    const result = await handleReviewResult({
+      owner: 'fluent-io',
+      repo: 'fluent-flow',
+      prNumber: 42,
+      issueNumber: 10,
+      result: { status: 'PASS', blocking: [], advisory: [], attempt: 1 },
+      reviewSha: 'abc123',
+      headBranch: 'main',
+    });
+
+    expect(result.action).toBe('escalate');
+    expect(mockEnablePullRequestAutoMerge).not.toHaveBeenCalled();
+  });
+
+  it('escalates (does not return pass) when auto-merge enablement throws', async () => {
+    mockEnablePullRequestAutoMerge.mockRejectedValueOnce(new Error('merge enablement rejected'));
+
+    const result = await handleReviewResult({
+      owner: 'fluent-io',
+      repo: 'fluent-flow',
+      prNumber: 42,
+      issueNumber: 10,
+      result: { status: 'PASS', blocking: [], advisory: [], attempt: 1 },
+      reviewSha: 'abc123',
+      headBranch: 'main',
+    });
+
+    expect(result.action).toBe('escalate');
+  });
+
   it('does not auto-merge or create advisory work when the reviewed SHA is stale', async () => {
     mockGetPR.mockResolvedValue({ head: { sha: 'new-head' } });
 

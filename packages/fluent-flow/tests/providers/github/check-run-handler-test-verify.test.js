@@ -407,4 +407,27 @@ describe('handleCheckRun — green claim path (replaces test_verify)', () => {
     expect(mockCreateClaimWithRetry).not.toHaveBeenCalled();
     expect(mockDispatchReview).toHaveBeenCalledTimes(1);
   });
+
+  it('does NOT fall through to review dispatch when green claim creation throws', async () => {
+    // Setup: claimDispatch returns a retry record so we enter the dispatch path
+    mockClaimDispatch.mockResolvedValueOnce({ retry_count: 0, last_issues: [] });
+
+    // mockDbExecute throws — green claim lookup fails. We cannot determine
+    // whether a red record exists. We MUST NOT fall through to review dispatch
+    // (which would enable auto-merge without green gating on a PR that may
+    // have a red record).
+    mockDbExecute.mockRejectedValueOnce(new Error('transient db error'));
+
+    mockGetPRsForCommit.mockResolvedValueOnce([{
+      number: 42,
+      state: 'open',
+      body: '',
+      head: { ref: 'feature/x' },
+    }]);
+
+    await handleCheckRun('test-org', 'test-repo', makePayload(), defaultConfig);
+
+    expect(mockCreateClaimWithRetry).not.toHaveBeenCalled();
+    expect(mockDispatchReview).not.toHaveBeenCalled();
+  });
 });

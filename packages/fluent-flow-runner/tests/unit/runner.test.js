@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mockPrepareWorktree = vi.fn();
 vi.mock('../../src/worktree.js', () => ({ prepareWorktree: (...args) => mockPrepareWorktree(...args) }));
 
-import { createRunner } from '../../src/runner.js';
+import { createRunner, sanitizeChildEnv } from '../../src/runner.js';
 
 function deferred() {
   let resolve;
@@ -789,5 +789,44 @@ describe('review output', () => {
     });
     expect(api.reportClaim).toHaveBeenCalledWith(expect.objectContaining({ status: 'completed' }));
     expect(api.reportClaim.mock.calls[0][0]).not.toHaveProperty('verdict');
+  });
+});
+
+describe('sanitizeChildEnv', () => {
+  it('strips every secret-shaped variable before passing to the ACP child', () => {
+    const sanitized = sanitizeChildEnv({
+      PATH: '/usr/bin',
+      HOME: '/home/node',
+      LANG: 'en_US.UTF-8',
+      GITHUB_TOKEN: 'ghp_SECRET',
+      ANTHROPIC_API_KEY: 'sk-ant-SECRET',
+      MY_SECRET: 'xxxx',
+      MY_PASSWORD: 'hunter2',
+      SIGNING_KEY: 'pem-content',
+      DB_CREDENTIAL: 'user:pass',
+      PRIVATE_KEY: 'pem',
+    });
+    expect(sanitized).toEqual({
+      PATH: '/usr/bin',
+      HOME: '/home/node',
+      LANG: 'en_US.UTF-8',
+    });
+    expect(sanitized).not.toHaveProperty('GITHUB_TOKEN');
+    expect(sanitized).not.toHaveProperty('ANTHROPIC_API_KEY');
+    expect(sanitized).not.toHaveProperty('MY_SECRET');
+    expect(sanitized).not.toHaveProperty('MY_PASSWORD');
+    expect(sanitized).not.toHaveProperty('SIGNING_KEY');
+    expect(sanitized).not.toHaveProperty('DB_CREDENTIAL');
+    expect(sanitized).not.toHaveProperty('PRIVATE_KEY');
+  });
+
+  it('skips non-string values entirely (defense against serialization surprises)', () => {
+    const sanitized = sanitizeChildEnv({
+      PATH: '/usr/bin',
+      NUMERIC: 42,
+      NULLISH: null,
+      UNDEF: undefined,
+    });
+    expect(sanitized).toEqual({ PATH: '/usr/bin' });
   });
 });

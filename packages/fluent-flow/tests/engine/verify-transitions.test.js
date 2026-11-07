@@ -7,15 +7,12 @@ vi.mock('../../src/logger.js', async () => {
 
 const mockGetVerificationResultByClaim = vi.fn().mockResolvedValue(null);
 const mockInsertVerificationResult = vi.fn().mockResolvedValue({ transitionAppliedAt: null });
-const mockMarkVerificationTransitionApplied = vi.fn().mockResolvedValue({});
-const mockTransitionTx = { execute: vi.fn() };
-const mockWithTransaction = vi.fn((fn) => fn(mockTransitionTx));
+const mockMarkVerificationTransitionApplied = vi.fn().mockResolvedValue({ claimId: 1, transitionAppliedAt: new Date() });
 vi.mock('@fluent-flow/db', async (importOriginal) => ({
   ...(await importOriginal()),
   getVerificationResultByClaim: (...a) => mockGetVerificationResultByClaim(...a),
   insertVerificationResult: (...a) => mockInsertVerificationResult(...a),
   markVerificationTransitionApplied: (...a) => mockMarkVerificationTransitionApplied(...a),
-  withTransaction: (...a) => mockWithTransaction(...a),
 }));
 
 
@@ -94,9 +91,7 @@ function makeVerification(overrides = {}) {
 beforeEach(() => {
   mockGetVerificationResultByClaim.mockReset().mockResolvedValue(null);
   mockInsertVerificationResult.mockReset().mockResolvedValue({ transitionAppliedAt: null });
-  mockMarkVerificationTransitionApplied.mockReset().mockResolvedValue({});
-  mockTransitionTx.execute.mockReset().mockResolvedValue({ rows: [{ transition_applied_at: null }] });
-  mockWithTransaction.mockClear();
+  mockMarkVerificationTransitionApplied.mockReset().mockResolvedValue({ claimId: 1, transitionAppliedAt: new Date() });
   vi.clearAllMocks();
   createClaimWithRetry.mockResolvedValue({ id: 10, attempt: 3 });
   nextChainAttempt.mockResolvedValue(3);
@@ -235,24 +230,51 @@ describe('verify-transitions — red phase', () => {
 });
 
 describe('verification transition delivery', () => {
-  it('applies effects only while the persisted result remains unapplied', async () => {
+  it('marks the transition BEFORE running effects so replays never duplicate side effects', async () => {
     const claim = makeClaim();
     const verification = makeVerification();
     const decision = { action: 'none' };
 
-    mockTransitionTx.execute.mockResolvedValueOnce({ rows: [{ transition_applied_at: null }] });
+    const callOrder = [];
+    mockMarkVerificationTransitionApplied.mockImplementationOnce(async () => {
+      callOrder.push('mark');
+      return { claimId: 1, transitionAppliedAt: new Date() };
+    });
+    onClaimResolved.mockImplementationOnce(async () => {
+      callOrder.push('effects');
+    });
+
     await applyVerifyTransitionOnce(claim, verification, { orgId: 'o1' }, decision);
 
+    expect(callOrder).toEqual(['mark', 'effects']);
     expect(onClaimResolved).toHaveBeenCalledTimes(1);
-    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(1, mockTransitionTx);
+    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(1);
+  });
 
-    vi.clearAllMocks();
-    mockTransitionTx.execute.mockResolvedValueOnce({ rows: [{ transition_applied_at: new Date() }] });
+  it('skips effects when the CAS returns no row (already applied by a concurrent caller)', async () => {
+    const claim = makeClaim();
+    const verification = makeVerification();
+    const decision = { action: 'none' };
+
+    mockMarkVerificationTransitionApplied.mockResolvedValueOnce(null);
+    mockGetVerificationResultByClaim.mockResolvedValueOnce({ claimId: 1, transitionAppliedAt: new Date() });
+
     const replay = await applyVerifyTransitionOnce(claim, verification, { orgId: 'o1' }, decision);
 
     expect(replay).toEqual({ applied: false, decision });
     expect(onClaimResolved).not.toHaveBeenCalled();
-    expect(mockMarkVerificationTransitionApplied).not.toHaveBeenCalled();
+  });
+
+  it('throws when the verification result row is missing', async () => {
+    const claim = makeClaim();
+    const verification = makeVerification();
+    const decision = { action: 'none' };
+
+    mockMarkVerificationTransitionApplied.mockResolvedValueOnce(null);
+    mockGetVerificationResultByClaim.mockResolvedValueOnce(null);
+
+    await expect(applyVerifyTransitionOnce(claim, verification, { orgId: 'o1' }, decision))
+      .rejects.toThrow('Verification result is unavailable');
   });
 });
 
@@ -452,7 +474,7 @@ describe('verify redispatch exhaustion', () => {
     expect(mockInsertVerificationResult).toHaveBeenCalledWith(
       expect.objectContaining({ claimId: 77, phase: 'red', outcome: 'FAIL' }),
     );
-    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(77, mockTransitionTx);
+    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(77);
   });
 });
 
@@ -472,7 +494,7 @@ describe('sweepStrandedVerifyClaims', () => {
     await sweepStrandedVerifyClaims(db);
 
     expect(dispatchReview).toHaveBeenCalledWith(expect.objectContaining({ prNumber: 5 }));
-    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(42, mockTransitionTx);
+    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(42);
   });
 
   it('does not duplicate a successor when the chain already advanced', async () => {
@@ -491,7 +513,7 @@ describe('sweepStrandedVerifyClaims', () => {
 
     expect(dispatchReview).not.toHaveBeenCalled();
     expect(onClaimResolved).toHaveBeenCalled();
-    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(44, mockTransitionTx);
+    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(44);
   });
 
   it('replays terminal notification effects before marking the result', async () => {
@@ -522,7 +544,7 @@ describe('sweepStrandedVerifyClaims', () => {
       agentId: 'agent-1',
       payload: expect.objectContaining({ type: 'escalation' }),
     }));
-    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(43, mockTransitionTx);
+    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(43);
   });
 
   it('attempts every stranded transition before reporting aggregate failure', async () => {
@@ -538,10 +560,10 @@ describe('sweepStrandedVerifyClaims', () => {
         .mockResolvedValueOnce({ rows: [resultRow] })
         .mockResolvedValueOnce({ rows: [] }),
     };
-    mockTransitionTx.execute.mockRejectedValue(new Error('lock unavailable'));
+    mockMarkVerificationTransitionApplied.mockRejectedValue(new Error('lock unavailable'));
 
     await expect(sweepStrandedVerifyClaims(db)).rejects.toThrow(AggregateError);
-    expect(mockWithTransaction).toHaveBeenCalledTimes(2);
+    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledTimes(2);
   });
 
   it('recovers a capped failed verification with no result', async () => {
@@ -567,6 +589,6 @@ describe('sweepStrandedVerifyClaims', () => {
     expect(mockInsertVerificationResult).toHaveBeenCalledWith(
       expect.objectContaining({ claimId: 77, outcome: 'FAIL' }),
     );
-    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(77, mockTransitionTx);
+    expect(mockMarkVerificationTransitionApplied).toHaveBeenCalledWith(77);
   });
 });

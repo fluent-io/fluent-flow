@@ -70,6 +70,29 @@ function environmentSecrets(environment) {
   return values;
 }
 
+function isProgrammerError(err) {
+  return err instanceof TypeError
+    || err instanceof ReferenceError
+    || err instanceof SyntaxError
+    || err instanceof RangeError;
+}
+
+export function sanitizeChildEnv(environment) {
+  // Strip every secret-shaped variable (tokens, API keys, passwords, credentials)
+  // before passing the environment to a spawned ACP agent. The agent's files are
+  // git add/commit/pushed back to the PR branch, and ACP file-content redaction
+  // does NOT run on child-written files — so a GITHUB_TOKEN or API key present
+  // in process.env could be leaked into committed source. GitHub auth is handled
+  // via `gh auth login --with-token` which caches credentials outside env.
+  const out = {};
+  for (const [name, value] of Object.entries(environment)) {
+    if (typeof value !== 'string') continue;
+    if (SECRET_ENV_NAME.test(name)) continue;
+    out[name] = value;
+  }
+  return out;
+}
+
 function executeCommand(command, cwd, timeoutMs = 0) {
   return new Promise((resolve) => {
     execFileCb(
@@ -936,8 +959,13 @@ export function createRunner({
 
       const requestedClaimType = work.claim_type ?? work.claimType ?? 'review_fix';
       if (requestedClaimType === 'verify') {
-        const runtimeEnvironment = { ...process.env };
-        bridge = createInteractionBridge(state, claimId, runtimeEnvironment);
+        // Redactor sees the full parent env so any secret the agent happens
+        // to emit (from files, args, etc.) still gets scrubbed. The child
+        // receives a sanitized env so secrets never reach the ACP process in
+        // the first place — critical because author child commits code back
+        // to the PR branch.
+        const runtimeEnvironment = sanitizeChildEnv(process.env);
+        bridge = createInteractionBridge(state, claimId, process.env);
         state.bridge = bridge;
         let result;
         try {
@@ -963,13 +991,21 @@ export function createRunner({
               if (turn.stopReason !== 'end_turn') throw new Error('ACP authoring turn did not complete');
             },
           });
-        } catch {
-          result = { status: 'failed', failure_kind: 'transient' };
+        } catch (err) {
+          log.error('runVerifyClaim threw', { claimId, error: err?.message, stack: err?.stack });
+          result = {
+            status: 'failed',
+            failure_kind: isProgrammerError(err) ? 'terminal' : 'transient',
+          };
         }
         try {
           await bridge.finalizeEvents();
-        } catch {
-          result = { status: 'failed', failure_kind: 'transient' };
+        } catch (err) {
+          log.error('Verify bridge finalize failed', { claimId, error: err?.message });
+          result = {
+            status: 'failed',
+            failure_kind: isProgrammerError(err) ? 'terminal' : 'transient',
+          };
         }
         stopHeartbeat();
         await reportState(state, result.status, {
@@ -1020,9 +1056,9 @@ export function createRunner({
         return;
       }
 
-      const runtimeEnvironment = { ...process.env };
+      const runtimeEnvironment = sanitizeChildEnv(process.env);
       try {
-        bridge = createInteractionBridge(state, claimId, runtimeEnvironment);
+        bridge = createInteractionBridge(state, claimId, process.env);
         state.bridge = bridge;
         state.runtime = createAcpRuntime({
           command,

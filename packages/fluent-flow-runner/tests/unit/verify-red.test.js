@@ -1047,4 +1047,57 @@ describe('runVerifyClaim red phase', () => {
       }),
     });
   });
+
+  it('returns terminal (not transient) when ACP authoring throws a programmer error so it cannot infinitely retry', async () => {
+    const redWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-red-'));
+    setupRepo(redWorktree);
+
+    // Simulate a bug in the authoring callback (TypeError) — must NOT be retried
+    // as transient. The runner would otherwise re-dispatch forever.
+    const author = vi.fn(async () => { throw new TypeError('Cannot read properties of undefined (reading \'foo\')'); });
+
+    const result = await runVerifyClaim(makeContext({
+      author,
+      execute: vi.fn(),
+      resolveCommand: vi.fn(() => ({ bin: 'claude', args: ['author'] })),
+      prepareWorktree: vi.fn().mockResolvedValueOnce({ worktreePath: redWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(redWorktree, 'packages', 'app') })),
+      adapters: new Map([['vitest', makeVitestAdapter()]]),
+      work: makeWork({
+        findings: [{ id: 'F-1', blocking: true }],
+        verification: {
+          ...makeWork().verification,
+          authoring: { ...makeWork().verification.authoring, retries: 0, red_reproductions: 1 },
+        },
+      }),
+    }));
+
+    expect(result).toEqual({ status: 'failed', failure_kind: 'terminal' });
+    expect(author).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns transient when ACP authoring throws an operational error so re-dispatch can retry', async () => {
+    const redWorktree = mkdtempSync(join(tmpdir(), 'ff-verify-red-'));
+    setupRepo(redWorktree);
+
+    const author = vi.fn(async () => { throw new Error('ACP process timed out'); });
+
+    const result = await runVerifyClaim(makeContext({
+      author,
+      execute: vi.fn(),
+      resolveCommand: vi.fn(() => ({ bin: 'claude', args: ['author'] })),
+      prepareWorktree: vi.fn().mockResolvedValueOnce({ worktreePath: redWorktree, cleanup: vi.fn().mockResolvedValue() }),
+      detectFramework: vi.fn(() => ({ id: 'vitest', packageManager: 'npm', root: join(redWorktree, 'packages', 'app') })),
+      adapters: new Map([['vitest', makeVitestAdapter()]]),
+      work: makeWork({
+        findings: [{ id: 'F-1', blocking: true }],
+        verification: {
+          ...makeWork().verification,
+          authoring: { ...makeWork().verification.authoring, retries: 0, red_reproductions: 1 },
+        },
+      }),
+    }));
+
+    expect(result).toEqual({ status: 'failed', failure_kind: 'transient' });
+  });
 });

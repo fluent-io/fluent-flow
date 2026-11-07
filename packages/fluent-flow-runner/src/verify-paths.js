@@ -28,8 +28,23 @@ export function sha256File(path) {
 }
 
 export function containsRealPath(root, candidate) {
-  const rootReal = realpathSync(root);
-  const candidateReal = realpathSync(candidate);
+  // Callers assume a boolean return. realpathSync throws ENOENT on missing
+  // paths, which the callers do not expect; absent/inaccessible candidates
+  // are "not contained" from the caller's perspective.
+  let rootReal;
+  let candidateReal;
+  try {
+    rootReal = realpathSync(root);
+  } catch (err) {
+    if (err?.code === 'ENOENT') return false;
+    throw err;
+  }
+  try {
+    candidateReal = realpathSync(candidate);
+  } catch (err) {
+    if (err?.code === 'ENOENT') return false;
+    throw err;
+  }
   const rel = relative(rootReal, candidateReal);
   return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }

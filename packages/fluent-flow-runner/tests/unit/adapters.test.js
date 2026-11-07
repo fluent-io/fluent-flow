@@ -287,6 +287,12 @@ describe('path safety', () => {
     expect(assertSafeRelPath('..fixtures/data.json')).toBe('..fixtures/data.json');
     expect(containsRealPath(repo, dotted)).toBe(true);
   });
+
+  it('returns false (not throw) when either path is missing', () => {
+    const repo = makeRepo();
+    expect(containsRealPath(repo, join(repo, 'does-not-exist'))).toBe(false);
+    expect(containsRealPath(join(repo, 'missing-root'), repo)).toBe(false);
+  });
 });
 
 describe('reporter parsing', () => {

@@ -82,9 +82,33 @@ async function runSuiteWithTimeoutClassification(context, argv, cwd, timeoutMs) 
   return { ok: true, result: second };
 }
 
+function extractReporterJson(stdout) {
+  if (typeof stdout !== 'string' || stdout.length === 0) return '{}';
+  // Fast path: the whole stdout is JSON.
+  const trimmed = stdout.trim();
+  if (trimmed.length === 0) return '{}';
+  if (trimmed[0] === '{' || trimmed[0] === '[') return trimmed;
+  // Reporters sometimes emit deprecation warnings or progress lines before the
+  // JSON envelope. Locate the first '{' or '[' and attempt to parse from there.
+  const braceIdx = stdout.indexOf('{');
+  const bracketIdx = stdout.indexOf('[');
+  const candidates = [braceIdx, bracketIdx].filter((i) => i >= 0);
+  if (candidates.length === 0) return null;
+  const start = Math.min(...candidates);
+  return stdout.slice(start);
+}
+
 function parseReporterOutput(stdout) {
+  // Guard against non-JSON reporter output. Any parse failure or non-JSON output
+  // is captured as terminal (not transient) so we fail closed rather than retrying
+  // an ill-formed response indefinitely. Returning an {ok:false} record lets the
+  // phase classify the failure instead of throwing an unhandled exception.
+  const candidate = extractReporterJson(stdout);
+  if (candidate === null) {
+    return { ok: false, failureKind: 'terminal' };
+  }
   try {
-    return { ok: true, value: JSON.parse(stdout || '{}') };
+    return { ok: true, value: JSON.parse(candidate) };
   } catch {
     return { ok: false, failureKind: 'terminal' };
   }
@@ -586,6 +610,13 @@ async function withPreparedWorktree(context, opts, fn) {
   }
 }
 
+function isProgrammerError(err) {
+  return err instanceof TypeError
+    || err instanceof ReferenceError
+    || err instanceof SyntaxError
+    || err instanceof RangeError;
+}
+
 async function runAuthoring(context, worktreePath, data) {
   if (typeof context.author !== 'function') {
     throw new Error('Verify claim requires an ACP authoring callback');
@@ -594,7 +625,14 @@ async function runAuthoring(context, worktreePath, data) {
   try {
     await context.author({ worktreePath, prompt, work: data });
     return { ok: true };
-  } catch {
+  } catch (err) {
+    // Programmer errors (TypeError, ReferenceError, SyntaxError, RangeError)
+    // indicate bugs and must NOT be retried transiently — otherwise they
+    // re-dispatch forever. Operational errors from the ACP agent (I/O, process
+    // spawn, timeout) are classified as transient so the runner can re-dispatch.
+    if (isProgrammerError(err)) {
+      return { ok: false, kind: 'terminal' };
+    }
     return { ok: false, kind: 'transient' };
   }
 }
@@ -1017,8 +1055,9 @@ async function runGreenPhase(context) {
       const rows = normalizeRows(worktreePath, adapter.parseResults(parsed.value));
       const evaluation = evaluateGreenRows(manifest, rows);
       pinnedRuns.push(evaluation);
-      const allPassed = [...evaluation.byRequirement.values()].every((entry) => entry.passed);
-      if (allPassed) break;
+      // Do NOT break on first all-pass. A regression that intermittently passes
+      // (lucky pass followed by subsequent failure) would be misclassified as a
+      // flake. We run the full retry budget so flaky detection sees every run.
     }
 
     const finalPinned = pinnedRuns.at(-1) ?? evaluateGreenRows(manifest, []);
@@ -1071,7 +1110,9 @@ async function runGreenPhase(context) {
       if (!parsed.ok) return { status: 'failed', failure_kind: parsed.failureKind };
       const rows = normalizeRows(worktreePath, adapter.parseResults(parsed.value));
       fullRuns.push(rows);
-      if (rows.every((row) => row.status === 'pass')) break;
+      // Do NOT break on first all-pass — see pinned loop above. A regression
+      // whose first run happens to pass must still be observed across the full
+      // retry budget so warnings and persistentFullFailure reflect reality.
     }
 
     const finalFullRows = fullRuns.at(-1) ?? [];
