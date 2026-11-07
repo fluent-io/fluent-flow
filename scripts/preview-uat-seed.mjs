@@ -3,7 +3,8 @@ import { writeFileSync } from 'node:fs';
 
 const db = await import('@fluent-flow/db');
 const pool = db.getPool();
-const suffix = process.env.UAT_PR_NUMBER ?? '134';
+const suffix = process.env.UAT_PR_NUMBER;
+if (!suffix || !/^[1-9][0-9]{0,8}$/.test(suffix)) throw new Error('UAT_PR_NUMBER must be a positive integer');
 const orgId = `preview-uat-${suffix}`;
 const repo = `fixture/preview-uat-${suffix}`;
 const owner = {
