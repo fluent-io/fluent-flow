@@ -136,6 +136,7 @@ jobs:
       - name: Remove UAT secrets and scaffolds
         if: always()
         env:
+          PR_NUMBER: ${{ steps.preview.outputs.number }}
           PROJECT_NAME: ${{ steps.preview.outputs.project_name }}
         run: |
           set -euo pipefail
@@ -143,11 +144,11 @@ jobs:
           cleanup_status=0
           server=$(docker ps --quiet --filter "label=com.docker.compose.project=$PROJECT_NAME" --filter label=com.docker.compose.service=fluent-flow)
           if [ -n "$server" ]; then
-            if docker exec "$server" test -f /tmp/preview-uat-state.json; then
-              docker exec --workdir /app/packages/fluent-flow "$server" node preview-uat-cleanup.mjs || cleanup_status=$?
-              docker cp "$server:/tmp/preview-uat-cleanup.json" preview-uat-evidence/credential-cleanup.json || true
-            fi
+            docker exec --env "UAT_PR_NUMBER=$PR_NUMBER" --workdir /app/packages/fluent-flow "$server" node preview-uat-cleanup.mjs || cleanup_status=$?
+            docker cp "$server:/tmp/preview-uat-cleanup.json" preview-uat-evidence/credential-cleanup.json || true
             docker exec "$server" rm -f /app/packages/fluent-flow/preview-uat-seed.mjs /app/packages/fluent-flow/preview-uat-report.mjs /app/packages/fluent-flow/preview-uat-cleanup.mjs /tmp/preview-uat-state.json /tmp/preview-uat-report.json /tmp/preview-uat-cleanup.json
+          else
+            cleanup_status=1
           fi
           rm -f "$RUNNER_TEMP/preview-uat-state.json"
           exit "$cleanup_status"

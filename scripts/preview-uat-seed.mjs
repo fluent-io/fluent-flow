@@ -19,7 +19,7 @@ await pool.query(
   [orgId, `Preview UAT ${suffix}`],
 );
 
-const githubId = 8_134_000_000 + Number(suffix);
+const githubId = -1_000_000_000 - Number(suffix);
 let user = (await pool.query('SELECT id FROM users WHERE github_id = $1', [githubId])).rows[0];
 if (!user) {
   user = (await pool.query(
@@ -87,7 +87,7 @@ const token = await db.createToken({
   orgId,
   agentId,
   label: 'preview-uat',
-  expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+  expiresAt: new Date(Date.now() + 35 * 60 * 1000),
 });
 
 writeFileSync('/tmp/preview-uat-state.json', JSON.stringify({
