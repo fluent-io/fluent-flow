@@ -39,8 +39,7 @@ Runtime code receives only preview-scoped credentials:
 - A dedicated preview GitHub App installed only on the Fluent Flow test repository.
 - Preview App private key and webhook secret.
 - Preview OAuth client ID and client secret.
-- A preview MCP token.
-- A preview stack seed used to derive per-PR PostgreSQL and NextAuth secrets.
+- A preview stack seed used to derive per-PR PostgreSQL, NextAuth, MCP, and collaboration HMAC secrets.
 - A Cloudflare Tunnel token available only to the trusted edge workflow.
 
 The preview workflow never reads the production `DATABASE_URL`, GitHub App key, OAuth secret, MCP token, PostgreSQL password, or NextAuth secret.

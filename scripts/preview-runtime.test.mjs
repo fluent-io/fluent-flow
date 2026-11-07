@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -7,6 +7,7 @@ import {
   derivePreviewSecret,
   previewComposeArgs,
   previewRuntimeEnvironment,
+  runPreviewOperation,
   writePreviewEnvFile,
 } from './preview-runtime.mjs';
 
@@ -122,4 +123,53 @@ test('rejects empty credentials and unsafe project names', () => {
     }),
     /project name/i,
   );
+});
+
+test('executes a preview operation with array arguments and erases its runtime file', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'fluent-flow-preview-run-'));
+  const calls = [];
+  let runtimePath;
+  const result = runPreviewOperation({
+    deployment,
+    credentials,
+    stackSecret: 'stack-seed',
+    sourceDir: '/tmp/source',
+    edgeNetwork: 'fluent-flow-preview-edge',
+    composeFile: '/trusted/docker-compose.preview.yml',
+    runtimeDir: directory,
+    runCommand(command, args) {
+      calls.push([command, args]);
+      runtimePath = args[2];
+      assert.equal(existsSync(runtimePath), true);
+      assert.equal(statSync(runtimePath).mode & 0o777, 0o600);
+      return { status: 0 };
+    },
+  });
+
+  assert.equal(result, 0);
+  assert.deepEqual(calls[0][1].slice(-2), ['config', '--quiet']);
+  assert.deepEqual(calls[1][1].slice(-5), ['up', '--detach', '--build', '--remove-orphans', '--wait']);
+  assert.equal(existsSync(runtimePath), false);
+});
+
+test('erases the runtime file when Docker fails', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'fluent-flow-preview-run-'));
+  let runtimePath;
+  assert.throws(
+    () => runPreviewOperation({
+      deployment,
+      credentials,
+      stackSecret: 'stack-seed',
+      sourceDir: '/tmp/source',
+      edgeNetwork: 'fluent-flow-preview-edge',
+      composeFile: '/trusted/docker-compose.preview.yml',
+      runtimeDir: directory,
+      runCommand(_command, args) {
+        runtimePath = args[2];
+        return { status: 17 };
+      },
+    }),
+    /Docker Compose exited with status 17/,
+  );
+  assert.equal(existsSync(runtimePath), false);
 });

@@ -15,14 +15,14 @@ services:
 
   cloudflared:
     image: cloudflare/cloudflared:2026.10.0
+    environment:
+      TUNNEL_TOKEN: ${PREVIEW_TUNNEL_TOKEN}
     command:
       - tunnel
       - --no-autoupdate
       - --url
       - http://traefik:80
       - run
-      - --token
-      - ${PREVIEW_TUNNEL_TOKEN}
     depends_on:
       - traefik
     networks:

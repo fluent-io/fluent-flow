@@ -111,9 +111,8 @@ test('renders a private shared edge from Cloudflare Tunnel to Traefik', () => {
     '--url',
     'http://traefik:80',
     'run',
-    '--token',
-    'tunnel-token',
   ]);
+  assert.equal(config.services.cloudflared.environment.TUNNEL_TOKEN, 'tunnel-token');
   assert.equal(config.networks['preview-edge'].external, true);
   assert.equal(config.networks['preview-edge'].name, 'fluent-flow-preview-edge');
 });

@@ -43,6 +43,9 @@ jobs:
       - name: Install dependencies from committed lockfile
         run: npm ci
 
+      - name: Verify pull request preview contracts
+        run: npm run test:preview
+
       # Service containers start before checkout, so the databases cannot be
       # created via init scripts bind-mounted from the workspace. Create them
       # explicitly once dependencies (pg) are available.

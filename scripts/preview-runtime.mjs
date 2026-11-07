@@ -1,6 +1,9 @@
+import { spawnSync } from 'node:child_process';
 import { createHmac, randomUUID } from 'node:crypto';
-import { closeSync, openSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join } from 'node:path';
+import { closeSync, mkdtempSync, openSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const PROJECT_PATTERN = /^fluent-flow-preview-[1-9]\d*$/;
 const HOST_PATTERN = /^(?:api-)?pr-[1-9]\d*\.preview\.app\.fluentflow\.tech$/;
@@ -84,12 +87,10 @@ export function writePreviewEnvFile(directory, environment) {
   return path;
 }
 
-export function previewComposeArgs(operation, { envFile, projectName, composeFile }) {
-  if (!['deploy', 'remove'].includes(operation)) throw new Error('Invalid preview operation');
+function previewComposeBaseArgs({ envFile, projectName, composeFile }) {
   if (!PROJECT_PATTERN.test(projectName)) throw new Error('Invalid preview project name');
   if (!isAbsolute(envFile) || !isAbsolute(composeFile)) throw new Error('Preview Compose paths must be absolute');
-
-  const base = [
+  return [
     'compose',
     '--env-file',
     envFile,
@@ -98,8 +99,96 @@ export function previewComposeArgs(operation, { envFile, projectName, composeFil
     '--file',
     composeFile,
   ];
+}
+
+export function previewComposeArgs(operation, options) {
+  if (!['deploy', 'remove'].includes(operation)) throw new Error('Invalid preview operation');
+  const base = previewComposeBaseArgs(options);
   if (operation === 'deploy') {
     return [...base, 'up', '--detach', '--build', '--remove-orphans', '--wait'];
   }
   return [...base, 'down', '--volumes', '--remove-orphans', '--rmi', 'local'];
 }
+
+export function runPreviewOperation({
+  deployment,
+  credentials,
+  stackSecret,
+  sourceDir,
+  edgeNetwork,
+  composeFile,
+  runtimeDir,
+  runCommand = spawnSync,
+}) {
+  const environment = previewRuntimeEnvironment({
+    deployment,
+    credentials,
+    stackSecret,
+    sourceDir,
+    edgeNetwork,
+  });
+  if (!isAbsolute(composeFile)) throw new Error('Preview Compose file must be absolute');
+
+  const ownsDirectory = runtimeDir === undefined;
+  const directory = runtimeDir ?? mkdtempSync(join(tmpdir(), 'fluent-flow-preview-'));
+  const envFile = writePreviewEnvFile(directory, environment);
+  try {
+    const options = {
+      envFile,
+      projectName: deployment.projectName,
+      composeFile,
+    };
+    const validation = runCommand('docker', [...previewComposeBaseArgs(options), 'config', '--quiet'], {
+      stdio: 'inherit',
+    });
+    if (validation.error) throw validation.error;
+    if (validation.status !== 0) {
+      throw new Error(`Docker Compose exited with status ${String(validation.status)}`);
+    }
+
+    const result = runCommand('docker', previewComposeArgs(deployment.operation, options), { stdio: 'inherit' });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(`Docker Compose exited with status ${String(result.status)}`);
+    return result.status;
+  } finally {
+    rmSync(envFile, { force: true });
+    if (ownsDirectory) rmSync(directory, { force: true, recursive: true });
+  }
+}
+
+function deploymentFromEnvironment(environment) {
+  return {
+    operation: environment.PREVIEW_OPERATION,
+    number: Number(environment.PREVIEW_PR_NUMBER),
+    projectName: environment.PREVIEW_PROJECT_NAME,
+    environmentName: environment.PREVIEW_ENVIRONMENT_NAME,
+    dashboardHost: environment.PREVIEW_DASHBOARD_HOST,
+    apiHost: environment.PREVIEW_API_HOST,
+    headSha: environment.PREVIEW_HEAD_SHA,
+  };
+}
+
+function credentialsFromEnvironment(environment) {
+  return {
+    githubAppId: environment.PREVIEW_GITHUB_APP_ID,
+    githubAppPrivateKey: environment.PREVIEW_GITHUB_APP_PRIVATE_KEY,
+    githubAppWebhookSecret: environment.PREVIEW_GITHUB_APP_WEBHOOK_SECRET,
+    githubClientId: environment.PREVIEW_GITHUB_CLIENT_ID,
+    githubClientSecret: environment.PREVIEW_GITHUB_CLIENT_SECRET,
+  };
+}
+
+function runCli() {
+  runPreviewOperation({
+    deployment: deploymentFromEnvironment(process.env),
+    credentials: credentialsFromEnvironment(process.env),
+    stackSecret: process.env.PREVIEW_STACK_SECRET,
+    sourceDir: process.env.PREVIEW_SOURCE_DIR,
+    edgeNetwork: process.env.PREVIEW_EDGE_NETWORK,
+    composeFile: process.env.PREVIEW_COMPOSE_FILE,
+    runtimeDir: process.env.RUNNER_TEMP,
+  });
+}
+
+const entryPath = process.argv[1] ? resolve(process.argv[1]) : '';
+if (entryPath && fileURLToPath(import.meta.url) === entryPath) runCli();
