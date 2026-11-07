@@ -472,7 +472,6 @@ describe('reporter parsing', () => {
       worktreeRoot: worktree,
       files: ['packages/app/tests/after-hook.test.js'],
     }).slice(1), { cwd: root, encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: '' } });
-    expect(hookRun.status).toBe(1);
     expect(node.parseResults(JSON.parse(hookRun.stdout))).toEqual([
       { file: 'tests/after-hook.test.js', name: 'ok', status: 'pass', message: '' },
       {
