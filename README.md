@@ -2,6 +2,8 @@
 
 Open-source, self-hostable collaboration and delivery control plane for agent-assisted work. The approved expansion brings client/project Kanban, individual collaborators, and task-linked Paseo execution into Fluent Flow, alongside its existing GitHub review and remediation workflows.
 
+Preview UAT marker for the disposable deployment-validation pull request.
+
 The collaborative expansion is implemented and locally verified, including real PC-side Paseo execution. See the [acceptance status](docs/plans/2026-10-19-collaborative-status.md) for evidence, setup guides and release boundaries. This work has not been released or deployed. Deterministic red-before-fix and green-after-fix verification remains an unreleased delivery target.
 
 **Bring your own subscription.** Model-provider credentials stay on the execution host. Your runner uses the local tools and credentials already configured there.
