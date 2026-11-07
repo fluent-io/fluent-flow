@@ -138,8 +138,8 @@ docker compose up -d --build
 
 Every pull request whose branch belongs to this repository receives an isolated full-stack preview:
 
-- Dashboard: `https://pr-<number>.preview.app.fluentflow.tech`
-- Service: `https://api-pr-<number>.preview.app.fluentflow.tech`
+- Dashboard: `https://pr-<number>-preview.fluentflow.tech`
+- Service: `https://api-pr-<number>-preview.fluentflow.tech`
 
 Opening, reopening, or updating the pull request deploys its current head. Closing it removes that pull request's containers, network, images, and PostgreSQL volume. Fork pull requests are excluded before a self-hosted runner is assigned.
 

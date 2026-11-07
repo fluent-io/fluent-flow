@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Deploy every same-repository pull request as an isolated Fluent Flow dashboard, service, and PostgreSQL stack under `preview.app.fluentflow.tech`, then remove it when the pull request closes.
+**Goal:** Deploy every same-repository pull request as an isolated Fluent Flow dashboard, service, and PostgreSQL stack under `fluentflow.tech`, then remove it when the pull request closes.
 
 **Architecture:** A trusted `pull_request_target` workflow reads a pure event-policy module from `main`, checks out pull-request code only as a Docker build context, and deploys a project-scoped Compose stack on G10. A permanent Traefik and Cloudflare Tunnel edge stack routes wildcard preview hostnames to per-PR containers. Dedicated preview credentials keep production secrets out of pull-request runtimes.
 
@@ -15,7 +15,7 @@
 - Preview only same-repository pull requests; fork pull requests MUST stop before self-hosted runner assignment.
 - Use dedicated preview credentials; production secrets and production data MUST NOT enter a preview container.
 - Trusted deployment files come from `main`; pull-request code is only a Docker build context.
-- URLs are exactly `pr-<number>.preview.app.fluentflow.tech` and `api-pr-<number>.preview.app.fluentflow.tech`.
+- URLs are exactly `pr-<number>-preview.fluentflow.tech` and `api-pr-<number>-preview.fluentflow.tech`.
 - Per-PR containers, network, images, PostgreSQL volume, database password, and NextAuth secret are isolated.
 - Closing a pull request removes its stack and volume without affecting another preview.
 - No fixed container names or host-published application ports.
@@ -253,7 +253,7 @@ git commit -m "ci: deploy full-stack pull request previews"
 
 - [ ] **Step 1: Create dedicated Cloudflare ingress**
 
-Create named tunnel `fluent-flow-preview`, route `*.preview.app.fluentflow.tech`, obtain its run token, and store it as `PREVIEW_TUNNEL_TOKEN` without printing it.
+Create named tunnel `fluent-flow-preview`, route `*.fluentflow.tech`, obtain its run token, and store it as `PREVIEW_TUNNEL_TOKEN` without printing it.
 
 - [ ] **Step 2: Create dedicated preview GitHub App**
 

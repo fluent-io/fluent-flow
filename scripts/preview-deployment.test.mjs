@@ -24,8 +24,8 @@ test('maps same-repository opened pull request to an isolated deployment', () =>
     number: 122,
     projectName: 'fluent-flow-preview-122',
     environmentName: 'preview-pr-122',
-    dashboardHost: 'pr-122.preview.app.fluentflow.tech',
-    apiHost: 'api-pr-122.preview.app.fluentflow.tech',
+    dashboardHost: 'pr-122-preview.fluentflow.tech',
+    apiHost: 'api-pr-122-preview.fluentflow.tech',
     headSha: 'a'.repeat(40),
   });
 });
@@ -36,8 +36,8 @@ test('maps same-repository closed pull request to removal without requiring a li
     number: 122,
     projectName: 'fluent-flow-preview-122',
     environmentName: 'preview-pr-122',
-    dashboardHost: 'pr-122.preview.app.fluentflow.tech',
-    apiHost: 'api-pr-122.preview.app.fluentflow.tech',
+    dashboardHost: 'pr-122-preview.fluentflow.tech',
+    apiHost: 'api-pr-122-preview.fluentflow.tech',
     headSha: 'b'.repeat(40),
   });
 });
