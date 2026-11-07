@@ -48,7 +48,11 @@ jobs:
             echo "Invalid pull request number"
             exit 1
           fi
-          pull_request=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")
+          pull_request=$(curl --fail --silent --show-error \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER")
           head_repo=$(jq --raw-output '.head.repo.full_name' <<<"$pull_request")
           head_sha=$(jq --raw-output '.head.sha' <<<"$pull_request")
           state=$(jq --raw-output '.state' <<<"$pull_request")
@@ -121,7 +125,7 @@ jobs:
         run: node scripts/preview-uat-browser.mjs
 
       - name: Capture database evidence
-        if: always()
+        if: always() && steps.preview.outcome == 'success'
         env:
           PROJECT_NAME: ${{ steps.preview.outputs.project_name }}
         run: |
@@ -134,7 +138,7 @@ jobs:
           fi
 
       - name: Remove UAT secrets and scaffolds
-        if: always()
+        if: always() && steps.preview.outcome == 'success'
         env:
           PR_NUMBER: ${{ steps.preview.outputs.number }}
           PROJECT_NAME: ${{ steps.preview.outputs.project_name }}
@@ -154,7 +158,7 @@ jobs:
           exit "$cleanup_status"
 
       - name: Upload UAT evidence
-        if: always()
+        if: always() && steps.preview.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: preview-uat-${{ steps.preview.outputs.number }}
