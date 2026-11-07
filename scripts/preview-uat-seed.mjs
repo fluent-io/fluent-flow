@@ -3,7 +3,8 @@ import { writeFileSync } from 'node:fs';
 
 const db = await import('@fluent-flow/db');
 const pool = db.getPool();
-const suffix = process.env.UAT_PR_NUMBER ?? '134';
+const suffix = process.env.UAT_PR_NUMBER;
+if (!suffix || !/^[1-9][0-9]{0,8}$/.test(suffix)) throw new Error('UAT_PR_NUMBER must be a positive integer');
 const orgId = `preview-uat-${suffix}`;
 const repo = `fixture/preview-uat-${suffix}`;
 const owner = {
@@ -18,7 +19,7 @@ await pool.query(
   [orgId, `Preview UAT ${suffix}`],
 );
 
-const githubId = 8_134_000_000 + Number(suffix);
+const githubId = -1_000_000_000 - Number(suffix);
 let user = (await pool.query('SELECT id FROM users WHERE github_id = $1', [githubId])).rows[0];
 if (!user) {
   user = (await pool.query(
@@ -86,13 +87,14 @@ const token = await db.createToken({
   orgId,
   agentId,
   label: 'preview-uat',
-  expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+  expiresAt: new Date(Date.now() + 35 * 60 * 1000),
 });
 
 writeFileSync('/tmp/preview-uat-state.json', JSON.stringify({
   orgId,
   repo,
   agentId,
+  principalId: principal.id,
   taskId: task.id,
   taskTitle: task.title,
   email: owner.email,
