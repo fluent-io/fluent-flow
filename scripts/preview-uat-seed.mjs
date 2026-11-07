@@ -94,6 +94,7 @@ writeFileSync('/tmp/preview-uat-state.json', JSON.stringify({
   orgId,
   repo,
   agentId,
+  principalId: principal.id,
   taskId: task.id,
   taskTitle: task.title,
   email: owner.email,

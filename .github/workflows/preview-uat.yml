@@ -106,6 +106,7 @@ jobs:
           server=$(docker ps --quiet --filter "label=com.docker.compose.project=$PROJECT_NAME" --filter label=com.docker.compose.service=fluent-flow)
           docker cp scripts/preview-uat-seed.mjs "$server:/app/packages/fluent-flow/preview-uat-seed.mjs"
           docker cp scripts/preview-uat-report.mjs "$server:/app/packages/fluent-flow/preview-uat-report.mjs"
+          docker cp scripts/preview-uat-cleanup.mjs "$server:/app/packages/fluent-flow/preview-uat-cleanup.mjs"
           docker exec --env "UAT_PR_NUMBER=$PR_NUMBER" --workdir /app/packages/fluent-flow "$server" node preview-uat-seed.mjs
           docker cp "$server:/tmp/preview-uat-state.json" "$RUNNER_TEMP/preview-uat-state.json"
           chmod 600 "$RUNNER_TEMP/preview-uat-state.json"
@@ -138,11 +139,18 @@ jobs:
           PROJECT_NAME: ${{ steps.preview.outputs.project_name }}
         run: |
           set -euo pipefail
+          mkdir -p preview-uat-evidence
+          cleanup_status=0
           server=$(docker ps --quiet --filter "label=com.docker.compose.project=$PROJECT_NAME" --filter label=com.docker.compose.service=fluent-flow)
           if [ -n "$server" ]; then
-            docker exec "$server" rm -f /app/packages/fluent-flow/preview-uat-seed.mjs /app/packages/fluent-flow/preview-uat-report.mjs /tmp/preview-uat-state.json /tmp/preview-uat-report.json
+            if docker exec "$server" test -f /tmp/preview-uat-state.json; then
+              docker exec --workdir /app/packages/fluent-flow "$server" node preview-uat-cleanup.mjs || cleanup_status=$?
+              docker cp "$server:/tmp/preview-uat-cleanup.json" preview-uat-evidence/credential-cleanup.json || true
+            fi
+            docker exec "$server" rm -f /app/packages/fluent-flow/preview-uat-seed.mjs /app/packages/fluent-flow/preview-uat-report.mjs /app/packages/fluent-flow/preview-uat-cleanup.mjs /tmp/preview-uat-state.json /tmp/preview-uat-report.json /tmp/preview-uat-cleanup.json
           fi
           rm -f "$RUNNER_TEMP/preview-uat-state.json"
+          exit "$cleanup_status"
 
       - name: Upload UAT evidence
         if: always()
