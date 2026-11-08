@@ -20,7 +20,7 @@ function response(status, payload, body = '', link = null) {
 }
 
 function delivery(id, guid, statusCode, deliveredAt, extra = {}) {
-  return { id, guid, status_code: statusCode, delivered_at: deliveredAt, ...extra };
+  return { id, guid, status_code: statusCode, delivered_at: deliveredAt, redelivery: false, ...extra };
 }
 
 test('follows GitHub cursor pagination and groups realistic delivery status codes', async () => {
@@ -84,6 +84,30 @@ test('uses a six-hour outage lookback and excludes older deliveries', async () =
 
   assert.deepEqual(result, { redelivered: 1 });
   assert.equal(calls.filter(({ url }) => url.includes('/attempts'))[0].url, 'https://api.github.com/app/hook/deliveries/51/attempts');
+});
+
+test('stops retrying a GUID six hours after its original delivery', async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, options });
+    if (url.includes('/app/hook/deliveries?')) {
+      return response(200, [
+        delivery(53, 'guid-expired', 500, '2026-11-07T11:59:00.000Z', { redelivery: true }),
+        delivery(50, 'guid-expired', 500, '2026-11-07T05:00:00.000Z'),
+      ]);
+    }
+    return response(202);
+  };
+
+  const result = await redeliverFailedPreviewWebhooks({
+    appId: '12345',
+    privateKey,
+    fetchImpl,
+    now,
+  });
+
+  assert.deepEqual(result, { redelivered: 0 });
+  assert.equal(calls.some(({ url }) => url.includes('/attempts')), false);
 });
 
 test('throws when a delivery is missing its GUID', async () => {

@@ -68,11 +68,7 @@ async function listRecentDeliveries({ jwt, fetchImpl, cutoff }) {
     if (!statusOk(response)) throw new Error(`GitHub App delivery listing failed with status ${response?.status ?? 'unknown'}`);
     const batch = await response.json();
     if (!Array.isArray(batch)) throw new Error('GitHub App delivery listing returned invalid data');
-    const recent = batch.filter((delivery) => {
-      const timestamp = deliveryTime(delivery);
-      return timestamp !== null && timestamp >= cutoff;
-    });
-    deliveries.push(...recent);
+    deliveries.push(...batch);
     const oldest = batch.reduce((value, delivery) => {
       const timestamp = deliveryTime(delivery);
       return timestamp === null ? value : Math.min(value, timestamp);
@@ -105,11 +101,16 @@ export async function redeliverFailedPreviewWebhooks({
 
   const candidates = [];
   for (const group of grouped.values()) {
+    const original = group.find((delivery) => delivery.redelivery === false);
+    if (!original) continue;
+    const originalTime = deliveryTime(original);
+    if (originalTime === null || originalTime < cutoff) continue;
     if (group.some(succeeded)) continue;
     const failed = group
       .filter((delivery) => !succeeded(delivery))
-      .sort((left, right) => (deliveryTime(right) ?? 0) - (deliveryTime(left) ?? 0));
-    if (failed[0]?.id !== undefined && failed[0]?.id !== null) candidates.push(failed[0]);
+      .sort((left, right) => (deliveryTime(right) ?? 0) - (deliveryTime(left) ?? 0))[0];
+    if (failed?.id === undefined || failed?.id === null) throw new Error('GitHub App delivery is missing its id');
+    candidates.push(failed);
   }
   if (candidates.length > MAX_REDELIVERIES) {
     throw new Error(`GitHub App webhook redelivery candidate count exceeds maximum redelivery cap of ${MAX_REDELIVERIES}`);

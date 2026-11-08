@@ -226,3 +226,35 @@ docker build --file scripts/preview-webhook-router/Dockerfile --tag fluent-flow-
 ```
 
 Result: edge status and configuration commands passed, the final router image built, and its `/health` endpoint returned HTTP 200 with `{"status":"ok"}`.
+
+## Independent recovery review fixes
+
+The independent review found four release defects: production used the no-op logger, restart recovery waited for another route registration, failed replay could remove a route that already existed, and newer attempts could extend a delivery GUID beyond its six-hour recovery window.
+
+### RED
+
+```bash
+node --test --test-name-pattern='persisted pending|failed restart replay' scripts/preview-webhook-router/router.test.mjs
+node --test --test-name-pattern='six hours after its original' scripts/preview-webhook-redelivery.test.mjs
+```
+
+Result: both restart tests failed because the server exposed no startup replay, and the original-delivery regression expected zero redeliveries but observed one.
+
+### GREEN
+
+```bash
+node --test scripts/preview-webhook-router/router.test.mjs
+node --test scripts/preview-webhook-redelivery.test.mjs
+```
+
+Result: 25 router tests and 9 redelivery tests passed. The router now emits structured JSON in production, retries persisted baseline work when it starts, retains existing routes when recovery fails, and leaves failed recovery pending. Redelivery eligibility is now bounded by the original GitHub delivery rather than by newer attempts.
+
+Final verification:
+
+```bash
+npm run test:preview
+npm test
+docker build --file scripts/preview-webhook-router/Dockerfile --tag fluent-flow-preview-webhook-router:final .
+```
+
+Result: 61 preview contract tests passed. The complete monorepo run passed all five Turbo tasks: dashboard 208, database 202, runner 515, and service 684 tests; 10 legacy integration tests remained intentionally skipped. The final image built, `/health` returned HTTP 200, and a signed pull-request delivery produced one JSON log containing its delivery ID, event, selector, route count, and status.

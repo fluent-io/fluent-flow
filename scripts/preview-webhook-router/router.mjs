@@ -249,6 +249,16 @@ export function createRouteStore({ directory }) {
       return current.pendingBaselineRoutes[key] ? baselineFromState(current.baseline) : null;
     },
 
+    pendingInstallationBaselines() {
+      const current = requireLoaded();
+      const baseline = baselineFromState(current.baseline);
+      if (!baseline) return [];
+      return Object.keys(current.pendingBaselineRoutes).map((key) => ({
+        route: current.routes[key],
+        baseline,
+      }));
+    },
+
     markInstallationBaselineReplayed(key) {
       return enqueue(async () => {
         const current = requireLoaded();
@@ -411,7 +421,31 @@ export function createPreviewWebhookRouter({
     }
   }
 
-  return createServer(async (req, res) => {
+  async function replayInstallationBaseline(route, baseline, selector) {
+    await forward(route, baseline.body, {
+      signature: baseline.signature,
+      event: baseline.event,
+      delivery: baseline.delivery,
+      contentType: baseline.contentType,
+    }, selector);
+    await store.markInstallationBaselineReplayed(route.key);
+  }
+
+  async function replayPendingBaselines() {
+    for (const { route, baseline } of store.pendingInstallationBaselines()) {
+      try {
+        await replayInstallationBaseline(route, baseline, 'installation-baseline-recovery');
+      } catch (error) {
+        logger.error({
+          msg: 'preview webhook baseline recovery failed',
+          error: safeError(error),
+          route: route.key,
+        });
+      }
+    }
+  }
+
+  const server = createServer(async (req, res) => {
     const requestUrl = new URL(req.url ?? '/', 'http://router');
     try {
       if (requestUrl.pathname === '/health' && req.method === 'GET') {
@@ -439,27 +473,28 @@ export function createPreviewWebhookRouter({
           return;
         }
         await enqueueRouteMutation(async () => {
+          const existed = store.routesFor({
+            scope: 'pull_request',
+            repository: input.repository,
+            pullRequests: [input.pullRequest],
+          }).length > 0;
           const route = await store.register(input);
           const baseline = store.pendingInstallationBaseline(route.key);
           if (baseline) {
             try {
-              await forward(route, baseline.body, {
-                signature: baseline.signature,
-                event: baseline.event,
-                delivery: baseline.delivery,
-                contentType: baseline.contentType,
-              }, 'installation-baseline');
-              await store.markInstallationBaselineReplayed(route.key);
+              await replayInstallationBaseline(route, baseline, 'installation-baseline');
             } catch (error) {
-              try {
-                await store.remove(input);
-              } catch (rollbackError) {
-                logger.error({
-                  msg: 'preview webhook route rollback failed',
-                  error: safeError(rollbackError),
-                  route: route.key,
-                });
-                throw Object.assign(new Error('route rollback failed'), { statusCode: 500 });
+              if (!existed) {
+                try {
+                  await store.remove(input);
+                } catch (rollbackError) {
+                  logger.error({
+                    msg: 'preview webhook route rollback failed',
+                    error: safeError(rollbackError),
+                    route: route.key,
+                  });
+                  throw Object.assign(new Error('route rollback failed'), { statusCode: 500 });
+                }
               }
               throw Object.assign(new Error('baseline replay failed'), { statusCode: 502, cause: error });
             }
@@ -538,6 +573,8 @@ export function createPreviewWebhookRouter({
       writeText(res, 500, 'Internal Server Error');
     }
   });
+  server.startupReplay = enqueueRouteMutation(replayPendingBaselines);
+  return server;
 }
 
 const entryPath = process.argv[1] ? resolve(process.argv[1]) : '';
@@ -547,6 +584,18 @@ if (entryPath && entryPath === fileURLToPath(import.meta.url)) {
   if (!webhookSecret || !routeSecret) throw new Error('router secrets are required');
   const store = createRouteStore({ directory: process.env.ROUTER_STATE_DIR ?? '/data' });
   await store.load();
-  const server = createPreviewWebhookRouter({ webhookSecret, routeSecret, store });
+  const writeLog = (stream, level, fields) => stream.write(`${JSON.stringify({ level, ...fields })}\n`);
+  const logger = {
+    info(fields) {
+      writeLog(process.stdout, 'info', fields);
+    },
+    warn(fields) {
+      writeLog(process.stderr, 'warn', fields);
+    },
+    error(fields) {
+      writeLog(process.stderr, 'error', fields);
+    },
+  };
+  const server = createPreviewWebhookRouter({ webhookSecret, routeSecret, store, logger });
   server.listen(Number(process.env.PORT ?? 3000), '0.0.0.0');
 }

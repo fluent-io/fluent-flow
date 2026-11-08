@@ -492,6 +492,9 @@ test('persisted pending baseline replay survives a router restart', async () => 
     },
   });
   try {
+    assert.ok(restarted.server.startupReplay instanceof Promise);
+    await restarted.server.startupReplay;
+    assert.deepEqual(delivered, [baselineBody]);
     assert.equal((await httpRequest(restarted.baseUrl, '/routes', {
       method: 'PUT',
       body: routePayload(),
@@ -518,6 +521,37 @@ test('persisted pending baseline replay survives a router restart', async () => 
     assert.deepEqual(delivered, [baselineBody]);
   } finally {
     await close(settled.server);
+  }
+});
+
+test('failed restart replay keeps an existing route pending and registered', async () => {
+  const directory = await tempDirectory();
+  const store = createRouteStore({ directory });
+  await store.load();
+  await store.saveInstallationBaseline({
+    body: baselineBody,
+    signature: signature(baselineBody),
+    event: 'installation',
+    delivery: 'baseline-restart-failure',
+  });
+  await store.register({ repository, pullRequest: 123, headSha: sha });
+
+  const restarted = await createTestRouter({
+    directory,
+    transport: async () => ({ status: 500 }),
+  });
+  try {
+    assert.ok(restarted.server.startupReplay instanceof Promise);
+    await restarted.server.startupReplay;
+    assert.equal(restarted.store.routesFor({ scope: 'repository', repository, pullRequests: [] }).length, 1);
+    assert.equal((await httpRequest(restarted.baseUrl, '/routes', {
+      method: 'PUT',
+      body: routePayload(),
+      headers: { authorization: `Bearer ${routeSecret}` },
+    })).status, 502);
+    assert.equal(restarted.store.routesFor({ scope: 'repository', repository, pullRequests: [] }).length, 1);
+  } finally {
+    await close(restarted.server);
   }
 });
 
