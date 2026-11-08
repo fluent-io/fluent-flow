@@ -117,7 +117,7 @@ export async function redeliverFailedPreviewWebhooks({
 
   const failures = [];
   let redelivered = 0;
-  for (const delivery of candidates.slice(0, MAX_REDELIVERIES)) {
+  for (const delivery of candidates) {
     try {
       const response = await fetchImpl(`${GITHUB_API_URL}/app/hook/deliveries/${encodeURIComponent(delivery.id)}/attempts`, {
         method: 'POST',

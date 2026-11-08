@@ -130,6 +130,7 @@ test('renders the permanent healthy webhook router without privileged mounts', (
   });
   const router = config.services['preview-webhook-router'];
   assert.ok(router);
+  assert.ok(router.healthcheck);
   assert.equal(router.image, undefined);
   assert.equal(router.build.dockerfile, 'scripts/preview-webhook-router/Dockerfile');
   assert.deepEqual(router.depends_on.traefik.condition, 'service_healthy');
