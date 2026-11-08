@@ -1,4 +1,4 @@
-import { createServer } from 'node:http';
+import { createServer, request as nodeRequest } from 'node:http';
 import { mkdir, open, readFile, rename } from 'node:fs/promises';
 import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -6,8 +6,10 @@ import { join, resolve } from 'node:path';
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 const STATE_VERSION = 1;
+const DOWNSTREAM_TIMEOUT_MS = 5_000;
 const ROUTE_RE = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?\/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?$/;
 const SHA_RE = /^[0-9a-f]{40}$/i;
+const ROUTE_INPUT_KEYS = ['repository', 'pullRequest', 'headSha'];
 
 function positivePullRequest(value) {
   return Number.isInteger(value) && value > 0 ? value : null;
@@ -27,10 +29,23 @@ function routeFor(repository, pullRequest, headSha) {
   };
 }
 
-function validateRouteInput({ repository, pullRequest, headSha }) {
+function exactObject(value, keys) {
+  return value !== null
+    && typeof value === 'object'
+    && !Array.isArray(value)
+    && Object.keys(value).length === keys.length
+    && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function validateRouteFields({ repository, pullRequest, headSha }) {
   if (typeof repository !== 'string' || !ROUTE_RE.test(repository)) throw new Error('invalid route');
   if (positivePullRequest(pullRequest) === null) throw new Error('invalid route');
   if (typeof headSha !== 'string' || !SHA_RE.test(headSha)) throw new Error('invalid route');
+}
+
+function validateRouteInput(input) {
+  if (!exactObject(input, ROUTE_INPUT_KEYS)) throw new Error('invalid route');
+  validateRouteFields(input);
 }
 
 function emptyClassification(scope = 'unresolvable', repository = null, pullRequests = []) {
@@ -65,7 +80,7 @@ export function classifyWebhook(eventName, payload) {
 
   if (eventName === 'check_run' || eventName === 'check_suite' || eventName === 'workflow_run') {
     const container = payload?.[eventName];
-    const pullRequests = validPullRequests((container?.pull_requests ?? payload?.pull_requests ?? []).map((item) => item?.number));
+    const pullRequests = validPullRequests((container?.pull_requests ?? []).map((item) => item?.number));
     if (repository && pullRequests.length > 0) return emptyClassification('pull_request', repository, pullRequests);
     return repository ? emptyClassification('repository', repository) : emptyClassification();
   }
@@ -74,10 +89,29 @@ export function classifyWebhook(eventName, payload) {
   return repository ? emptyClassification('repository', repository) : emptyClassification();
 }
 
+
 export function createRouteStore({ directory }) {
   const statePath = join(directory, 'state.json');
   let state = null;
   let mutation = Promise.resolve();
+
+  function baselineFromState(value) {
+    if (!value) return null;
+    if (typeof value.body !== 'string' || typeof value.signature !== 'string' || typeof value.event !== 'string' || typeof value.delivery !== 'string') throw new Error('router state is corrupt');
+    const body = Buffer.from(value.body, 'base64');
+    if (body.toString('base64') !== value.body) throw new Error('router state is corrupt');
+    return {
+      body,
+      signature: value.signature,
+      event: value.event,
+      delivery: value.delivery,
+    };
+  }
+
+  function validateStoredRoute(route) {
+    validateRouteFields(route);
+    if (route.key !== routeKey(route.repository, route.pullRequest) || route.host !== `api-pr-${route.pullRequest}-preview.fluentflow.tech`) throw new Error('router state is corrupt');
+  }
 
   async function atomicWrite(nextState) {
     const temporaryPath = `${statePath}.${process.pid}.${randomUUID()}.tmp`;
@@ -114,7 +148,7 @@ export function createRouteStore({ directory }) {
       throw new Error('router state is corrupt');
     }
     try {
-      for (const route of Object.values(parsed.routes)) validateRouteInput(route);
+      for (const route of Object.values(parsed.routes)) validateStoredRoute(route);
       baselineFromState(parsed.baseline);
     } catch (error) {
       throw new Error('router state is corrupt', { cause: error });
@@ -133,37 +167,16 @@ export function createRouteStore({ directory }) {
     return result;
   }
 
-  function baselineFromState(value) {
-    if (!value) return null;
-    if (typeof value.body !== 'string' || typeof value.signature !== 'string' || typeof value.event !== 'string' || typeof value.delivery !== 'string') throw new Error('router state is corrupt');
-    const body = Buffer.from(value.body, 'base64');
-    if (body.toString('base64') !== value.body) throw new Error('router state is corrupt');
-    return {
-      body,
-      signature: value.signature,
-      event: value.event,
-      delivery: value.delivery,
-    };
-  }
-
   return {
     async load() {
       await load();
     },
 
-    register(input, pullRequestArg, headShaArg) {
-      const values = input !== null && typeof input === 'object'
-        ? input
-        : { repository: input, pullRequest: pullRequestArg, headSha: headShaArg };
-      const normalized = {
-        repository: values.repository,
-        pullRequest: values.pullRequest ?? values.pull_request ?? values.prNumber ?? values.number,
-        headSha: values.headSha ?? values.head_sha ?? values.sha,
-      };
+    register(input) {
       return enqueue(async () => {
-        validateRouteInput(normalized);
+        validateRouteInput(input);
         const current = requireLoaded();
-        const route = routeFor(normalized.repository, normalized.pullRequest, normalized.headSha);
+        const route = routeFor(input.repository, input.pullRequest, input.headSha);
         const next = { ...current, routes: { ...current.routes, [route.key]: route } };
         await atomicWrite(next);
         state = next;
@@ -171,19 +184,12 @@ export function createRouteStore({ directory }) {
       });
     },
 
-    remove(input, pullRequestArg) {
-      const values = input !== null && typeof input === 'object'
-        ? input
-        : { repository: input, pullRequest: pullRequestArg };
-      const normalized = {
-        repository: values.repository,
-        pullRequest: values.pullRequest ?? values.pull_request ?? values.prNumber ?? values.number,
-      };
+    remove(input) {
       return enqueue(async () => {
-        if (typeof normalized.repository !== 'string' || !ROUTE_RE.test(normalized.repository) || positivePullRequest(normalized.pullRequest) === null) throw new Error('invalid route');
+        validateRouteInput(input);
         const current = requireLoaded();
         const routes = { ...current.routes };
-        delete routes[routeKey(normalized.repository, normalized.pullRequest)];
+        delete routes[routeKey(input.repository, input.pullRequest)];
         const next = { ...current, routes };
         await atomicWrite(next);
         state = next;
@@ -206,20 +212,17 @@ export function createRouteStore({ directory }) {
       return [];
     },
 
-    saveInstallationBaseline(input, payload, signatureArg, deliveryArg) {
-      const baseline = typeof input === 'object'
-        ? input
-        : { event: input, payload, signature: signatureArg, delivery: deliveryArg };
-      if (!Buffer.isBuffer(baseline.body) || typeof baseline.signature !== 'string' || typeof baseline.event !== 'string' || typeof baseline.delivery !== 'string') throw new Error('invalid baseline');
+    saveInstallationBaseline(input) {
       return enqueue(async () => {
+        if (!exactObject(input, ['event', 'delivery', 'signature', 'body']) || !Buffer.isBuffer(input.body) || typeof input.signature !== 'string' || typeof input.event !== 'string' || typeof input.delivery !== 'string') throw new Error('invalid baseline');
         const current = requireLoaded();
         const next = {
           ...current,
           baseline: {
-            body: baseline.body.toString('base64'),
-            signature: baseline.signature,
-            event: baseline.event,
-            delivery: baseline.delivery,
+            body: input.body.toString('base64'),
+            signature: input.signature,
+            event: input.event,
+            delivery: input.delivery,
           },
         };
         await atomicWrite(next);
@@ -239,6 +242,48 @@ function safeSignature(rawBody, signature, secret) {
   const actual = Buffer.from(signature, 'utf8');
   const wanted = Buffer.from(expected, 'utf8');
   return actual.length === wanted.length && timingSafeEqual(actual, wanted);
+}
+
+
+function responseAccepted(response) {
+  return response && response.status >= 200 && response.status < 300;
+}
+
+export function createNodeTransport({ target } = {}) {
+  const fixedTarget = target ? new URL(target) : null;
+  return (url, options = {}) => new Promise((resolve, reject) => {
+    const destination = fixedTarget ?? new URL(url);
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      callback(value);
+    };
+    const req = nodeRequest(destination, {
+      method: options.method ?? 'POST',
+      headers: options.headers,
+    }, (res) => {
+      res.resume();
+      res.once('end', () => finish(resolve, { status: res.statusCode }));
+      res.once('error', (error) => finish(reject, error));
+    });
+    if (options.timeoutMs) {
+      req.setTimeout(options.timeoutMs, () => {
+        req.destroy(Object.assign(new Error('downstream timeout'), { code: 'ETIMEDOUT' }));
+      });
+    }
+    req.once('error', (error) => finish(reject, error));
+    req.end(options.body);
+  });
+}
+
+function safeError(error) {
+  const safe = {
+    name: typeof error?.name === 'string' ? error.name : 'Error',
+  };
+  if (typeof error?.code === 'string') safe.code = error.code;
+  if (Number.isInteger(error?.statusCode)) safe.status = error.statusCode;
+  return safe;
 }
 
 function readRequestBody(req, limit) {
@@ -266,10 +311,6 @@ function readRequestBody(req, limit) {
   });
 }
 
-async function responseAccepted(response) {
-  return response && response.status >= 200 && response.status < 300;
-}
-
 function authorizationValid(req, routeSecret) {
   const authorization = req.headers.authorization;
   if (typeof authorization === 'string' && authorization.startsWith('Bearer ')) return authorization.slice(7) === routeSecret;
@@ -294,33 +335,48 @@ export function createPreviewWebhookRouter({
   webhookSecret,
   routeSecret,
   store,
-  fetchImpl = globalThis.fetch,
+  transport = createNodeTransport(),
+  downstreamTimeoutMs = DOWNSTREAM_TIMEOUT_MS,
   logger = { info() {}, warn() {}, error() {} },
 }) {
-
+  const pendingBaselineRoutes = new Set();
   let routeMutation = Promise.resolve();
   function enqueueRouteMutation(operation) {
     const result = routeMutation.then(operation);
     routeMutation = result.then(() => undefined, () => undefined);
     return result;
   }
+
   async function forward(route, body, headers, selector) {
-    const response = await fetchImpl('http://traefik/webhooks/github-app', {
-      method: 'POST',
-      headers: {
-        host: route.host,
-        'x-hub-signature-256': headers.signature,
-        'x-github-event': headers.event,
-        'x-github-delivery': headers.delivery,
-        ...(headers.contentType ? { 'content-type': headers.contentType } : {}),
-      },
-      body,
-      signal: AbortSignal.timeout(10000),
-    });
-    const accepted = await responseAccepted(response);
-    logger.info({ delivery_id: headers.delivery, event: headers.event, selector, route: route.key, status: response.status });
-    if (!accepted) throw new Error('downstream rejected');
-    return response.status;
+    try {
+      const response = await transport('http://traefik/webhooks/github-app', {
+        method: 'POST',
+        headers: {
+          host: route.host,
+          'x-hub-signature-256': headers.signature,
+          'x-github-event': headers.event,
+          'x-github-delivery': headers.delivery,
+          ...(headers.contentType ? { 'content-type': headers.contentType } : {}),
+        },
+        body,
+        timeoutMs: downstreamTimeoutMs,
+      });
+      if (!responseAccepted(response)) {
+        throw Object.assign(new Error('downstream rejected'), { statusCode: response?.status });
+      }
+      logger.info({ delivery_id: headers.delivery, event: headers.event, selector, route: route.key, status: response.status });
+      return response.status;
+    } catch (error) {
+      logger.error({
+        msg: 'preview webhook downstream forwarding failed',
+        error: safeError(error),
+        delivery_id: headers.delivery,
+        event: headers.event,
+        selector,
+        route: route.key,
+      });
+      throw error;
+    }
   }
 
   return createServer(async (req, res) => {
@@ -338,45 +394,51 @@ export function createPreviewWebhookRouter({
           return;
         }
         const input = await parseJsonRequest(req);
-        if (!input || typeof input !== 'object' || Array.isArray(input)) {
-          writeText(res, 400, 'Bad Request');
-          return;
-        }
-        if (req.method === 'DELETE') {
-          const removal = await Promise.allSettled([enqueueRouteMutation(() => store.remove(input))]);
-          if (removal[0].status === 'rejected') {
-            writeText(res, 400, 'Bad Request');
-            return;
-          }
-          res.writeHead(204);
-          res.end();
-          return;
-        }
-        const normalized = {
-          repository: input.repository,
-          pullRequest: input.pullRequest ?? input.pull_request ?? input.prNumber ?? input.number,
-          headSha: input.headSha ?? input.head_sha ?? input.sha,
-        };
         try {
-          validateRouteInput(normalized);
+          validateRouteInput(input);
         } catch {
           writeText(res, 400, 'Bad Request');
           return;
         }
+        if (req.method === 'DELETE') {
+          await enqueueRouteMutation(() => store.remove(input));
+          res.writeHead(204);
+          res.end();
+          return;
+        }
         await enqueueRouteMutation(async () => {
-          const existed = store.routesFor({ scope: 'pull_request', repository: normalized.repository, pullRequests: [normalized.pullRequest] }).length > 0;
-          const route = await store.register(normalized);
-          if (!existed) {
+          const route = routeFor(input.repository, input.pullRequest, input.headSha);
+          const existed = store.routesFor({
+            scope: 'pull_request',
+            repository: input.repository,
+            pullRequests: [input.pullRequest],
+          }).length > 0;
+          const shouldReplay = !existed || pendingBaselineRoutes.has(route.key);
+          await store.register(input);
+          if (shouldReplay) {
             const baseline = store.installationBaseline();
             if (baseline) {
-              const replay = await Promise.allSettled([forward(route, baseline.body, {
-                signature: baseline.signature,
-                event: baseline.event,
-                delivery: baseline.delivery,
-              }, 'installation-baseline')]);
-              if (replay[0].status === 'rejected') {
-                await store.remove(normalized);
-                throw Object.assign(new Error('downstream rejected'), { statusCode: 502 });
+              try {
+                await forward(route, baseline.body, {
+                  signature: baseline.signature,
+                  event: baseline.event,
+                  delivery: baseline.delivery,
+                }, 'installation-baseline');
+                pendingBaselineRoutes.delete(route.key);
+              } catch (error) {
+                try {
+                  await store.remove(input);
+                  pendingBaselineRoutes.delete(route.key);
+                } catch (rollbackError) {
+                  pendingBaselineRoutes.add(route.key);
+                  logger.error({
+                    msg: 'preview webhook route rollback failed',
+                    error: safeError(rollbackError),
+                    route: route.key,
+                  });
+                  throw Object.assign(new Error('route rollback failed'), { statusCode: 500 });
+                }
+                throw Object.assign(new Error('baseline replay failed'), { statusCode: 502, cause: error });
               }
             }
           }
@@ -434,12 +496,23 @@ export function createPreviewWebhookRouter({
 
       writeText(res, 404, 'Not Found');
     } catch (error) {
+      logger.error({
+        msg: 'preview webhook router request failed',
+        error: safeError(error),
+        method: req.method,
+        path: requestUrl.pathname,
+      });
       if (error.statusCode) {
-        const body = error.statusCode === 413 ? 'Payload Too Large' : error.statusCode === 502 ? 'Bad Gateway' : 'Bad Request';
+        const body = error.statusCode === 413
+          ? 'Payload Too Large'
+          : error.statusCode === 502
+            ? 'Bad Gateway'
+            : error.statusCode === 500
+              ? 'Internal Server Error'
+              : 'Bad Request';
         writeText(res, error.statusCode, body);
         return;
       }
-      logger.error({ msg: 'preview webhook router request failed' });
       writeText(res, 500, 'Internal Server Error');
     }
   });

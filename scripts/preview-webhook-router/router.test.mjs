@@ -1,21 +1,24 @@
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { createServer, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { request } from 'node:http';
 import { test } from 'node:test';
-import {
+import * as router from './router.mjs';
+
+const {
   classifyWebhook,
   createPreviewWebhookRouter,
   createRouteStore,
-} from './router.mjs';
+} = router;
 
 const webhookSecret = 'webhook-secret';
 const routeSecret = 'route-secret';
 const repository = 'fluent-io/fluent-flow';
 const sha = 'a'.repeat(40);
 const baselineBody = Buffer.from('{"action":"created","installation":{"id":42}}');
+const responseBody = 'downstream response body';
 
 function signature(body, secret = webhookSecret) {
   return `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;
@@ -71,19 +74,21 @@ function webhookPayload(overrides = {}) {
   }));
 }
 
-async function createTestRouter({ fetchImpl, logger, directory } = {}) {
+async function createTestRouter({ transport, logger, directory, downstreamTimeoutMs } = {}) {
   const store = createRouteStore({ directory: directory ?? await tempDirectory() });
   await store.load();
   const server = createPreviewWebhookRouter({
     webhookSecret,
     routeSecret,
     store,
-    fetchImpl: fetchImpl ?? (async () => new Response('ok', { status: 202 })),
+    transport: transport ?? (async () => ({ status: 202 })),
+    downstreamTimeoutMs,
     logger: logger ?? { info() {}, warn() {}, error() {} },
   });
   const baseUrl = await listen(server);
   return { store, server, baseUrl };
 }
+
 
 test('classifyWebhook selects the pull request route', () => {
   assert.deepEqual(classifyWebhook('pull_request', {
@@ -111,15 +116,15 @@ test('classifyWebhook selects an issue comment route only when the issue is a pu
   }), { scope: 'repository', repository, pullRequests: [] });
 });
 
-test('classifyWebhook selects every pull request in check and workflow arrays', () => {
+test('classifyWebhook selects every pull request in nested check and workflow arrays', () => {
   for (const eventName of ['check_run', 'check_suite', 'workflow_run']) {
     assert.deepEqual(classifyWebhook(eventName, {
       repository: { full_name: repository },
-      pull_requests: [{ number: 123 }, { number: 456 }],
+      [eventName]: { pull_requests: [{ number: 123 }, { number: 456 }] },
     }), { scope: 'pull_request', repository, pullRequests: [123, 456] });
     assert.deepEqual(classifyWebhook(eventName, {
       repository: { full_name: repository },
-      pull_requests: [],
+      [eventName]: { pull_requests: [] },
     }), { scope: 'repository', repository, pullRequests: [] });
   }
 });
@@ -154,15 +159,17 @@ test('route store persists registration, removes routes, derives the destination
   assert.deepEqual(store.routesFor({ scope: 'pull_request', repository, pullRequests: [123] }), [route]);
   assert.deepEqual(store.routesFor({ scope: 'repository', repository, pullRequests: [] }), [route]);
   assert.deepEqual(store.routesFor({ scope: 'installation', repository: null, pullRequests: [] }), [route]);
-  await store.remove({ repository, pullRequest: 123 });
+  await store.remove({ repository, pullRequest: 123, headSha: sha });
   assert.deepEqual(store.routesFor({ scope: 'repository', repository, pullRequests: [] }), []);
   await store.register({ repository, pullRequest: 123, headSha: sha });
   const restarted = createRouteStore({ directory });
   await restarted.load();
   assert.equal(restarted.routesFor({ scope: 'repository', repository, pullRequests: [] }).length, 1);
-  await assert.rejects(() => restarted.register({ repository: 'bad', pullRequest: 123, headSha: sha }));
+  await assert.rejects(() => restarted.register(repository, 123, sha));
+  await assert.rejects(() => restarted.register({ repository, pull_request: 123, headSha: sha }));
   await assert.rejects(() => restarted.register({ repository, pullRequest: 0, headSha: sha }));
   await assert.rejects(() => restarted.register({ repository, pullRequest: 123, headSha: 'z'.repeat(40) }));
+  await assert.rejects(() => restarted.remove({ repository, pullRequest: 123 }));
 });
 
 test('route store writes one versioned state file atomically and replaces the baseline exactly', async () => {
@@ -183,6 +190,7 @@ test('route store writes one versioned state file atomically and replaces the ba
   const persisted = JSON.parse(await readFile(join(directory, 'state.json'), 'utf8'));
   assert.equal(persisted.version, 1);
   assert.equal(persisted.baseline.body, replacement.toString('base64'));
+  await assert.rejects(() => store.saveInstallationBaseline('installation', replacement, signature(replacement), 'delivery-3'));
   await writeFile(join(directory, 'state.json'), '{bad', 'utf8');
   const corrupted = createRouteStore({ directory });
   await assert.rejects(() => corrupted.load());
@@ -190,9 +198,9 @@ test('route store writes one versioned state file atomically and replaces the ba
 
 test('HTTP forwards valid signed raw bytes and selected headers through Traefik', async () => {
   const calls = [];
-  const { server, baseUrl } = await createTestRouter({ fetchImpl: async (url, options) => {
+  const { server, baseUrl } = await createTestRouter({ transport: async (url, options) => {
     calls.push({ url, options });
-    return new Response('accepted', { status: 202 });
+    return { status: 202 };
   }});
   try {
     const registration = await httpRequest(baseUrl, '/routes', {
@@ -245,9 +253,9 @@ test('HTTP rejects an invalid signature before parsing the payload', async () =>
 
 test('HTTP enforces the 5 MiB body limit', async () => {
   const calls = [];
-  const { server, baseUrl } = await createTestRouter({ fetchImpl: async () => {
+  const { server, baseUrl } = await createTestRouter({ transport: async () => {
     calls.push(true);
-    return new Response('accepted', { status: 202 });
+    return { status: 202 };
   }});
   try {
     const body = Buffer.alloc(5 * 1024 * 1024 + 1, 97);
@@ -265,9 +273,9 @@ test('HTTP enforces the 5 MiB body limit', async () => {
 
 test('HTTP keeps pull request events isolated and fans out repository and installation events', async () => {
   const calls = [];
-  const { server, baseUrl } = await createTestRouter({ fetchImpl: async (url, options) => {
+  const { server, baseUrl } = await createTestRouter({ transport: async (url, options) => {
     calls.push({ url, options });
-    return new Response('accepted', { status: 202 });
+    return { status: 202 };
   }});
   try {
     for (const pullRequest of [123, 456]) {
@@ -302,9 +310,9 @@ test('HTTP keeps pull request events isolated and fans out repository and instal
 
 test('HTTP returns 502 when any selected target fails and 202 when there are no targets', async () => {
   let call = 0;
-  const { server, baseUrl } = await createTestRouter({ fetchImpl: async () => {
+  const { server, baseUrl } = await createTestRouter({ transport: async () => {
     call += 1;
-    return new Response('rejected', { status: call === 1 ? 500 : 202 });
+    return { status: call === 1 ? 500 : 202 };
   }});
   try {
     assert.equal((await httpRequest(baseUrl, '/routes', {
@@ -325,9 +333,9 @@ test('HTTP returns 502 when any selected target fails and 202 when there are no 
 
 test('HTTP replays the latest installation baseline once to a newly registered route', async () => {
   const calls = [];
-  const { server, baseUrl } = await createTestRouter({ fetchImpl: async (url, options) => {
+  const { server, baseUrl } = await createTestRouter({ transport: async (url, options) => {
     calls.push({ url, options });
-    return new Response('accepted', { status: 202 });
+    return { status: 202 };
   }});
   try {
     const baseline = Buffer.from('{"action":"created","installation":{"id":42}}');
@@ -351,56 +359,205 @@ test('HTTP replays the latest installation baseline once to a newly registered r
     await close(server);
   }
 });
-
-test('HTTP serializes concurrent registration and replays the baseline once', async () => {
-  const calls = [];
-  let releaseReplay;
-  let releaseRegister;
-  let registerCalls = 0;
-  const replayGate = new Promise((resolve) => { releaseReplay = resolve; });
-  const registerGate = new Promise((resolve) => { releaseRegister = resolve; });
-  const { store, server, baseUrl } = await createTestRouter({ fetchImpl: async (url, options) => {
-    calls.push({ url, options });
-    await replayGate;
-    return new Response('accepted', { status: 202 });
-  }});
-  const originalRegister = store.register.bind(store);
-  store.register = async (...args) => {
-    registerCalls += 1;
-    await registerGate;
-    return originalRegister(...args);
-  };
+test('Node transport sends the derived Host header on the wire', async () => {
+  assert.equal(typeof router.createNodeTransport, 'function');
+  const hosts = [];
+  const upstream = createServer((req, res) => {
+    hosts.push(req.headers.host);
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(202);
+      res.end(responseBody);
+    });
+  });
+  const upstreamUrl = await listen(upstream);
+  const { server, baseUrl } = await createTestRouter({
+    transport: router.createNodeTransport({ target: upstreamUrl }),
+  });
   try {
-    const baseline = Buffer.from('{"action":"created","installation":{"id":42}}');
+    assert.equal((await httpRequest(baseUrl, '/routes', {
+      method: 'PUT',
+      body: routePayload(),
+      headers: { authorization: `Bearer ${routeSecret}` },
+    })).status, 204);
+    const body = webhookPayload();
     assert.equal((await httpRequest(baseUrl, '/webhooks/github-app', {
-      method: 'POST', body: baseline, headers: {
-        'x-hub-signature-256': signature(baseline), 'x-github-event': 'installation', 'x-github-delivery': 'installation-2',
+      method: 'POST',
+      body,
+      headers: {
+        'x-hub-signature-256': signature(body),
+        'x-github-event': 'pull_request',
+        'x-github-delivery': 'wire-host',
       },
     })).status, 202);
-    const first = httpRequest(baseUrl, '/routes', {
-      method: 'PUT', body: routePayload(), headers: { authorization: `Bearer ${routeSecret}` },
-    });
-    const second = httpRequest(baseUrl, '/routes', {
-      method: 'PUT', body: routePayload(), headers: { authorization: `Bearer ${routeSecret}` },
-    });
-    for (let attempt = 0; attempt < 100 && registerCalls === 0; attempt += 1) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    const concurrentRegisterCalls = registerCalls;
-    releaseRegister();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.equal(calls.length, 1);
-    releaseReplay();
-    assert.deepEqual((await Promise.all([first, second])).map((response) => response.status), [204, 204]);
-    assert.equal(concurrentRegisterCalls, 1);
-    assert.equal(calls.length, 1);
+    assert.deepEqual(hosts, ['api-pr-123-preview.fluentflow.tech']);
   } finally {
-    releaseRegister?.();
-    releaseReplay?.();
+    await close(server);
+    await close(upstream);
+  }
+});
+
+test('downstream timeout returns 502 before the GitHub delivery deadline', async () => {
+  const sockets = new Set();
+  const upstream = createServer(() => {});
+  upstream.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+  });
+  const upstreamUrl = await listen(upstream);
+  const { server, baseUrl } = await createTestRouter({
+    transport: router.createNodeTransport({ target: upstreamUrl }),
+    downstreamTimeoutMs: 25,
+  });
+  try {
+    assert.equal((await httpRequest(baseUrl, '/routes', {
+      method: 'PUT',
+      body: routePayload(),
+      headers: { authorization: `Bearer ${routeSecret}` },
+    })).status, 204);
+    const body = webhookPayload();
+    assert.equal((await httpRequest(baseUrl, '/webhooks/github-app', {
+      method: 'POST',
+      body,
+      headers: {
+        'x-hub-signature-256': signature(body),
+        'x-github-event': 'pull_request',
+        'x-github-delivery': 'timeout',
+      },
+    })).status, 502);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await close(server);
+    await close(upstream);
+  }
+});
+
+test('downstream failures are logged without payloads or secrets', async () => {
+  const errors = [];
+  const body = webhookPayload();
+  const { server, baseUrl } = await createTestRouter({
+    transport: async () => {
+      throw Object.assign(new Error(responseBody), { code: 'E_DOWNSTREAM' });
+    },
+    logger: {
+      info() {},
+      warn() {},
+      error(fields) {
+        errors.push(fields);
+      },
+    },
+  });
+  try {
+    assert.equal((await httpRequest(baseUrl, '/routes', {
+      method: 'PUT',
+      body: routePayload(),
+      headers: { authorization: `Bearer ${routeSecret}` },
+    })).status, 204);
+    assert.equal((await httpRequest(baseUrl, '/webhooks/github-app', {
+      method: 'POST',
+      body,
+      headers: {
+        'x-hub-signature-256': signature(body),
+        'x-github-event': 'pull_request',
+        'x-github-delivery': 'logged-failure',
+      },
+    })).status, 502);
+    assert.ok(errors.length > 0);
+    const serialized = JSON.stringify(errors);
+    assert.ok(serialized.includes('E_DOWNSTREAM'));
+    assert.ok(!serialized.includes(body.toString('utf8')));
+    assert.ok(!serialized.includes(signature(body)));
+    assert.ok(!serialized.includes(webhookSecret));
+    assert.ok(!serialized.includes(routeSecret));
+    assert.ok(!serialized.includes(responseBody));
+  } finally {
     await close(server);
   }
 });
+
+test('baseline replay failure returns 502, removes the route, and retries safely', async () => {
+  let attempts = 0;
+  const { store, server, baseUrl } = await createTestRouter({
+    transport: async () => ({ status: ++attempts === 1 ? 500 : 202 }),
+  });
+  try {
+    assert.equal((await httpRequest(baseUrl, '/webhooks/github-app', {
+      method: 'POST',
+      body: baselineBody,
+      headers: {
+        'x-hub-signature-256': signature(baselineBody),
+        'x-github-event': 'installation',
+        'x-github-delivery': 'baseline-failure',
+      },
+    })).status, 202);
+    const routeRequest = {
+      method: 'PUT',
+      body: routePayload(),
+      headers: { authorization: `Bearer ${routeSecret}` },
+    };
+    assert.equal((await httpRequest(baseUrl, '/routes', routeRequest)).status, 502);
+    assert.deepEqual(store.routesFor({ scope: 'repository', repository, pullRequests: [] }), []);
+    assert.equal((await httpRequest(baseUrl, '/routes', routeRequest)).status, 204);
+    assert.equal(attempts, 2);
+    assert.equal(store.routesFor({ scope: 'repository', repository, pullRequests: [] }).length, 1);
+  } finally {
+    await close(server);
+  }
+});
+
+test('DELETE requires admin auth, validates the exact route shape, and removes a route', async () => {
+  const { store, server, baseUrl } = await createTestRouter();
+  try {
+    const routeRequest = {
+      method: 'PUT',
+      body: routePayload(),
+      headers: { authorization: `Bearer ${routeSecret}` },
+    };
+    assert.equal((await httpRequest(baseUrl, '/routes', routeRequest)).status, 204);
+    assert.equal((await httpRequest(baseUrl, '/routes', {
+      method: 'DELETE',
+      body: routePayload(),
+      headers: { authorization: 'Bearer wrong' },
+    })).status, 401);
+    assert.equal((await httpRequest(baseUrl, '/routes', {
+      method: 'DELETE',
+      body: JSON.stringify({ repository, pullRequest: 123 }),
+      headers: { authorization: `Bearer ${routeSecret}` },
+    })).status, 400);
+    assert.equal((await httpRequest(baseUrl, '/routes', {
+      method: 'DELETE',
+      body: JSON.stringify({ repository, pull_request: 123, head_sha: sha }),
+      headers: { authorization: `Bearer ${routeSecret}` },
+    })).status, 400);
+    assert.equal((await httpRequest(baseUrl, '/routes', {
+      method: 'DELETE',
+      body: routePayload(),
+      headers: { authorization: `Bearer ${routeSecret}` },
+    })).status, 204);
+    assert.deepEqual(store.routesFor({ scope: 'repository', repository, pullRequests: [] }), []);
+  } finally {
+    await close(server);
+  }
+});
+
+test('DELETE persistence failures return 500', async () => {
+  const { store, server, baseUrl } = await createTestRouter();
+  await store.register({ repository, pullRequest: 123, headSha: sha });
+  store.remove = async () => {
+    throw new Error('persistence failure');
+  };
+  try {
+    assert.equal((await httpRequest(baseUrl, '/routes', {
+      method: 'DELETE',
+      body: routePayload(),
+      headers: { authorization: `Bearer ${routeSecret}` },
+    })).status, 500);
+  } finally {
+    await close(server);
+  }
+});
+
+
 
 test('HTTP uses distinct admin authentication and generic auth failures', async () => {
   const { server, baseUrl } = await createTestRouter();

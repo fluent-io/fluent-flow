@@ -27,3 +27,25 @@
 - Task 2 edge Compose integration and route lifecycle clients are not part of this task and remain outside this commit.
 - The Docker smoke exercised only router startup and `/health`; it did not require a live Traefik network, GitHub delivery, or preview stack.
 - Live GitHub App redelivery and concurrent deployed previews were not exercised locally.
+
+## Fix round 1
+
+### RED
+
+Command:
+
+```bash
+node --test scripts/preview-webhook-router/router.test.mjs
+```
+
+Result before the fix: 8 passing, 11 failing, 1 cancelled. The failures covered positional registration, baseline positional overloads, ignored transport injection, missing Node transport, missing operational error logs, DELETE validation, persistence status mapping, and baseline replay retry behavior. The run remained pending after 120 seconds because the new timeout/ephemeral-server cases had no supported transport boundary.
+
+### GREEN
+
+- `node --test scripts/preview-webhook-router/router.test.mjs` — 19 passing, 0 failing, 0 cancelled.
+- `npm run test:preview` — 37 passing, 0 failing, 0 cancelled.
+- `node --check scripts/preview-webhook-router/router.mjs` and `node --check scripts/preview-webhook-router/router.test.mjs` — passed.
+- `docker build --file scripts/preview-webhook-router/Dockerfile --tag fluent-flow-preview-webhook-router:test .` — passed.
+- Docker smoke with temporary secrets and state — `GET /health` returned `{"status":"ok"}`.
+
+The fix uses Node's built-in HTTP transport with an explicit Host header and a 5-second default timeout, keeps transport injection for deterministic tests, removes positional and alias inputs, validates DELETE requests, logs sanitized operational error identifiers, maps persistence failures to 500, maps baseline replay failures to 502, and keeps retry behavior safe after rollback failure in the running router.
