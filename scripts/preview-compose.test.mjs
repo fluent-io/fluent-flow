@@ -101,6 +101,8 @@ test('renders different network and volume identities for concurrent pull reques
 test('renders a private shared edge from Cloudflare Tunnel to Traefik', () => {
   const config = render('docker-compose.preview-edge.yml', 'fluent-flow-preview-edge', {
     PREVIEW_TUNNEL_TOKEN: 'tunnel-token',
+    PREVIEW_WEBHOOK_SECRET: 'webhook-secret',
+    PREVIEW_ROUTE_SECRET: 'route-secret',
   });
 
   assert.deepEqual(Object.keys(config.services).sort(), ['cloudflared', 'preview-webhook-router', 'traefik']);
@@ -143,5 +145,23 @@ test('renders the permanent healthy webhook router without privileged mounts', (
   assert.deepEqual(config.volumes['preview-router-state'], {
     name: 'fluent-flow-preview-router-state',
   });
-  assert.equal(router.healthcheck.test[0], 'CMD');
+  assert.deepEqual(router.healthcheck.test, [
+    'CMD',
+    'node',
+    '-e',
+    "fetch('http://127.0.0.1:3000/health').then((response) => { if (!response.ok) process.exit(1); })",
+  ]);
+});
+
+test('requires both router secrets during Compose interpolation', () => {
+  for (const missingSecret of ['PREVIEW_WEBHOOK_SECRET', 'PREVIEW_ROUTE_SECRET']) {
+    assert.throws(
+      () => render('docker-compose.preview-edge.yml', 'fluent-flow-preview-edge', {
+        PREVIEW_TUNNEL_TOKEN: 'tunnel-token',
+        PREVIEW_WEBHOOK_SECRET: missingSecret === 'PREVIEW_WEBHOOK_SECRET' ? '' : 'webhook-secret',
+        PREVIEW_ROUTE_SECRET: missingSecret === 'PREVIEW_ROUTE_SECRET' ? '' : 'route-secret',
+      }),
+      /required/,
+    );
+  }
 });

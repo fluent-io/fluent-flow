@@ -100,3 +100,52 @@ Result: all three workflow files parsed successfully.
 
 - `actionlint` was not installed in the execution environment, so workflow validation used `js-yaml` parsing plus Compose validation instead.
 - Live GitHub App API configuration, scheduled redelivery, Cloudflare ingress, and deployed concurrent previews were not exercised locally.
+
+## Review Fixes
+
+### RED
+
+Focused review-fix tests:
+
+```bash
+node --test scripts/preview-compose.test.mjs scripts/preview-webhook-route.test.mjs scripts/preview-webhook-redelivery.test.mjs
+```
+
+Result: 17 tests, 8 passed, 9 failed. The failures were the new behavioral assertions for required Compose secrets, cursor pagination, six-hour lookback, missing GUID rejection, AggregateError after all attempts, redelivery cap traversal, bounded-page exhaustion, redelivery AggregateError semantics, and remove-404 failure.
+
+### GREEN
+
+Focused review-fix suite:
+
+```bash
+node --test scripts/preview-compose.test.mjs scripts/preview-webhook-route.test.mjs scripts/preview-github-app.test.mjs scripts/preview-webhook-redelivery.test.mjs
+```
+
+Result: 19 tests passed, 0 failed, 0 cancelled.
+
+The implementation now follows GitHub `Link` cursor URLs without `page=`, uses the six-hour outage window within GitHub's three-day webhook redelivery retention, stops after three pages with a loud failure when the cutoff is not reached, caps each run at 100 redeliveries, classifies delivery `status_code` 200–399 as success, rejects missing GUIDs, attempts every selected redelivery before throwing an `AggregateError`, accepts only 2xx route responses including removal, uses path-safe CLI guards, and requires both router secrets during Compose interpolation. The design spec and scripts README document these limits. The router healthcheck contract asserts its complete command.
+
+### Verification
+
+```bash
+npm run test:preview
+```
+
+Result: 55 tests passed, 0 failed, 0 cancelled.
+
+```bash
+for file in scripts/preview-webhook-route.mjs scripts/preview-github-app.mjs scripts/preview-webhook-redelivery.mjs scripts/preview-webhook-route.test.mjs scripts/preview-github-app.test.mjs scripts/preview-webhook-redelivery.test.mjs scripts/preview-compose.test.mjs; do node --check "$file"; done
+PREVIEW_TUNNEL_TOKEN=tunnel-token PREVIEW_WEBHOOK_SECRET=webhook-secret PREVIEW_ROUTE_SECRET=route-secret PREVIEW_EDGE_NETWORK=fluent-flow-preview-edge docker compose --project-name fluent-flow-preview-edge --file docker-compose.preview-edge.yml config >/dev/null
+node --input-type=module -e "import fs from 'node:fs'; import yaml from 'js-yaml'; for (const file of ['.github/workflows/preview-edge.yml','.github/workflows/preview.yml','.github/workflows/preview-webhook-redelivery.yml']) { yaml.load(fs.readFileSync(file, 'utf8')); console.log(file + ': PASS'); }"
+git diff --check
+```
+
+Result: all syntax checks, Compose validation, workflow YAML parsing, and whitespace checks passed. YAML output:
+
+```text
+.github/workflows/preview-edge.yml: PASS
+.github/workflows/preview.yml: PASS
+.github/workflows/preview-webhook-redelivery.yml: PASS
+```
+
+Remaining concerns are unchanged: live GitHub App API configuration and redelivery, Cloudflare ingress, deployed concurrent previews, and live router delivery were not exercised locally; `actionlint` is not installed in the execution environment.

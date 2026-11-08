@@ -1,3 +1,6 @@
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 const ROUTER_ORIGIN = 'https://preview-webhooks.fluentflow.tech';
 const REPOSITORY_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?\/[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9_-])?$/;
 const SHA_PATTERN = /^[0-9a-f]{40}$/i;
@@ -19,9 +22,7 @@ export async function reconcilePreviewWebhookRoute({
   headSha,
   secret,
   fetchImpl = globalThis.fetch,
-  origin = ROUTER_ORIGIN,
 }) {
-  if (origin !== ROUTER_ORIGIN) throw new Error('fixed router origin is required');
   if (operation !== 'deploy' && operation !== 'remove') throw new Error('invalid route operation');
   validateIdentity({ repository, prNumber, headSha });
   if (typeof secret !== 'string' || secret.length === 0) throw new Error('route secret is required');
@@ -35,7 +36,7 @@ export async function reconcilePreviewWebhookRoute({
     },
     body: JSON.stringify({ repository, pullRequest: prNumber, headSha }),
   });
-  if (!statusOk(response) && !(operation === 'remove' && response?.status === 404)) {
+  if (!statusOk(response)) {
     throw new Error(`preview webhook route request failed with status ${response?.status ?? 'unknown'}`);
   }
   return { status: response.status };
@@ -51,4 +52,4 @@ async function runCli() {
   });
 }
 
-if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) await runCli();
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) await runCli();

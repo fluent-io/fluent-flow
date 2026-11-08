@@ -24,8 +24,8 @@ services:
       context: .
       dockerfile: scripts/preview-webhook-router/Dockerfile
     environment:
-      PREVIEW_WEBHOOK_SECRET: ${PREVIEW_WEBHOOK_SECRET}
-      PREVIEW_ROUTE_SECRET: ${PREVIEW_ROUTE_SECRET}
+      PREVIEW_WEBHOOK_SECRET: ${PREVIEW_WEBHOOK_SECRET:?PREVIEW_WEBHOOK_SECRET is required}
+      PREVIEW_ROUTE_SECRET: ${PREVIEW_ROUTE_SECRET:?PREVIEW_ROUTE_SECRET is required}
       ROUTER_STATE_DIR: /data
     depends_on:
       traefik:

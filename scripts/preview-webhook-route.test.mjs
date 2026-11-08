@@ -13,7 +13,7 @@ function response(status, body = '') {
   };
 }
 
-test('reconciles only the fixed router origin with the route identity fields', async () => {
+test('reconciles the route with the fixed router origin and identity fields', async () => {
   const calls = [];
   const fetchImpl = async (url, options) => {
     calls.push({ url, options });
@@ -43,40 +43,39 @@ test('reconciles only the fixed router origin with the route identity fields', a
   });
 });
 
-test('removal treats an absent route as an idempotent success', async () => {
-  const calls = [];
-  const fetchImpl = async (url, options) => {
-    calls.push({ url, options });
-    return response(404);
-  };
+test('fails when removal receives a 404', async () => {
+  const fetchImpl = async () => response(404);
 
-  await reconcilePreviewWebhookRoute({
-    operation: 'remove',
-    repository,
-    prNumber: 123,
-    headSha,
-    secret: 'route-secret',
-    fetchImpl,
-  });
-  await reconcilePreviewWebhookRoute({
-    operation: 'remove',
-    repository,
-    prNumber: 123,
-    headSha,
-    secret: 'route-secret',
-    fetchImpl,
-  });
-
-  assert.equal(calls.length, 2);
-  assert.equal(calls[0].options.method, 'DELETE');
-  assert.deepEqual(JSON.parse(calls[0].options.body), {
-    repository,
-    pullRequest: 123,
-    headSha,
-  });
+  await assert.rejects(
+    () => reconcilePreviewWebhookRoute({
+      operation: 'remove',
+      repository,
+      prNumber: 123,
+      headSha,
+      secret: 'route-secret',
+      fetchImpl,
+    }),
+    /status 404/,
+  );
 });
 
-test('rejects invalid identities and arbitrary origins before fetch', async () => {
+test('fails when deployment receives a 404', async () => {
+  const fetchImpl = async () => response(404);
+
+  await assert.rejects(
+    () => reconcilePreviewWebhookRoute({
+      operation: 'deploy',
+      repository,
+      prNumber: 123,
+      headSha,
+      secret: 'route-secret',
+      fetchImpl,
+    }),
+    /status 404/,
+  );
+});
+
+test('rejects a missing route secret and invalid identities before fetch', async () => {
   const fetchImpl = async () => {
     throw new Error('fetch must not run');
   };
@@ -86,10 +85,9 @@ test('rejects invalid identities and arbitrary origins before fetch', async () =
     repository,
     prNumber: 123,
     headSha,
-    secret: 'route-secret',
-    origin: 'https://attacker.example',
+    secret: '',
     fetchImpl,
-  }), /fixed router origin/);
+  }), /route secret is required/);
   await assert.rejects(() => reconcilePreviewWebhookRoute({
     operation: 'deploy',
     repository: 'fluent-io',

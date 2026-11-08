@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { signAppJwt } from '../packages/fluent-flow/src/providers/github/app-auth.js';
 
 export const PREVIEW_WEBHOOK_URL = 'https://preview-webhooks.fluentflow.tech/webhooks/github-app';
@@ -53,4 +55,4 @@ async function runCli() {
   });
 }
 
-if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) await runCli();
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) await runCli();
