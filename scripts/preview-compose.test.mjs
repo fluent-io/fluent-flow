@@ -103,7 +103,7 @@ test('renders a private shared edge from Cloudflare Tunnel to Traefik', () => {
     PREVIEW_TUNNEL_TOKEN: 'tunnel-token',
   });
 
-  assert.deepEqual(Object.keys(config.services).sort(), ['cloudflared', 'traefik']);
+  assert.deepEqual(Object.keys(config.services).sort(), ['cloudflared', 'preview-webhook-router', 'traefik']);
   assert.equal(config.services.traefik.image, 'traefik:v3.6.6');
   assert.deepEqual(config.services.traefik.healthcheck.test, ['CMD', 'traefik', 'healthcheck', '--ping=true']);
   assert.equal(config.services.cloudflared.depends_on.traefik.condition, 'service_healthy');
@@ -119,4 +119,29 @@ test('renders a private shared edge from Cloudflare Tunnel to Traefik', () => {
   assert.equal(config.services.cloudflared.environment.TUNNEL_TOKEN, 'tunnel-token');
   assert.equal(config.networks['preview-edge'].external, true);
   assert.equal(config.networks['preview-edge'].name, 'fluent-flow-preview-edge');
+});
+test('renders the permanent healthy webhook router without privileged mounts', () => {
+  const config = render('docker-compose.preview-edge.yml', 'fluent-flow-preview-edge', {
+    PREVIEW_TUNNEL_TOKEN: 'tunnel-token',
+    PREVIEW_WEBHOOK_SECRET: 'webhook-secret',
+    PREVIEW_ROUTE_SECRET: 'route-secret',
+  });
+  const router = config.services['preview-webhook-router'];
+  assert.ok(router);
+  assert.equal(router.image, undefined);
+  assert.equal(router.build.dockerfile, 'scripts/preview-webhook-router/Dockerfile');
+  assert.deepEqual(router.depends_on.traefik.condition, 'service_healthy');
+  assert.equal(router.ports, undefined);
+  assert.deepEqual(router.networks, { 'preview-edge': null });
+  assert.deepEqual(router.volumes, [{ type: 'volume', source: 'preview-router-state', target: '/data', volume: {} }]);
+  assert.equal(router.environment.PREVIEW_WEBHOOK_SECRET, 'webhook-secret');
+  assert.equal(router.environment.PREVIEW_ROUTE_SECRET, 'route-secret');
+  assert.equal(router.environment.PREVIEW_GITHUB_APP_PRIVATE_KEY, undefined);
+  assert.equal(router.volumes.some((volume) => typeof volume === 'string' && volume.includes('docker.sock')), false);
+  assert.equal(router.labels['traefik.http.routers.preview-webhook.rule'], 'Host(`preview-webhooks.fluentflow.tech`)');
+  assert.equal(router.labels['traefik.http.services.preview-webhook.loadbalancer.server.port'], '3000');
+  assert.deepEqual(config.volumes['preview-router-state'], {
+    name: 'fluent-flow-preview-router-state',
+  });
+  assert.equal(router.healthcheck.test[0], 'CMD');
 });

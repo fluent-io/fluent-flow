@@ -26,15 +26,21 @@ jobs:
           ref: refs/heads/main
           persist-credentials: false
 
-      - name: Validate tunnel credential
+      - name: Validate preview edge credentials
         env:
           PREVIEW_TUNNEL_TOKEN: ${{ secrets.PREVIEW_TUNNEL_TOKEN }}
+          PREVIEW_WEBHOOK_SECRET: ${{ secrets.PREVIEW_GITHUB_APP_WEBHOOK_SECRET }}
+          PREVIEW_ROUTE_SECRET: ${{ secrets.PREVIEW_ROUTE_SECRET }}
+          PREVIEW_GITHUB_APP_ID: ${{ vars.PREVIEW_GITHUB_APP_ID }}
+          PREVIEW_GITHUB_APP_PRIVATE_KEY: ${{ secrets.PREVIEW_GITHUB_APP_PRIVATE_KEY }}
         run: |
           set -euo pipefail
-          if [ -z "$PREVIEW_TUNNEL_TOKEN" ]; then
-            echo "::error::PREVIEW_TUNNEL_TOKEN is required"
-            exit 1
-          fi
+          for name in PREVIEW_TUNNEL_TOKEN PREVIEW_WEBHOOK_SECRET PREVIEW_ROUTE_SECRET PREVIEW_GITHUB_APP_ID PREVIEW_GITHUB_APP_PRIVATE_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is required"
+              exit 1
+            fi
+          done
 
       - name: Ensure shared preview network
         run: docker network inspect fluent-flow-preview-edge >/dev/null 2>&1 || docker network create fluent-flow-preview-edge
@@ -42,14 +48,30 @@ jobs:
       - name: Validate edge configuration
         env:
           PREVIEW_TUNNEL_TOKEN: ${{ secrets.PREVIEW_TUNNEL_TOKEN }}
+          PREVIEW_WEBHOOK_SECRET: ${{ secrets.PREVIEW_GITHUB_APP_WEBHOOK_SECRET }}
+          PREVIEW_ROUTE_SECRET: ${{ secrets.PREVIEW_ROUTE_SECRET }}
           PREVIEW_EDGE_NETWORK: fluent-flow-preview-edge
         run: docker compose --project-name fluent-flow-preview-edge --file docker-compose.preview-edge.yml config >/dev/null
 
       - name: Reconcile edge services
         env:
           PREVIEW_TUNNEL_TOKEN: ${{ secrets.PREVIEW_TUNNEL_TOKEN }}
+          PREVIEW_WEBHOOK_SECRET: ${{ secrets.PREVIEW_GITHUB_APP_WEBHOOK_SECRET }}
+          PREVIEW_ROUTE_SECRET: ${{ secrets.PREVIEW_ROUTE_SECRET }}
           PREVIEW_EDGE_NETWORK: fluent-flow-preview-edge
         run: docker compose --project-name fluent-flow-preview-edge --file docker-compose.preview-edge.yml up --detach --remove-orphans --wait
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Configure Preview App webhook
+        env:
+          PREVIEW_GITHUB_APP_ID: ${{ vars.PREVIEW_GITHUB_APP_ID }}
+          PREVIEW_GITHUB_APP_PRIVATE_KEY: ${{ secrets.PREVIEW_GITHUB_APP_PRIVATE_KEY }}
+          PREVIEW_GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.PREVIEW_GITHUB_APP_WEBHOOK_SECRET }}
+        run: node scripts/preview-github-app.mjs
 
       - name: Show edge services
         if: always()

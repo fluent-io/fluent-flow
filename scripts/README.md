@@ -7,6 +7,9 @@
 - [preview-webhook-router/router.mjs](preview-webhook-router/router.mjs): permanent signed Preview GitHub App webhook router. It persists routes and the latest signed installation baseline, forwards raw events through Traefik, and exposes route administration and health endpoints.
 - [preview-webhook-router/README.md](preview-webhook-router/README.md): router runtime, authentication, state, and test documentation.
 - [preview-webhook-router/Dockerfile](preview-webhook-router/Dockerfile): Node 22 image for the router service.
+- [preview-webhook-route.mjs](preview-webhook-route.mjs): registers and removes preview webhook routes through the fixed permanent router origin.
+- [preview-github-app.mjs](preview-github-app.mjs): configures the Preview GitHub App webhook at the stable router URL with an App JWT.
+- [preview-webhook-redelivery.mjs](preview-webhook-redelivery.mjs): lists recent failed Preview App deliveries and requests bounded redelivery through GitHub.
 
 Startup regressions live in [dev-database.test.js](../packages/fluent-flow/tests/unit/dev-database.test.js) and execute the real npm lifecycle with controlled external process fixtures.
 Runner setup tests use the real mounted API, password service, separate PostgreSQL database and Git: [collab-local-runner.test.js](../packages/fluent-flow/tests/routes/collab-local-runner.test.js). Lifecycle tests run the real connector runtime and poll loop; only external Paseo SDK/CLI I/O is faked. They verify readiness, signal cleanup and lock release. The [CLI test](../packages/fluent-flow/tests/unit/dev-runner-cli.test.js) verifies help without requiring services.

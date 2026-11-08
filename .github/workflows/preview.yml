@@ -47,10 +47,11 @@ jobs:
           PREVIEW_GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.PREVIEW_GITHUB_APP_WEBHOOK_SECRET }}
           PREVIEW_GITHUB_CLIENT_ID: ${{ secrets.PREVIEW_GITHUB_CLIENT_ID }}
           PREVIEW_GITHUB_CLIENT_SECRET: ${{ secrets.PREVIEW_GITHUB_CLIENT_SECRET }}
+          PREVIEW_ROUTE_SECRET: ${{ secrets.PREVIEW_ROUTE_SECRET }}
           PREVIEW_STACK_SECRET: ${{ secrets.PREVIEW_STACK_SECRET }}
         run: |
           set -euo pipefail
-          for name in PREVIEW_GITHUB_APP_ID PREVIEW_GITHUB_APP_PRIVATE_KEY PREVIEW_GITHUB_APP_WEBHOOK_SECRET PREVIEW_GITHUB_CLIENT_ID PREVIEW_GITHUB_CLIENT_SECRET PREVIEW_STACK_SECRET; do
+          for name in PREVIEW_GITHUB_APP_ID PREVIEW_GITHUB_APP_PRIVATE_KEY PREVIEW_GITHUB_APP_WEBHOOK_SECRET PREVIEW_GITHUB_CLIENT_ID PREVIEW_GITHUB_CLIENT_SECRET PREVIEW_ROUTE_SECRET PREVIEW_STACK_SECRET; do
             if [ -z "${!name:-}" ]; then
               echo "::error::$name is required"
               exit 1
@@ -133,6 +134,28 @@ jobs:
             docker logs --tail 200 "$container"
           done
 
+      - name: Register preview webhook route
+        id: register_route
+        if: steps.preview.outputs.operation == 'deploy' && steps.smoke.outcome == 'success'
+        working-directory: control
+        env:
+          PREVIEW_OPERATION: deploy
+          PREVIEW_PR_NUMBER: ${{ steps.preview.outputs.number }}
+          PREVIEW_HEAD_SHA: ${{ steps.preview.outputs.head_sha }}
+          PREVIEW_ROUTE_SECRET: ${{ secrets.PREVIEW_ROUTE_SECRET }}
+        run: node scripts/preview-webhook-route.mjs
+
+      - name: Remove preview webhook route
+        id: remove_route
+        if: always() && steps.preview.outputs.operation == 'remove'
+        working-directory: control
+        env:
+          PREVIEW_OPERATION: remove
+          PREVIEW_PR_NUMBER: ${{ steps.preview.outputs.number }}
+          PREVIEW_HEAD_SHA: ${{ steps.preview.outputs.head_sha }}
+          PREVIEW_ROUTE_SECRET: ${{ secrets.PREVIEW_ROUTE_SECRET }}
+        run: node scripts/preview-webhook-route.mjs
+
       - name: Update preview comment
         if: always() && steps.preview.outputs.number != ''
         uses: actions/github-script@v7
@@ -143,11 +166,14 @@ jobs:
           DEPLOY_SHA: ${{ steps.preview.outputs.head_sha }}
           OPERATION_OUTCOME: ${{ steps.operation.outcome }}
           SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+          REGISTER_ROUTE_OUTCOME: ${{ steps.register_route.outcome }}
+          REMOVE_ROUTE_OUTCOME: ${{ steps.remove_route.outcome }}
         with:
           script: |
             const marker = '<!-- fluent-flow-preview -->'
             const deploy = process.env.OPERATION === 'deploy'
-            const succeeded = process.env.OPERATION_OUTCOME === 'success' && (!deploy || process.env.SMOKE_OUTCOME === 'success')
+            const routeOutcome = deploy ? process.env.REGISTER_ROUTE_OUTCOME : process.env.REMOVE_ROUTE_OUTCOME
+            const succeeded = process.env.OPERATION_OUTCOME === 'success' && (!deploy || process.env.SMOKE_OUTCOME === 'success') && routeOutcome === 'success'
             const state = succeeded ? (deploy ? 'Ready' : 'Removed') : 'Failed'
             const links = deploy && succeeded
               ? `\n\n- Dashboard: ${process.env.DASHBOARD_URL}\n- Service: ${process.env.API_URL}`
