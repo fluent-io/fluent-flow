@@ -385,6 +385,61 @@ test('concurrent PUTs serialize baseline replay and return successful responses 
     await close(server);
   }
 });
+test('each newly registered route replays the installation baseline once', async () => {
+  const deliveredBaselineEvents = [];
+  const { server, baseUrl } = await createTestRouter({
+    transport: async (url, options) => {
+      if (options.headers['x-github-event'] === 'installation') {
+        deliveredBaselineEvents.push({
+          body: Buffer.from(options.body),
+          host: options.headers.host,
+          signature: options.headers['x-hub-signature-256'],
+        });
+      }
+      return { status: 202 };
+    },
+  });
+  try {
+    assert.equal((await httpRequest(baseUrl, '/webhooks/github-app', {
+      method: 'POST',
+      body: baselineBody,
+      headers: {
+        'x-hub-signature-256': signature(baselineBody),
+        'x-github-event': 'installation',
+        'x-github-delivery': 'baseline-per-route',
+      },
+    })).status, 202);
+    const firstRoute = {
+      method: 'PUT',
+      body: routePayload({ pullRequest: 123 }),
+      headers: { authorization: `Bearer ${routeSecret}` },
+    };
+    const secondRoute = {
+      method: 'PUT',
+      body: routePayload({ pullRequest: 456 }),
+      headers: { authorization: `Bearer ${routeSecret}` },
+    };
+    assert.equal((await httpRequest(baseUrl, '/routes', firstRoute)).status, 204);
+    assert.equal((await httpRequest(baseUrl, '/routes', secondRoute)).status, 204);
+    assert.deepEqual(deliveredBaselineEvents, [
+      {
+        body: baselineBody,
+        host: 'api-pr-123-preview.fluentflow.tech',
+        signature: signature(baselineBody),
+      },
+      {
+        body: baselineBody,
+        host: 'api-pr-456-preview.fluentflow.tech',
+        signature: signature(baselineBody),
+      },
+    ]);
+    assert.equal((await httpRequest(baseUrl, '/routes', firstRoute)).status, 204);
+    assert.equal((await httpRequest(baseUrl, '/routes', secondRoute)).status, 204);
+    assert.equal(deliveredBaselineEvents.length, 2);
+  } finally {
+    await close(server);
+  }
+});
 test('baseline replay and rollback failures preserve a retry marker until one successful replay clears it', async () => {
   const deliveredBaselineEvents = [];
   let rollbackAttempts = 0;

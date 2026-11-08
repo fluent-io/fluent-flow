@@ -77,3 +77,42 @@ The failure proved the removed `routesFor(classification)` contract was still ac
 - `npm run test:preview` — 38 passing, 0 failing, 0 cancelled.
 
 The round-2 tests prove concurrent same-route PUT responses both return `204` while exactly one installation baseline is delivered, and prove a baseline replay failure with rollback failure returns `500`, preserves the route for retry, replays the preserved baseline once successfully, and does not replay it on the following retry.
+
+## Fix round 3
+
+### RED
+
+Command:
+
+```bash
+node --test scripts/preview-webhook-router/router.test.mjs
+```
+
+Output before adding the missing behavior coverage:
+
+```text
+ℹ tests 20
+ℹ pass 20
+ℹ fail 0
+ℹ cancelled 0
+```
+
+The existing suite was green because it did not register a second distinct route after preserving an installation baseline or verify that re-registering either route produced no additional replay. No production defect was exposed by the coverage addition.
+
+### GREEN
+
+Commands:
+
+```bash
+node --test scripts/preview-webhook-router/router.test.mjs
+npm run test:preview
+```
+
+Output:
+
+```text
+focused router suite: 21 passing, 0 failing, 0 cancelled
+preview suite: 39 passing, 0 failing, 0 cancelled
+```
+
+The new test registers two distinct routes and verifies each receives the preserved installation body once with the original signature and its derived `Host`; re-registering either route leaves the replay count at two. Production code was unchanged.
