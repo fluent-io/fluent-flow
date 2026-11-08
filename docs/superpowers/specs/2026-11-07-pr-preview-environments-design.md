@@ -96,7 +96,7 @@ Public webhook ingress:
 3. Require `X-GitHub-Event` and `X-GitHub-Delivery`.
 4. Select active preview routes from the event payload.
 5. Forward the unchanged raw body, signature, event name, and delivery ID through Traefik.
-6. Return success only when every selected preview accepts the event. Any failed target produces a server error so GitHub redelivers the original event.
+6. Return success only when every selected preview accepts the event. Any failed target produces a server error recorded by GitHub as a failed delivery.
 
 Trusted deploy and remove workflows call the route API with the administration secret. Registration accepts only a repository name, positive pull-request number, and 40-character head SHA. The destination is derived as `https://api-pr-<number>-preview.fluentflow.tech/webhooks/github-app`; callers cannot supply a URL. Removal is idempotent.
 
@@ -104,7 +104,7 @@ Pull-request-scoped events route only to the matching repository and pull reques
 
 The route map is saved atomically as JSON. The router also retains the latest signed `installation.created` event. A newly registered preview receives that event once so its empty database can establish current App installation and repository state. After the initial cutover, the Preview App's current installation event must be redelivered once to seed the baseline.
 
-The router does not implement a second queue or retry engine. GitHub redelivery is the retry mechanism, and existing Fluent Flow webhook handlers remain responsible for idempotent processing.
+The router does not implement a second queue. A trusted scheduled workflow authenticates as the Preview GitHub App, lists recent failed App webhook deliveries, and requests redelivery through GitHub's API. Existing Fluent Flow webhook handlers are idempotent, so targets that accepted an earlier fan-out can safely receive the same delivery again.
 
 The router logs decisions as structured JSON without payloads, signatures, secrets, or response bodies. Logs include the GitHub delivery ID, event name, repository, pull-request selector, route identity, and downstream status.
 
@@ -165,11 +165,12 @@ Automated contract tests prove:
 - Registration cannot create an arbitrary forwarding destination.
 - Concurrent pull requests receive only their own pull-request-scoped events.
 - Repository and installation events fan out to every active matching preview.
-- A failed target makes the router return a server error so GitHub redelivers the event.
+- A failed target makes the router return a server error, and the scheduled workflow requests GitHub redelivery.
 - Router restart preserves the route map and installation baseline.
 - Route removal prevents later delivery to the removed stack.
 - Raw body bytes and the GitHub signature reach the preview service unchanged.
 - A newly registered route receives the retained installation baseline once.
+- The redelivery workflow ignores successful deliveries and fails loudly when GitHub cannot list or redeliver failures.
 
 Deployment smoke checks prove:
 
@@ -212,5 +213,5 @@ One-time external setup:
 - Database migration failure fails deployment and is visible in service logs.
 - Route-map or baseline persistence failure rejects the affected change; it never reports a successful write.
 - Invalid route administration credentials return a generic unauthorized response and do not reveal active routes.
-- Any failed preview delivery returns a server error so GitHub can redeliver the original event to all selected targets.
+- Any failed preview delivery returns a server error recorded by GitHub; the scheduled workflow requests redelivery of recent failures.
 - An event for an unregistered pull request has no target and is acknowledged without delivery.
