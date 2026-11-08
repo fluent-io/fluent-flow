@@ -194,3 +194,35 @@ git diff --check
 ```
 
 Result: all commands passed; each workflow printed `PASS`.
+
+## Final security review fixes
+
+The final review identified five runtime defects: baseline replay omitted the JSON content type, replay-pending state was memory-only, the downstream timeout reset on response activity, the edge status step omitted required router secrets, and edge reconciliation could reuse a stale locally built router image.
+
+### RED
+
+```bash
+node --test scripts/preview-webhook-router/router.test.mjs
+```
+
+Result: three new behavioral regressions failed. Baseline replay forwarded no content type, a persisted route skipped its baseline after restart, and a trickling response outlived the configured downstream deadline. The edge status command also failed during Compose interpolation when run with the workflow's original environment.
+
+### GREEN
+
+```bash
+node --test scripts/preview-webhook-router/router.test.mjs
+npm run test:preview
+node --check scripts/preview-webhook-router/router.mjs
+node --check scripts/preview-webhook-router/router.test.mjs
+git diff --check
+```
+
+Result: 24 router tests and 59 preview contract tests passed. The router now persists content type and replay-pending state, clears pending state only after downstream acceptance, uses an absolute timeout, and retries unfinished replay after restart. The edge workflow supplies required secrets to `compose ps` and reconciles with `--build`.
+
+```bash
+PREVIEW_TUNNEL_TOKEN=test PREVIEW_WEBHOOK_SECRET=test PREVIEW_ROUTE_SECRET=test PREVIEW_EDGE_NETWORK=fluent-flow-preview-edge docker compose --project-name fluent-flow-preview-edge --file docker-compose.preview-edge.yml ps
+PREVIEW_TUNNEL_TOKEN=test PREVIEW_WEBHOOK_SECRET=test PREVIEW_ROUTE_SECRET=test PREVIEW_EDGE_NETWORK=fluent-flow-preview-edge docker compose --project-name fluent-flow-preview-edge --file docker-compose.preview-edge.yml config --quiet
+docker build --file scripts/preview-webhook-router/Dockerfile --tag fluent-flow-preview-webhook-router:verify .
+```
+
+Result: edge status and configuration commands passed, the final router image built, and its `/health` endpoint returned HTTP 200 with `{"status":"ok"}`.

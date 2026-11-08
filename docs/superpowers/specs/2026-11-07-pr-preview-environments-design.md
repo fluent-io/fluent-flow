@@ -102,7 +102,7 @@ Trusted deploy and remove workflows call the route API with the administration s
 
 Pull-request-scoped events route only to the matching repository and pull request. This includes `pull_request`, `pull_request_review`, `pull_request_review_comment`, issue and issue-comment events whose issue contains `pull_request`, and pull-request arrays on `check_run`, `check_suite`, and `workflow_run`. A check or workflow event with no pull requests is repository-scoped. Every other event with `repository.full_name` fans out to active previews for that repository. `installation` and `installation_repositories` events fan out to all active previews. Events with neither a resolvable repository nor installation scope are acknowledged without delivery and logged by event name and delivery ID.
 
-The route map is saved atomically as JSON. The router also retains the latest signed `installation.created` event. A newly registered preview receives that event once so its empty database can establish current App installation and repository state. After the initial cutover, the Preview App's current installation event must be redelivered once to seed the baseline.
+The route map is saved atomically as JSON. The router also retains the latest signed `installation.created` event, including its content type. A newly registered preview receives that event so its empty database can establish current App installation and repository state. Replay-pending state is persisted before forwarding and cleared only after downstream acceptance, so a router restart retries unfinished bootstrap delivery. After the initial cutover, the Preview App's current installation event must be redelivered once to seed the baseline.
 
 The router does not implement a second queue. A trusted scheduled workflow authenticates as the Preview GitHub App, lists recent failed App webhook deliveries through GitHub's cursor `Link` pagination, and requests redelivery through GitHub's API. It uses a conservative six-hour outage window, within [GitHub's three-day webhook redelivery retention](https://docs.github.com/en/webhooks/testing-and-troubleshooting-webhooks/redelivering-webhooks). The listing is bounded to three cursor pages and fails loudly if the next cursor remains before the lookback cutoff, rather than silently missing failures. If more than 100 unresolved delivery groups are eligible, the run fails before requesting any redelivery; the next scheduled run retries the same bounded window. Existing Fluent Flow webhook handlers are idempotent, so targets that accepted an earlier fan-out can safely receive the same delivery again.
 
@@ -166,10 +166,10 @@ Automated contract tests prove:
 - Concurrent pull requests receive only their own pull-request-scoped events.
 - Repository and installation events fan out to every active matching preview.
 - A failed target makes the router return a server error, and the scheduled workflow requests GitHub redelivery.
-- Router restart preserves the route map and installation baseline.
+- Router restart preserves the route map, installation baseline, and any unfinished baseline replay.
 - Route removal prevents later delivery to the removed stack.
-- Raw body bytes and the GitHub signature reach the preview service unchanged.
-- A newly registered route receives the retained installation baseline once.
+- Raw body bytes, content type, and the GitHub signature reach the preview service unchanged.
+- A newly registered route receives the retained installation baseline, and an interrupted replay is retried after restart.
 - The redelivery workflow follows cursor pagination, uses the six-hour window within GitHub's three-day redelivery retention, caps each run at 100 requests, ignores successful deliveries with `status_code` 200–399, and fails loudly when its bounded page traversal cannot reach the lookback cutoff or when any selected redelivery fails.
 
 Deployment smoke checks prove:
@@ -214,4 +214,5 @@ One-time external setup:
 - Route-map or baseline persistence failure rejects the affected change; it never reports a successful write.
 - Invalid route administration credentials return a generic unauthorized response and do not reveal active routes.
 - Any failed preview delivery returns a server error recorded by GitHub; the scheduled workflow requests redelivery of recent failures within the six-hour window, bounded to 100 requests per run and three cursor pages, and fails loudly when that bound is insufficient.
+- Downstream forwarding has a five-second absolute deadline; response activity cannot extend it.
 - An event for an unregistered pull request has no target and is acknowledged without delivery.

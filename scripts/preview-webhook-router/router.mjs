@@ -98,6 +98,7 @@ export function createRouteStore({ directory }) {
   function baselineFromState(value) {
     if (!value) return null;
     if (typeof value.body !== 'string' || typeof value.signature !== 'string' || typeof value.event !== 'string' || typeof value.delivery !== 'string') throw new Error('router state is corrupt');
+    if (value.contentType !== undefined && value.contentType !== null && typeof value.contentType !== 'string') throw new Error('router state is corrupt');
     const body = Buffer.from(value.body, 'base64');
     if (body.toString('base64') !== value.body) throw new Error('router state is corrupt');
     return {
@@ -105,6 +106,7 @@ export function createRouteStore({ directory }) {
       signature: value.signature,
       event: value.event,
       delivery: value.delivery,
+      contentType: value.contentType ?? null,
     };
   }
 
@@ -133,7 +135,7 @@ export function createRouteStore({ directory }) {
       raw = await readFile(statePath, 'utf8');
     } catch (error) {
       if (error.code === 'ENOENT') {
-        state = { version: STATE_VERSION, routes: {}, baseline: null };
+        state = { version: STATE_VERSION, routes: {}, baseline: null, pendingBaselineRoutes: {} };
         return;
       }
       throw error;
@@ -147,13 +149,18 @@ export function createRouteStore({ directory }) {
     if (parsed?.version !== STATE_VERSION || !parsed.routes || Array.isArray(parsed.routes) || typeof parsed.routes !== 'object' || (parsed.baseline !== null && typeof parsed.baseline !== 'object')) {
       throw new Error('router state is corrupt');
     }
+    const pendingBaselineRoutes = parsed.pendingBaselineRoutes ?? {};
+    if (Array.isArray(pendingBaselineRoutes) || typeof pendingBaselineRoutes !== 'object') throw new Error('router state is corrupt');
     try {
       for (const route of Object.values(parsed.routes)) validateStoredRoute(route);
+      for (const [key, pending] of Object.entries(pendingBaselineRoutes)) {
+        if (pending !== true || !parsed.routes[key]) throw new Error('router state is corrupt');
+      }
       baselineFromState(parsed.baseline);
     } catch (error) {
       throw new Error('router state is corrupt', { cause: error });
     }
-    state = parsed;
+    state = { ...parsed, pendingBaselineRoutes };
   }
 
   function requireLoaded() {
@@ -177,7 +184,9 @@ export function createRouteStore({ directory }) {
         validateRouteInput(input);
         const current = requireLoaded();
         const route = routeFor(input.repository, input.pullRequest, input.headSha);
-        const next = { ...current, routes: { ...current.routes, [route.key]: route } };
+        const pendingBaselineRoutes = { ...current.pendingBaselineRoutes };
+        if (!current.routes[route.key] && current.baseline) pendingBaselineRoutes[route.key] = true;
+        const next = { ...current, routes: { ...current.routes, [route.key]: route }, pendingBaselineRoutes };
         await atomicWrite(next);
         state = next;
         return route;
@@ -189,8 +198,11 @@ export function createRouteStore({ directory }) {
         validateRouteInput(input);
         const current = requireLoaded();
         const routes = { ...current.routes };
-        delete routes[routeKey(input.repository, input.pullRequest)];
-        const next = { ...current, routes };
+        const pendingBaselineRoutes = { ...current.pendingBaselineRoutes };
+        const key = routeKey(input.repository, input.pullRequest);
+        delete routes[key];
+        delete pendingBaselineRoutes[key];
+        const next = { ...current, routes, pendingBaselineRoutes };
         await atomicWrite(next);
         state = next;
       });
@@ -211,7 +223,11 @@ export function createRouteStore({ directory }) {
 
     saveInstallationBaseline(input) {
       return enqueue(async () => {
-        if (!exactObject(input, ['event', 'delivery', 'signature', 'body']) || !Buffer.isBuffer(input.body) || typeof input.signature !== 'string' || typeof input.event !== 'string' || typeof input.delivery !== 'string') throw new Error('invalid baseline');
+        const keys = input?.contentType === undefined
+          ? ['event', 'delivery', 'signature', 'body']
+          : ['event', 'delivery', 'signature', 'body', 'contentType'];
+        if (!exactObject(input, keys) || !Buffer.isBuffer(input.body) || typeof input.signature !== 'string' || typeof input.event !== 'string' || typeof input.delivery !== 'string') throw new Error('invalid baseline');
+        if (input.contentType !== undefined && input.contentType !== null && typeof input.contentType !== 'string') throw new Error('invalid baseline');
         const current = requireLoaded();
         const next = {
           ...current,
@@ -220,8 +236,26 @@ export function createRouteStore({ directory }) {
             signature: input.signature,
             event: input.event,
             delivery: input.delivery,
+            contentType: input.contentType ?? null,
           },
         };
+        await atomicWrite(next);
+        state = next;
+      });
+    },
+
+    pendingInstallationBaseline(key) {
+      const current = requireLoaded();
+      return current.pendingBaselineRoutes[key] ? baselineFromState(current.baseline) : null;
+    },
+
+    markInstallationBaselineReplayed(key) {
+      return enqueue(async () => {
+        const current = requireLoaded();
+        if (!current.pendingBaselineRoutes[key]) return;
+        const pendingBaselineRoutes = { ...current.pendingBaselineRoutes };
+        delete pendingBaselineRoutes[key];
+        const next = { ...current, pendingBaselineRoutes };
         await atomicWrite(next);
         state = next;
       });
@@ -251,9 +285,11 @@ export function createNodeTransport({ target } = {}) {
   return (url, options = {}) => new Promise((resolve, reject) => {
     const destination = fixedTarget ?? new URL(url);
     let settled = false;
+    let timer = null;
     const finish = (callback, value) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       callback(value);
     };
     const req = nodeRequest(destination, {
@@ -265,9 +301,9 @@ export function createNodeTransport({ target } = {}) {
       res.once('error', (error) => finish(reject, error));
     });
     if (options.timeoutMs) {
-      req.setTimeout(options.timeoutMs, () => {
+      timer = setTimeout(() => {
         req.destroy(Object.assign(new Error('downstream timeout'), { code: 'ETIMEDOUT' }));
-      });
+      }, options.timeoutMs);
     }
     req.once('error', (error) => finish(reject, error));
     req.end(options.body);
@@ -336,7 +372,6 @@ export function createPreviewWebhookRouter({
   downstreamTimeoutMs = DOWNSTREAM_TIMEOUT_MS,
   logger = { info() {}, warn() {}, error() {} },
 }) {
-  const pendingBaselineRoutes = new Set();
   let routeMutation = Promise.resolve();
   function enqueueRouteMutation(operation) {
     const result = routeMutation.then(operation);
@@ -404,39 +439,29 @@ export function createPreviewWebhookRouter({
           return;
         }
         await enqueueRouteMutation(async () => {
-          const route = routeFor(input.repository, input.pullRequest, input.headSha);
-          const existed = store.routesFor({
-            scope: 'pull_request',
-            repository: input.repository,
-            pullRequests: [input.pullRequest],
-          }).length > 0;
-          const shouldReplay = !existed || pendingBaselineRoutes.has(route.key);
-          await store.register(input);
-          if (shouldReplay) {
-            const baseline = store.installationBaseline();
-            if (baseline) {
+          const route = await store.register(input);
+          const baseline = store.pendingInstallationBaseline(route.key);
+          if (baseline) {
+            try {
+              await forward(route, baseline.body, {
+                signature: baseline.signature,
+                event: baseline.event,
+                delivery: baseline.delivery,
+                contentType: baseline.contentType,
+              }, 'installation-baseline');
+              await store.markInstallationBaselineReplayed(route.key);
+            } catch (error) {
               try {
-                await forward(route, baseline.body, {
-                  signature: baseline.signature,
-                  event: baseline.event,
-                  delivery: baseline.delivery,
-                }, 'installation-baseline');
-                pendingBaselineRoutes.delete(route.key);
-              } catch (error) {
-                try {
-                  await store.remove(input);
-                  pendingBaselineRoutes.delete(route.key);
-                } catch (rollbackError) {
-                  pendingBaselineRoutes.add(route.key);
-                  logger.error({
-                    msg: 'preview webhook route rollback failed',
-                    error: safeError(rollbackError),
-                    route: route.key,
-                  });
-                  throw Object.assign(new Error('route rollback failed'), { statusCode: 500 });
-                }
-                throw Object.assign(new Error('baseline replay failed'), { statusCode: 502, cause: error });
+                await store.remove(input);
+              } catch (rollbackError) {
+                logger.error({
+                  msg: 'preview webhook route rollback failed',
+                  error: safeError(rollbackError),
+                  route: route.key,
+                });
+                throw Object.assign(new Error('route rollback failed'), { statusCode: 500 });
               }
+              throw Object.assign(new Error('baseline replay failed'), { statusCode: 502, cause: error });
             }
           }
         });
@@ -466,7 +491,7 @@ export function createPreviewWebhookRouter({
           return;
         }
         if (event === 'installation' && payload.action === 'created') {
-          await store.saveInstallationBaseline({ body, signature, event, delivery });
+          await store.saveInstallationBaseline({ body, signature, event, delivery, contentType: req.headers['content-type'] ?? null });
         }
         const classification = classifyWebhook(event, payload);
         const routes = store.routesFor(classification);

@@ -192,6 +192,7 @@ test('route store writes one versioned state file atomically and replaces the ba
     signature: signature(replacement),
     event: 'installation',
     delivery: 'delivery-2',
+    contentType: null,
   });
   const files = await readdir(directory);
   assert.deepEqual(files, ['state.json']);
@@ -440,6 +441,86 @@ test('each newly registered route replays the installation baseline once', async
     await close(server);
   }
 });
+test('baseline replay preserves its content type', async () => {
+  const delivered = [];
+  const { server, baseUrl } = await createTestRouter({
+    transport: async (url, options) => {
+      delivered.push(options.headers['content-type']);
+      return { status: 202 };
+    },
+  });
+  try {
+    assert.equal((await httpRequest(baseUrl, '/webhooks/github-app', {
+      method: 'POST',
+      body: baselineBody,
+      headers: {
+        'content-type': 'application/json',
+        'x-hub-signature-256': signature(baselineBody),
+        'x-github-event': 'installation',
+        'x-github-delivery': 'baseline-content-type',
+      },
+    })).status, 202);
+    assert.equal((await httpRequest(baseUrl, '/routes', {
+      method: 'PUT',
+      body: routePayload(),
+      headers: { authorization: `Bearer ${routeSecret}` },
+    })).status, 204);
+    assert.deepEqual(delivered, ['application/json']);
+  } finally {
+    await close(server);
+  }
+});
+
+test('persisted pending baseline replay survives a router restart', async () => {
+  const directory = await tempDirectory();
+  const store = createRouteStore({ directory });
+  await store.load();
+  await store.saveInstallationBaseline({
+    body: baselineBody,
+    signature: signature(baselineBody),
+    event: 'installation',
+    delivery: 'baseline-restart',
+  });
+  await store.register({ repository, pullRequest: 123, headSha: sha });
+
+  const delivered = [];
+  const restarted = await createTestRouter({
+    directory,
+    transport: async (url, options) => {
+      delivered.push(Buffer.from(options.body));
+      return { status: 202 };
+    },
+  });
+  try {
+    assert.equal((await httpRequest(restarted.baseUrl, '/routes', {
+      method: 'PUT',
+      body: routePayload(),
+      headers: { authorization: `Bearer ${routeSecret}` },
+    })).status, 204);
+    assert.deepEqual(delivered, [baselineBody]);
+  } finally {
+    await close(restarted.server);
+  }
+
+  const settled = await createTestRouter({
+    directory,
+    transport: async (url, options) => {
+      delivered.push(Buffer.from(options.body));
+      return { status: 202 };
+    },
+  });
+  try {
+    assert.equal((await httpRequest(settled.baseUrl, '/routes', {
+      method: 'PUT',
+      body: routePayload(),
+      headers: { authorization: `Bearer ${routeSecret}` },
+    })).status, 204);
+    assert.deepEqual(delivered, [baselineBody]);
+  } finally {
+    await close(settled.server);
+  }
+});
+
 test('baseline replay and rollback failures preserve a retry marker until one successful replay clears it', async () => {
   const deliveredBaselineEvents = [];
   let rollbackAttempts = 0;
@@ -558,6 +639,40 @@ test('downstream timeout returns 502 before the GitHub delivery deadline', async
     await close(upstream);
   }
 });
+test('downstream timeout is an absolute deadline during trickling responses', async () => {
+  const sockets = new Set();
+  const upstream = createServer((req, res) => {
+    req.resume();
+    res.writeHead(202);
+    const interval = setInterval(() => res.write('x'), 10);
+    setTimeout(() => {
+      clearInterval(interval);
+      res.end();
+    }, 200);
+  });
+  upstream.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+  });
+  const upstreamUrl = await listen(upstream);
+  const transport = router.createNodeTransport({ target: upstreamUrl });
+  const startedAt = Date.now();
+  try {
+    await assert.rejects(
+      () => transport('http://traefik/webhooks/github-app', {
+        method: 'POST',
+        body: Buffer.from('{}'),
+        timeoutMs: 40,
+      }),
+      { code: 'ETIMEDOUT' },
+    );
+    assert.ok(Date.now() - startedAt < 160);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await close(upstream);
+  }
+});
+
 
 test('downstream failures are logged without payloads or secrets', async () => {
   const errors = [];

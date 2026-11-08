@@ -59,7 +59,7 @@ jobs:
           PREVIEW_WEBHOOK_SECRET: ${{ secrets.PREVIEW_GITHUB_APP_WEBHOOK_SECRET }}
           PREVIEW_ROUTE_SECRET: ${{ secrets.PREVIEW_ROUTE_SECRET }}
           PREVIEW_EDGE_NETWORK: fluent-flow-preview-edge
-        run: docker compose --project-name fluent-flow-preview-edge --file docker-compose.preview-edge.yml up --detach --remove-orphans --wait
+        run: docker compose --project-name fluent-flow-preview-edge --file docker-compose.preview-edge.yml up --detach --build --remove-orphans --wait
 
       - name: Use Node.js 22
         uses: actions/setup-node@v4
@@ -77,5 +77,7 @@ jobs:
         if: always()
         env:
           PREVIEW_TUNNEL_TOKEN: ${{ secrets.PREVIEW_TUNNEL_TOKEN }}
+          PREVIEW_WEBHOOK_SECRET: ${{ secrets.PREVIEW_GITHUB_APP_WEBHOOK_SECRET }}
+          PREVIEW_ROUTE_SECRET: ${{ secrets.PREVIEW_ROUTE_SECRET }}
           PREVIEW_EDGE_NETWORK: fluent-flow-preview-edge
         run: docker compose --project-name fluent-flow-preview-edge --file docker-compose.preview-edge.yml ps
