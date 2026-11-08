@@ -196,11 +196,8 @@ export function createRouteStore({ directory }) {
       });
     },
 
-    routesFor(classificationOrEvent, payload) {
+    routesFor(classification) {
       const current = requireLoaded();
-      const classification = typeof classificationOrEvent === 'string'
-        ? classifyWebhook(classificationOrEvent, payload)
-        : classificationOrEvent;
       if (!classification || classification.scope === 'unresolvable') return [];
       const routes = Object.values(current.routes);
       if (classification.scope === 'installation') return routes;

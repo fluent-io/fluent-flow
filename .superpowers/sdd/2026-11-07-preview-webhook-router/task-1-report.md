@@ -49,3 +49,31 @@ Result before the fix: 8 passing, 11 failing, 1 cancelled. The failures covered 
 - Docker smoke with temporary secrets and state — `GET /health` returned `{"status":"ok"}`.
 
 The fix uses Node's built-in HTTP transport with an explicit Host header and a 5-second default timeout, keeps transport injection for deterministic tests, removes positional and alias inputs, validates DELETE requests, logs sanitized operational error identifiers, maps persistence failures to 500, maps baseline replay failures to 502, and keeps retry behavior safe after rollback failure in the running router.
+
+## Fix round 2
+
+### RED
+
+Command:
+
+```bash
+node --test scripts/preview-webhook-router/router.test.mjs
+```
+
+Output:
+
+```text
+ℹ tests 20
+ℹ pass 19
+ℹ fail 1
+ℹ cancelled 0
+```
+
+The failure proved the removed `routesFor(classification)` contract was still accepting the dead string-event overload: `routesFor('push', payload)` returned the registered route instead of `[]`.
+
+### GREEN
+
+- `node --test scripts/preview-webhook-router/router.test.mjs` — 20 passing, 0 failing, 0 cancelled.
+- `npm run test:preview` — 38 passing, 0 failing, 0 cancelled.
+
+The round-2 tests prove concurrent same-route PUT responses both return `204` while exactly one installation baseline is delivered, and prove a baseline replay failure with rollback failure returns `500`, preserves the route for retry, replays the preserved baseline once successfully, and does not replay it on the following retry.

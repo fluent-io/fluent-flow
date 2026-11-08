@@ -64,6 +64,13 @@ function httpRequest(baseUrl, path, { method = 'GET', body, headers = {} } = {})
 function routePayload(overrides = {}) {
   return JSON.stringify({ repository, pullRequest: 123, headSha: sha, ...overrides });
 }
+function deferred() {
+  let resolve;
+  const promise = new Promise((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
 
 function webhookPayload(overrides = {}) {
   return Buffer.from(JSON.stringify({
@@ -159,6 +166,7 @@ test('route store persists registration, removes routes, derives the destination
   assert.deepEqual(store.routesFor({ scope: 'pull_request', repository, pullRequests: [123] }), [route]);
   assert.deepEqual(store.routesFor({ scope: 'repository', repository, pullRequests: [] }), [route]);
   assert.deepEqual(store.routesFor({ scope: 'installation', repository: null, pullRequests: [] }), [route]);
+  assert.deepEqual(store.routesFor('push', { repository: { full_name: repository } }), []);
   await store.remove({ repository, pullRequest: 123, headSha: sha });
   assert.deepEqual(store.routesFor({ scope: 'repository', repository, pullRequests: [] }), []);
   await store.register({ repository, pullRequest: 123, headSha: sha });
@@ -331,30 +339,94 @@ test('HTTP returns 502 when any selected target fails and 202 when there are no 
   }
 });
 
-test('HTTP replays the latest installation baseline once to a newly registered route', async () => {
-  const calls = [];
-  const { server, baseUrl } = await createTestRouter({ transport: async (url, options) => {
-    calls.push({ url, options });
-    return { status: 202 };
-  }});
+test('concurrent PUTs serialize baseline replay and return successful responses after one delivery', async () => {
+  const replayStarted = deferred();
+  const releaseReplay = deferred();
+  const deliveredBaselineEvents = [];
+  const { server, baseUrl } = await createTestRouter({
+    transport: async (url, options) => {
+      if (options.headers['x-github-event'] === 'installation') {
+        deliveredBaselineEvents.push({
+          body: Buffer.from(options.body),
+          host: options.headers.host,
+          signature: options.headers['x-hub-signature-256'],
+        });
+        if (deliveredBaselineEvents.length === 1) {
+          replayStarted.resolve();
+          await releaseReplay.promise;
+        }
+      }
+      return { status: 202 };
+    },
+  });
   try {
-    const baseline = Buffer.from('{"action":"created","installation":{"id":42}}');
     assert.equal((await httpRequest(baseUrl, '/webhooks/github-app', {
-      method: 'POST', body: baseline, headers: {
-        'x-hub-signature-256': signature(baseline), 'x-github-event': 'installation', 'x-github-delivery': 'installation-1',
+      method: 'POST', body: baselineBody, headers: {
+        'x-hub-signature-256': signature(baselineBody), 'x-github-event': 'installation', 'x-github-delivery': 'installation-concurrent',
       },
     })).status, 202);
-    assert.equal((await httpRequest(baseUrl, '/routes', {
-      method: 'PUT', body: routePayload(), headers: { authorization: `Bearer ${routeSecret}` },
-    })).status, 204);
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].options.headers.host, 'api-pr-123-preview.fluentflow.tech');
-    assert.deepEqual(Buffer.from(calls[0].options.body), baseline);
-    assert.equal(calls[0].options.headers['x-hub-signature-256'], signature(baseline));
-    assert.equal((await httpRequest(baseUrl, '/routes', {
-      method: 'PUT', body: routePayload({ pullRequest: 456 }), headers: { authorization: `Bearer ${routeSecret}` },
-    })).status, 204);
-    assert.equal(calls.length, 2);
+    const routeRequest = {
+      method: 'PUT',
+      body: routePayload(),
+      headers: { authorization: `Bearer ${routeSecret}` },
+    };
+    const firstPut = httpRequest(baseUrl, '/routes', routeRequest);
+    const secondPut = httpRequest(baseUrl, '/routes', routeRequest);
+    await replayStarted.promise;
+    releaseReplay.resolve();
+    assert.equal((await firstPut).status, 204);
+    assert.equal((await secondPut).status, 204);
+    assert.deepEqual(deliveredBaselineEvents, [{
+      body: baselineBody,
+      host: 'api-pr-123-preview.fluentflow.tech',
+      signature: signature(baselineBody),
+    }]);
+  } finally {
+    await close(server);
+  }
+});
+test('baseline replay and rollback failures preserve a retry marker until one successful replay clears it', async () => {
+  const deliveredBaselineEvents = [];
+  let rollbackAttempts = 0;
+  let replayAttempts = 0;
+  const { store, server, baseUrl } = await createTestRouter({
+    transport: async (url, options) => {
+      if (options.headers['x-github-event'] === 'installation') {
+        replayAttempts += 1;
+        deliveredBaselineEvents.push(Buffer.from(options.body));
+        return { status: replayAttempts === 1 ? 500 : 202 };
+      }
+      return { status: 202 };
+    },
+  });
+  const remove = store.remove;
+  store.remove = async (input) => {
+    rollbackAttempts += 1;
+    if (rollbackAttempts === 1) throw new Error('rollback failed');
+    return remove.call(store, input);
+  };
+  try {
+    assert.equal((await httpRequest(baseUrl, '/webhooks/github-app', {
+      method: 'POST',
+      body: baselineBody,
+      headers: {
+        'x-hub-signature-256': signature(baselineBody),
+        'x-github-event': 'installation',
+        'x-github-delivery': 'baseline-rollback-failure',
+      },
+    })).status, 202);
+    const routeRequest = {
+      method: 'PUT',
+      body: routePayload(),
+      headers: { authorization: `Bearer ${routeSecret}` },
+    };
+    assert.equal((await httpRequest(baseUrl, '/routes', routeRequest)).status, 500);
+    assert.equal(store.routesFor({ scope: 'repository', repository, pullRequests: [] }).length, 1);
+    assert.equal((await httpRequest(baseUrl, '/routes', routeRequest)).status, 204);
+    assert.deepEqual(deliveredBaselineEvents, [baselineBody, baselineBody]);
+    assert.equal(store.routesFor({ scope: 'repository', repository, pullRequests: [] }).length, 1);
+    assert.equal((await httpRequest(baseUrl, '/routes', routeRequest)).status, 204);
+    assert.deepEqual(deliveredBaselineEvents, [baselineBody, baselineBody]);
   } finally {
     await close(server);
   }
