@@ -58,6 +58,30 @@ test('fails when removal receives a 404', async () => {
     /status 404/,
   );
 });
+test('accepts a successful removal and rejects status boundaries outside 2xx', async () => {
+  await reconcilePreviewWebhookRoute({
+    operation: 'remove',
+    repository,
+    prNumber: 123,
+    headSha,
+    secret: 'route-secret',
+    fetchImpl: async () => response(204),
+  });
+
+  for (const status of [199, 400]) {
+    await assert.rejects(
+      () => reconcilePreviewWebhookRoute({
+        operation: 'remove',
+        repository,
+        prNumber: 123,
+        headSha,
+        secret: 'route-secret',
+        fetchImpl: async () => response(status),
+      }),
+      new RegExp(`status ${status}`),
+    );
+  }
+});
 
 test('fails when deployment receives a 404', async () => {
   const fetchImpl = async () => response(404);

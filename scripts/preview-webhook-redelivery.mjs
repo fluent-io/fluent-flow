@@ -111,6 +111,9 @@ export async function redeliverFailedPreviewWebhooks({
       .sort((left, right) => (deliveryTime(right) ?? 0) - (deliveryTime(left) ?? 0));
     if (failed[0]?.id !== undefined && failed[0]?.id !== null) candidates.push(failed[0]);
   }
+  if (candidates.length > MAX_REDELIVERIES) {
+    throw new Error(`GitHub App webhook redelivery candidate count exceeds maximum redelivery cap of ${MAX_REDELIVERIES}`);
+  }
 
   const failures = [];
   let redelivered = 0;

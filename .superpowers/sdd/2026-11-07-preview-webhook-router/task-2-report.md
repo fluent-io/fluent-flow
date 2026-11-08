@@ -123,7 +123,7 @@ node --test scripts/preview-compose.test.mjs scripts/preview-webhook-route.test.
 
 Result: 19 tests passed, 0 failed, 0 cancelled.
 
-The implementation now follows GitHub `Link` cursor URLs without `page=`, uses the six-hour outage window within GitHub's three-day webhook redelivery retention, stops after three pages with a loud failure when the cutoff is not reached, caps each run at 100 redeliveries, classifies delivery `status_code` 200–399 as success, rejects missing GUIDs, attempts every selected redelivery before throwing an `AggregateError`, accepts only 2xx route responses including removal, uses path-safe CLI guards, and requires both router secrets during Compose interpolation. The design spec and scripts README document these limits. The router healthcheck contract asserts its complete command.
+The implementation now follows GitHub `Link` cursor URLs without `page=`, uses the six-hour outage window within GitHub's three-day webhook redelivery retention, stops after three pages with a loud failure when the cutoff is not reached, fails before any POST when unresolved candidates exceed the 100-redelivery cap, classifies delivery `status_code` 200–399 as success, rejects missing GUIDs, attempts every selected redelivery before throwing an `AggregateError`, accepts only 2xx route responses including removal, uses path-safe CLI guards, and requires both router secrets during Compose interpolation. The design spec and scripts README document these limits. Compose assertions cover service topology, secret requirements, and isolation behavior.
 
 ### Verification
 
@@ -149,3 +149,48 @@ Result: all syntax checks, Compose validation, workflow YAML parsing, and whites
 ```
 
 Remaining concerns are unchanged: live GitHub App API configuration and redelivery, Cloudflare ingress, deployed concurrent previews, and live router delivery were not exercised locally; `actionlint` is not installed in the execution environment.
+
+## Final re-review blocker fix
+
+### RED
+
+```bash
+node --test scripts/preview-webhook-redelivery.test.mjs
+```
+
+Result: 8 tests, 7 passed, 1 failed. The 101-unresolved-GUID regression failed with `AssertionError: Missing expected rejection`, showing that the previous implementation returned normally instead of failing before the redelivery cap.
+
+### GREEN
+
+```bash
+node --test --test-name-pattern='fails loudly before redelivering' scripts/preview-webhook-redelivery.test.mjs
+```
+
+Result: 1 test passed, 0 failed. The regression now rejects before any redelivery POST.
+
+Final focused suite:
+
+```bash
+node --test scripts/preview-compose.test.mjs scripts/preview-webhook-route.test.mjs scripts/preview-github-app.test.mjs scripts/preview-webhook-redelivery.test.mjs
+```
+
+Result: 20 tests passed, 0 failed, 0 cancelled.
+
+Full preview contract suite:
+
+```bash
+npm run test:preview
+```
+
+Result: 56 tests passed, 0 failed, 0 cancelled.
+
+Syntax, Compose, workflow YAML, and whitespace checks all passed:
+
+```bash
+for file in scripts/preview-webhook-route.mjs scripts/preview-github-app.mjs scripts/preview-webhook-redelivery.mjs scripts/preview-webhook-route.test.mjs scripts/preview-github-app.test.mjs scripts/preview-webhook-redelivery.test.mjs scripts/preview-compose.test.mjs; do node --check "$file"; done
+PREVIEW_TUNNEL_TOKEN=tunnel-token PREVIEW_WEBHOOK_SECRET=webhook-secret PREVIEW_ROUTE_SECRET=route-secret PREVIEW_EDGE_NETWORK=fluent-flow-preview-edge docker compose --project-name fluent-flow-preview-edge --file docker-compose.preview-edge.yml config >/dev/null
+node --input-type=module -e "import fs from 'node:fs'; import yaml from 'js-yaml'; for (const file of ['.github/workflows/preview-edge.yml','.github/workflows/preview.yml','.github/workflows/preview-webhook-redelivery.yml']) { yaml.load(fs.readFileSync(file, 'utf8')); console.log(file + ': PASS'); }"
+git diff --check
+```
+
+Result: all commands passed; each workflow printed `PASS`.

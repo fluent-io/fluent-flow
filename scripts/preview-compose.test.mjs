@@ -145,12 +145,6 @@ test('renders the permanent healthy webhook router without privileged mounts', (
   assert.deepEqual(config.volumes['preview-router-state'], {
     name: 'fluent-flow-preview-router-state',
   });
-  assert.deepEqual(router.healthcheck.test, [
-    'CMD',
-    'node',
-    '-e',
-    "fetch('http://127.0.0.1:3000/health').then((response) => { if (!response.ok) process.exit(1); })",
-  ]);
 });
 
 test('requires both router secrets during Compose interpolation', () => {

@@ -119,7 +119,7 @@ test('attempts every selected redelivery before throwing an AggregateError', asy
   assert.equal(calls.filter(({ url }) => url.includes('/attempts')).length, 2);
 });
 
-test('caps redeliveries at one hundred per run', async () => {
+test('fails loudly before redelivering when unresolved candidates exceed one hundred per run', async () => {
   const calls = [];
   const firstPage = Array.from({ length: 100 }, (_, index) => delivery(
     1000 + index,
@@ -136,15 +136,19 @@ test('caps redeliveries at one hundred per run', async () => {
     return response(202);
   };
 
-  const result = await redeliverFailedPreviewWebhooks({
-    appId: '12345',
-    privateKey,
-    fetchImpl,
-    now,
-  });
-
-  assert.deepEqual(result, { redelivered: 100 });
-  assert.equal(calls.filter(({ url }) => url.includes('/attempts')).length, 100);
+  await assert.rejects(
+    () => redeliverFailedPreviewWebhooks({
+      appId: '12345',
+      privateKey,
+      fetchImpl,
+      now,
+    }),
+    /maximum redelivery cap of 100/,
+  );
+  assert.equal(
+    calls.filter(({ url, options }) => url.includes('/attempts') && options?.method === 'POST').length,
+    0,
+  );
 });
 
 test('fails when cursor pagination is exhausted before the lookback cutoff', async () => {
