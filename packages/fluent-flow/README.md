@@ -8,11 +8,11 @@ Existing GitHub review, claims and configured merge behavior remain separate.
 
 ## The Review Loop
 
-When a PR is pushed or updated, Fluent Flow runs an automated code review. If the review passes, the PR is auto-merged. If it fails, the server creates a **claim** — a work assignment containing the review feedback — always in `pending` state. An online runner claims it via `claimPendingWork()`, pushes a fix, which triggers a re-review. This loop repeats up to a configurable retry limit before escalating to a human. If a claim expires before a runner claims it, the server automatically re-dispatches at `attempt + 1` (capped at 10).
+When a PR is pushed or updated, Fluent Flow runs an automated code review. If the review passes, the PR is auto-merged. If it fails, the server creates a **claim**, a work assignment containing the review feedback, always in `pending` state. An online agent server slot claims it via `claimPendingWork()`, pushes a fix, which triggers a re-review. This loop repeats up to a configurable retry limit before escalating to a human. If a claim expires before a slot claims it, the server automatically re-dispatches at `attempt + 1` (capped at 10).
 
 ```
 PR pushed → review → PASS → auto-merge
-                   → FAIL → claim created (pending) → runner claims → pushes fix → re-review → ...
+                   → FAIL → claim created (pending) → agent server slot claims → pushes fix → re-review → ...
                    → claim expires → auto-re-dispatch at attempt + 1
                    → max retries exceeded → escalate to human
 ```
@@ -21,11 +21,11 @@ PR pushed → review → PASS → auto-merge
 
 ### Claims
 
-A claim is a unit of work for an agent. When a review fails, the server creates a claim with the review feedback and PR details. Claims are always created as `pending` — runners claim them via `claimPendingWork()` (atomic `pending → claimed` transition). Claims are tracked per review attempt and have a TTL. Expired claims are automatically re-dispatched at `attempt + 1` (capped at 10) so no PR stays orphaned.
+A claim is a unit of work for an agent. When a review fails, the server creates a claim with the review feedback and PR details. Claims are always created as `pending`. Agent server slots claim them via `claimPendingWork()` (atomic `pending → claimed` transition). Claims are tracked per review attempt and have a TTL. Expired claims are automatically re-dispatched at `attempt + 1` (capped at 10) so no PR stays orphaned.
 
 ### Agents
 
-An agent is a registered identity with a transport configuration. Named ACP identities include `claude-code`, `claude-agent-acp`, `codex`, `codex-acp`, and `opencode`; existing non-long-poll transports can also use `devin`, `openclaw`, `aider`, or `custom`. Agents are stored in the database, authenticated via tokens, and can be scoped to specific repos.
+An agent is a registered identity with a transport configuration. Named ACP identities include `claude-code`, `claude-agent-acp`, `codex`, `codex-acp`, and `opencode`; existing non-long-poll transports can also use `devin`, `openclaw`, `aider`, or `custom`. The [agent server](../fluent-flow-agent-server/README.md) runs `claude-code` and `codex` agents (its `--provider` values); other long-poll agents need a custom ACP command. Agents are stored in the database, authenticated via tokens, and can be scoped to specific repos.
 
 The agent that created a PR is resolved in this order:
 1. PR body marker: `<!-- fluent-flow-agent: agent-id -->`
@@ -38,12 +38,12 @@ Transports define how agents receive work:
 
 | Transport | Description | Use case |
 |-----------|-------------|----------|
-| `long_poll` | Agent polls the server for claims | Self-hosted runners ([fluent-flow-runner](../fluent-flow-runner/README.md)) |
+| `long_poll` | Agent polls the server for claims | The [agent server](../fluent-flow-agent-server/README.md), run locally, self-hosted or hosted |
 | `webhook` | Server POSTs to agent's URL | External agents with HTTP endpoints |
 | `workflow_dispatch` | Server triggers a GitHub Actions workflow | CI-based agents |
 | `api` | Server calls an external API | Cloud agents (Devin, OpenAI Agents) |
 
-Long-poll runners choose and launch their ACP v2 adapter locally. Agent registration does not provide an executable, argument list, environment, or command template to the runner.
+Long-poll agent servers choose and launch their ACP v2 adapter locally. Agent registration does not provide an executable, argument list, environment, or command template to the agent server. One agent server process registers one control-plane session per capacity slot through `/api/agent-server/*`, and a one-time `enroll_` token from the dashboard is exchanged for a durable `ff_` token at `POST /api/agent-server/enroll`. See the [agents module](src/agents/README.md).
 
 ### MCP (Model Context Protocol)
 
@@ -114,7 +114,7 @@ src/
   config/          Config loader, defaults, validation
   db/              PostgreSQL client, migrations
   github/          GitHub API client (REST + webhooks)
-  routes/          Express API routes (agents, runner, webhook)
+  routes/          Express API routes (agents, agent-server, webhook)
 ```
 
 See the README in each directory for details:
@@ -152,7 +152,7 @@ Known limits:
 | 003 | `pauses` — paused issues with reason and agent |
 | 004 | `config_cache` — GitHub config fetch cache |
 | 005 | `orgs`, `agents`, `agent_tokens` — agent registry and auth |
-| 006 | `agent_sessions` — ephemeral runner sessions with TTL |
+| 006 | `agent_sessions` — ephemeral agent server slot sessions with TTL |
 | 007 | `agent_claims` — per-attempt work assignments |
 
 Migrations run automatically on server startup. See the [database guide](../db/README.md) and [migration sources](../db/src/migrations/) for the current schema.

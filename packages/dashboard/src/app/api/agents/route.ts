@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
-import { listAgents, createAgent, createToken, query } from '@fluent-flow/db';
+import { listAgents, createAgentWithEnrollment } from '@fluent-flow/db';
 import { authOptions, getOrgScope, hasRole } from '@/lib/auth';
 
 export async function GET() {
@@ -15,13 +15,65 @@ export async function GET() {
 }
 
 const AGENT_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
-const ALLOWED_AGENT_TYPES: Record<string, true> = {
-  'claude-code': true,
-  'claude-agent-acp': true,
-  'codex': true,
-  'codex-acp': true,
-  'opencode': true,
-};
+const ENROLLMENT_TOKEN_RE = /^enroll_[0-9a-f]{64}$/;
+const PROVIDERS = ['claude-code', 'codex'] as const;
+const DEPLOYMENTS = ['local', 'self_hosted'] as const;
+const MIN_CAPACITY = 1;
+const MAX_CAPACITY = 16;
+const ENROLLMENT_TTL_MS = 15 * 60 * 1000;
+const SELF_HOSTED_IMAGE = 'ghcr.io/fluent-io/fluent-flow-agent-server:latest';
+const COMMAND_LINE_BREAK = ' \\\n  ';
+
+type Provider = (typeof PROVIDERS)[number];
+type Deployment = (typeof DEPLOYMENTS)[number];
+
+function isProvider(value: unknown): value is Provider {
+  return typeof value === 'string' && (PROVIDERS as readonly string[]).includes(value);
+}
+
+function isDeployment(value: unknown): value is Deployment {
+  return typeof value === 'string' && (DEPLOYMENTS as readonly string[]).includes(value);
+}
+
+function isCapacity(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= MIN_CAPACITY && value <= MAX_CAPACITY;
+}
+
+function buildCommand(input: {
+  serverUrl: string;
+  provider: Provider;
+  capacity: number;
+  deployment: Deployment;
+  enrollmentToken: string;
+}): string {
+  const { serverUrl, provider, capacity, deployment, enrollmentToken } = input;
+  if (deployment === 'self_hosted') {
+    return [
+      'docker run -d --name fluent-flow-agent-server --restart unless-stopped --init',
+      '-v /etc/fluent-flow/provider-auth:/run/secrets/provider-auth:ro',
+      '-v fluent-flow-state:/home/node/.fluent-flow',
+      '-v fluent-flow-work:/work',
+      SELF_HOSTED_IMAGE,
+      `--server ${serverUrl}`,
+      `--provider ${provider}`,
+      `--capacity ${capacity}`,
+      `--deployment ${deployment}`,
+      `--enrollment-token ${enrollmentToken}`,
+      '--provider-secret-file /run/secrets/provider-auth',
+    ].join(COMMAND_LINE_BREAK);
+  }
+  return [
+    'npx @fluent-flow/agent-server@latest',
+    `--server ${serverUrl}`,
+    `--provider ${provider}`,
+    `--capacity ${capacity}`,
+    `--enrollment-token ${enrollmentToken}`,
+  ].join(COMMAND_LINE_BREAK);
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === 'localhost' || /^127(\.\d{1,3}){3}$/.test(hostname);
+}
 
 // Strict validator for NEXT_PUBLIC_FLUENT_FLOW_URL. The generated CLI
 // command interpolates this value into a shell line, so we must reject
@@ -32,8 +84,8 @@ function validateServerUrl(raw: string): { url: string } | { error: string } {
   if (trimmed !== raw || /\s/.test(trimmed) || /[\x00-\x1f\x7f]/.test(trimmed)) {
     return { error: 'contains whitespace or control characters' };
   }
-  if (/["'`$;&|<>\\]/.test(trimmed)) {
-    return { error: 'contains shell-meaningful characters' };
+  if (!/^[A-Za-z0-9:/._-]+$/.test(trimmed)) {
+    return { error: 'contains characters outside the shell-safe set' };
   }
   let parsed: URL;
   try {
@@ -43,6 +95,9 @@ function validateServerUrl(raw: string): { url: string } | { error: string } {
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     return { error: `protocol must be http or https (got "${parsed.protocol}")` };
+  }
+  if (parsed.protocol === 'http:' && !isLoopbackHost(parsed.hostname)) {
+    return { error: 'plain http is only allowed for loopback hosts; use https' };
   }
   // Normalise: drop trailing slash so the command is consistent.
   return { url: trimmed.replace(/\/+$/, '') };
@@ -79,67 +134,76 @@ export async function POST(req: Request) {
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
 
-  const { org_id, agent_id, agent_type } = (body ?? {}) as Record<string, unknown>;
+  const { org_id, agent_id, provider, capacity, deployment } = body as Record<string, unknown>;
 
   if (typeof org_id !== 'string' || !org_id) {
     return NextResponse.json({ error: 'org_id is required' }, { status: 400 });
   }
   if (typeof agent_id !== 'string' || !AGENT_ID_RE.test(agent_id)) {
-    return NextResponse.json({ error: 'agent_id must be alphanumeric; letters, digits, _, - only' }, { status: 400 });
+    return NextResponse.json(
+      { error: "Server name must use letters, digits, '_' or '-' and start with a letter or digit" },
+      { status: 400 },
+    );
   }
-  if (typeof agent_type !== 'string' || !Object.hasOwn(ALLOWED_AGENT_TYPES, agent_type)) {
-    return NextResponse.json({ error: `agent_type must be one of: ${Object.keys(ALLOWED_AGENT_TYPES).join(', ')}` }, { status: 400 });
+  if (!isProvider(provider)) {
+    return NextResponse.json({ error: `provider must be one of: ${PROVIDERS.join(', ')}` }, { status: 400 });
+  }
+  if (!isCapacity(capacity)) {
+    return NextResponse.json(
+      { error: `capacity must be an integer from ${MIN_CAPACITY} to ${MAX_CAPACITY}` },
+      { status: 400 },
+    );
+  }
+  if (!isDeployment(deployment)) {
+    return NextResponse.json({ error: `deployment must be one of: ${DEPLOYMENTS.join(', ')}` }, { status: 400 });
   }
   if (!hasRole(session, org_id, 'admin')) {
     return NextResponse.json({ error: 'Forbidden: must be admin of the target org' }, { status: 403 });
   }
 
-  let agent;
+  const enrollmentExpiresAt = new Date(Date.now() + ENROLLMENT_TTL_MS);
+  let created;
   try {
-    agent = await createAgent({
-      id: agent_id,
-      orgId: org_id,
-      agentType: agent_type,
-      transport: 'long_poll',
-    });
+    created = await createAgentWithEnrollment(
+      {
+        id: agent_id,
+        orgId: org_id,
+        agentType: provider,
+        transport: 'long_poll',
+        transportMeta: { capacity, deployment, provider },
+      },
+      enrollmentExpiresAt,
+    );
   } catch (err) {
-    const code = (err as { code?: string }).code;
-    if (code === '23505') {
+    const isUniqueViolation = typeof err === 'object' && err !== null && 'code' in err && err.code === '23505';
+    if (isUniqueViolation) {
       return NextResponse.json(
-        { error: `Agent '${agent_id}' already exists in org '${org_id}'` },
+        { error: `A server named '${agent_id}' already exists` },
         { status: 409 },
       );
     }
     throw err;
   }
 
-  // Compensating cleanup: if token creation fails after the agent row is
-  // written, we'd leave a credentials-less agent behind. Delete it before
-  // propagating the error so the user can retry cleanly.
-  let token;
-  try {
-    token = await createToken({
-      orgId: org_id,
-      agentId: agent_id,
-      label: `dashboard-${Date.now().toString(36)}`,
-    });
-  } catch (err) {
-    await query('DELETE FROM agents WHERE org_id = $1 AND id = $2', [org_id, agent_id]).catch(() => {});
-    throw err;
+  if (!ENROLLMENT_TOKEN_RE.test(created.enrollment.plaintext)) {
+    console.error('[agents.POST] enrollment token has an unexpected format; refusing to render a command');
+    throw new Error('Enrollment token has an unexpected format');
   }
 
-  // The runner CLI has no subcommand today; agent_type is stored on the
-  // agents row, not passed per-run. Keep the command minimal so what the
-  // user sees matches what the CLI actually accepts.
-  const command = [
-    'npx @fluent-flow/runner@latest',
-    `--server ${serverUrl}`,
-    `--token ${token.plaintext}`,
-  ].join(' \\\n  ');
+  const command = buildCommand({
+    serverUrl,
+    provider,
+    capacity,
+    deployment,
+    enrollmentToken: created.enrollment.plaintext,
+  });
 
-  // `command` already embeds the plaintext token. Returning it again as a
-  // top-level field doubles the exposure surface — if a consumer logs the
-  // response, we'd log the token twice.
-  return NextResponse.json({ agent, command }, { status: 201 });
+  return NextResponse.json(
+    { agent: created.agent, command, enrollment_expires_at: enrollmentExpiresAt.toISOString() },
+    { status: 201 },
+  );
 }

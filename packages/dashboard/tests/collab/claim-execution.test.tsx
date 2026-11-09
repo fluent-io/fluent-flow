@@ -837,7 +837,7 @@ describe('permission and elicitation requests', () => {
     await user.click(await screen.findByRole('button', { name: 'Allow again' }));
 
     expect((await screen.findByRole('button', { name: 'Allow again' }) as HTMLButtonElement).disabled).toBe(false);
-    expect(screen.queryByText('Answer sent, waiting for the runner')).toBeNull();
+    expect(screen.queryByText('Answer sent, waiting for the agent server')).toBeNull();
   });
 
   it('explains that an answer failed because the claim is no longer active', async () => {
@@ -1042,7 +1042,7 @@ describe('permission and elicitation requests', () => {
     cleanup();
     api.requests = [{ ...api.requests[0], status: 'answer_queued' }];
     renderPanel();
-    expect(await screen.findByText('Answer sent, waiting for the runner')).toBeTruthy();
+    expect(await screen.findByText('Answer sent, waiting for the agent server')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Allow' })).toBeNull();
   });
 });

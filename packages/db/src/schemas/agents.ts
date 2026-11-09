@@ -13,9 +13,16 @@ export const agentSchema = z.object({
 
 export type Agent = z.infer<typeof agentSchema>;
 
-export const agentListItemSchema = agentSchema.extend({
+export const agentDetailSchema = agentSchema.extend({
+  deployment: z.enum(['local', 'self_hosted', 'hosted']).nullable(),
+  capacity: z.number().int().nullable(),
+  active_slots: z.number().int().nonnegative(),
   status: z.string().nullable(),
   last_seen_at: z.coerce.date().nullable(),
 });
+
+export type AgentDetail = z.infer<typeof agentDetailSchema>;
+
+export const agentListItemSchema = agentDetailSchema;
 
 export type AgentListItem = z.infer<typeof agentListItemSchema>;

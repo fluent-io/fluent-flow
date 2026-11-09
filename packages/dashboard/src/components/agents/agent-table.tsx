@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import type { AgentListItem } from '@fluent-flow/db';
 import { StatusBadge } from './status-badge';
 import { TypeBadge } from './type-badge';
+import { formatDeployment, formatSlots } from './agent-format';
 import {
   Table,
   TableBody,
@@ -38,9 +39,11 @@ export function AgentTable({ agents }: { agents: AgentListItem[] }) {
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Agent</TableHead>
-            <TableHead>Type</TableHead>
+            <TableHead>Agent Server</TableHead>
+            <TableHead>Provider</TableHead>
+            <TableHead>Slots</TableHead>
             <TableHead>Status</TableHead>
+            <TableHead>Deployment</TableHead>
             <TableHead>Last Seen</TableHead>
           </TableRow>
         </TableHeader>
@@ -53,7 +56,9 @@ export function AgentTable({ agents }: { agents: AgentListItem[] }) {
             >
               <TableCell className="font-medium">{agent.id}</TableCell>
               <TableCell><TypeBadge type={agent.agent_type} /></TableCell>
+              <TableCell>{formatSlots(agent)}</TableCell>
               <TableCell><StatusBadge status={agent.status} /></TableCell>
+              <TableCell>{formatDeployment(agent.deployment)}</TableCell>
               <TableCell className="text-muted-foreground">{timeAgo(agent.last_seen_at)}</TableCell>
             </TableRow>
           ))}

@@ -60,8 +60,52 @@ services:
       - fluent-flow-net
     restart: unless-stopped
 
+  agent-server:
+    profiles:
+      - hosted-agent
+    image: ghcr.io/fluent-io/fluent-flow-agent-server:${AGENT_SERVER_IMAGE_TAG:-latest}
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/node:mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      FLUENT_FLOW_TOKEN_FILE: /run/secrets/fluent-flow-token
+    command:
+      - --server
+      - ${AGENT_SERVER_FLUENT_FLOW_URL:-https://set-AGENT_SERVER_FLUENT_FLOW_URL.invalid}
+      - --provider
+      - ${AGENT_SERVER_PROVIDER:-claude-code}
+      - --capacity
+      - ${AGENT_SERVER_CAPACITY:-2}
+      - --deployment
+      - hosted
+      - --provider-secret-file
+      - /run/secrets/provider-auth
+    secrets:
+      - source: provider_auth
+        target: provider-auth
+      - source: fluent_flow_token
+        target: fluent-flow-token
+    volumes:
+      - agent-server-state:/home/node/.fluent-flow
+      - agent-server-work:/work
+
 volumes:
   pgdata:
+  agent-server-state:
+  agent-server-work:
+
+secrets:
+  provider_auth:
+    file: ${AGENT_SERVER_PROVIDER_AUTH_FILE:-/nonexistent/set-AGENT_SERVER_PROVIDER_AUTH_FILE}
+  fluent_flow_token:
+    file: ${AGENT_SERVER_TOKEN_FILE:-/nonexistent/set-AGENT_SERVER_TOKEN_FILE}
 
 networks:
   fluent-flow-net:
