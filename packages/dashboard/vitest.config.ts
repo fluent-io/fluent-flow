@@ -11,7 +11,7 @@ export default defineConfig({
         test: {
           name: 'node',
           environment: 'node',
-          exclude: ['tests/collab/claim-execution.test.tsx'],
+          exclude: ['tests/collab/claim-execution.test.tsx', 'tests/components/**/*.test.tsx'],
         },
       },
       {
@@ -20,6 +20,14 @@ export default defineConfig({
           name: 'claim-execution',
           environment: 'jsdom',
           include: ['tests/collab/claim-execution.test.tsx'],
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'components',
+          environment: 'jsdom',
+          include: ['tests/components/**/*.test.tsx'],
         },
       },
     ],

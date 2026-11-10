@@ -8,14 +8,32 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
 type Step = 1 | 2 | 3;
-type AgentType = 'claude-code' | 'codex' | 'opencode';
+type Provider = 'claude-code' | 'codex';
+type Deployment = 'local' | 'self_hosted';
 
-const AGENT_TYPES: AgentType[] = ['claude-code', 'codex', 'opencode'];
-const ADAPTER_PACKAGES: Record<AgentType, string> = {
+const PROVIDERS: { value: Provider; label: string }[] = [
+  { value: 'claude-code', label: 'Claude Code' },
+  { value: 'codex', label: 'Codex' },
+];
+const ACP_ADAPTER_PACKAGES: Record<Provider, string> = {
   'claude-code': '@agentclientprotocol/claude-agent-acp',
-  'codex': '@agentclientprotocol/codex-acp',
-  'opencode': 'opencode-ai',
+  codex: '@agentclientprotocol/codex-acp',
 };
+const POLL_FAILURE_ALERT_THRESHOLD = 3;
+const DEPLOYMENTS: { value: Deployment; label: string }[] = [
+  { value: 'local', label: 'Local (npm)' },
+  { value: 'self_hosted', label: 'Self-hosted (Docker)' },
+];
+const DEFAULT_CAPACITY = '2';
+const MIN_CAPACITY = 1;
+const MAX_CAPACITY = 16;
+
+function parseCapacity(input: string): number | null {
+  if (input.trim() === '') return null;
+  const value = Number(input);
+  if (!Number.isInteger(value) || value < MIN_CAPACITY || value > MAX_CAPACITY) return null;
+  return value;
+}
 
 export function NewAgentDialog() {
   const { data: session } = useSession();
@@ -33,11 +51,18 @@ export function NewAgentDialog() {
   const [step, setStep] = useState<Step>(1);
   const [orgId, setOrgId] = useState('');
   const [agentId, setAgentId] = useState('');
-  const [agentType, setAgentType] = useState<AgentType>('claude-code');
+  const [provider, setProvider] = useState<Provider>('claude-code');
+  const [capacityInput, setCapacityInput] = useState(DEFAULT_CAPACITY);
+  const [deployment, setDeployment] = useState<Deployment>('local');
   const [submitting, setSubmitting] = useState(false);
   const [command, setCommand] = useState<string | null>(null);
+  const [expiresInMinutes, setExpiresInMinutes] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [checkFailed, setCheckFailed] = useState(false);
   const [copied, setCopied] = useState(false);
+  const fieldId = useId();
+  const capacity = parseCapacity(capacityInput);
+  const capacityInvalid = capacity === null;
 
   // Default org to first eligible org whenever the session loads or the dialog opens.
   useEffect(() => {
@@ -46,29 +71,45 @@ export function NewAgentDialog() {
 
   function reset() {
     setStep(1);
+    setOrgId('');
     setAgentId('');
-    setAgentType('claude-code');
+    setProvider('claude-code');
+    setCapacityInput(DEFAULT_CAPACITY);
+    setDeployment('local');
     setCommand(null);
+    setExpiresInMinutes(0);
     setError(null);
+    setCheckFailed(false);
     setCopied(false);
     setSubmitting(false);
   }
 
+  function handleOpenChange(next: boolean) {
+    setOpen(next);
+    if (!next) reset();
+  }
+
   async function createAgent() {
+    if (submitting || capacity === null) return;
     setSubmitting(true);
     setError(null);
     try {
       const res = await fetch('/api/agents', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ org_id: orgId, agent_id: agentId, agent_type: agentType }),
+        body: JSON.stringify({ org_id: orgId, agent_id: agentId, provider, capacity, deployment }),
       });
       if (!res.ok) {
         const b = await res.json().catch(() => ({}));
         throw new Error(b.error ?? `Request failed with ${res.status}`);
       }
       const data = await res.json();
+      const expiresAt = new Date(data.enrollment_expires_at).getTime();
+      if (typeof data.command !== 'string' || Number.isNaN(expiresAt)) {
+        throw new Error('Unexpected response from the server');
+      }
       setCommand(data.command);
+      setExpiresInMinutes(Math.max(1, Math.round((expiresAt - Date.now()) / 60_000)));
       setStep(2);
       router.refresh();
     } catch (err) {
@@ -78,21 +119,34 @@ export function NewAgentDialog() {
     }
   }
 
-  // Poll agent detail every 2s while on step 2; flip to step 3 when a session comes online.
+  // Poll agent detail every 2s while on step 2; flip to step 3 when any slot reports a non-offline status.
   // Scope the poll to the org we just created in — agents are keyed by
   // (org_id, id), so sending orgId as `?org=` avoids matching a same-named
   // agent in another org the user belongs to.
   useEffect(() => {
     if (step !== 2 || !agentId || !orgId) return;
     let cancelled = false;
+    let consecutiveFailures = 0;
+    const recordFailure = () => {
+      consecutiveFailures += 1;
+      if (!cancelled && consecutiveFailures >= POLL_FAILURE_ALERT_THRESHOLD) setCheckFailed(true);
+    };
     const check = async () => {
       try {
         const res = await fetch(`/api/agents/${encodeURIComponent(agentId)}?org=${encodeURIComponent(orgId)}`);
-        if (!res.ok) return;
+        if (!res.ok) {
+          recordFailure();
+          return;
+        }
         const data = await res.json();
-        const online = Array.isArray(data.sessions) && data.sessions.some((s: { status?: string }) => s.status === 'online');
-        if (!cancelled && online) setStep(3);
-      } catch { /* ignore transient errors */ }
+        consecutiveFailures = 0;
+        if (!cancelled) setCheckFailed(false);
+        const connected = Array.isArray(data.sessions)
+          && data.sessions.some((s: { status?: unknown }) => typeof s.status === 'string' && s.status !== 'offline');
+        if (!cancelled && connected) setStep(3);
+      } catch {
+        recordFailure();
+      }
     };
     const id = setInterval(check, 2000);
     check();
@@ -110,14 +164,22 @@ export function NewAgentDialog() {
 
   if (!canCreate) return null;
 
+  const controlClass = 'rounded border bg-background px-2 py-1';
+  const nameId = `${fieldId}-name`;
+  const orgFieldId = `${fieldId}-org`;
+  const providerId = `${fieldId}-provider`;
+  const capacityId = `${fieldId}-capacity`;
+  const capacityErrorId = `${fieldId}-capacity-error`;
+  const deploymentId = `${fieldId}-deployment`;
+
   return (
-    <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) reset(); }}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
-        <Button>+ New agent</Button>
+        <Button>+ New agent server</Button>
       </DialogTrigger>
       <DialogContent className="max-w-2xl">
         <DialogHeader>
-          <DialogTitle>New agent</DialogTitle>
+          <DialogTitle>New agent server</DialogTitle>
         </DialogHeader>
 
         <Stepper step={step} />
@@ -125,10 +187,11 @@ export function NewAgentDialog() {
         {step === 1 && (
           <div className="flex flex-col gap-3">
             {eligibleOrgs.length > 1 && (
-              <label className="flex flex-col gap-1 text-sm">
-                Organization
+              <div className="flex flex-col gap-1 text-sm">
+                <label htmlFor={orgFieldId}>Organization</label>
                 <select
-                  className="rounded border bg-background px-2 py-1"
+                  id={orgFieldId}
+                  className={controlClass}
                   value={orgId}
                   onChange={(e) => setOrgId(e.target.value)}
                 >
@@ -136,36 +199,66 @@ export function NewAgentDialog() {
                     <option key={o.org_id} value={o.org_id}>{o.org_id}</option>
                   ))}
                 </select>
-              </label>
+              </div>
             )}
-            <label className="flex flex-col gap-1 text-sm">
-              Agent ID
+            <div className="flex flex-col gap-1 text-sm">
+              <label htmlFor={nameId}>Server name</label>
               <input
-                className="rounded border bg-background px-2 py-1"
+                id={nameId}
+                className={controlClass}
                 value={agentId}
                 onChange={(e) => setAgentId(e.target.value)}
                 placeholder="laptop-1"
                 pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*"
                 autoFocus
               />
-            </label>
-            <label className="flex flex-col gap-1 text-sm">
-              Agent type
+            </div>
+            <div className="flex flex-col gap-1 text-sm">
+              <label htmlFor={providerId}>Provider</label>
               <select
-                className="rounded border bg-background px-2 py-1"
-                value={agentType}
-                onChange={(e) => setAgentType(e.target.value as AgentType)}
+                id={providerId}
+                className={controlClass}
+                value={provider}
+                onChange={(e) => setProvider(e.target.value as Provider)}
               >
-                {AGENT_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                {PROVIDERS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
               </select>
-              <span className="text-xs text-muted-foreground">
-                Select the local ACP adapter this runner will use for claims.
-              </span>
-            </label>
-            {error && <p className="text-sm text-destructive">{error}</p>}
+            </div>
+            <div className="flex flex-col gap-1 text-sm">
+              <label htmlFor={capacityId}>Capacity</label>
+              <input
+                id={capacityId}
+                type="number"
+                min={MIN_CAPACITY}
+                max={MAX_CAPACITY}
+                step={1}
+                className={cn(controlClass, capacityInvalid && 'border-destructive')}
+                value={capacityInput}
+                onChange={(e) => setCapacityInput(e.target.value)}
+                aria-invalid={capacityInvalid}
+                aria-describedby={capacityInvalid ? capacityErrorId : undefined}
+              />
+              {capacityInvalid && (
+                <span id={capacityErrorId} className="text-xs text-destructive">
+                  Capacity must be a whole number between {MIN_CAPACITY} and {MAX_CAPACITY}.
+                </span>
+              )}
+            </div>
+            <div className="flex flex-col gap-1 text-sm">
+              <label htmlFor={deploymentId}>Deployment</label>
+              <select
+                id={deploymentId}
+                className={controlClass}
+                value={deployment}
+                onChange={(e) => setDeployment(e.target.value as Deployment)}
+              >
+                {DEPLOYMENTS.map((d) => <option key={d.value} value={d.value}>{d.label}</option>)}
+              </select>
+            </div>
+            {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
             <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button onClick={createAgent} disabled={submitting || !agentId || !orgId}>
+              <Button variant="outline" onClick={() => handleOpenChange(false)}>Cancel</Button>
+              <Button onClick={createAgent} disabled={submitting || !agentId || !orgId || capacityInvalid}>
                 {submitting ? 'Creating…' : 'Next →'}
               </Button>
             </div>
@@ -174,22 +267,28 @@ export function NewAgentDialog() {
 
         {step === 2 && command && (
           <div className="flex flex-col gap-3">
-            <p className="text-sm">Run this on the machine where the runner should execute:</p>
+            {checkFailed && (
+              <p role="alert" className="text-sm text-destructive">
+                The connection check failed. Your server may still connect — keep this dialog open or check the agents list.
+              </p>
+            )}
+            <p className="text-sm">Run this on the machine where the server should execute:</p>
             <pre className="whitespace-pre-wrap break-all rounded bg-muted p-3 text-xs leading-relaxed">{command}</pre>
             <div className="flex items-center justify-between">
-              <Button variant="outline" onClick={copyCommand}>
-                {copied ? 'Copied ✓' : 'Copy command'}
-              </Button>
-              <span className="flex items-center gap-2 text-sm text-muted-foreground">
+              <div className="flex items-center gap-2">
+                <Button variant="outline" onClick={copyCommand}>Copy command</Button>
+                <span role="status" className="text-xs text-muted-foreground">{copied ? 'Copied ✓' : ''}</span>
+              </div>
+              <span role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
                 <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-500" />
-                Waiting for the runner to connect…
+                Waiting for the server to connect…
               </span>
             </div>
             <p className="text-xs text-muted-foreground">
-              The token is shown once. Copy it before closing — if lost, delete the agent and create a new one.
+              {`This command is valid for ${expiresInMinutes} ${expiresInMinutes === 1 ? 'minute' : 'minutes'} and is single-use. Copy it before closing — if it expires or is lost, delete the server and create a new one.`}
             </p>
 
-            <SetupInstructions agentType={agentType} />
+            <SetupInstructions deployment={deployment} provider={provider} />
           </div>
         )}
 
@@ -200,7 +299,7 @@ export function NewAgentDialog() {
             </div>
             <p className="text-sm font-medium">Connected</p>
             <p className="text-sm text-muted-foreground">{agentId} is online.</p>
-            <Button onClick={() => setOpen(false)}>Done</Button>
+            <Button onClick={() => handleOpenChange(false)}>Done</Button>
           </div>
         )}
       </DialogContent>
@@ -208,7 +307,7 @@ export function NewAgentDialog() {
   );
 }
 
-function SetupInstructions({ agentType }: { agentType: AgentType }) {
+function SetupInstructions({ deployment, provider }: { deployment: Deployment; provider: Provider }) {
   const [open, setOpen] = useState(false);
   const id = useId();
   const toggleId = `${id}-toggle`;
@@ -228,29 +327,27 @@ function SetupInstructions({ agentType }: { agentType: AgentType }) {
       </button>
       {open && (
         <div id={contentId} className="border-t border-border px-3 py-3 flex flex-col gap-3">
-          <div>
-            <p className="text-xs font-medium mb-1">Git authentication</p>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              The runner needs access to clone repos.
-            </p>
-            <ul className="mt-1 list-disc list-inside text-xs text-muted-foreground space-y-0.5">
-              <li>
-                <span className="font-medium text-foreground">SSH key</span>{' '}
-                (recommended) — mount <code className="rounded bg-muted px-1 py-0.5 text-[11px]">~/.ssh/id_ed25519</code> or{' '}
-                <code className="rounded bg-muted px-1 py-0.5 text-[11px]">~/.ssh/id_rsa</code> into the container
-              </li>
-              <li>
-                <span className="font-medium text-foreground">GitHub token</span>{' '}
-                — set <code className="rounded bg-muted px-1 py-0.5 text-[11px]">GITHUB_TOKEN</code> env var (works for public &amp; private repos)
-              </li>
-            </ul>
-          </div>
-          <div>
-            <p className="mb-1 text-xs font-medium">Local ACP adapter</p>
-            <p className="text-xs leading-relaxed text-muted-foreground">
-              Install <code className="rounded bg-muted px-1 py-0.5 text-[11px]">{ADAPTER_PACKAGES[agentType]}</code> on this machine, then complete its local authentication setup before starting the runner. The Fluent Flow service does not send AI provider credentials. The adapter uses its local login state and inherits the runner process environment.
-            </p>
-          </div>
+          {deployment === 'self_hosted' ? (
+            <div>
+              <p className="mb-1 text-xs font-medium">Provider credentials</p>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Place the provider credential file at the secret path mounted in the command before you run it.
+                The state and work volumes in the command persist the enrollment, so keep them when you recreate the container.
+              </p>
+            </div>
+          ) : (
+            <div>
+              <p className="mb-1 text-xs font-medium">Local requirements</p>
+              <p className="text-xs leading-relaxed text-muted-foreground">
+                Local mode reuses the login of your provider CLI, so sign in with it on this machine first.
+                The machine needs Node 20+, git and gh on its PATH.
+              </p>
+              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+                Install the ACP adapter for your provider before you run the command:{' '}
+                <code>npm install -g {ACP_ADAPTER_PACKAGES[provider]}</code>
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>

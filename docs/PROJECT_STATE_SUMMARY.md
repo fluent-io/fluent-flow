@@ -6,6 +6,8 @@
 **Live URL:** https://flow.fluenthive.io
 **Repository:** `fluent-io/fluent-flow`
 
+> Update, 2026-11-08: the `fluent-flow-runner` package described in this snapshot has been replaced by `packages/fluent-flow-agent-server` (`@fluent-flow/agent-server`), which runs several claims at once and serves `/api/agent-server/*`. Package names, routes, commands and counts below are corrected where they would mislead. Everything else is the 2026-05-08 snapshot, so "runner" in the narrative means the earlier single-slot process. See the [agent server guide](../packages/fluent-flow-agent-server/README.md).
+
 ---
 
 ## 1. What Was Built
@@ -17,7 +19,7 @@ Fluent Flow is an agent orchestration service for autonomous development workflo
 | Package | Purpose |
 |---------|---------|
 | `fluent-flow` (server) | Express.js server — claim dispatch, agent registry, webhook handler, MCP server, review pipeline, check-run lifecycle |
-| `fluent-flow-runner` | CLI runner — connects to the server via long-poll, claims work, launches a locally installed ACP adapter, reports results |
+| `fluent-flow-agent-server` | Agent server (formerly the runner) — connects to the server via long-poll with one session per capacity slot, claims work, launches a locally installed ACP adapter per claim, reports results |
 | `dashboard` | Next.js 15 admin UI — agent management, pipeline status, repo onboarding, workflow initiation |
 | `db` | Shared data access — pg pool, Drizzle ORM schemas, Zod schemas, org-scoped query functions |
 
@@ -76,14 +78,14 @@ Fluent Flow is an agent orchestration service for autonomous development workflo
 - New Agent registration stepper (Name → Run → Connect)
 - Dismiss/archive controls for claims
 
-**Runner**
-- Long-poll client with exponential backoff and watchdog
-- Git worktree management per claim (isolated checkout)
-- SSH key detection with HTTPS+token fallback for cloning
-- `gh` CLI auto-authentication with GitHub App token
-- Local ACP adapter discovery and authentication; no server-supplied executable, command template, or AI provider credentials
-- Graceful shutdown with claim failure reporting
-- Session re-registration on expiry (410)
+**Agent server** (replaced the single-slot runner)
+- Long-poll client with exponential backoff and watchdog, one session per capacity slot (default 2, up to 16)
+- Git worktree management per claim (isolated `claim-<id>` checkout, shared base clone, per-repository lock)
+- HTTPS clones authenticated with a claim-scoped GitHub App token through an ephemeral Git header; no SSH keys, no token in remotes, no `gh auth login`
+- Local ACP adapter discovery; subscription login in local mode, a mounted provider secret file in containers; no server-supplied executable, command template, or AI provider credentials
+- Single-use enrollment token exchanged for a durable token kept in private state
+- Health and status endpoints, graceful shutdown with claim failure reporting, slot restart with backoff
+- Session re-registration on expiry (410) and cancellation on `claim: null` heartbeats
 
 **MCP Server**
 - Streamable HTTP transport at `POST /mcp`
@@ -101,7 +103,7 @@ Fluent Flow is an agent orchestration service for autonomous development workflo
 - Retry with rate-limit awareness
 - Queueable actions: comment, review, create_check_run, update_check_run
 
-### Test Coverage
+### Test Coverage (at the snapshot date)
 
 - Server: ~381 tests (Vitest, sequential)
 - DB package: ~15 tests
@@ -126,21 +128,26 @@ fluent-flow/
 │   │   │   ├── mcp/          # MCP server (handler, auth, tools)
 │   │   │   ├── notifications/ # Dispatcher + transports (webhook, workflow, long-poll)
 │   │   │   ├── providers/    # Provider abstraction, GitHub REST/GraphQL, token cache
-│   │   │   ├── routes/       # Express routes (webhook, agents, runner, config, health)
+│   │   │   ├── routes/       # Express routes (webhook, agents, agent-server, config, health)
 │   │   │   ├── workers/      # Background workers (outbound, session-expiry, claim-expiry)
 │   │   │   ├── work-queue/   # Generic work queue abstraction
 │   │   │   ├── app.js        # Express app factory
 │   │   │   └── index.js      # Entry point
 │   │   └── Dockerfile         # Multi-stage build (db-builder → runtime)
-│   ├── fluent-flow-runner/   # CLI runner
+│   ├── fluent-flow-agent-server/ # Agent server and Paseo connector
 │   │   ├── src/
-│   │   │   ├── runner.js     # Main runner loop (poll → execute → report)
-│   │   │   ├── client.js     # HTTP client (register, poll, reportClaim)
+│   │   │   ├── server.js     # Capacity slots, restart supervision, aggregate status
+│   │   │   ├── runner.js     # One slot: poll → execute → report
+│   │   │   ├── config.js     # CLI options and provider secret loading
+│   │   │   ├── state.js      # Private instance ID and durable token
+│   │   │   ├── client.js     # HTTP client (enroll, register, poll, reportClaim)
 │   │   │   ├── acp/          # ACP adapter resolution, process lifecycle and session runtime
 │   │   │   ├── prompts.js    # Prompt templates by claim_type
 │   │   │   ├── worktree.js   # Git worktree management
-│   │   │   └── credentials.js # Token resolution
-│   │   └── bin/              # CLI entry point
+│   │   │   └── connector/    # Paseo connector (separate executable)
+│   │   ├── docker/           # Pinned ACP adapter lockfile for the image
+│   │   ├── scripts/          # In-process and container smoke tests
+│   │   └── bin/              # CLI entry points
 │   ├── dashboard/            # Next.js 15 app (port 3000)
 │   │   └── src/app/
 │   │       ├── agents/       # Agent list + detail pages
@@ -167,10 +174,10 @@ fluent-flow/
 | Layer | Technology |
 |-------|-----------|
 | Server | Express.js, ESM, raw pg + Drizzle ORM, Zod validation |
-| Runner | Node.js CLI, no external deps beyond Vitest for tests |
+| Agent server | Node.js CLI, ACP SDK, Zod; Vitest for tests |
 | Dashboard | Next.js 15 (App Router), React 19, TypeScript, Tailwind CSS, shadcn/ui, Radix UI |
 | Database | PostgreSQL 16, Drizzle ORM for schema, raw SQL for complex queries |
-| Auth | GitHub OAuth (NextAuth.js) for dashboard, Bearer tokens for runner/MCP |
+| Auth | GitHub OAuth (NextAuth.js) for dashboard, Bearer tokens for agent servers/MCP |
 | Logging | Pino with OpenTelemetry transport (optional Signoz integration) |
 | Build | Turborepo monorepo, npm workspaces |
 | Containerization | Docker multi-stage builds, Docker Compose |
@@ -186,8 +193,8 @@ fluent-flow/
 | `users` | GitHub OAuth users |
 | `user_orgs` | User-to-org membership with roles (admin/member) |
 | `agents` | Registered agents with type, transport, repo scope |
-| `agent_sessions` | Runner sessions with status, heartbeat, TTL |
-| `agent_tokens` | Hashed API tokens for runner auth |
+| `agent_sessions` | Agent server slot sessions with status, heartbeat, TTL |
+| `agent_tokens` | Hashed tokens for agent server auth (`ff_` durable, `enroll_` single-use) |
 | `agent_claims` | Work claims with type, status, payload, attempt tracking, archived_at |
 | `repos` | Connected repositories with installation_id FK |
 | `org_config` / `repo_configs` | Per-org and per-repo configuration |
@@ -290,7 +297,7 @@ Error messages returned to clients never include env var names, stack traces, DB
 │  ├── fluent-flow        (port 3847)             │
 │  ├── fluent-flow-dashboard (port 3000)          │
 │  ├── postgres:16-alpine (port 5432)             │
-│  └── fluent-flow-runner (on host or container)  │
+│  └── fluent-flow-agent-server (on host or container)│
 └─────────────────────────────────────────────────┘
          │
          ├── Cloudflare Tunnel → flow.fluenthive.io
@@ -360,7 +367,7 @@ Error messages returned to clients never include env var names, stack traces, DB
 
 6. **Drizzle schema drift** — The Drizzle schema declaration diverged from the actual DB (missing FK, wrong column types). A migration journal consistency check was added to CI to prevent future drift.
 
-7. **Runner npm publish blocking** — The runner package name is `fluent-flow-runner` (unscoped) but the dashboard generates `npx @fluent-flow/runner@latest` commands. Not published to npm yet, so new users hit 404.
+7. **Agent server npm publish blocking** — The package is `@fluent-flow/agent-server` and the dashboard generates `npx @fluent-flow/agent-server@latest` commands. Nothing is published yet, so new users hit 404 until the first release. (At the snapshot date this was the unscoped `fluent-flow-runner` package.)
 
 ---
 
@@ -368,7 +375,7 @@ Error messages returned to clients never include env var names, stack traces, DB
 
 ### Immediate Next Steps (Known Gaps from ROADMAP.md)
 
-1. **Publish runner to npm** — Rename to `@fluent-flow/runner`, set up release workflow, cut v0.1.0. This unblocks the dashboard's generated `npx` commands.
+1. **Publish the agent server** — Run the first release dry run on a GitHub Actions runner (see `.github/workflows/release-agent-server.yml`), then cut the first stable release. This unblocks the dashboard's generated `npx` commands and the `ghcr.io/fluent-io/fluent-flow-agent-server` image.
 
 2. **Fix non-check-run webhook auth** — `pull_request.closed` and review-dismissal paths still lack installation context. Audit all GitHub REST helpers to require token context.
 
@@ -398,12 +405,12 @@ Error messages returned to clients never include env var names, stack traces, DB
 13. **Agent work queue redesign** — `packages/fluent-flow/docs/plans/2026-03-28-agent-work-queue-plan.md`
 14. **Admin dashboard phase 2** — Claim history, audit log viewer, notification preferences
 15. **Multi-org dashboard support** — The schema supports it; the UI doesn't expose org switching yet
-16. **Runner Docker image publication** — Reference Dockerfile exists but isn't published to a registry
+16. **Agent server Docker image publication** — The Dockerfile and release workflow exist but the image has not been published to a registry
 
 ### Dependency / Maintenance
 
 17. **17 Dependabot vulnerabilities** — Flagged on default branch (4 critical, 2 high, 11 moderate). Needs triage and patching.
-18. **Node.js version alignment** — Server Dockerfile uses node:20, runner engines reference node:24. Align versions.
+18. **Node.js version alignment** — Server Dockerfile uses node:20, the agent server image uses node:24.22.2 and its package supports Node 20 or newer. Align versions.
 19. **Test coverage gaps** — Dashboard API routes (`/api/repos`, `/api/repos/{id}/claims`) and DB queries (`listRepos`, `createClaim`) lack unit tests.
 
 ---

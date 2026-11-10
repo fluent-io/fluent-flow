@@ -276,7 +276,7 @@ function RequestCard({ request, active, submit }: { request: ClaimExecutionReque
   });
   const [error, setError] = useState<string | null>(null);
   if (request.status !== 'open') {
-    const labels = { answer_queued: 'Answer sent, waiting for the runner', resolved: 'Resolved', uncertain: 'Delivery could not be confirmed', cancelled: 'Cancelled' };
+    const labels = { answer_queued: 'Answer sent, waiting for the agent server', resolved: 'Resolved', uncertain: 'Delivery could not be confirmed', cancelled: 'Cancelled' };
     return <div className="rounded-md border border-border p-3 text-sm"><strong>{typeof payload.title === 'string' ? payload.title : typeof payload.message === 'string' ? payload.message : 'Request'}</strong><p className="mt-1 text-muted-foreground">{labels[request.status]}</p></div>;
   }
   if (request.kind === 'permission') {

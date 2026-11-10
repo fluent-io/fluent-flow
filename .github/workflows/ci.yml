@@ -6,13 +6,16 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
 
     services:
       postgres:
-        image: postgres:16
+        image: postgres:16@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -32,10 +35,10 @@ jobs:
       COLLAB_CONNECTOR_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ff_connector_test
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Use Node.js 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
 
@@ -45,6 +48,9 @@ jobs:
 
       - name: Verify pull request preview contracts
         run: npm run test:preview
+
+      - name: Verify release policy
+        run: npm run test:release
 
       # Service containers start before checkout, so the databases cannot be
       # created via init scripts bind-mounted from the workspace. Create them
@@ -69,10 +75,13 @@ jobs:
       - name: Run all tests (turbo fans out to every workspace; `test` depends on `^build`)
         run: npm test
 
-      - name: Typecheck runner connector
-        run: npm run typecheck -w @fluent-flow/runner
+      - name: Typecheck agent server connector
+        run: npm run typecheck -w @fluent-flow/agent-server
 
-      - name: Exercise existing runner claim SQL against an independent database
+      - name: Run agent server smoke
+        run: npm run smoke -w @fluent-flow/agent-server
+
+      - name: Exercise existing agent server claim SQL against an independent database
         env:
           DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ff_legacy_test
           TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ff_legacy_test
@@ -80,8 +89,8 @@ jobs:
           node --input-type=module -e "import { runMigrations,closePool } from '@fluent-flow/db'; await runMigrations(); await closePool();"
           npm test -w fluent-flow -- tests/integration/claim-pending-work.test.js
 
-  acp-runner:
-    name: ACP runner (${{ matrix.os }})
+  acp-agent-server:
+    name: ACP agent server (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -89,18 +98,128 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Use Node.js 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
 
       - name: Install dependencies from committed lockfile
         run: npm ci
 
-      - name: Run ACP runner tests
-        run: npm test -w @fluent-flow/runner -- tests/unit/acp-command.test.js tests/unit/acp-process.test.js tests/unit/acp-runtime.test.js tests/unit/runner.test.js
+      - name: Run cross-platform agent server unit tests
+        run: >-
+          npm test -w @fluent-flow/agent-server --
+          tests/unit/acp-command.test.js
+          tests/unit/acp-normalize.test.js
+          tests/unit/acp-process.test.js
+          tests/unit/acp-runtime.test.js
+          tests/unit/agent-server-cli.test.js
+          tests/unit/agent-server-main.test.js
+          tests/unit/client.test.js
+          tests/unit/config.test.js
+          tests/unit/environment.test.js
+          tests/unit/health-server.test.js
+          tests/unit/logger.test.js
+          tests/unit/package-manifest.test.js
+          tests/unit/probe.test.js
+          tests/unit/prompts.test.js
+          tests/unit/runner.test.js
+          tests/unit/safe-error.test.js
+          tests/unit/server.test.js
+          tests/unit/state.test.js
 
-      - name: Typecheck runner
-        run: npm run typecheck -w @fluent-flow/runner
+      - name: Typecheck agent server
+        run: npm run typecheck -w @fluent-flow/agent-server
+
+  agent-server-image-changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      relevant: ${{ steps.changes.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Detect agent server image changes
+        id: changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "push" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed="$(git diff --name-only "$BASE_SHA" HEAD)"
+          echo "$changed"
+          if echo "$changed" | grep -Eq '^(packages/fluent-flow-agent-server/|package\.json$|package-lock\.json$|\.dockerignore$|\.hadolint\.yaml$|docker-compose\.yml$|\.github/workflows/(ci|release-agent-server)\.yml$)'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  agent-server-image:
+    needs: agent-server-image-changes
+    if: needs.agent-server-image-changes.outputs.relevant == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      PACKAGE_DIR: packages/fluent-flow-agent-server
+      SMOKE_IMAGE: fluent-flow-agent-server:ci
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+
+      - name: Install dependencies from committed lockfile
+        run: npm ci
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - name: Lint Dockerfile
+        run: |
+          docker run --rm -i -v "$PWD/.hadolint.yaml:/.hadolint.yaml:ro" hadolint/hadolint:v2.15.1@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d \
+            hadolint --config /.hadolint.yaml - < "${PACKAGE_DIR}/Dockerfile"
+
+      - name: Build linux/amd64 image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: packages/fluent-flow-agent-server/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ env.SMOKE_IMAGE }}
+
+      - name: Run image smoke
+        env:
+          CONTAINER_CLI: docker
+          AGENT_SERVER_IMAGE: ${{ env.SMOKE_IMAGE }}
+        run: npm run smoke:image -w @fluent-flow/agent-server
+
+      - name: Validate Compose files
+        env:
+          FLUENT_FLOW_SERVER: https://flow.example.test
+          AGENT_PROVIDER: claude-code
+          FLUENT_FLOW_ENROLLMENT_TOKEN: dummy-enrollment-token
+          PROVIDER_AUTH_FILE: /tmp/provider-auth
+          FLUENT_FLOW_TOKEN_SECRET_FILE: /tmp/fluent-flow-token
+          AGENT_SERVER_PROVIDER_AUTH_FILE: /tmp/provider-auth
+          AGENT_SERVER_TOKEN_FILE: /tmp/fluent-flow-token
+          GITHUB_CLIENT_ID: dummy
+          GITHUB_CLIENT_SECRET: dummy
+          NEXTAUTH_SECRET: dummy
+        run: |
+          docker compose -f "${PACKAGE_DIR}/docker-compose.yml" config --quiet
+          docker compose -f "${PACKAGE_DIR}/docker-compose.durable-token.yml" config --quiet
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.yml --profile hosted-agent config --quiet

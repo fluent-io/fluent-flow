@@ -6,7 +6,7 @@ WORKDIR /app
 COPY package*.json turbo.json ./
 COPY packages/db ./packages/db
 COPY packages/fluent-flow/package.json ./packages/fluent-flow/package.json
-COPY packages/fluent-flow-runner/package.json ./packages/fluent-flow-runner/package.json
+COPY packages/fluent-flow-agent-server/package.json ./packages/fluent-flow-agent-server/package.json
 COPY packages/dashboard/package.json ./packages/dashboard/package.json
 
 # Install only the db workspace's deps (includes devDeps like tsc, drizzle-kit
@@ -23,7 +23,7 @@ WORKDIR /app
 
 COPY package*.json turbo.json ./
 COPY packages/fluent-flow ./packages/fluent-flow
-COPY packages/fluent-flow-runner/package.json ./packages/fluent-flow-runner/package.json
+COPY packages/fluent-flow-agent-server/package.json ./packages/fluent-flow-agent-server/package.json
 COPY packages/dashboard/package.json ./packages/dashboard/package.json
 
 # Pull the built @fluent-flow/db in as a workspace: package.json + dist/ only

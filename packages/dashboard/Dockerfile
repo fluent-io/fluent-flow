@@ -5,7 +5,7 @@ WORKDIR /app
 COPY package*.json turbo.json ./
 COPY packages/db ./packages/db
 COPY packages/fluent-flow/package.json ./packages/fluent-flow/package.json
-COPY packages/fluent-flow-runner/package.json ./packages/fluent-flow-runner/package.json
+COPY packages/fluent-flow-agent-server/package.json ./packages/fluent-flow-agent-server/package.json
 COPY packages/dashboard/package.json ./packages/dashboard/package.json
 
 RUN npm ci --workspace packages/db
@@ -18,7 +18,7 @@ WORKDIR /app
 COPY package*.json turbo.json ./
 COPY packages/dashboard ./packages/dashboard
 COPY packages/fluent-flow/package.json ./packages/fluent-flow/package.json
-COPY packages/fluent-flow-runner/package.json ./packages/fluent-flow-runner/package.json
+COPY packages/fluent-flow-agent-server/package.json ./packages/fluent-flow-agent-server/package.json
 
 COPY --from=db-builder /app/packages/db/package.json ./packages/db/package.json
 COPY --from=db-builder /app/packages/db/dist ./packages/db/dist
@@ -40,7 +40,7 @@ WORKDIR /app
 COPY package*.json turbo.json ./
 COPY packages/dashboard/package.json ./packages/dashboard/package.json
 COPY packages/fluent-flow/package.json ./packages/fluent-flow/package.json
-COPY packages/fluent-flow-runner/package.json ./packages/fluent-flow-runner/package.json
+COPY packages/fluent-flow-agent-server/package.json ./packages/fluent-flow-agent-server/package.json
 
 COPY --from=db-builder /app/packages/db/package.json ./packages/db/package.json
 COPY --from=db-builder /app/packages/db/dist ./packages/db/dist

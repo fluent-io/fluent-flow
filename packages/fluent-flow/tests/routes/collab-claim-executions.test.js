@@ -77,7 +77,7 @@ describe('collaboration claim execution routes', () => {
   }
 
   async function runnerRequest(path, body) {
-    const response = await fetch(`${baseUrl}/api/runner${path}`, {
+    const response = await fetch(`${baseUrl}/api/agent-server${path}`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${runnerToken}`,

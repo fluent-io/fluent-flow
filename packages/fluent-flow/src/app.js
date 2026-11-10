@@ -16,7 +16,7 @@ import reviewRouter from './routes/review.js';
 import configRouter from './routes/config.js';
 import healthRouter from './routes/health.js';
 import agentsRouter from './routes/agents.js';
-import runnerRouter from './routes/runner.js';
+import agentServerRouter from './routes/agent-server.js';
 import collabRouter from './collab/routes.js';
 import connectorRouter from './collab/routes-connector.js';
 import { collabMcpHandler } from './collab/mcp.js';
@@ -64,7 +64,7 @@ export function createApp() {
   app.use('/api', configRouter);
   app.use('/api', healthRouter);
   app.use('/api', agentsRouter);
-  app.use('/api', runnerRouter);
+  app.use('/api', agentServerRouter);
 
   app.use('/api/collab/v1', collabRouter);
 

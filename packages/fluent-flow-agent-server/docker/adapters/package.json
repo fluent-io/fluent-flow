@@ -1,0 +1,8 @@
+{
+  "name": "fluent-flow-agent-server-adapters",
+  "private": true,
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.101.0",
+    "@agentclientprotocol/codex-acp": "2.6.0"
+  }
+}
