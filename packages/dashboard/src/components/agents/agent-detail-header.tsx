@@ -2,16 +2,17 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { Agent } from '@fluent-flow/db';
+import type { AgentDetail } from '@fluent-flow/db';
 import { StatusBadge } from './status-badge';
 import { TypeBadge } from './type-badge';
+import { formatDeployment, formatSlots } from './agent-format';
 import { Button } from '@/components/ui/button';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger,
 } from '@/components/ui/dialog';
 
 interface AgentDetailHeaderProps {
-  agent: Agent;
+  agent: AgentDetail;
   keyInfo: { id: number; created_at: Date | string } | null;
   status: string | null;
   isAdmin: boolean;
@@ -49,7 +50,9 @@ export function AgentDetailHeader({ agent, keyInfo, status, isAdmin }: AgentDeta
             <StatusBadge status={status} />
           </div>
           <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
-            <div>Type: <TypeBadge type={agent.agent_type} /></div>
+            <div>Provider: <TypeBadge type={agent.agent_type} /></div>
+            <div>Slots: {formatSlots(agent)}</div>
+            <div>Deployment: {formatDeployment(agent.deployment)}</div>
             <div>Transport: {agent.transport}</div>
             <div>Registered: {new Date(agent.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</div>
             <div>Repos: {agent.repos.join(', ')}</div>

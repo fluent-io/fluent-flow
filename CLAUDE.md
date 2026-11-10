@@ -1,6 +1,6 @@
 # Fluent Flow
 
-Turborepo monorepo with four packages: server (`packages/fluent-flow/`), runner (`packages/fluent-flow-runner/`), dashboard (`packages/dashboard/`), and shared db (`packages/db/`).
+Turborepo monorepo with four packages: server (`packages/fluent-flow/`), agent server (`packages/fluent-flow-agent-server/`), dashboard (`packages/dashboard/`), and shared db (`packages/db/`). The agent server runs claims on a machine you control and also ships the separate `fluent-flow-connector` executable for Paseo execution.
 
 Read [packages/fluent-flow/README.md](packages/fluent-flow/README.md) for architecture overview, quick start, API reference, and config system.
 
@@ -8,13 +8,14 @@ Read [packages/fluent-flow/README.md](packages/fluent-flow/README.md) for archit
 
 - [packages/dashboard/README.md](packages/dashboard/README.md) — Admin dashboard: agent management, pipeline status, auth, setup
 - [packages/db/README.md](packages/db/README.md) — Shared data access: pg pool, Zod schemas, org-scoped queries
-- [packages/fluent-flow-runner/README.md](packages/fluent-flow-runner/README.md) — Runner CLI: agent registration, token setup, running locally
+- [packages/fluent-flow-agent-server/README.md](packages/fluent-flow-agent-server/README.md) — Agent server: local, self-hosted and hosted setup, enrollment, capacity, health, security model, operations
+- [packages/fluent-flow-agent-server/docker/README.md](packages/fluent-flow-agent-server/docker/README.md) — Image contents, Compose files, pinned ACP adapter lockfile
 - [packages/fluent-flow/config/README.md](packages/fluent-flow/config/README.md) — Config system: defaults, agent registry, per-repo overrides, validation
 - [packages/fluent-flow/src/engine/README.md](packages/fluent-flow/src/engine/README.md) — State machine, review pipeline, pause/resume logic
 - [packages/fluent-flow/src/mcp/README.md](packages/fluent-flow/src/mcp/README.md) — MCP server: tools, connection, auth
 - [packages/fluent-flow/src/notifications/README.md](packages/fluent-flow/src/notifications/README.md) — Agent notification dispatcher, transports, multi-agent routing
 - [packages/fluent-flow/src/agents/README.md](packages/fluent-flow/src/agents/README.md) — Agent registry, tokens, sessions, claims
-- [packages/fluent-flow/DESIGN.md](packages/fluent-flow/DESIGN.md) — Build instructions, DB schema, Docker setup
+- [docs/superpowers/specs/2026-11-08-portable-agent-server-design.md](docs/superpowers/specs/2026-11-08-portable-agent-server-design.md) — Agent server design, acceptance status, open deviations
 - [docs/specs/](docs/specs/) — Design specs (agent-agnostic routing, worktree task pipeline, dashboard, pipeline status)
 - [docs/plans/](docs/plans/) — Implementation plans
 
@@ -52,13 +53,21 @@ Notifications route to the agent that created the PR, not just the repo default:
 
 ```bash
 cd packages/fluent-flow
-npm test          # 381 tests, runs sequentially (--fileParallelism=false)
+npm test          # runs sequentially (--fileParallelism=false)
 npm run test:watch
 ```
 
-Or from root via Turborepo (runs all packages: 381 engine + 15 db + 14 dashboard = 410 tests):
+Or from root via Turborepo (runs every package, including the agent server and dashboard):
 ```bash
 npm test
 ```
+
+Agent server checks beyond the unit suite (see [its README](packages/fluent-flow-agent-server/README.md#development)):
+```bash
+npm run typecheck --workspace packages/fluent-flow-agent-server
+npm run smoke --workspace packages/fluent-flow-agent-server
+```
+
+Suites that need a real PostgreSQL database read `COLLAB_DB_TEST_DATABASE_URL`, `COLLAB_ROUTES_TEST_DATABASE_URL` or `COLLAB_CONNECTOR_TEST_DATABASE_URL`; without them those files fail at load. Use a disposable loopback `ff_*` database.
 
 TDD workflow: Red → Green → Refactor → breaking change verification → revert.

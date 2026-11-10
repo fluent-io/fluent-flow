@@ -71,7 +71,7 @@ jobs:
       - name: Install UAT dependencies
         run: |
           set -euo pipefail
-          npm ci --workspace packages/db --workspace packages/fluent-flow-runner --workspace packages/dashboard
+          npm ci --workspace packages/db --workspace packages/fluent-flow-agent-server --workspace packages/dashboard
           npx playwright install chromium
           npm run build --workspace packages/db
 
@@ -116,7 +116,7 @@ jobs:
           docker cp "$server:/tmp/preview-uat-state.json" "$RUNNER_TEMP/preview-uat-state.json"
           chmod 600 "$RUNNER_TEMP/preview-uat-state.json"
 
-      - name: Exercise login, execution, runner, and interactions
+      - name: Exercise login, execution, agent server, and interactions
         env:
           PREVIEW_UAT_STATE: ${{ runner.temp }}/preview-uat-state.json
           PREVIEW_UAT_SCREENSHOTS: ${{ github.workspace }}/preview-uat-evidence

@@ -9,11 +9,13 @@
     "build": "turbo run build",
     "test": "turbo run test",
     "test:preview": "node --test scripts/preview-*.test.mjs scripts/preview-webhook-router/*.test.mjs",
+    "test:release": "node --test scripts/release-policy.test.mjs scripts/workflow-pins.test.mjs",
     "predev": "node scripts/dev-database.mjs",
     "dev": "turbo run dev",
     "runner": "node scripts/dev-runner.mjs"
   },
   "devDependencies": {
+    "semver": "7.8.5",
     "turbo": "^2.5.0",
     "typescript": "^6.0.2"
   }

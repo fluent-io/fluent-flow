@@ -7,9 +7,9 @@ import { promisify } from 'node:util';
 import { createServer } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { resolveCollabTestDatabaseUrl, resetCollabSchema } from '../helpers/collab-db.js';
-import { createConnectorClient } from '../../../fluent-flow-runner/src/connector/connector-client.js';
-import { createConnectorRuntime } from '../../../fluent-flow-runner/src/connector/runtime.js';
-import { fakePaseoSdk } from '../../../fluent-flow-runner/tests/unit/connector/helpers/fake-paseo.js';
+import { createConnectorClient } from '../../../fluent-flow-agent-server/src/connector/connector-client.js';
+import { createConnectorRuntime } from '../../../fluent-flow-agent-server/src/connector/runtime.js';
+import { fakePaseoSdk } from '../../../fluent-flow-agent-server/tests/unit/connector/helpers/fake-paseo.js';
 
 const run = promisify(execFile);
 const repo = resolve(import.meta.dirname, '../../../..');

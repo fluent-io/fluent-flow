@@ -22,8 +22,8 @@ if (args.help) {
     process.env.DATABASE_URL ??= parseEnv(readFileSync(join(root, 'packages/fluent-flow/.env.local'), 'utf8')).DATABASE_URL;
     setup = await import('./dev-runner-setup.mjs');
     db = await import('@fluent-flow/db');
-    const { resolveLocalDaemon } = await import('../packages/fluent-flow-runner/src/connector/paseo-local.js');
-    const { connectLocalPaseo, createConnectorRuntime } = await import('../packages/fluent-flow-runner/src/connector/runtime.js');
+    const { resolveLocalDaemon } = await import('../packages/fluent-flow-agent-server/src/connector/paseo-local.js');
+    const { connectLocalPaseo, createConnectorRuntime } = await import('../packages/fluent-flow-agent-server/src/connector/runtime.js');
     const connection = await resolveLocalDaemon({ home: process.env.PASEO_HOME });
     paseo = await connectLocalPaseo(connection);
     prepared = await setup.prepareLocalRunner({ root, paseo, profileId: args.profile });

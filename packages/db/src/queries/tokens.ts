@@ -2,9 +2,16 @@ import crypto from 'node:crypto';
 import { getPool, query } from '../pool.js';
 
 const TOKEN_PREFIX = 'ff_';
+const ENROLLMENT_TOKEN_PREFIX = 'enroll_';
+const DEFAULT_TTL_MS = 365 * 24 * 60 * 60 * 1000;
+const ENROLLMENT_TTL_MS = 15 * 60 * 1000;
 
 function generateToken(): string {
   return TOKEN_PREFIX + crypto.randomBytes(32).toString('hex');
+}
+
+function generateEnrollmentToken(): string {
+  return ENROLLMENT_TOKEN_PREFIX + crypto.randomBytes(32).toString('hex');
 }
 
 function hashToken(plaintext: string): string {
@@ -47,8 +54,6 @@ export async function getKeyInfo(orgId: string, agentId: string): Promise<{ id: 
   return result.rows[0] ?? null;
 }
 
-const DEFAULT_TTL_MS = 365 * 24 * 60 * 60 * 1000;
-
 export interface CreateTokenInput {
   orgId: string;
   agentId: string;
@@ -83,4 +88,117 @@ export async function createToken(input: CreateTokenInput): Promise<{ plaintext:
     [input.orgId, input.agentId, hash, input.label, expiresAt],
   );
   return { plaintext, id: result.rows[0].id };
+}
+
+export async function createEnrollmentToken(
+  input: { orgId: string; agentId: string; expiresAt?: Date },
+  executor?: {
+    query(text: string, params?: unknown[]): Promise<{ rows: unknown[] }>;
+  },
+): Promise<{ plaintext: string; id: number }> {
+  const plaintext = generateEnrollmentToken();
+  const hash = hashToken(plaintext);
+  const expiresAt = input.expiresAt ?? new Date(Date.now() + ENROLLMENT_TTL_MS);
+  const result = await (executor ?? { query }).query(
+    `INSERT INTO agent_tokens (org_id, agent_id, token_hash, label, expires_at)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id`,
+    [input.orgId, input.agentId, hash, `enrollment:${input.agentId}`, expiresAt],
+  );
+  const row = result.rows[0];
+  if (typeof row !== 'object' || row === null || !('id' in row) || typeof row.id !== 'number') {
+    throw new Error('Enrollment token insert did not return an id');
+  }
+  return { plaintext, id: row.id };
+}
+
+interface EnrollmentTokenRow {
+  id: number;
+  org_id: string;
+  agent_id: string;
+  label: string | null;
+  expires_at: Date | null;
+  revoked_at: Date | null;
+}
+
+export async function exchangeEnrollmentToken(input: {
+  plaintext: string;
+  instanceId: string;
+}): Promise<{
+  plaintext: string;
+  id: number;
+  orgId: string;
+  agentId: string;
+} | null> {
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    const enrollmentResult = await client.query<EnrollmentTokenRow>(
+      `SELECT id, org_id, agent_id, label, expires_at, revoked_at
+       FROM agent_tokens
+       WHERE token_hash = $1
+         AND revoked_at IS NULL
+         AND expires_at > NOW()
+         AND label LIKE 'enrollment:%'
+       FOR UPDATE`,
+      [hashToken(input.plaintext)],
+    );
+    const enrollment = enrollmentResult.rows[0];
+    const isActiveEnrollment = enrollment !== undefined
+      && enrollment.revoked_at === null
+      && enrollment.label?.startsWith('enrollment:') === true;
+
+    if (!isActiveEnrollment) {
+      await client.query('COMMIT');
+      return null;
+    }
+
+    const revoked = await client.query(
+      `UPDATE agent_tokens
+       SET revoked_at = NOW()
+       WHERE id = $1
+         AND revoked_at IS NULL
+         AND expires_at > NOW()
+         AND label LIKE 'enrollment:%'
+       RETURNING id`,
+      [enrollment.id],
+    );
+    if (revoked.rows.length === 0) {
+      await client.query('COMMIT');
+      return null;
+    }
+
+    const plaintext = generateToken();
+    const inserted = await client.query(
+      `INSERT INTO agent_tokens (org_id, agent_id, token_hash, label, expires_at)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id`,
+      [
+        enrollment.org_id,
+        enrollment.agent_id,
+        hashToken(plaintext),
+        `instance:${input.instanceId}`,
+        new Date(Date.now() + DEFAULT_TTL_MS),
+      ],
+    );
+    await client.query('COMMIT');
+    return {
+      plaintext,
+      id: inserted.rows[0].id,
+      orgId: enrollment.org_id,
+      agentId: enrollment.agent_id,
+    };
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [err, rollbackError],
+        'Enrollment token exchange and rollback both failed.',
+      );
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
 }

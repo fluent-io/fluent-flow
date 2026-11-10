@@ -1,0 +1,342 @@
+name: Release agent server
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+concurrency:
+  group: release-agent-server-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+env:
+  PACKAGE_NAME: "@fluent-flow/agent-server"
+  PACKAGE_DIR: packages/fluent-flow-agent-server
+  IMAGE_NAME: ghcr.io/fluent-io/fluent-flow-agent-server
+  SMOKE_IMAGE: fluent-flow-agent-server:smoke
+
+jobs:
+  verify:
+    if: startsWith(github.event.release.tag_name, 'agent-server-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.policy.outputs.prerelease }}
+      promote_latest: ${{ steps.policy.outputs.promote_latest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+
+      - name: Install dependencies from committed lockfile
+        run: npm ci
+
+      - name: Assert tag version matches package version
+        id: version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          tag_version="${RELEASE_TAG#agent-server-v}"
+          package_version="$(node -p "require('./${PACKAGE_DIR}/package.json').version")"
+          if [ -z "$tag_version" ] || [ "$tag_version" = "$RELEASE_TAG" ]; then
+            echo "::error::Release tag ${RELEASE_TAG} does not start with agent-server-v"
+            exit 1
+          fi
+          if [ "$tag_version" != "$package_version" ]; then
+            echo "::error::Release tag version ${tag_version} does not match ${PACKAGE_DIR}/package.json version ${package_version}"
+            exit 1
+          fi
+          echo "version=${package_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Test release policy
+        run: npm run test:release
+
+      - name: Compute release policy
+        id: policy
+        env:
+          PACKAGE_VERSION: ${{ steps.version.outputs.version }}
+        run: node scripts/release-policy.mjs
+
+      - name: Run agent server tests
+        run: npm test -w @fluent-flow/agent-server -- --exclude tests/unit/connector/real-app.test.js
+
+      - name: Typecheck agent server
+        run: npm run typecheck -w @fluent-flow/agent-server
+
+      - name: Run agent server smoke
+        run: npm run smoke -w @fluent-flow/agent-server
+
+      - name: Assert npm tarball contents
+        run: |
+          npm pack --dry-run --json -w @fluent-flow/agent-server > pack.json
+          node --input-type=module - <<'EOF'
+          import { readFileSync } from 'node:fs';
+          import { posix } from 'node:path';
+
+          const [result] = JSON.parse(readFileSync('pack.json', 'utf8'));
+          const manifest = JSON.parse(readFileSync(`${process.env.PACKAGE_DIR}/package.json`, 'utf8'));
+          const paths = result.files.map((file) => file.path);
+          const failures = [];
+          const required = ['package.json', 'README.md', 'connector.example.json', ...Object.values(manifest.bin).map((target) => posix.normalize(target))];
+          for (const path of required) {
+            if (!paths.includes(path)) failures.push(`tarball is missing ${path}`);
+          }
+          if (!paths.some((path) => path.startsWith('bin/'))) failures.push('tarball has no bin/ files');
+          if (!paths.some((path) => path.startsWith('src/'))) failures.push('tarball has no src/ files');
+          for (const path of paths) {
+            if (path.startsWith('tests/') || path.startsWith('scripts/') || path === 'Dockerfile' || /^docker-compose.*\.ya?ml$/.test(path)) {
+              failures.push(`tarball must not contain ${path}`);
+            }
+          }
+          if (failures.length > 0) {
+            for (const failure of failures) console.error(`::error::${failure}`);
+            process.exit(1);
+          }
+          console.log(`Tarball ${result.name}@${result.version} contains ${paths.length} files`);
+          EOF
+
+  image-smoke-amd64:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+
+      - name: Install dependencies from committed lockfile
+        run: npm ci
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - name: Lint Dockerfile
+        run: |
+          docker run --rm -i -v "$PWD/.hadolint.yaml:/.hadolint.yaml:ro" hadolint/hadolint:v2.15.1@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d \
+            hadolint --config /.hadolint.yaml - < "${PACKAGE_DIR}/Dockerfile"
+
+      - name: Build linux/amd64 image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: packages/fluent-flow-agent-server/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ env.SMOKE_IMAGE }}
+
+      - name: Run image smoke
+        env:
+          CONTAINER_CLI: docker
+          AGENT_SERVER_IMAGE: ${{ env.SMOKE_IMAGE }}
+        run: npm run smoke:image -w @fluent-flow/agent-server
+
+      - name: Validate package Compose files
+        env:
+          FLUENT_FLOW_SERVER: https://flow.example.test
+          AGENT_PROVIDER: claude-code
+          FLUENT_FLOW_ENROLLMENT_TOKEN: dummy-enrollment-token
+          PROVIDER_AUTH_FILE: /tmp/provider-auth
+          FLUENT_FLOW_TOKEN_SECRET_FILE: /tmp/fluent-flow-token
+        run: |
+          docker compose -f "${PACKAGE_DIR}/docker-compose.yml" config --quiet
+          docker compose -f "${PACKAGE_DIR}/docker-compose.durable-token.yml" config --quiet
+
+  publish-npm:
+    needs: [verify, image-smoke-amd64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PACKAGE_VERSION: ${{ needs.verify.outputs.version }}
+      PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+      PROMOTE_LATEST: ${{ needs.verify.outputs.promote_latest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+
+      - name: Check whether this version is already published
+        id: published
+        run: |
+          status=0
+          npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version > view.out 2> view.err || status=$?
+          if [ "$status" -eq 0 ] && [ "$(cat view.out)" = "$PACKAGE_VERSION" ]; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+          elif [ "$status" -eq 0 ] && [ ! -s view.out ]; then
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          elif [ "$status" -ne 0 ] && grep -q "E404" view.err; then
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Unable to determine whether ${PACKAGE_NAME}@${PACKAGE_VERSION} is published"
+            cat view.out view.err
+            exit 1
+          fi
+
+      - name: Publish to npm
+        if: steps.published.outputs.already_published == 'false'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ "$PRERELEASE" = "true" ]; then
+            dist_tag=next
+          elif [ "$PROMOTE_LATEST" = "true" ]; then
+            dist_tag=latest
+          else
+            dist_tag=legacy
+          fi
+          echo "Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION} with dist-tag ${dist_tag}"
+          printf '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}\n' > "$RUNNER_TEMP/publish.npmrc"
+          NPM_CONFIG_USERCONFIG="$RUNNER_TEMP/publish.npmrc" npm publish --provenance --access public --tag "$dist_tag" -w "$PACKAGE_NAME"
+
+      - name: Confirm version is on the registry
+        run: |
+          for attempt in 1 2 3; do
+            published="$(npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version || true)"
+            if [ "$published" = "$PACKAGE_VERSION" ]; then
+              exit 0
+            fi
+            echo "Attempt ${attempt}: registry reports '${published}', expected ${PACKAGE_VERSION}"
+            sleep 10
+          done
+          echo "::error::${PACKAGE_NAME}@${PACKAGE_VERSION} is not visible on the registry"
+          exit 1
+
+  publish-image:
+    needs: [verify, image-smoke-amd64]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      PACKAGE_VERSION: ${{ needs.verify.outputs.version }}
+      PROMOTE_LATEST: ${{ needs.verify.outputs.promote_latest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check whether the version tag already exists
+        id: existing
+        run: |
+          status=0
+          docker buildx imagetools inspect --raw "${IMAGE_NAME}:${PACKAGE_VERSION}" > existing.out 2> existing.err || status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${IMAGE_NAME}:${PACKAGE_VERSION} already exists; it will be verified, not rebuilt"
+          elif grep -qi "not found" existing.err; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Unable to determine whether ${IMAGE_NAME}:${PACKAGE_VERSION} exists"
+            cat existing.err
+            exit 1
+          fi
+
+      - name: Build and push the version tag
+        id: build
+        if: steps.existing.outputs.exists == 'false'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: .
+          file: packages/fluent-flow-agent-server/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          cache-from: type=gha,scope=agent-server-image
+          cache-to: type=gha,scope=agent-server-image,mode=max
+          tags: ${{ env.IMAGE_NAME }}:${{ needs.verify.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.verify.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+
+      - name: Resolve the version tag digest
+        id: digest
+        env:
+          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          digest="$(docker buildx imagetools inspect "${IMAGE_NAME}:${PACKAGE_VERSION}" --format '{{json .Manifest}}' | jq -r '.digest')"
+          case "$digest" in
+            sha256:*) ;;
+            *)
+              echo "::error::Could not resolve a digest for ${IMAGE_NAME}:${PACKAGE_VERSION}"
+              exit 1
+              ;;
+          esac
+          if [ -n "$BUILT_DIGEST" ] && [ "$BUILT_DIGEST" != "$digest" ]; then
+            echo "::error::Tag resolves to ${digest} but the build pushed ${BUILT_DIGEST}"
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the manifest lists amd64 and arm64
+        id: platforms
+        env:
+          IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          manifest="$(docker buildx imagetools inspect --raw "${IMAGE_NAME}@${IMAGE_DIGEST}")"
+          platforms="$(echo "$manifest" | jq -r '[.manifests[].platform | select(.os == "linux") | "\(.os)/\(.architecture)"] | sort | join(",")')"
+          if [ "$platforms" != "linux/amd64,linux/arm64" ]; then
+            echo "::error::${IMAGE_NAME}@${IMAGE_DIGEST} lists platforms '${platforms}', expected linux/amd64,linux/arm64"
+            exit 1
+          fi
+          for arch in amd64 arm64; do
+            platform_digest="$(echo "$manifest" | jq -r --arg arch "$arch" '.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest')"
+            if [ -z "$platform_digest" ]; then
+              echo "::error::No linux/${arch} manifest in ${IMAGE_NAME}@${IMAGE_DIGEST}"
+              exit 1
+            fi
+            echo "${arch}=${platform_digest}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Run the full image smoke against the pushed amd64 digest
+        env:
+          CONTAINER_CLI: docker
+          AMD64_DIGEST: ${{ steps.platforms.outputs.amd64 }}
+        run: |
+          docker pull "${IMAGE_NAME}@${AMD64_DIGEST}"
+          AGENT_SERVER_IMAGE="${IMAGE_NAME}@${AMD64_DIGEST}" npm run smoke:image -w @fluent-flow/agent-server
+
+      - name: Verify the pushed arm64 digest under QEMU
+        env:
+          ARM64_DIGEST: ${{ steps.platforms.outputs.arm64 }}
+        run: |
+          image="${IMAGE_NAME}@${ARM64_DIGEST}"
+          docker pull --platform linux/arm64 "$image"
+          docker run --rm --platform linux/arm64 --entrypoint git "$image" --version
+          docker run --rm --platform linux/arm64 --entrypoint claude-agent-acp "$image" --version
+          docker run --rm --platform linux/arm64 --entrypoint codex-acp "$image" --version
+
+      - name: Promote latest to the verified digest
+        if: env.PROMOTE_LATEST == 'true'
+        env:
+          IMAGE_DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          docker buildx imagetools create --tag "${IMAGE_NAME}:latest" "${IMAGE_NAME}@${IMAGE_DIGEST}"
+          latest_digest="$(docker buildx imagetools inspect "${IMAGE_NAME}:latest" --format '{{json .Manifest}}' | jq -r '.digest')"
+          if [ "$latest_digest" != "$IMAGE_DIGEST" ]; then
+            echo "::error::${IMAGE_NAME}:latest resolves to ${latest_digest}, expected ${IMAGE_DIGEST}"
+            exit 1
+          fi

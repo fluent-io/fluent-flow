@@ -3,12 +3,12 @@ import { EventEmitter } from 'node:events';
 import { db, enqueueClaimCommand, schema, upsertClaimRequest } from '@fluent-flow/db';
 import { sql } from 'drizzle-orm';
 import { integrationDescribe, resetDb } from '../helpers/integration-db.js';
-import { claimPendingWork, handlePoll, releaseUndeliveredClaim } from '../../src/routes/runner.js';
+import { claimPendingWork, handlePoll, releaseUndeliveredClaim } from '../../src/routes/agent-server.js';
 import { completeClaim } from '../../src/agents/claim-manager.js';
 
 /**
  * Integration coverage for the `FOR UPDATE SKIP LOCKED` atomic claim path in
- * runner.js. Requires a live Postgres (TEST_DATABASE_URL). The runner's polling
+ * agent-server.js. Requires a live Postgres (TEST_DATABASE_URL). The agent server's polling
  * concurrency is critical — two sessions polling simultaneously must never
  * both win the same pending claim, and repo-scoped agents must skip claims
  * outside their scope.

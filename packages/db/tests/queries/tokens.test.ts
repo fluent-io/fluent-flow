@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { createEnrollmentToken, exchangeEnrollmentToken } from '../../src/queries/index';
 
 const mockClientQuery = vi.fn();
 const mockRelease = vi.fn();
@@ -11,6 +13,17 @@ vi.mock('../../src/pool', () => ({
 }));
 
 const { regenerateKey, getKeyInfo, createToken } = await import('../../src/queries/tokens');
+
+
+function normalizedSql(value: unknown): string {
+  return String(value).replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function transactionCommands() {
+  return mockClientQuery.mock.calls.map(([text]) => normalizedSql(text)).filter((sql) =>
+    ['begin', 'commit', 'rollback'].includes(sql),
+  );
+}
 
 describe('regenerateKey', () => {
   beforeEach(() => {
@@ -122,5 +135,197 @@ describe('createToken', () => {
     await createToken({ orgId: 'o', agentId: 'a', label: 'l', expiresAt: when });
 
     expect(mockQuery.mock.calls[0][1]?.[4]).toBe(when);
+  });
+});
+
+describe('createEnrollmentToken', () => {
+  beforeEach(() => {
+    mockQuery.mockReset();
+    mockClientQuery.mockReset();
+    mockRelease.mockReset();
+    mockConnect.mockClear();
+  });
+
+  it('generates a distinct non-ff_ credential and stores only its SHA-256 hash under an enrollment label', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 73 }] });
+
+    const result = await createEnrollmentToken({ orgId: 'fluent-io', agentId: 'portable-1' });
+
+    expect(result.id).toBe(73);
+    expect(result.plaintext).not.toMatch(/^ff_/);
+    expect(result.plaintext.length).toBeGreaterThan(32);
+    const [, params] = mockQuery.mock.calls[0];
+    expect(params[0]).toBe('fluent-io');
+    expect(params[1]).toBe('portable-1');
+    expect(params[2]).toBe(createHash('sha256').update(result.plaintext).digest('hex'));
+    expect(params[2]).not.toContain(result.plaintext);
+    expect(params[3]).toMatch(/^enrollment:/);
+  });
+
+  it('defaults expiry to fifteen minutes', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-08T12:00:00.000Z'));
+    try {
+      mockQuery.mockResolvedValueOnce({ rows: [{ id: 74 }] });
+
+      await createEnrollmentToken({ orgId: 'fluent-io', agentId: 'portable-2' });
+
+      expect(mockQuery.mock.calls[0][1][4]).toEqual(new Date('2026-11-08T12:15:00.000Z'));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('honours an explicit expiry', async () => {
+    const expiresAt = new Date('2026-12-01T00:00:00.000Z');
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 75 }] });
+
+    await createEnrollmentToken({ orgId: 'fluent-io', agentId: 'portable-3', expiresAt });
+
+    expect(mockQuery.mock.calls[0][1][4]).toBe(expiresAt);
+  });
+
+  it('uses a supplied transaction executor without opening or committing its own transaction', async () => {
+    const executorQuery = vi.fn().mockResolvedValue({ rows: [{ id: 76 }] });
+    const executor = { query: executorQuery };
+
+    const result = await createEnrollmentToken(
+      { orgId: 'fluent-io', agentId: 'portable-4' },
+      executor,
+    );
+
+    expect(result.id).toBe(76);
+    expect(executorQuery).toHaveBeenCalledTimes(1);
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockConnect).not.toHaveBeenCalled();
+    const commands = executorQuery.mock.calls.map(([text]) => normalizedSql(text));
+    expect(commands).not.toContain('begin');
+    expect(commands).not.toContain('commit');
+    expect(commands).not.toContain('rollback');
+  });
+});
+
+describe('exchangeEnrollmentToken', () => {
+  const validEnrollmentRow = {
+    id: 90,
+    org_id: 'fluent-io',
+    agent_id: 'portable-1',
+    label: 'enrollment:portable-1',
+    expires_at: new Date('2099-01-01T00:00:00.000Z'),
+    revoked_at: null,
+  };
+
+  beforeEach(() => {
+    mockClientQuery.mockReset();
+    mockRelease.mockReset();
+    mockConnect.mockClear();
+  });
+
+  it('atomically consumes a valid enrollment and returns one durable ff_ token bound to the instance', async () => {
+    mockClientQuery.mockImplementation(async (text: unknown) => {
+      const sql = normalizedSql(text);
+      if (sql.startsWith('select')) return { rows: [validEnrollmentRow] };
+      if (sql.startsWith('update')) return { rows: [validEnrollmentRow] };
+      if (sql.startsWith('insert')) return { rows: [{ id: 91 }] };
+      return { rows: [] };
+    });
+
+    const result = await exchangeEnrollmentToken({
+      plaintext: 'enrollment_credential_value',
+      instanceId: 'instance-01',
+    });
+
+    expect(result).toEqual({
+      plaintext: expect.stringMatching(/^ff_[0-9a-f]{64}$/),
+      id: 91,
+      orgId: 'fluent-io',
+      agentId: 'portable-1',
+    });
+    expect(transactionCommands()).toEqual(['begin', 'commit']);
+    expect(mockRelease).toHaveBeenCalledTimes(1);
+    const insertCall = mockClientQuery.mock.calls.find(([text]) =>
+      normalizedSql(text).startsWith('insert'),
+    );
+    expect(insertCall).toBeDefined();
+    const insertParams = insertCall?.[1] as unknown[];
+    expect(
+      insertParams.some((value) => typeof value === 'string' && value.includes('instance-01')),
+    ).toBe(true);
+    expect(
+      insertParams.some((value) => typeof value === 'string' && value.startsWith('enrollment:')),
+    ).toBe(false);
+    expect(insertParams).toContain(createHash('sha256').update(result!.plaintext).digest('hex'));
+  });
+
+  it('trusts PostgreSQL admission when the application clock is later than the row expiry', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2100-01-01T00:00:00.000Z'));
+    try {
+      mockClientQuery.mockImplementation(async (text: unknown) => {
+        const sql = normalizedSql(text);
+        if (sql.startsWith('select')) return { rows: [validEnrollmentRow] };
+        if (sql.startsWith('update')) return { rows: [validEnrollmentRow] };
+        if (sql.startsWith('insert')) return { rows: [{ id: 93 }] };
+        return { rows: [] };
+      });
+
+      const result = await exchangeEnrollmentToken({
+        plaintext: 'database_admitted_enrollment',
+        instanceId: 'instance-clock-skew',
+      });
+
+      expect(result).toEqual({
+        plaintext: expect.stringMatching(/^ff_[0-9a-f]{64}$/),
+        id: 93,
+        orgId: 'fluent-io',
+        agentId: 'portable-1',
+      });
+      expect(transactionCommands()).toEqual(['begin', 'commit']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ['unknown', null],
+    ['non-enrollment', { ...validEnrollmentRow, label: 'dashboard' }],
+    ['revoked', { ...validEnrollmentRow, revoked_at: new Date('2026-11-08T00:00:00.000Z') }],
+    ['expired', null],
+  ])('returns the same null result for %s input without creating a durable token', async (_case, row) => {
+    mockClientQuery.mockImplementation(async (text: unknown) => {
+      const sql = normalizedSql(text);
+      if (sql.startsWith('select')) return { rows: row ? [row] : [] };
+      if (sql.startsWith('update')) return { rows: row ? [row] : [] };
+      if (sql.startsWith('insert')) return { rows: [{ id: 92 }] };
+      return { rows: [] };
+    });
+
+    const result = await exchangeEnrollmentToken({
+      plaintext: 'generic_failure_credential',
+      instanceId: 'instance-02',
+    });
+
+    expect(result).toBeNull();
+    expect(mockClientQuery.mock.calls.some(([text]) => normalizedSql(text).startsWith('insert'))).toBe(false);
+    expect(transactionCommands()).toEqual(['begin', 'commit']);
+    expect(mockRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it('rolls back enrollment consumption when durable token insertion fails', async () => {
+    mockClientQuery.mockImplementation(async (text: unknown) => {
+      const sql = normalizedSql(text);
+      if (sql.startsWith('select')) return { rows: [validEnrollmentRow] };
+      if (sql.startsWith('update')) return { rows: [validEnrollmentRow] };
+      if (sql.startsWith('insert')) throw new Error('durable insert failed');
+      return { rows: [] };
+    });
+
+    await expect(exchangeEnrollmentToken({
+      plaintext: 'enrollment_credential_value',
+      instanceId: 'instance-03',
+    })).rejects.toThrow('durable insert failed');
+
+    expect(transactionCommands()).toEqual(['begin', 'rollback']);
+    expect(mockRelease).toHaveBeenCalledTimes(1);
   });
 });

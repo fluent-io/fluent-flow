@@ -31,22 +31,20 @@ Rolling view of what's shipped, what's in flight, and what's known-missing.
 
 ## In flight
 
-- [Collaborative client Kanban with task-linked Paseo execution](docs/plans/2026-10-19-collaborative-spec.md): implemented and locally verified, including canonical client/project/task persistence, non-GitHub invitations, scoped permissions, the board and task detail, an outbound PC connector, and retained Flowly execution features. Existing GitHub review, claims, pipelines and direct runner behavior remain supported. The [acceptance ledger](docs/plans/2026-10-19-collaborative-status.md) records real native/browser evidence and release boundaries; deployment and publication remain pending.
+- [Collaborative client Kanban with task-linked Paseo execution](docs/plans/2026-10-19-collaborative-spec.md): implemented and locally verified, including canonical client/project/task persistence, non-GitHub invitations, scoped permissions, the board and task detail, an outbound PC connector, and retained Flowly execution features. Existing GitHub review, claims, pipelines and direct agent server behavior remain supported. The [acceptance ledger](docs/plans/2026-10-19-collaborative-status.md) records real native/browser evidence and release boundaries; deployment and publication remain pending.
+- [Portable agent server](docs/superpowers/specs/2026-11-08-portable-agent-server-design.md): replaces the single-slot runner with `@fluent-flow/agent-server`, which runs up to 16 claims at once, enrolls with a single-use dashboard token, ships as an npm package and a prebuilt image, and exposes health endpoints. The work is implemented on its branch and not released. The design's [acceptance status](docs/superpowers/specs/2026-11-08-portable-agent-server-design.md#acceptance-status) lists the evidence and the open gaps.
 - Deterministic verification and merge policy remain unreleased targets. Existing review/remediation behavior must not be described as independent deterministic verification.
 
 ## Known gaps / next candidates
 
 Each entry: the gap, the impact, and the rough shape of the fix.
 
-### Runner distribution
+### Agent server distribution
 
-- **Runner distribution needs release verification.** The package is named `@fluent-flow/runner` with public publishing configuration. This change has not published a package or verified registry availability. The [runner guide](packages/fluent-flow-runner/README.md) documents local commands for the review runner and Paseo connector.
-  - **Next step:** verify the release workflow and registry version before recommending a published install command.
+- **The first release has not run.** `@fluent-flow/agent-server` and `ghcr.io/fluent-io/fluent-flow-agent-server` have never been published, so the dashboard's `npx @fluent-flow/agent-server@latest` command fails until they are. The release workflow has never run on GitHub: registry not-found handling, `imagetools` output parsing, the QEMU arm64 check, the Actions cache and the publish-step npm config are untested, and no arm64 image has been built. The container smoke test has run under rootless Podman, not a Docker daemon. The [agent server guide](packages/fluent-flow-agent-server/README.md#releases) describes the release policy.
+  - **Next step:** run the first release dry run on a GitHub Actions runner with a prerelease version (it publishes to the `next` dist-tag and never moves `latest`), check the npm provenance and the image digests, then cut the stable release.
 
 ### Reviewer reliability
-
-- **Review dispatch fires but runner can't clone.** Even after PR #93 (git auth), the runner container on G10 still needs SSH keys or `GITHUB_TOKEN` mounted. The code is ready but the Docker config hasn't been updated yet. Verify after next deploy.
-  - **Fix shape:** mount SSH key or set `GITHUB_TOKEN` in the runner's `docker-compose.yml` / `.env`.
 
 - **401 on GitHub API reviews endpoint during review dismissal.** The `pull_request.closed` / review-dismissal path still lacks installation context, falling back to PAT auth which 401s. Non-blocking for new review dispatch but means stale reviews aren't cleaned up.
   - **Fix shape:** same as the "non-check-run webhook paths" gap below — pass installation context to all GitHub REST helpers.
@@ -55,9 +53,6 @@ Each entry: the gap, the impact, and the rough shape of the fix.
 
 - **"All Repositories" at scale.** `installation.created` payload truncates at ~100 repos. Orgs with more repos only get partial `repos`/PIR rows on install. A manual `scripts/backfill-install-repos.js --all-active` fixes it (PR #86) but there's no automatic sync.
   - **Fix shape:** fire the same backfill logic automatically from the `installation.created` handler when the payload size hits the cap, or run it periodically. Reuse `scripts/backfill-install-repos.js`'s core as an exported function.
-
-- **Regenerate key from dashboard (session-authed).** Currently `/api/agents/[id]/key` POST is MCP admin only; there's no way for an org admin to re-issue a token if they close the New Agent modal without copying.
-  - **Fix shape:** session-auth branch on the existing `/api/agents/[id]/key` handler. Gated on `hasRole(session, agent.org_id, 'admin')`.
 
 ### Schema cleanup
 
@@ -77,9 +72,6 @@ Each entry: the gap, the impact, and the rough shape of the fix.
 
 ### Review pipeline
 
-- **Verdict parsing is fragile for non-Claude-Code agents.** The review→review_fix auto-chain depends on the agent echoing a `<!-- reviewer-result -->` marker to stdout. Works for Claude Code but if the agent posts reviews via `gh api` directly (the new prompt), the marker goes to GitHub, not stdout. The auto-chain won't fire unless the agent also prints the marker.
-  - **Fix shape:** after the agent exits, fetch the latest review from GitHub API and parse the verdict from there.
-
 - **DismissStaleButton visible to non-superadmins.** The button renders for all logged-in users but the API returns 403. Should gate on `isSuperadmin`.
   - **Fix shape:** pass `isSuperadmin` from session to client component, conditionally render.
 
@@ -88,14 +80,9 @@ Each entry: the gap, the impact, and the rough shape of the fix.
 - **Deploy can build a new app image without recreating the running container.** On 2026-04-25, CI built `fluent-flow-fluent-flow:latest`, but the live `fluent-flow` container stayed on the old image until `docker compose up -d --force-recreate fluent-flow` was run manually. During the forced restart, runners saw transient Cloudflare 502s and retried.
   - **Fix shape:** add `--force-recreate` or an equivalent deploy-sha image/container label change to the deploy workflow, and add a post-deploy smoke check that verifies the running container was created after the image build / exposes the expected `DEPLOY_SHA`.
 
-### Routing tighter-than-display
-
-- **`touchSession` lacks `expires_at > NOW()` guard.** A runner whose session TTL lapsed can silently revive the dead row on its next heartbeat instead of being forced through `registerSession`. PR #85 only tightened the read path (display + routing queries). Correctness-leaning — noted as out-of-scope on PR #85.
-  - **Fix shape:** add `expires_at > NOW()` to the `touchSession` WHERE clause; if the update hits zero rows, the runner re-registers.
-
 ### Quality of life
 
-- **Local dev ergonomics.** `npm install -g fluent-flow-runner` won't work until publish. Document the workspace-linked `npx fluent-flow-runner` path in the runner README more prominently, and prefer `https://flow.fluenthive.io` in runner examples to avoid tunnel/redirect confusion.
+- **Local dev ergonomics.** Prefer `https://flow.fluenthive.io` in agent server examples to avoid tunnel and redirect confusion.
 
 - **Consolidate webhook routers.** `webhook.js` exists only to host `routeWebhookEvent` + legacy 410 stubs; `github-app-webhook.js` forwards to it. Merge into one module now that PAT-era paths are fully retired.
 
@@ -113,7 +100,7 @@ Delivery assurance remains part of the direction. Further work includes:
 - fail-closed merge policy with explicit Verified, Evidence incomplete, Monitored, Inconclusive, Tampered, and Failed states;
 - an exportable evidence record and coverage ledger;
 - policy-enforced reviewer, verifier, and fixer identity separation where required;
-- customer-controlled runners and a supported self-hosting path;
+- customer-controlled agent servers and a supported self-hosting path;
 - external reviewer and security-tool ingestion, with CodeRabbit as the first direct integration target;
 - broader language and framework coverage;
 - enterprise deployment, identity, audit, and support readiness.
@@ -124,7 +111,7 @@ The earlier [Loop Engine v2 exploration](docs/specs/2026-06-10-loop-engineering-
 
 Held in `docs/plans/` and `packages/fluent-flow/docs/plans/`:
 
-- Server-hosted reviewer fallback is no longer a near-term direction. Fluent Flow is BYOK / bring-your-own-subscription: model credentials live with the user's runner/harness, not on the server. Any stale docs proposing server-side model calls or per-repo `pr-review.yml` workflows should be deleted or rewritten before use.
+- Server-hosted reviewer fallback is no longer a near-term direction. Fluent Flow is BYOK / bring-your-own-subscription: model credentials live with the user's agent server or harness, not on the server. Any stale docs proposing server-side model calls or per-repo `pr-review.yml` workflows should be deleted or rewritten before use.
 - VSCode extension — `packages/fluent-flow/docs/plans/vscode-extension.md`
 - Agent work queue redesign — `packages/fluent-flow/docs/plans/2026-03-28-agent-work-queue-plan.md`
 - Admin dashboard phase 2 (claim history, audit log viewer, notification preferences) — scoped in existing dashboard plan

@@ -1,0 +1,42 @@
+name: fluent-flow-agent-server
+
+services:
+  agent-server:
+    image: ghcr.io/fluent-io/fluent-flow-agent-server:latest
+    init: true
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /home/node:mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    command:
+      - --server
+      - ${FLUENT_FLOW_SERVER:?Set FLUENT_FLOW_SERVER to your Fluent Flow URL}
+      - --provider
+      - ${AGENT_PROVIDER:?Set AGENT_PROVIDER to claude-code or codex}
+      - --capacity
+      - ${AGENT_CAPACITY:-2}
+      - --deployment
+      - self_hosted
+      - --enrollment-token
+      - ${FLUENT_FLOW_ENROLLMENT_TOKEN:?Set FLUENT_FLOW_ENROLLMENT_TOKEN to the dashboard enrollment token}
+      - --provider-secret-file
+      - /run/secrets/provider-auth
+    secrets:
+      - source: provider_auth
+        target: provider-auth
+    volumes:
+      - fluent-flow-state:/home/node/.fluent-flow
+      - fluent-flow-work:/work
+
+secrets:
+  provider_auth:
+    file: ${PROVIDER_AUTH_FILE:?Set PROVIDER_AUTH_FILE to the provider secret file path}
+
+volumes:
+  fluent-flow-state:
+  fluent-flow-work:

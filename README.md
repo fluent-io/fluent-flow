@@ -4,7 +4,7 @@ Open-source, self-hostable collaboration and delivery control plane for agent-as
 
 The collaborative expansion is implemented and locally verified, including real PC-side Paseo execution. See the [acceptance status](docs/plans/2026-10-19-collaborative-status.md) for evidence, setup guides and release boundaries. This work has not been released or deployed. Deterministic red-before-fix and green-after-fix verification remains an unreleased delivery target.
 
-**Bring your own subscription.** Model-provider credentials stay on the execution host. Your runner uses the local tools and credentials already configured there.
+**Bring your own subscription.** Fluent Flow never calls model APIs. Your agent server uses the provider login or subscription credential file that you give it on its own host.
 
 ## Collaborative work and execution
 
@@ -16,15 +16,15 @@ Tasks retain their runs, sessions, discussion, workpad, checks, artifacts, summa
 
 ## Existing GitHub workflows
 
-Three boundaries: **GitHub**, the **Fluent Flow server + DB**, and **one or more runners** you register to your org. The server orchestrates; runners execute.
+Three boundaries: **GitHub**, the **Fluent Flow server + DB**, and **one or more agent servers** you register to your org. The server orchestrates; agent servers execute.
 
 ### Install
 
 Install the GitHub App on your org. The server records the installation and materializes repo rows for every repo the App can see. Adding, removing, or reinstalling repos later stays in sync via `installation_repositories.*` webhooks.
 
-### Connect a runner
+### Connect an agent server
 
-From the dashboard, create an agent. You get a runner command — run it wherever your AI CLI lives. The runner registers a session with the server and holds a long-poll open, waiting for work. Agents are scoped to all repos in their org by default.
+From the dashboard, create an agent server: pick a provider (`claude-code` or `codex`), a capacity from 1 to 16 concurrent claims, and local (npm) or self-hosted (Docker). You get one command with a 15-minute, single-use enrollment token. Run it where your provider login lives, or run the Docker command on a VM. The agent server registers one long-poll session per capacity slot and waits for work, and agents are scoped to all repos in their org by default. Platform operators run hosted servers from the same image. See the [agent server guide](packages/fluent-flow-agent-server/README.md).
 
 ### Do work
 
@@ -33,8 +33,8 @@ Two paths into the same engine:
 **Reactive** — GitHub events trigger claims automatically:
 ```
 Push → CI completes → check_run.completed webhook → server
-  → creates a pending review claim → runner claims via poll → local ACP adapter posts review
-  → on failure, creates a pending fix claim → runner claims it → pushes a fix → loop continues
+  → creates a pending review claim → agent server slot claims via poll → local ACP adapter posts review
+  → on failure, creates a pending fix claim → a slot claims it → pushes a fix → loop continues
   → on claim expiry, auto-re-dispatches at attempt + 1 (cap at 10)
 ```
 
@@ -50,7 +50,7 @@ The verifier will bind evidence to the reviewed commit, prove new tests fail bef
 ```
 Pick a repo → choose type (Feature / Fix / Review / Spec) → describe the task
   → server creates a pending claim (spec / build / review / fix / test)
-  → runner claims it via poll → local ACP adapter does the work → result flows back
+  → an agent server slot claims it via poll → local ACP adapter does the work → result flows back
   → on claim expiry, auto-re-dispatches at attempt + 1 (cap at 10)
 ```
 Feature claims auto-chain spec → build. Spec claims produce a plan for the user to create a PR. Fix and Review require an existing PR number.
@@ -62,7 +62,7 @@ Both paths produce claims that flow through the same dispatch pipeline. The pipe
 | Package | Description |
 |---------|-------------|
 | [fluent-flow](packages/fluent-flow/) | Server — claim dispatch, agent registry, webhook handler, MCP server |
-| [fluent-flow-runner](packages/fluent-flow-runner/) | CLI runner — connects to server, picks up claims, launches a local ACP adapter |
+| [fluent-flow-agent-server](packages/fluent-flow-agent-server/) | Agent server — connects to the server, runs up to 16 claims at once in isolated worktrees with a local ACP adapter, ships as an npm package and a Docker image. Also holds the separate Paseo connector |
 | [dashboard](packages/dashboard/) | Admin UI — Next.js dashboard for repos, agents, and pipeline monitoring |
 | [db](packages/db/) | Shared data access — pg pool, Zod schemas, org-scoped queries |
 
@@ -71,8 +71,8 @@ Both paths produce claims that flow through the same dispatch pipeline. The pipe
 ### For org admins
 
 1. **Install the GitHub App** on your org via the dashboard install CTA.
-2. **Create an agent** on the Agents page. Name it and choose `claude-code`, `codex`, or `opencode`.
-3. **Install and authenticate the matching ACP adapter locally**, then run the generated command. The dashboard shows "Connected" when the runner registers.
+2. **Create an agent server** on the Agents page. Name it, choose `claude-code` or `codex`, a capacity, and local or self-hosted.
+3. **Run the generated command.** Local mode needs Node 20+, git, gh, the provider's ACP adapter and a signed-in provider CLI. Self-hosted mode needs Docker and a provider secret file. The dashboard shows "Connected" when a slot registers.
 4. **Do work** — open a PR for an automatic review, or start a workflow from the Repos page.
 
 ### For developers
@@ -85,7 +85,7 @@ cp packages/fluent-flow/.env.example packages/fluent-flow/.env.local
 cp packages/dashboard/.env.example packages/dashboard/.env.local
 ```
 
-Fill in both files before starting. Set `DATABASE_URL` to your development database in both apps and use the same private `FF_COLLAB_AUTH_SECRET`. The server also requires its existing `FF_GITHUB_APP_ID`, `FF_GITHUB_APP_PRIVATE_KEY` and `FF_GITHUB_APP_WEBHOOK_SECRET` configuration. In the dashboard, set `FF_COLLAB_API_URL=http://127.0.0.1:3847`, `NEXTAUTH_URL=http://localhost:3000` and a private `NEXTAUTH_SECRET`; configure GitHub OAuth credentials when using GitHub sign-in. Legacy Agents/runner registration also needs dashboard `NEXT_PUBLIC_FLUENT_FLOW_URL=http://127.0.0.1:3847`. See the [server](packages/fluent-flow/README.md#environment-variables) and [dashboard](packages/dashboard/README.md#setup) setup guides.
+Fill in both files before starting. Set `DATABASE_URL` to your development database in both apps and use the same private `FF_COLLAB_AUTH_SECRET`. The server also requires its existing `FF_GITHUB_APP_ID`, `FF_GITHUB_APP_PRIVATE_KEY` and `FF_GITHUB_APP_WEBHOOK_SECRET` configuration. In the dashboard, set `FF_COLLAB_API_URL=http://127.0.0.1:3847`, `NEXTAUTH_URL=http://localhost:3000` and a private `NEXTAUTH_SECRET`; configure GitHub OAuth credentials when using GitHub sign-in. Creating agent servers from the Agents page also needs dashboard `NEXT_PUBLIC_FLUENT_FLOW_URL=http://127.0.0.1:3847`. See the [server](packages/fluent-flow/README.md#environment-variables) and [dashboard](packages/dashboard/README.md#setup) setup guides.
 
 Then start the API and dashboard together:
 
@@ -103,7 +103,7 @@ To test task execution, keep `npm run dev` running and open another terminal:
 npm run runner
 ```
 
-With the local demo seeded to `.local/ff-demo-users.json` and Paseo already running, this connects a real local execution host, prepares a disposable Git repository, and configures Project A1. It prefers your existing OMP AI3 `ai3/qwen38-flash` coding profile; choose another with `npm run runner -- --profile <paseo-profile-id>`. Enrollment and journal state stay private in `.local/runner/` and are reused on restart. No AI task starts automatically. In Project A1, create a task asking the agent to fix `add` so `npm test` passes, then open Execution and click Start. See the [runner guide](packages/fluent-flow-runner/README.md#local-browser-testing).
+With the local demo seeded to `.local/ff-demo-users.json` and Paseo already running, this connects a real local execution host, prepares a disposable Git repository, and configures Project A1. It prefers your existing OMP AI3 `ai3/qwen38-flash` coding profile; choose another with `npm run runner -- --profile <paseo-profile-id>`. Enrollment and journal state stay private in `.local/runner/` and are reused on restart. No AI task starts automatically. In Project A1, create a task asking the agent to fix `add` so `npm test` passes, then open Execution and click Start. This command runs the Paseo connector, not the agent server. See the [connector guide](packages/fluent-flow-agent-server/README.md#local-browser-testing).
 
 Other root commands:
 
@@ -112,7 +112,7 @@ npm test            # full test suite
 npm run build       # build all packages
 ```
 
-Collaboration tests need separate disposable PostgreSQL databases for the database, server and connector suites. Existing claim SQL tests use a fourth database. The collaboration suites refuse non-loopback or non-test database names and reset their dedicated schemas. See the [database package testing guide](packages/db/README.md) before running them. The Paseo connector requires Node 22 or newer; the existing review runner also supports Node 20.
+Collaboration tests need separate disposable PostgreSQL databases for the database, server and connector suites. Existing claim SQL tests use a fourth database. The collaboration suites refuse non-loopback or non-test database names and reset their dedicated schemas. See the [database package testing guide](packages/db/README.md) before running them. The Paseo connector requires Node 22 or newer; the agent server also supports Node 20.
 
 To develop one app separately, build the shared database package first and run the desired workspace:
 
@@ -122,10 +122,10 @@ npm run dev -w fluent-flow             # server
 npm run dev -w @fluent-flow/dashboard   # Next.js, in a separate terminal
 ```
 
-Local runner (workspace-linked, no publish yet):
+Local agent server from this checkout. Create the server in the dashboard first to get its enrollment token. No package has been published yet, so `npx @fluent-flow/agent-server@latest` works only after the first release:
 
 ```bash
-npx @fluent-flow/runner --server http://127.0.0.1:3847 --token ff_<token>
+node packages/fluent-flow-agent-server/bin/fluent-flow-agent-server.js --server http://127.0.0.1:3847 --provider claude-code --enrollment-token enroll_<token>
 ```
 
 Docker:
@@ -133,6 +133,8 @@ Docker:
 ```bash
 docker compose up -d --build
 ```
+
+This starts the server, dashboard and PostgreSQL. The compose file also defines an optional `hosted-agent` profile that runs the published agent server image against an HTTPS control-plane URL, with its token and provider credential supplied as files and no network shared with PostgreSQL. The default command does not start it. See [Hosted](packages/fluent-flow-agent-server/README.md#hosted).
 
 ## Pull request previews
 
@@ -154,7 +156,7 @@ The preview stack uses a dedicated preview GitHub App and preview-only repositor
 - [Roadmap](ROADMAP.md) — shipped, in-flight, and known gaps
 - [Design specs](docs/specs/) — architecture and design decisions
 - [Implementation plans](docs/plans/) — step-by-step build plans
-- Per-package: [fluent-flow](packages/fluent-flow/README.md) · [runner](packages/fluent-flow-runner/README.md) · [dashboard](packages/dashboard/README.md) · [db](packages/db/README.md)
+- Per-package: [fluent-flow](packages/fluent-flow/README.md) · [agent server](packages/fluent-flow-agent-server/README.md) · [dashboard](packages/dashboard/README.md) · [db](packages/db/README.md)
 
 ## License
 
