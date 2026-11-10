@@ -61,6 +61,21 @@ services:
       - "traefik.http.routers.${PREVIEW_ROUTER_PREFIX}-dashboard.service=${PREVIEW_ROUTER_PREFIX}-dashboard"
       - "traefik.http.services.${PREVIEW_ROUTER_PREFIX}-dashboard.loadbalancer.server.port=3000"
 
+  preview-seed:
+    build:
+      context: ${PREVIEW_SOURCE_DIR}
+      dockerfile: packages/fluent-flow/Dockerfile
+    environment:
+      DATABASE_URL: postgres://fluentflow:${PREVIEW_DATABASE_PASSWORD}@postgres:5432/fluentflow
+    depends_on:
+      fluent-flow:
+        condition: service_healthy
+    volumes:
+      - ${PREVIEW_SOURCE_DIR}/scripts/preview-seed-demo.mjs:/app/preview-seed-demo.mjs:ro
+    entrypoint: ["node", "/app/preview-seed-demo.mjs"]
+    networks:
+      - default
+
   postgres:
     image: postgres:16-alpine
     environment:
