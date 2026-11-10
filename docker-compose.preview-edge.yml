@@ -19,6 +19,32 @@ services:
       - preview-edge
     restart: unless-stopped
 
+  preview-webhook-router:
+    build:
+      context: .
+      dockerfile: scripts/preview-webhook-router/Dockerfile
+    environment:
+      PREVIEW_WEBHOOK_SECRET: ${PREVIEW_WEBHOOK_SECRET:?PREVIEW_WEBHOOK_SECRET is required}
+      PREVIEW_ROUTE_SECRET: ${PREVIEW_ROUTE_SECRET:?PREVIEW_ROUTE_SECRET is required}
+      ROUTER_STATE_DIR: /data
+    depends_on:
+      traefik:
+        condition: service_healthy
+    volumes:
+      - preview-router-state:/data
+    networks:
+      - preview-edge
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.preview-webhook.rule: Host(`preview-webhooks.fluentflow.tech`)
+      traefik.http.services.preview-webhook.loadbalancer.server.port: "3000"
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/health').then((response) => { if (!response.ok) process.exit(1); })"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
   cloudflared:
     image: cloudflare/cloudflared:2026.10.0
     environment:
@@ -35,6 +61,10 @@ services:
     networks:
       - preview-edge
     restart: unless-stopped
+
+volumes:
+  preview-router-state:
+    name: fluent-flow-preview-router-state
 
 networks:
   preview-edge:

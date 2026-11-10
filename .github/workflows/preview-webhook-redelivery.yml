@@ -1,0 +1,52 @@
+name: Preview Webhook Redelivery
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-webhook-redelivery
+  cancel-in-progress: false
+
+jobs:
+  redeliver:
+    if: github.ref == 'refs/heads/main'
+    name: Redeliver failed preview webhooks
+    runs-on:
+      group: Fluent Flow trusted deployments
+      labels: [Linux, X64, g10]
+    timeout-minutes: 10
+    steps:
+      - name: Check out trusted controls
+        uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+          persist-credentials: false
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate Preview App credentials
+        env:
+          PREVIEW_GITHUB_APP_ID: ${{ vars.PREVIEW_GITHUB_APP_ID }}
+          PREVIEW_GITHUB_APP_PRIVATE_KEY: ${{ secrets.PREVIEW_GITHUB_APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          for name in PREVIEW_GITHUB_APP_ID PREVIEW_GITHUB_APP_PRIVATE_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is required"
+              exit 1
+            fi
+          done
+
+      - name: Redeliver failed Preview App webhooks
+        env:
+          PREVIEW_GITHUB_APP_ID: ${{ vars.PREVIEW_GITHUB_APP_ID }}
+          PREVIEW_GITHUB_APP_PRIVATE_KEY: ${{ secrets.PREVIEW_GITHUB_APP_PRIVATE_KEY }}
+        run: node scripts/preview-webhook-redelivery.mjs

@@ -1,0 +1,144 @@
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { signAppJwt } from '../packages/fluent-flow/src/providers/github/app-auth.js';
+import { decodePrivateKey } from './preview-github-app.mjs';
+
+const GITHUB_API_URL = 'https://api.github.com';
+const PAGE_SIZE = 100;
+const MAX_PAGES = 3;
+const LOOKBACK_MS = 6 * 60 * 60 * 1000;
+const MAX_REDELIVERIES = 100;
+
+function statusOk(response) {
+  return response && Number.isInteger(response.status) && response.status >= 200 && response.status < 300;
+}
+
+function currentTime(now) {
+  if (typeof now === 'function') return new Date(now());
+  if (now instanceof Date) return new Date(now.getTime());
+  if (now === undefined) return new Date();
+  return new Date(now);
+}
+
+function deliveryTime(delivery) {
+  const value = Date.parse(delivery?.delivered_at ?? '');
+  return Number.isFinite(value) ? value : null;
+}
+
+function succeeded(delivery) {
+  return Number.isInteger(delivery?.status_code)
+    && delivery.status_code >= 200
+    && delivery.status_code < 400;
+}
+
+function deliveryGuid(delivery) {
+  if (typeof delivery?.guid !== 'string' || delivery.guid.trim() === '') {
+    throw new Error('GitHub App delivery missing GUID');
+  }
+  return delivery.guid;
+}
+
+function headers(jwt) {
+  return {
+    Accept: 'application/vnd.github+json',
+    Authorization: `Bearer ${jwt}`,
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+}
+
+function nextCursorUrl(response) {
+  const link = typeof response?.headers?.get === 'function'
+    ? response.headers.get('link')
+    : response?.headers?.link;
+  if (typeof link !== 'string') return null;
+  const next = link
+    .split(',')
+    .map((part) => part.trim())
+    .find((part) => /;\s*rel="next"/i.test(part));
+  return next?.match(/^<([^>]+)>/)?.[1] ?? null;
+}
+
+async function listRecentDeliveries({ jwt, fetchImpl, cutoff }) {
+  const deliveries = [];
+  let nextUrl = `${GITHUB_API_URL}/app/hook/deliveries?per_page=${PAGE_SIZE}`;
+  for (let page = 1; page <= MAX_PAGES && nextUrl; page += 1) {
+    const response = await fetchImpl(nextUrl, {
+      headers: headers(jwt),
+    });
+    if (!statusOk(response)) throw new Error(`GitHub App delivery listing failed with status ${response?.status ?? 'unknown'}`);
+    const batch = await response.json();
+    if (!Array.isArray(batch)) throw new Error('GitHub App delivery listing returned invalid data');
+    deliveries.push(...batch);
+    const oldest = batch.reduce((value, delivery) => {
+      const timestamp = deliveryTime(delivery);
+      return timestamp === null ? value : Math.min(value, timestamp);
+    }, Number.POSITIVE_INFINITY);
+    nextUrl = nextCursorUrl(response);
+    if (oldest < cutoff || !nextUrl) return deliveries;
+  }
+  if (nextUrl) throw new Error('GitHub App delivery listing exceeded the maximum delivery pages before the lookback cutoff');
+  return deliveries;
+}
+
+export async function redeliverFailedPreviewWebhooks({
+  appId,
+  privateKey,
+  fetchImpl = globalThis.fetch,
+  now,
+}) {
+  if (appId === undefined || appId === null || String(appId).trim() === '') throw new Error('App ID is required');
+  if (typeof fetchImpl !== 'function') throw new Error('fetch is required');
+  const jwt = signAppJwt({ appId: String(appId), privateKeyPem: decodePrivateKey(privateKey) });
+  const cutoff = currentTime(now).getTime() - LOOKBACK_MS;
+  const deliveries = await listRecentDeliveries({ jwt, fetchImpl, cutoff });
+  const grouped = new Map();
+  for (const delivery of deliveries) {
+    const guid = deliveryGuid(delivery);
+    const group = grouped.get(guid) ?? [];
+    group.push(delivery);
+    grouped.set(guid, group);
+  }
+
+  const candidates = [];
+  for (const group of grouped.values()) {
+    const original = group.find((delivery) => delivery.redelivery === false);
+    if (!original) continue;
+    const originalTime = deliveryTime(original);
+    if (originalTime === null || originalTime < cutoff) continue;
+    if (group.some(succeeded)) continue;
+    const failed = group
+      .filter((delivery) => !succeeded(delivery))
+      .sort((left, right) => (deliveryTime(right) ?? 0) - (deliveryTime(left) ?? 0))[0];
+    if (failed?.id === undefined || failed?.id === null) throw new Error('GitHub App delivery is missing its id');
+    candidates.push(failed);
+  }
+  if (candidates.length > MAX_REDELIVERIES) {
+    throw new Error(`GitHub App webhook redelivery candidate count exceeds maximum redelivery cap of ${MAX_REDELIVERIES}`);
+  }
+
+  const failures = [];
+  let redelivered = 0;
+  for (const delivery of candidates) {
+    try {
+      const response = await fetchImpl(`${GITHUB_API_URL}/app/hook/deliveries/${encodeURIComponent(delivery.id)}/attempts`, {
+        method: 'POST',
+        headers: headers(jwt),
+      });
+      if (!statusOk(response)) throw new Error(`GitHub App webhook redelivery failed with status ${response?.status ?? 'unknown'}`);
+      redelivered += 1;
+    } catch (error) {
+      failures.push(error instanceof Error ? error : new Error('GitHub App webhook redelivery failed'));
+    }
+  }
+  if (failures.length > 0) throw new AggregateError(failures, `GitHub App webhook redelivery failed for ${failures.length} deliveries`);
+  return { redelivered };
+}
+
+async function runCli() {
+  await redeliverFailedPreviewWebhooks({
+    appId: process.env.PREVIEW_GITHUB_APP_ID,
+    privateKey: process.env.PREVIEW_GITHUB_APP_PRIVATE_KEY,
+  });
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) await runCli();

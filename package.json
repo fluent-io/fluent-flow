@@ -8,7 +8,7 @@
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",
-    "test:preview": "node --test scripts/preview-*.test.mjs",
+    "test:preview": "node --test scripts/preview-*.test.mjs scripts/preview-webhook-router/*.test.mjs",
     "test:release": "node --test scripts/release-policy.test.mjs scripts/workflow-pins.test.mjs",
     "predev": "node scripts/dev-database.mjs",
     "dev": "turbo run dev",
