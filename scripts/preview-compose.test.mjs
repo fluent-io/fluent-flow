@@ -43,7 +43,7 @@ function serviceNetworks(service) {
 
 test('renders an isolated preview application stack', () => {
   const config = render('docker-compose.preview.yml', 'fluent-flow-preview-122');
-  assert.deepEqual(Object.keys(config.services).sort(), ['dashboard', 'fluent-flow', 'postgres']);
+  assert.deepEqual(Object.keys(config.services).sort(), ['dashboard', 'fluent-flow', 'postgres', 'preview-seed']);
 
   for (const service of Object.values(config.services)) {
     assert.equal(service.container_name, undefined);
@@ -54,6 +54,24 @@ test('renders an isolated preview application stack', () => {
   assert.deepEqual(serviceNetworks(config.services.postgres), ['default']);
   assert.deepEqual(serviceNetworks(config.services['fluent-flow']), ['default', 'preview-edge']);
   assert.deepEqual(serviceNetworks(config.services.dashboard), ['default', 'preview-edge']);
+  assert.deepEqual(serviceNetworks(config.services['preview-seed']), ['default']);
+
+  assert.equal(config.services['preview-seed'].depends_on['fluent-flow'].condition, 'service_healthy');
+  assert.equal(
+    config.services['preview-seed'].environment.DATABASE_URL,
+    'postgres://fluentflow:database-password@postgres:5432/fluentflow',
+  );
+  assert.deepEqual(
+    config.services['preview-seed'].volumes,
+    [{
+      type: 'bind',
+      source: `${previewEnvironment.PREVIEW_SOURCE_DIR}/scripts/preview-seed-demo.mjs`,
+      target: '/app/preview-seed-demo.mjs',
+      read_only: true,
+      bind: {},
+    }],
+  );
+  assert.deepEqual(config.services['preview-seed'].entrypoint, ['node', '/app/preview-seed-demo.mjs']);
 
   assert.equal(config.services['fluent-flow'].environment.DEPLOY_SHA, 'a'.repeat(40));
   assert.equal(config.services.dashboard.environment.DEPLOY_SHA, 'a'.repeat(40));
