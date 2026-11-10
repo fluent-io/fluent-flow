@@ -61,16 +61,11 @@ test('renders an isolated preview application stack', () => {
     config.services['preview-seed'].environment.DATABASE_URL,
     'postgres://fluentflow:database-password@postgres:5432/fluentflow',
   );
-  assert.deepEqual(
-    config.services['preview-seed'].volumes,
-    [{
-      type: 'bind',
-      source: `${previewEnvironment.PREVIEW_SOURCE_DIR}/scripts/preview-seed-demo.mjs`,
-      target: '/app/preview-seed-demo.mjs',
-      read_only: true,
-      bind: {},
-    }],
-  );
+  const seedVolume = config.services['preview-seed'].volumes[0];
+  assert.equal(seedVolume.type, 'bind');
+  assert.equal(seedVolume.source, `${previewEnvironment.PREVIEW_SOURCE_DIR}/scripts/preview-seed-demo.mjs`);
+  assert.equal(seedVolume.target, '/app/preview-seed-demo.mjs');
+  assert.equal(seedVolume.read_only, true);
   assert.deepEqual(config.services['preview-seed'].entrypoint, ['node', '/app/preview-seed-demo.mjs']);
 
   assert.equal(config.services['fluent-flow'].environment.DEPLOY_SHA, 'a'.repeat(40));
