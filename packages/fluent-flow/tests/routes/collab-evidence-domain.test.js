@@ -6,7 +6,7 @@ vi.mock('../../src/logger.js', async () => {
   return { default: createMockLogger() };
 });
 
-const { resolveCollabTestDatabaseUrl, resetCollabSchema, seedLegacyUser, seedLegacyOrgMembership } =
+const { resolveCollabTestDatabaseUrl, resetCollabSchema, seedUser, seedOrgMembership } =
   await import('../helpers/collab-db.js');
 const resolveEvidenceDomainDatabaseUrl = () => {
   const url = process.env.COLLAB_EVIDENCE_DOMAIN_TEST_DATABASE_URL ?? process.env.COLLAB_ROUTES_TEST_DATABASE_URL ?? process.env.TEST_DATABASE_URL;
@@ -55,10 +55,10 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
     const db = await import('@fluent-flow/db');
     await db.runMigrations();
 
-    const admin = await seedLegacyUser(process.env.DATABASE_URL, { githubId: 9201, login: 'evidence-owner' });
-    await seedLegacyOrgMembership(process.env.DATABASE_URL, admin, 'org-evidence', 'admin');
+    const admin = await seedUser(process.env.DATABASE_URL, { githubId: 9201, login: 'evidence-owner' });
+    await seedOrgMembership(process.env.DATABASE_URL, admin, 'org-evidence', 'admin');
     const adminPrincipal = await db.ensureGithubPrincipal({
-      legacyUserId: admin,
+      userId: admin,
       displayName: 'evidence-owner',
       email: 'evidence-owner@example.test',
     });
@@ -66,7 +66,7 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
 
     const ws = await db.bootstrapCollaborationWorkspace({
       actor: managerActor,
-      legacyOrgId: 'org-evidence',
+      orgId: 'org-evidence',
       name: 'Evidence Client',
       idempotencyKey: 'evidence-slice-bootstrap',
     });
@@ -92,16 +92,16 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
     });
     collaboratorActor = { principalId: collaborator.principal.id, sessionVersion: collaborator.principal.sessionVersion };
 
-    const adminB = await seedLegacyUser(process.env.DATABASE_URL, { githubId: 9202, login: 'evidence-outsider' });
-    await seedLegacyOrgMembership(process.env.DATABASE_URL, adminB, 'org-evidence-b', 'admin');
+    const adminB = await seedUser(process.env.DATABASE_URL, { githubId: 9202, login: 'evidence-outsider' });
+    await seedOrgMembership(process.env.DATABASE_URL, adminB, 'org-evidence-b', 'admin');
     const outsiderPrincipal = await db.ensureGithubPrincipal({
-      legacyUserId: adminB,
+      userId: adminB,
       displayName: 'evidence-outsider',
       email: 'evidence-outsider@example.test',
     });
     await db.bootstrapCollaborationWorkspace({
       actor: { principalId: outsiderPrincipal.id, sessionVersion: outsiderPrincipal.sessionVersion },
-      legacyOrgId: 'org-evidence-b',
+      orgId: 'org-evidence-b',
       name: 'Evidence Client B',
       idempotencyKey: 'evidence-slice-bootstrap-b',
     });
@@ -221,10 +221,10 @@ describe('A4 evidence slice 2: named checks and append-only evidence', () => {
     const db = await import('@fluent-flow/db');
     await db.runMigrations();
 
-    const admin = await seedLegacyUser(process.env.DATABASE_URL, { githubId: 9301, login: 'checks-owner' });
-    await seedLegacyOrgMembership(process.env.DATABASE_URL, admin, 'org-checks', 'admin');
+    const admin = await seedUser(process.env.DATABASE_URL, { githubId: 9301, login: 'checks-owner' });
+    await seedOrgMembership(process.env.DATABASE_URL, admin, 'org-checks', 'admin');
     const adminPrincipal = await db.ensureGithubPrincipal({
-      legacyUserId: admin,
+      userId: admin,
       displayName: 'checks-owner',
       email: 'checks-owner@example.test',
     });
@@ -232,7 +232,7 @@ describe('A4 evidence slice 2: named checks and append-only evidence', () => {
 
     const ws = await db.bootstrapCollaborationWorkspace({
       actor: managerActor,
-      legacyOrgId: 'org-checks',
+      orgId: 'org-checks',
       name: 'Checks Client',
       idempotencyKey: 'checks-slice-bootstrap',
     });
@@ -357,10 +357,10 @@ describe('A4 evidence domain slice 3: delivery acknowledgment and human-only dec
     const db = await import('@fluent-flow/db');
     await db.runMigrations();
 
-    const admin = await seedLegacyUser(process.env.DATABASE_URL, { githubId: 9401, login: 'delivery-owner' });
-    await seedLegacyOrgMembership(process.env.DATABASE_URL, admin, 'org-delivery', 'admin');
+    const admin = await seedUser(process.env.DATABASE_URL, { githubId: 9401, login: 'delivery-owner' });
+    await seedOrgMembership(process.env.DATABASE_URL, admin, 'org-delivery', 'admin');
     const adminPrincipal = await db.ensureGithubPrincipal({
-      legacyUserId: admin,
+      userId: admin,
       displayName: 'delivery-owner',
       email: 'delivery-owner@example.test',
     });
@@ -368,7 +368,7 @@ describe('A4 evidence domain slice 3: delivery acknowledgment and human-only dec
 
     const ws = await db.bootstrapCollaborationWorkspace({
       actor: managerActor,
-      legacyOrgId: 'org-delivery',
+      orgId: 'org-delivery',
       name: 'Delivery Client',
       idempotencyKey: 'delivery-slice-bootstrap',
     });
@@ -494,10 +494,10 @@ describe('A4 evidence domain slice 4: idea conversion idempotency', () => {
     const db = await import('@fluent-flow/db');
     await db.runMigrations();
 
-    const admin = await seedLegacyUser(process.env.DATABASE_URL, { githubId: 9501, login: 'ideas-owner' });
-    await seedLegacyOrgMembership(process.env.DATABASE_URL, admin, 'org-ideas', 'admin');
+    const admin = await seedUser(process.env.DATABASE_URL, { githubId: 9501, login: 'ideas-owner' });
+    await seedOrgMembership(process.env.DATABASE_URL, admin, 'org-ideas', 'admin');
     const adminPrincipal = await db.ensureGithubPrincipal({
-      legacyUserId: admin,
+      userId: admin,
       displayName: 'ideas-owner',
       email: 'ideas-owner@example.test',
     });
@@ -505,7 +505,7 @@ describe('A4 evidence domain slice 4: idea conversion idempotency', () => {
 
     const ws = await db.bootstrapCollaborationWorkspace({
       actor: managerActor,
-      legacyOrgId: 'org-ideas',
+      orgId: 'org-ideas',
       name: 'Ideas Client',
       idempotencyKey: 'ideas-slice-bootstrap',
     });
@@ -605,10 +605,10 @@ describe('A4 evidence domain slice 5: workpad plan snapshots and open questions'
     const db = await import('@fluent-flow/db');
     await db.runMigrations();
 
-    const admin = await seedLegacyUser(process.env.DATABASE_URL, { githubId: 9601, login: 'workpad-owner' });
-    await seedLegacyOrgMembership(process.env.DATABASE_URL, admin, 'org-workpad', 'admin');
+    const admin = await seedUser(process.env.DATABASE_URL, { githubId: 9601, login: 'workpad-owner' });
+    await seedOrgMembership(process.env.DATABASE_URL, admin, 'org-workpad', 'admin');
     const adminPrincipal = await db.ensureGithubPrincipal({
-      legacyUserId: admin,
+      userId: admin,
       displayName: 'workpad-owner',
       email: 'workpad-owner@example.test',
     });
@@ -616,7 +616,7 @@ describe('A4 evidence domain slice 5: workpad plan snapshots and open questions'
 
     const ws = await db.bootstrapCollaborationWorkspace({
       actor: managerActor,
-      legacyOrgId: 'org-workpad',
+      orgId: 'org-workpad',
       name: 'Workpad Client',
       idempotencyKey: 'workpad-slice-bootstrap',
     });
@@ -764,10 +764,10 @@ describe('A4 evidence domain slice 6: decision integrity and reviewer projection
     const db = await import('@fluent-flow/db');
     await db.runMigrations();
 
-    const admin = await seedLegacyUser(process.env.DATABASE_URL, { githubId: 9701, login: 'integrity-owner' });
-    await seedLegacyOrgMembership(process.env.DATABASE_URL, admin, 'org-integrity', 'admin');
+    const admin = await seedUser(process.env.DATABASE_URL, { githubId: 9701, login: 'integrity-owner' });
+    await seedOrgMembership(process.env.DATABASE_URL, admin, 'org-integrity', 'admin');
     const adminPrincipal = await db.ensureGithubPrincipal({
-      legacyUserId: admin,
+      userId: admin,
       displayName: 'integrity-owner',
       email: 'integrity-owner@example.test',
     });
@@ -775,7 +775,7 @@ describe('A4 evidence domain slice 6: decision integrity and reviewer projection
 
     const ws = await db.bootstrapCollaborationWorkspace({
       actor: managerActor,
-      legacyOrgId: 'org-integrity',
+      orgId: 'org-integrity',
       name: 'Integrity Client',
       idempotencyKey: 'integrity-slice-bootstrap',
     });
@@ -941,10 +941,10 @@ describe('A4 evidence domain slice 7: usage dedupe and honest insights', () => {
     const db = await import('@fluent-flow/db');
     await db.runMigrations();
 
-    const admin = await seedLegacyUser(process.env.DATABASE_URL, { githubId: 9801, login: 'usage-owner' });
-    await seedLegacyOrgMembership(process.env.DATABASE_URL, admin, 'org-usage', 'admin');
+    const admin = await seedUser(process.env.DATABASE_URL, { githubId: 9801, login: 'usage-owner' });
+    await seedOrgMembership(process.env.DATABASE_URL, admin, 'org-usage', 'admin');
     const adminPrincipal = await db.ensureGithubPrincipal({
-      legacyUserId: admin,
+      userId: admin,
       displayName: 'usage-owner',
       email: 'usage-owner@example.test',
     });
@@ -952,7 +952,7 @@ describe('A4 evidence domain slice 7: usage dedupe and honest insights', () => {
 
     const ws = await db.bootstrapCollaborationWorkspace({
       actor: managerActor,
-      legacyOrgId: 'org-usage',
+      orgId: 'org-usage',
       name: 'Usage Client',
       idempotencyKey: 'usage-slice-bootstrap',
     });

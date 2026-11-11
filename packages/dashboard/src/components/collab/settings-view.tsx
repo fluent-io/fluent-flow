@@ -106,7 +106,7 @@ function WorkspacePanel({ me, reload }: { me: MeResponse; reload: () => Promise<
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const eligible = me.bootstrap?.eligible ?? false;
-  const orgIds = me.bootstrap?.legacyOrgIds ?? [];
+  const orgIds = me.bootstrap?.orgIds ?? [];
 
   async function createWorkspace(event: React.FormEvent) {
     event.preventDefault();
@@ -115,7 +115,7 @@ function WorkspacePanel({ me, reload }: { me: MeResponse; reload: () => Promise<
     try {
       await collabFetch('/workspaces', {
         method: 'POST',
-        body: { name, legacyOrgId: orgIds.length > 1 ? orgId : orgIds[0] },
+        body: { name, orgId: orgIds.length > 1 ? orgId : orgIds[0] },
       });
       setName('');
       await reload();

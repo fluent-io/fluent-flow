@@ -56,7 +56,7 @@ const fixture = {
   notes: [],
 };
 
-async function ensureLegacyAdmin(githubId, login, orgId) {
+async function ensureOrgAdmin(githubId, login, orgId) {
   const client = await db.getPool().connect();
   try {
     await client.query(`INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT (id) DO NOTHING`, [
@@ -78,15 +78,15 @@ async function ensureLegacyAdmin(githubId, login, orgId) {
   }
 }
 
-const adminALegacy = await ensureLegacyAdmin(41001, 'fixture-owner-a', 'fixture-org-a');
-const adminBLegacy = await ensureLegacyAdmin(41002, 'fixture-owner-b', 'fixture-org-b');
+const adminALegacy = await ensureOrgAdmin(41001, 'fixture-owner-a', 'fixture-org-a');
+const adminBLegacy = await ensureOrgAdmin(41002, 'fixture-owner-b', 'fixture-org-b');
 const adminA = await db.ensureGithubPrincipal({
-  legacyUserId: adminALegacy,
+  userId: adminALegacy,
   displayName: 'Fixture Owner A',
   email: 'fixture-owner-a@example.test',
 });
 const adminB = await db.ensureGithubPrincipal({
-  legacyUserId: adminBLegacy,
+  userId: adminBLegacy,
   displayName: 'Fixture Owner B',
   email: 'fixture-owner-b@example.test',
 });
@@ -95,13 +95,13 @@ const adminBActor = { principalId: adminB.id, sessionVersion: adminB.sessionVers
 
 const wsA = await db.bootstrapCollaborationWorkspace({
   actor: adminAActor,
-  legacyOrgId: 'fixture-org-a',
+  orgId: 'fixture-org-a',
   name: 'Fixture Client A',
   idempotencyKey: 'fixture-ws-a',
 });
 const wsB = await db.bootstrapCollaborationWorkspace({
   actor: adminBActor,
-  legacyOrgId: 'fixture-org-b',
+  orgId: 'fixture-org-b',
   name: 'Fixture Client B',
   idempotencyKey: 'fixture-ws-b',
 });
@@ -175,7 +175,7 @@ async function upsertPrincipalCredential(entry) {
 
 async function ensureInvitedPrincipal({ email, displayName, inviteRoleId, workspaceId, projectId, actor = adminAActor }) {
   const existing = await db.getPool().query(
-    `SELECT id FROM collab_principals WHERE lower(email) = lower($1) AND legacy_user_id IS NULL`,
+    `SELECT id FROM collab_principals WHERE lower(email) = lower($1) AND user_id IS NULL`,
     [email],
   );
   if (existing.rows.length > 0) {

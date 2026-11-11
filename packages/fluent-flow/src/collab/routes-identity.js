@@ -76,8 +76,8 @@ export function registerIdentityRoutes(router) {
           'You do not have permission to perform this action.',
         );
       }
-      const legacyOrgId = req.body?.legacyOrgId ?? undefined;
-      if (legacyOrgId !== undefined && !eligibility.legacyOrgIds.includes(legacyOrgId)) {
+      const orgId = req.body?.orgId ?? undefined;
+      if (orgId !== undefined && !eligibility.orgIds.includes(orgId)) {
         throw new CollabServiceError(
           403,
           'bootstrap_not_allowed',
@@ -85,9 +85,9 @@ export function registerIdentityRoutes(router) {
         );
       }
       const resolvedOrg =
-        legacyOrgId ??
-        (eligibility.legacyOrgIds.length === 1
-          ? eligibility.legacyOrgIds[0]
+        orgId ??
+        (eligibility.orgIds.length === 1
+          ? eligibility.orgIds[0]
           : null);
       if (!resolvedOrg) {
         throw new CollabServiceError(
@@ -102,7 +102,7 @@ export function registerIdentityRoutes(router) {
           : `ws:${principal.id}:${resolvedOrg}`;
       const workspace = await bootstrapCollaborationWorkspace({
         actor: req.collabActor,
-        legacyOrgId: resolvedOrg,
+        orgId: resolvedOrg,
         name: req.body?.name,
         idempotencyKey,
       });

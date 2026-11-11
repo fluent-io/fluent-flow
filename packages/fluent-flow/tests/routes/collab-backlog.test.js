@@ -6,7 +6,7 @@ vi.mock('../../src/logger.js', async () => {
   return { default: createMockLogger() };
 });
 
-const { resolveCollabTestDatabaseUrl, resetCollabSchema, seedLegacyUser, seedLegacyOrgMembership } =
+const { resolveCollabTestDatabaseUrl, resetCollabSchema, seedUser, seedOrgMembership } =
   await import('../helpers/collab-db.js');
 process.env.DATABASE_URL = resolveCollabTestDatabaseUrl();
 
@@ -48,18 +48,18 @@ describe('A1 backlog acceptance: identity, task capture, client isolation, revoc
       await import('@fluent-flow/db');
     await runMigrations();
 
-    const adminA = await seedLegacyUser(process.env.DATABASE_URL, { githubId: 9101, login: 'owner-a' });
-    const adminB = await seedLegacyUser(process.env.DATABASE_URL, { githubId: 9102, login: 'owner-b' });
-    await seedLegacyOrgMembership(process.env.DATABASE_URL, adminA, 'org-a', 'admin');
-    await seedLegacyOrgMembership(process.env.DATABASE_URL, adminB, 'org-b', 'admin');
+    const adminA = await seedUser(process.env.DATABASE_URL, { githubId: 9101, login: 'owner-a' });
+    const adminB = await seedUser(process.env.DATABASE_URL, { githubId: 9102, login: 'owner-b' });
+    await seedOrgMembership(process.env.DATABASE_URL, adminA, 'org-a', 'admin');
+    await seedOrgMembership(process.env.DATABASE_URL, adminB, 'org-b', 'admin');
 
     const principalA = await ensureGithubPrincipal({
-      legacyUserId: adminA,
+      userId: adminA,
       displayName: 'Owner A',
       email: 'owner-a@example.test',
     });
     const principalB = await ensureGithubPrincipal({
-      legacyUserId: adminB,
+      userId: adminB,
       displayName: 'Owner B',
       email: 'owner-b@example.test',
     });
@@ -68,7 +68,7 @@ describe('A1 backlog acceptance: identity, task capture, client isolation, revoc
 
     const wsA = await bootstrapCollaborationWorkspace({
       actor: managerActor,
-      legacyOrgId: 'org-a',
+      orgId: 'org-a',
       name: 'Client A',
       idempotencyKey: 'fixture-ws-a',
     });
@@ -77,7 +77,7 @@ describe('A1 backlog acceptance: identity, task capture, client isolation, revoc
     projectA1Id = pA1.id;
     const wsB = await bootstrapCollaborationWorkspace({
       actor: clientBActor,
-      legacyOrgId: 'org-b',
+      orgId: 'org-b',
       name: 'Client B',
       idempotencyKey: 'fixture-ws-b',
     });

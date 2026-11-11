@@ -16,7 +16,7 @@ import { withClientTransaction } from './tx.js';
 
 const bootstrapSchema = z.object({
   actor: z.object({ principalId: z.string().uuid(), sessionVersion: z.number().int().min(1) }),
-  legacyOrgId: z.string().min(1).max(128),
+  orgId: z.string().min(1).max(128),
   name: z.string().min(1).max(200),
   idempotencyKey: z.string().min(8).max(128),
 });
@@ -30,10 +30,10 @@ const createProjectSchema = z.object({
 export async function getCollabBootstrapEligibility(actor: {
   principalId: string;
   sessionVersion: number;
-}): Promise<{ eligible: boolean; legacyOrgIds: string[] }> {
+}): Promise<{ eligible: boolean; orgIds: string[] }> {
   const principal = await requireCurrentPrincipal(actor);
-  if (principal.legacyUserId === null) {
-    return { eligible: false, legacyOrgIds: [] };
+  if (principal.userId === null) {
+    return { eligible: false, orgIds: [] };
   }
   const { rows } = await getPool().query<{ id: string }>(
     `SELECT o.id
@@ -42,20 +42,20 @@ export async function getCollabBootstrapEligibility(actor: {
      LEFT JOIN users u ON u.id = $1
      WHERE uo.role = 'admin' OR u.is_superadmin
      ORDER BY o.id`,
-    [principal.legacyUserId],
+    [principal.userId],
   );
-  return { eligible: rows.length > 0, legacyOrgIds: rows.map((r) => r.id) };
+  return { eligible: rows.length > 0, orgIds: rows.map((r) => r.id) };
 }
 
 export async function bootstrapCollaborationWorkspace(input: {
   actor: { principalId: string; sessionVersion: number };
-  legacyOrgId: string;
+  orgId: string;
   name: string;
   idempotencyKey: string;
 }): Promise<{ id: string; name: string }> {
   const input2 = bootstrapSchema.parse(input);
   const principal = await requireCurrentPrincipal(input2.actor);
-  if (principal.legacyUserId === null) {
+  if (principal.userId === null) {
     throw new CollabServiceError(
       403,
       'bootstrap_not_allowed',
@@ -68,7 +68,7 @@ export async function bootstrapCollaborationWorkspace(input: {
      FROM users u
      LEFT JOIN user_orgs uo ON uo.user_id = u.id AND uo.org_id = $2
      WHERE u.id = $1 AND (u.is_superadmin OR uo.role = 'admin')`,
-    [principal.legacyUserId, input2.legacyOrgId],
+    [principal.userId, input2.orgId],
   );
   if (admin.rows.length === 0) {
     throw new CollabServiceError(
@@ -80,24 +80,24 @@ export async function bootstrapCollaborationWorkspace(input: {
 
   return withClientTransaction(async (tx) => {
     const inserted = await tx.query(
-      `INSERT INTO collab_workspaces (name, created_by_principal_id, legacy_org_id, idempotency_key)
+      `INSERT INTO collab_workspaces (name, created_by_principal_id, org_id, idempotency_key)
        VALUES ($1, $2, $3, $4)
        ON CONFLICT (idempotency_key) DO NOTHING
        RETURNING id, name`,
-      [input2.name, principal.id, input2.legacyOrgId, input2.idempotencyKey],
+      [input2.name, principal.id, input2.orgId, input2.idempotencyKey],
     );
 
     let workspace = inserted.rows[0];
     if (!workspace) {
       const existing = await tx.query(
-        `SELECT id, name, legacy_org_id, created_by_principal_id FROM collab_workspaces WHERE idempotency_key = $1`,
+        `SELECT id, name, org_id, created_by_principal_id FROM collab_workspaces WHERE idempotency_key = $1`,
         [input2.idempotencyKey],
       );
       if (existing.rows.length === 0) {
         throw new CollabServiceError(409, 'workspace_conflict', 'Workspace bootstrap conflict.');
       }
       if (
-        existing.rows[0].legacy_org_id !== input2.legacyOrgId ||
+        existing.rows[0].org_id !== input2.orgId ||
         existing.rows[0].created_by_principal_id !== principal.id
       ) {
         throw new CollabServiceError(409, 'bootstrap_conflict', 'Workspace bootstrap conflict.');

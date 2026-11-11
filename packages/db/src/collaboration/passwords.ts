@@ -78,7 +78,7 @@ export async function authenticateCollabPassword(input: {
   await enforceRateLimitBucket(rateLimitBucket('login', rateLimitKey, email.toLowerCase()));
 
   const { rows } = await getPool().query(
-    `SELECT p.id, p.display_name, p.email, p.legacy_user_id, p.disabled_at, p.session_version,
+    `SELECT p.id, p.display_name, p.email, p.user_id, p.disabled_at, p.session_version,
             c.password_hash
      FROM collab_principals p
      JOIN collab_password_credentials c ON c.principal_id = p.id

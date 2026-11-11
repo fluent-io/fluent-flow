@@ -1,5 +1,5 @@
-import { LegacyAdminGate } from '@/components/layout/legacy-admin-gate';
+import { InternalNavGate } from '@/components/layout/internal-nav-gate';
 
 export default function PipelinesLayout({ children }: { children: React.ReactNode }) {
-  return <LegacyAdminGate>{children}</LegacyAdminGate>;
+  return <InternalNavGate>{children}</InternalNavGate>;
 }

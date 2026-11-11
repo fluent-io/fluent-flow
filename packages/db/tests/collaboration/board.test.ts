@@ -3,8 +3,8 @@ import pg from 'pg';
 import {
   resolveCollabTestDatabaseUrl,
   resetCollabSchema,
-  seedLegacyUser,
-  seedLegacyOrgMembership,
+  seedUser,
+  seedOrgMembership,
 } from '../helpers/collab-db.js';
 import { runMigrations } from '../../src/migrate.js';
 import { getPool, closePool } from '../../src/pool.js';
@@ -50,17 +50,17 @@ describe('A2 board: optimistic concurrency and ordering (real Postgres)', () => 
     await resetCollabSchema(DATABASE_URL);
     await runMigrations();
 
-    const legacyAdmin = await seedLegacyUser(DATABASE_URL, { githubId: 9201, login: 'board-owner' });
-    await seedLegacyOrgMembership(DATABASE_URL, legacyAdmin, 'board-org', 'admin');
+    const legacyAdmin = await seedUser(DATABASE_URL, { githubId: 9201, login: 'board-owner' });
+    await seedOrgMembership(DATABASE_URL, legacyAdmin, 'board-org', 'admin');
     const principal = await ensureGithubPrincipal({
-      legacyUserId: legacyAdmin,
+      userId: legacyAdmin,
       displayName: 'Board Owner',
       email: 'board-owner@example.test',
     });
     managerActor = { principalId: principal.id, sessionVersion: principal.sessionVersion };
     const ws = await bootstrapCollaborationWorkspace({
       actor: managerActor,
-      legacyOrgId: 'board-org',
+      orgId: 'board-org',
       name: 'Board Client',
       idempotencyKey: 'board-ws',
     });
@@ -272,7 +272,7 @@ describe('A2 board hardening (rank/lock review findings)', () => {
   }
 
   beforeAll(async () => {
-    const owner = await rawQuery(`SELECT id, session_version FROM collab_principals WHERE legacy_user_id = (SELECT id FROM users WHERE login = 'board-owner')`);
+    const owner = await rawQuery(`SELECT id, session_version FROM collab_principals WHERE user_id = (SELECT id FROM users WHERE login = 'board-owner')`);
     managerActor = { principalId: owner[0].id, sessionVersion: owner[0].session_version };
     projectId = (await rawQuery(`SELECT id FROM collab_projects WHERE name = 'Board P1'`))[0].id;
   });

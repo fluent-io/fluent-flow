@@ -50,7 +50,7 @@ export async function resetCollabSchema(databaseUrl) {
   }
 }
 
-export async function seedLegacyUser(
+export async function seedUser(
   databaseUrl: string,
   opts: { githubId: number; login: string; isSuperadmin?: boolean },
 ): Promise<number> {
@@ -68,7 +68,7 @@ export async function seedLegacyUser(
   }
 }
 
-export async function seedLegacyOrgMembership(
+export async function seedOrgMembership(
   databaseUrl: string,
   userId: number,
   orgId: string,

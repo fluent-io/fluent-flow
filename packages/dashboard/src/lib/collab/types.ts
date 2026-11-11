@@ -30,7 +30,7 @@ export interface Principal {
   id: string;
   displayName: string;
   email: string | null;
-  legacyUserId: number | null;
+  userId: number | null;
   disabledAt: string | null;
   sessionVersion: number;
 }
@@ -66,7 +66,7 @@ export interface MeResponse {
   workspaces: (Workspace & { projects: Project[] })[];
   capabilities: MeCapabilities;
   workspaceCapabilities?: { [workspaceId: string]: Capability[] };
-  bootstrap?: { eligible: boolean; legacyOrgIds: string[] };
+  bootstrap?: { eligible: boolean; orgIds: string[] };
 }
 
 export interface Role {

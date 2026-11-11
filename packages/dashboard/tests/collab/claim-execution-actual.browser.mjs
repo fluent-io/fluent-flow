@@ -240,10 +240,10 @@ try {
     [737373, owner.login, 'claim-browser-owner@example.test'],
   );
   await pool.query('INSERT INTO user_orgs (user_id, org_id, role) VALUES ($1, $2, $3)', [legacyUser.id, orgId, 'admin']);
-  const principal = await db.ensureGithubPrincipal({ legacyUserId: legacyUser.id, displayName: 'Claim browser owner', email: owner.email });
+  const principal = await db.ensureGithubPrincipal({ userId: legacyUser.id, displayName: 'Claim browser owner', email: owner.email });
   await pool.query('INSERT INTO collab_password_credentials (principal_id, password_hash) VALUES ($1, $2)', [principal.id, await db.hashPassword(owner.password)]);
   const actor = { principalId: principal.id, sessionVersion: principal.sessionVersion };
-  const workspace = await db.bootstrapCollaborationWorkspace({ actor, legacyOrgId: orgId, name: 'Claim Browser Client', idempotencyKey: 'claim-browser-workspace' });
+  const workspace = await db.bootstrapCollaborationWorkspace({ actor, orgId, name: 'Claim Browser Client', idempotencyKey: 'claim-browser-workspace' });
   const project = await db.createCollabProject({ actor, workspaceId: workspace.id, name: 'Claim Browser Project' });
   const task = await db.createCollabTask({ actor, projectId: project.id, title: 'Deterministic ACP claim task', description: 'Disposable actual-browser acceptance task.' });
   await pool.query(`INSERT INTO repos (id, org_id, repo_full_name, provider) VALUES ($1, $2, $3, 'github')`, [randomUUID(), orgId, repo]);

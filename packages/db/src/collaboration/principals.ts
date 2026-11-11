@@ -6,7 +6,7 @@ export type CollabPrincipal = {
   id: string;
   displayName: string;
   email: string | null;
-  legacyUserId: number | null;
+  userId: number | null;
   disabledAt: string | null;
   sessionVersion: number;
 };
@@ -21,7 +21,7 @@ export function rowToPrincipal(row: {
   id: string;
   display_name: string;
   email: string | null;
-  legacy_user_id: number | null;
+  user_id: number | null;
   disabled_at: Date | null;
   session_version: number;
 }): CollabPrincipal {
@@ -29,33 +29,33 @@ export function rowToPrincipal(row: {
     id: row.id,
     displayName: row.display_name,
     email: row.email,
-    legacyUserId: row.legacy_user_id,
+    userId: row.user_id,
     disabledAt: row.disabled_at ? row.disabled_at.toISOString() : null,
     sessionVersion: row.session_version,
   };
 }
 
 const ensureGithubPrincipalSchema = z.object({
-  legacyUserId: z.number().int().positive(),
+  userId: z.number().int().positive(),
   displayName: z.string().min(1).max(200),
   email: z.string().max(320).nullable(),
 });
 
 export async function ensureGithubPrincipal(input: {
-  legacyUserId: number;
+  userId: number;
   displayName: string;
   email: string | null;
 }): Promise<CollabPrincipal> {
-  const { legacyUserId, displayName, email } = ensureGithubPrincipalSchema.parse(input);
+  const { userId, displayName, email } = ensureGithubPrincipalSchema.parse(input);
   const { rows } = await getPool().query(
-    `INSERT INTO collab_principals (display_name, email, legacy_user_id)
+    `INSERT INTO collab_principals (display_name, email, user_id)
      VALUES ($1, $2, $3)
-     ON CONFLICT (legacy_user_id) DO UPDATE
+     ON CONFLICT (user_id) DO UPDATE
        SET display_name = EXCLUDED.display_name,
            email = EXCLUDED.email,
            updated_at = now()
-     RETURNING id, display_name, email, legacy_user_id, disabled_at, session_version`,
-    [displayName, email, legacyUserId],
+     RETURNING id, display_name, email, user_id, disabled_at, session_version`,
+    [displayName, email, userId],
   );
   return rowToPrincipal(rows[0]);
 }
@@ -63,7 +63,7 @@ export async function ensureGithubPrincipal(input: {
 export async function getCollabPrincipal(id: string): Promise<CollabPrincipal | null> {
   if (!z.string().uuid().safeParse(id).success) return null;
   const { rows } = await getPool().query(
-    `SELECT id, display_name, email, legacy_user_id, disabled_at, session_version
+    `SELECT id, display_name, email, user_id, disabled_at, session_version
      FROM collab_principals WHERE id = $1`,
     [id],
   );

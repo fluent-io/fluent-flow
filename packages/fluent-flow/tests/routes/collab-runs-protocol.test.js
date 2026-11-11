@@ -6,7 +6,7 @@ vi.mock('../../src/logger.js', async () => {
   return { default: createMockLogger() };
 });
 
-const { resolveCollabTestDatabaseUrl, resetCollabSchema, seedLegacyUser, seedLegacyOrgMembership } =
+const { resolveCollabTestDatabaseUrl, resetCollabSchema, seedUser, seedOrgMembership } =
   await import('../helpers/collab-db.js');
 process.env.DATABASE_URL = resolveCollabTestDatabaseUrl();
 
@@ -61,17 +61,17 @@ describe('A3 protocol over real HTTP (run start, connector loop, host truth)', (
       await import('@fluent-flow/db');
     await runMigrations();
 
-    const legacyAdmin = await seedLegacyUser(process.env.DATABASE_URL, { githubId: 9601, login: 'proto-owner' });
-    await seedLegacyOrgMembership(process.env.DATABASE_URL, legacyAdmin, 'proto-org', 'admin');
+    const legacyAdmin = await seedUser(process.env.DATABASE_URL, { githubId: 9601, login: 'proto-owner' });
+    await seedOrgMembership(process.env.DATABASE_URL, legacyAdmin, 'proto-org', 'admin');
     const principal = await ensureGithubPrincipal({
-      legacyUserId: legacyAdmin,
+      userId: legacyAdmin,
       displayName: 'Proto Owner',
       email: 'proto-owner@example.test',
     });
     manager = { id: principal.id, sessionVersion: principal.sessionVersion };
     const ws = await bootstrapCollaborationWorkspace({
       actor: { principalId: manager.id, sessionVersion: manager.sessionVersion },
-      legacyOrgId: 'proto-org',
+      orgId: 'proto-org',
       name: 'Proto Client',
       idempotencyKey: 'proto-ws-01',
     });

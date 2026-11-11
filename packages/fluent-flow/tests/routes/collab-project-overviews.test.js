@@ -5,7 +5,7 @@ vi.mock('../../src/logger.js',async()=>{
   const {createMockLogger}=await import('../helpers/mock-logger.js');
   return {default:createMockLogger()};
 });
-const {resolveCollabTestDatabaseUrl,resetCollabSchema,seedLegacyUser,seedLegacyOrgMembership}=await import('../helpers/collab-db.js');
+const {resolveCollabTestDatabaseUrl,resetCollabSchema,seedUser,seedOrgMembership}=await import('../helpers/collab-db.js');
 process.env.DATABASE_URL=resolveCollabTestDatabaseUrl();
 const db=await import('@fluent-flow/db');
 const {createApp}=await import('../../src/app.js');
@@ -40,16 +40,16 @@ describe('mounted project overview API',()=>{
   beforeAll(async()=>{
     process.env.FF_COLLAB_AUTH_SECRET=secret;
     await resetCollabSchema(process.env.DATABASE_URL);await db.runMigrations();
-    const legacy=await seedLegacyUser(process.env.DATABASE_URL,{githubId:98771,login:'overview-owner'});
-    await seedLegacyOrgMembership(process.env.DATABASE_URL,legacy,'overview-org','admin');
-    const principal=await db.ensureGithubPrincipal({legacyUserId:legacy,displayName:'Overview owner',email:'owner@overview.test'});
+    const legacy=await seedUser(process.env.DATABASE_URL,{githubId:98771,login:'overview-owner'});
+    await seedOrgMembership(process.env.DATABASE_URL,legacy,'overview-org','admin');
+    const principal=await db.ensureGithubPrincipal({userId:legacy,displayName:'Overview owner',email:'owner@overview.test'});
     owner={principalId:principal.id,sessionVersion:principal.sessionVersion};
-    const legacyB=await seedLegacyUser(process.env.DATABASE_URL,{githubId:98772,login:'overview-owner-b'});
-    await seedLegacyOrgMembership(process.env.DATABASE_URL,legacyB,'overview-org-b','admin');
-    const principalB=await db.ensureGithubPrincipal({legacyUserId:legacyB,displayName:'Other client owner',email:'owner@other-client.test'});
+    const legacyB=await seedUser(process.env.DATABASE_URL,{githubId:98772,login:'overview-owner-b'});
+    await seedOrgMembership(process.env.DATABASE_URL,legacyB,'overview-org-b','admin');
+    const principalB=await db.ensureGithubPrincipal({userId:legacyB,displayName:'Other client owner',email:'owner@other-client.test'});
     ownerB={principalId:principalB.id,sessionVersion:principalB.sessionVersion};
-    workspace=await db.bootstrapCollaborationWorkspace({actor:owner,legacyOrgId:'overview-org',name:'Overview client',idempotencyKey:'overview-workspace'});
-    const workspaceB=await db.bootstrapCollaborationWorkspace({actor:ownerB,legacyOrgId:'overview-org-b',name:'Other client',idempotencyKey:'overview-workspace-b'});
+    workspace=await db.bootstrapCollaborationWorkspace({actor:owner,orgId:'overview-org',name:'Overview client',idempotencyKey:'overview-workspace'});
+    const workspaceB=await db.bootstrapCollaborationWorkspace({actor:ownerB,orgId:'overview-org-b',name:'Other client',idempotencyKey:'overview-workspace-b'});
     project=await db.createCollabProject({actor:owner,workspaceId:workspace.id,name:'Overview project'});
     sibling=await db.createCollabProject({actor:owner,workspaceId:workspace.id,name:'Sibling private project'});
     foreign=await db.createCollabProject({actor:ownerB,workspaceId:workspaceB.id,name:'Other client project'});

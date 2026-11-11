@@ -62,7 +62,7 @@ const PRINCIPAL = {
   id: 'p-1',
   displayName: 'Collaborator One',
   email: 'c1@example.com',
-  legacyUserId: null,
+  userId: null,
   disabledAt: null,
   sessionVersion: 2,
 };
@@ -260,7 +260,7 @@ describe('jwt callback', () => {
 
   it('maps a GitHub sign-in to a collaboration principal by legacy user id', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [userRow()] });
-    mockEnsureGithubPrincipal.mockResolvedValueOnce({ ...PRINCIPAL, legacyUserId: 7 });
+    mockEnsureGithubPrincipal.mockResolvedValueOnce({ ...PRINCIPAL, userId: 7 });
 
     const token: Record<string, unknown> = {};
     await authOptions.callbacks!.jwt!(
@@ -272,7 +272,7 @@ describe('jwt callback', () => {
     );
 
     expect(mockEnsureGithubPrincipal).toHaveBeenCalledWith({
-      legacyUserId: 7,
+      userId: 7,
       displayName: 'victor',
       email: 'v@example.com',
     });
@@ -297,7 +297,7 @@ describe('jwt callback', () => {
 
   it('materializes the principal for a pre-collab GitHub JWT without rotating identity', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [userRow()] });
-    mockEnsureGithubPrincipal.mockResolvedValueOnce({ ...PRINCIPAL, legacyUserId: 7 });
+    mockEnsureGithubPrincipal.mockResolvedValueOnce({ ...PRINCIPAL, userId: 7 });
 
     const token: Record<string, unknown> = { github_id: 9001, login: 'victor', email: 'v@example.com' };
     const returned = (await authOptions.callbacks!.jwt!(
@@ -305,7 +305,7 @@ describe('jwt callback', () => {
     )) as Record<string, unknown>;
 
     expect(mockEnsureGithubPrincipal).toHaveBeenCalledWith({
-      legacyUserId: 7,
+      userId: 7,
       displayName: 'victor',
       email: 'v@example.com',
     });
@@ -362,7 +362,7 @@ describe('session callback', () => {
   });
 
   it('builds a GitHub user session with legacy identity, orgs and a mapped principal', async () => {
-    mockGetCollabPrincipal.mockResolvedValueOnce({ ...PRINCIPAL, legacyUserId: 7 });
+    mockGetCollabPrincipal.mockResolvedValueOnce({ ...PRINCIPAL, userId: 7 });
     mockQuery.mockResolvedValueOnce({
       rows: [
         {

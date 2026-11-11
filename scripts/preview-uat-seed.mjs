@@ -36,7 +36,7 @@ await pool.query(
 );
 
 const principal = await db.ensureGithubPrincipal({
-  legacyUserId: user.id,
+  userId: user.id,
   displayName: `Preview UAT ${suffix}`,
   email: owner.email,
 });
@@ -50,7 +50,7 @@ await pool.query(
 const actor = { principalId: principal.id, sessionVersion: principal.sessionVersion };
 const workspace = await db.bootstrapCollaborationWorkspace({
   actor,
-  legacyOrgId: orgId,
+  orgId,
   name: `Preview UAT Client ${suffix}`,
   idempotencyKey: `preview-uat-workspace-${suffix}`,
 });

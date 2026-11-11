@@ -5,11 +5,11 @@ import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 import { DashboardShell } from './dashboard-shell';
 
-export function LegacyAdminGate({ children }: { children: React.ReactNode }) {
-  return <DashboardShell><LegacyAccess>{children}</LegacyAccess></DashboardShell>;
+export function InternalNavGate({ children }: { children: React.ReactNode }) {
+  return <DashboardShell><InternalNavAccess>{children}</InternalNavAccess></DashboardShell>;
 }
 
-function LegacyAccess({ children }: { children: React.ReactNode }) {
+function InternalNavAccess({ children }: { children: React.ReactNode }) {
   const { data: session, status } = useSession();
   const router = useRouter();
 

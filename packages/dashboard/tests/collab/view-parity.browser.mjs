@@ -43,12 +43,12 @@ const { rows: [user] } = await pool.query(
   [owner.login],
 );
 await pool.query(`INSERT INTO user_orgs (user_id, org_id, role) VALUES ($1, 'parity-org', 'admin')`, [user.id]);
-const linked = await db.ensureGithubPrincipal({ legacyUserId: user.id, displayName: 'Owner via password', email: owner.email });
+const linked = await db.ensureGithubPrincipal({ userId: user.id, displayName: 'Owner via password', email: owner.email });
 await pool.query('INSERT INTO collab_password_credentials (principal_id, password_hash) VALUES ($1, $2)', [linked.id, await db.hashPassword(owner.password)]);
 await assert.rejects(pool.query('DELETE FROM users WHERE id = $1', [user.id]), (e) => e.code === '23503');
 
 const actor = { principalId: linked.id, sessionVersion: linked.sessionVersion };
-const workspace = await db.bootstrapCollaborationWorkspace({ actor, legacyOrgId: 'parity-org', name: names.workspace, idempotencyKey: 'view-parity-workspace' });
+const workspace = await db.bootstrapCollaborationWorkspace({ actor, orgId: 'parity-org', name: names.workspace, idempotencyKey: 'view-parity-workspace' });
 const project = await db.createCollabProject({ actor, workspaceId: workspace.id, name: names.project });
 await db.createCollabTask({ actor, projectId: project.id, title: names.task });
 
