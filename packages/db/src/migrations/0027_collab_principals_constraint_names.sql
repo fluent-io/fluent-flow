@@ -1,0 +1,3 @@
+ALTER TABLE collab_principals RENAME CONSTRAINT collab_principals_legacy_user_id_key TO collab_principals_user_id_key;
+--> statement-breakpoint
+ALTER TABLE collab_principals RENAME CONSTRAINT collab_principals_legacy_user_id_fkey TO collab_principals_user_id_fkey;

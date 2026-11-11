@@ -190,6 +190,13 @@
       "when": 1794355200000,
       "tag": "0026_collab_rename_org_user_fks",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1794441600000,
+      "tag": "0027_collab_principals_constraint_names",
+      "breakpoints": true
     }
   ]
 }
