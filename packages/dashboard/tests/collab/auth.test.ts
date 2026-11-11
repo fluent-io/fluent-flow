@@ -9,6 +9,7 @@ const mockEnsureGithubPrincipal = vi.fn();
 const mockGetCollabPrincipal = vi.fn();
 const mockUpsertUser = vi.fn();
 const mockGetUserOrgs = vi.fn();
+const mockLinkUserToOrg = vi.fn();
 const mockQuery = vi.fn();
 
 vi.mock('@fluent-flow/db', () => ({
@@ -18,6 +19,7 @@ vi.mock('@fluent-flow/db', () => ({
   getCollabPrincipal: (...args: unknown[]) => mockGetCollabPrincipal(...args),
   upsertUser: (...args: unknown[]) => mockUpsertUser(...args),
   getUserOrgs: (...args: unknown[]) => mockGetUserOrgs(...args),
+  linkUserToOrg: (...args: unknown[]) => mockLinkUserToOrg(...args),
   query: (...args: unknown[]) => mockQuery(...args),
 }));
 
@@ -157,6 +159,8 @@ describe('signIn callback', () => {
     ]) {
       m.mockReset();
     }
+    mockLinkUserToOrg.mockReset();
+    vi.unstubAllGlobals();
   });
 
   it('allows credentials sign-in without touching legacy GitHub upsert', async () => {
@@ -169,6 +173,8 @@ describe('signIn callback', () => {
   });
 
   it('upserts the legacy user for GitHub sign-in', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    mockGetUserOrgs.mockResolvedValueOnce([]);
     const result = await authOptions.callbacks!.signIn!(
       asSignInArgs({
         user: { email: 'v@example.com' },
@@ -181,6 +187,105 @@ describe('signIn callback', () => {
     expect(mockUpsertUser).toHaveBeenCalledWith(
       expect.objectContaining({ github_id: 9001, login: 'victor' }),
     );
+  });
+
+  it('links a missing org on GitHub sign-in by reconciling against GitHub installations', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    mockGetUserOrgs.mockResolvedValueOnce([]);
+    mockQuery.mockResolvedValueOnce({ rows: [{ '?column?': 1 }] }); // orgs row exists
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ installations: [{ account: { login: 'acme' } }] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await authOptions.callbacks!.signIn!(
+      asSignInArgs({
+        user: { email: 'v@example.com' },
+        account: { provider: 'github', access_token: 'gh-token' },
+        profile: { id: 9001, login: 'victor', avatar_url: 'https://avatar' },
+      }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://api.github.com/user/installations',
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer gh-token' }) }),
+    );
+    expect(mockLinkUserToOrg).toHaveBeenCalledWith(7, 'acme', 'admin');
+  });
+
+  it('does not touch an org the user is already linked to', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    mockGetUserOrgs.mockResolvedValueOnce([{ org_id: 'acme', role: 'member' }]);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ installations: [{ account: { login: 'acme' } }] }) }),
+    );
+
+    await authOptions.callbacks!.signIn!(
+      asSignInArgs({
+        user: { email: 'v@example.com' },
+        account: { provider: 'github', access_token: 'gh-token' },
+        profile: { id: 9001, login: 'victor', avatar_url: 'https://avatar' },
+      }),
+    );
+
+    expect(mockLinkUserToOrg).not.toHaveBeenCalled();
+  });
+
+  it('skips linking and still succeeds when the org row does not exist', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    mockGetUserOrgs.mockResolvedValueOnce([]);
+    mockQuery.mockResolvedValueOnce({ rows: [] }); // no orgs row
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ installations: [{ account: { login: 'ghost-org' } }] }) }),
+    );
+
+    const result = await authOptions.callbacks!.signIn!(
+      asSignInArgs({
+        user: { email: 'v@example.com' },
+        account: { provider: 'github', access_token: 'gh-token' },
+        profile: { id: 9001, login: 'victor', avatar_url: 'https://avatar' },
+      }),
+    );
+
+    expect(result).toBe(true);
+    expect(mockLinkUserToOrg).not.toHaveBeenCalled();
+  });
+
+  it('still succeeds when the GitHub installations call fails', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    mockGetUserOrgs.mockResolvedValueOnce([]);
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')));
+
+    const result = await authOptions.callbacks!.signIn!(
+      asSignInArgs({
+        user: { email: 'v@example.com' },
+        account: { provider: 'github', access_token: 'gh-token' },
+        profile: { id: 9001, login: 'victor', avatar_url: 'https://avatar' },
+      }),
+    );
+
+    expect(result).toBe(true);
+    expect(mockLinkUserToOrg).not.toHaveBeenCalled();
+  });
+
+  it('skips reconciliation entirely when the GitHub OAuth account carries no access token', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await authOptions.callbacks!.signIn!(
+      asSignInArgs({
+        user: { email: 'v@example.com' },
+        account: { provider: 'github' },
+        profile: { id: 9001, login: 'victor', avatar_url: 'https://avatar' },
+      }),
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockGetUserOrgs).not.toHaveBeenCalled();
   });
 });
 
