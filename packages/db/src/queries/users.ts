@@ -52,3 +52,28 @@ export async function linkUserToOrg(
   `;
   await query(sql, [userId, orgId, role]);
 }
+
+/**
+ * Atomically links a user to an org only if the org is already provisioned
+ * (an `orgs` row exists) AND the user has no existing link — in one
+ * statement, so there's no read-then-write race window and an existing link
+ * (at any role) is never touched, let alone escalated. Returns whether a row
+ * was actually inserted. Intended for self-heal/reconciliation paths where,
+ * unlike the webhook's `linkUserToOrg`, there's no reliable signal that the
+ * caller deserves to overwrite an existing membership.
+ */
+export async function linkUserToOrgIfProvisioned(
+  userId: number,
+  orgId: string,
+  role: 'member' | 'admin' = 'member',
+): Promise<boolean> {
+  const sql = `
+    INSERT INTO user_orgs (user_id, org_id, role)
+    SELECT $1, $2, $3
+    WHERE EXISTS (SELECT 1 FROM orgs WHERE id = $2)
+    ON CONFLICT (user_id, org_id) DO NOTHING
+    RETURNING user_id
+  `;
+  const result = await query(sql, [userId, orgId, role]);
+  return result.rows.length > 0;
+}
