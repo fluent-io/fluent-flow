@@ -38,12 +38,12 @@ const pool = db.getPool();
 await pool.query(`INSERT INTO orgs (id, name) VALUES ('projects-org', 'Projects Org')`);
 const { rows: [user] } = await pool.query(`INSERT INTO users (github_id, login, email, avatar_url) VALUES (525252, $1, 'projects-owner@example.test', NULL) RETURNING id`, [owner.login]);
 await pool.query(`INSERT INTO user_orgs (user_id, org_id, role) VALUES ($1, 'projects-org', 'admin')`, [user.id]);
-const linked = await db.ensureGithubPrincipal({ legacyUserId: user.id, displayName: 'Projects owner', email: owner.email });
+const linked = await db.ensureGithubPrincipal({ userId: user.id, displayName: 'Projects owner', email: owner.email });
 await pool.query('INSERT INTO collab_password_credentials (principal_id, password_hash) VALUES ($1, $2)', [linked.id, await db.hashPassword(owner.password)]);
 const actor = { principalId: linked.id, sessionVersion: linked.sessionVersion };
 
-const clientA = await db.bootstrapCollaborationWorkspace({ actor, legacyOrgId: 'projects-org', name: 'Client A', idempotencyKey: 'projects-client-a' });
-const clientB = await db.bootstrapCollaborationWorkspace({ actor, legacyOrgId: 'projects-org', name: 'Client B', idempotencyKey: 'projects-client-b' });
+const clientA = await db.bootstrapCollaborationWorkspace({ actor, orgId: 'projects-org', name: 'Client A', idempotencyKey: 'projects-client-a' });
+const clientB = await db.bootstrapCollaborationWorkspace({ actor, orgId: 'projects-org', name: 'Client B', idempotencyKey: 'projects-client-b' });
 const A1 = await db.createCollabProject({ actor, workspaceId: clientA.id, name: 'Project A1' });
 const A2 = await db.createCollabProject({ actor, workspaceId: clientA.id, name: 'Project A2' });
 const B1 = await db.createCollabProject({ actor, workspaceId: clientB.id, name: 'Project B1' });

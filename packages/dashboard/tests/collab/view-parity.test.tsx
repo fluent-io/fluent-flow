@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 type UserRow = { id: number; github_id: number; login: string; email: string | null; avatar_url: string | null; is_superadmin: boolean };
-type PrincipalRow = { id: string; displayName: string; email: string | null; legacyUserId: number | null; disabledAt: string | null; sessionVersion: number; password: string | null };
+type PrincipalRow = { id: string; displayName: string; email: string | null; userId: number | null; disabledAt: string | null; sessionVersion: number; password: string | null };
 const db = { users: [] as UserRow[], orgs: [] as { user_id: number; org_id: string; role: 'admin' | 'member' }[], principals: [] as PrincipalRow[] };
 
 function publicPrincipal(p: PrincipalRow) {
@@ -19,10 +19,10 @@ vi.mock('@fluent-flow/db', () => ({
     const p = db.principals.find((r) => r.email === email && r.password === password && !r.disabledAt);
     return p ? publicPrincipal(p) : null;
   },
-  ensureGithubPrincipal: async ({ legacyUserId, displayName, email }: { legacyUserId: number; displayName: string; email: string | null }) => {
-    let p = db.principals.find((r) => r.legacyUserId === legacyUserId);
+  ensureGithubPrincipal: async ({ userId, displayName, email }: { userId: number; displayName: string; email: string | null }) => {
+    let p = db.principals.find((r) => r.userId === userId);
     if (!p) {
-      p = { id: `p-gh-${legacyUserId}`, displayName, email, legacyUserId, disabledAt: null, sessionVersion: 1, password: null };
+      p = { id: `p-gh-${userId}`, displayName, email, userId, disabledAt: null, sessionVersion: 1, password: null };
       db.principals.push(p);
     }
     p.displayName = displayName;
@@ -59,7 +59,7 @@ vi.mock('next-auth/react', () => ({
 vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: vi.fn() }), usePathname: () => '/settings' }));
 
 const { authOptions, getOrgScope } = await import('../../src/lib/auth');
-const { LegacyAdminGate } = await import('@/components/layout/legacy-admin-gate');
+const { InternalNavGate } = await import('@/components/layout/internal-nav-gate');
 const { DashboardShell } = await import('@/components/layout/dashboard-shell');
 
 type Callbacks = NonNullable<NextAuthOptions['callbacks']>;
@@ -95,13 +95,13 @@ async function oauthLogin(profile: { id: number; login: string; avatar_url: stri
 function renderShell(session: Session) {
   currentSession = session;
   vi.stubGlobal('React', React);
-  return renderToStaticMarkup(<LegacyAdminGate><div>Internal page content</div></LegacyAdminGate>);
+  return renderToStaticMarkup(<InternalNavGate><div>Internal page content</div></InternalNavGate>);
 }
 
 function seedLinked(opts: { userId: number; githubId: number; login: string; superadmin?: boolean; orgs?: { org_id: string; role: 'admin' | 'member' }[] }) {
   db.users.push({ id: opts.userId, github_id: opts.githubId, login: opts.login, email: `${opts.login}@example.test`, avatar_url: `https://avatars.example.test/${opts.login}`, is_superadmin: opts.superadmin ?? false });
   for (const o of opts.orgs ?? []) db.orgs.push({ user_id: opts.userId, ...o });
-  db.principals.push({ id: `p-linked-${opts.userId}`, displayName: `${opts.login} (password)`, email: `${opts.login}+pw@example.test`, legacyUserId: opts.userId, disabledAt: null, sessionVersion: 1, password: 'correct horse battery' });
+  db.principals.push({ id: `p-linked-${opts.userId}`, displayName: `${opts.login} (password)`, email: `${opts.login}+pw@example.test`, userId: opts.userId, disabledAt: null, sessionVersion: 1, password: 'correct horse battery' });
   return { profile: { id: opts.githubId, login: opts.login, avatar_url: `https://avatars.example.test/${opts.login}` }, email: `${opts.login}@example.test`, passwordEmail: `${opts.login}+pw@example.test` };
 }
 
@@ -163,7 +163,7 @@ describe('password and GitHub sign-in produce the same dashboard view for a link
 describe('restricted and fail-closed cases', () => {
   it('an unlinked invited collaborator stays restricted to board views', async () => {
     seedLinked({ userId: 7, githubId: 9001, login: 'owner', orgs: [{ org_id: 'acme', role: 'admin' }] });
-    db.principals.push({ id: 'p-ext', displayName: 'External Person', email: 'owner@example.test', legacyUserId: null, disabledAt: null, sessionVersion: 1, password: 'external password' });
+    db.principals.push({ id: 'p-ext', displayName: 'External Person', email: 'owner@example.test', userId: null, disabledAt: null, sessionVersion: 1, password: 'external password' });
 
     const { session } = await passwordLogin('owner@example.test', 'external password');
 
@@ -192,7 +192,7 @@ describe('restricted and fail-closed cases', () => {
 
   it('rejects a GitHub token bound to an unlinked principal', async () => {
     seedLinked({ userId: 7, githubId: 9001, login: 'owner', orgs: [{ org_id: 'acme', role: 'admin' }] });
-    db.principals.push({ id: 'p-ext', displayName: 'External', email: null, legacyUserId: null, disabledAt: null, sessionVersion: 1, password: null });
+    db.principals.push({ id: 'p-ext', displayName: 'External', email: null, userId: null, disabledAt: null, sessionVersion: 1, password: null });
 
     await expect(resolveSession({ principalId: 'p-ext', sessionVersion: 1, github_id: 9001, login: 'owner' })).rejects.toThrow();
   });

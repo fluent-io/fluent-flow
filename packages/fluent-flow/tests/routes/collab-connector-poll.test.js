@@ -7,7 +7,7 @@ vi.mock('../../src/logger.js', async () => {
   return { default: createMockLogger() };
 });
 
-const { resolveCollabTestDatabaseUrl, resetCollabSchema, seedLegacyUser, seedLegacyOrgMembership } =
+const { resolveCollabTestDatabaseUrl, resetCollabSchema, seedUser, seedOrgMembership } =
   await import('../helpers/collab-db.js');
 process.env.DATABASE_URL = resolveCollabTestDatabaseUrl();
 
@@ -81,12 +81,12 @@ describe('connector poll waits for work, wakes on new work, and cancels cleanly'
     await resetCollabSchema(process.env.DATABASE_URL);
     await db.runMigrations();
 
-    const legacyAdmin = await seedLegacyUser(process.env.DATABASE_URL, { githubId: 9701, login: 'poll-owner' });
-    await seedLegacyOrgMembership(process.env.DATABASE_URL, legacyAdmin, 'poll-org', 'admin');
-    const principal = await db.ensureGithubPrincipal({ legacyUserId: legacyAdmin, displayName: 'Poll Owner', email: 'poll-owner@example.test' });
+    const legacyAdmin = await seedUser(process.env.DATABASE_URL, { githubId: 9701, login: 'poll-owner' });
+    await seedOrgMembership(process.env.DATABASE_URL, legacyAdmin, 'poll-org', 'admin');
+    const principal = await db.ensureGithubPrincipal({ userId: legacyAdmin, displayName: 'Poll Owner', email: 'poll-owner@example.test' });
     manager = { id: principal.id, sessionVersion: principal.sessionVersion };
     const actor = { principalId: manager.id, sessionVersion: manager.sessionVersion };
-    const ws = await db.bootstrapCollaborationWorkspace({ actor, legacyOrgId: 'poll-org', name: 'Poll Client', idempotencyKey: 'poll-ws-01' });
+    const ws = await db.bootstrapCollaborationWorkspace({ actor, orgId: 'poll-org', name: 'Poll Client', idempotencyKey: 'poll-ws-01' });
     projectId = (await db.createCollabProject({ actor, workspaceId: ws.id, name: 'Poll P1' })).id;
     const host = await db.createExecutionHost({ actor, name: 'Poll PC' });
     hostId = host.id;

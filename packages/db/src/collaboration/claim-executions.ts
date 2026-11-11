@@ -267,9 +267,9 @@ function rowToClaim(row: ClaimExecutionRow): ClaimExecution {
   };
 }
 
-async function taskScope(taskId: string): Promise<{ projectId: string; legacyOrgId: string | null }> {
-  const result = await getPool().query<{ project_id: string; legacy_org_id: string | null }>(
-    `SELECT task.project_id, workspace.legacy_org_id
+async function taskScope(taskId: string): Promise<{ projectId: string; orgId: string | null }> {
+  const result = await getPool().query<{ project_id: string; org_id: string | null }>(
+    `SELECT task.project_id, workspace.org_id
      FROM collab_tasks task
      JOIN collab_projects project ON project.id = task.project_id
      JOIN collab_workspaces workspace ON workspace.id = project.workspace_id
@@ -279,16 +279,16 @@ async function taskScope(taskId: string): Promise<{ projectId: string; legacyOrg
   if (result.rows.length === 0) throw new CollabServiceError(404, 'not_found', 'Not found.');
   return {
     projectId: result.rows[0].project_id,
-    legacyOrgId: result.rows[0].legacy_org_id,
+    orgId: result.rows[0].org_id,
   };
 }
 
-async function requireLegacyRepo(repo: string, legacyOrgId: string): Promise<void> {
+async function requireRepo(repo: string, orgId: string): Promise<void> {
   const result = await getPool().query(
     `SELECT id
      FROM repos
      WHERE repo_full_name = $1 AND org_id = $2`,
-    [repo, legacyOrgId],
+    [repo, orgId],
   );
   if (result.rows.length === 0) throw new CollabServiceError(404, 'not_found', 'Not found.');
 }
@@ -330,11 +330,11 @@ export async function startCollabClaimExecution(input: {
   const principal = await requireCurrentPrincipal(parsed.actor);
   const scope = await taskScope(parsed.taskId);
   await authorize(parsed.actor, { projectId: scope.projectId }, ['run.start']);
-  if (scope.legacyOrgId === null) {
+  if (scope.orgId === null) {
     throw new CollabServiceError(404, 'not_found', 'Not found.');
   }
-  const legacyOrgId = scope.legacyOrgId;
-  await requireLegacyRepo(parsed.repo, legacyOrgId);
+  const orgId = scope.orgId;
+  await requireRepo(parsed.repo, orgId);
   const canonical = {
     expectedVersion: parsed.expectedVersion,
     repo: parsed.repo,
@@ -380,7 +380,7 @@ export async function startCollabClaimExecution(input: {
       );
     }
     const claim = await insertPendingClaim({
-      orgId: legacyOrgId,
+      orgId,
       repo: parsed.repo,
       prNumber: parsed.prNumber ?? null,
       claimType: parsed.claimType,

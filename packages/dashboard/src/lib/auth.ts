@@ -110,7 +110,7 @@ export const authOptions: NextAuthOptions = {
           throw new Error('User not found');
         }
         const principal = await ensureGithubPrincipal({
-          legacyUserId: userResult.rows[0].id,
+          userId: userResult.rows[0].id,
           displayName: ghProfile.login,
           email: user.email ?? null,
         });
@@ -130,7 +130,7 @@ export const authOptions: NextAuthOptions = {
         const userResult = await query('SELECT id FROM users WHERE github_id = $1', [token.github_id]);
         if (userResult.rows.length > 0) {
           const principal = await ensureGithubPrincipal({
-            legacyUserId: userResult.rows[0].id,
+            userId: userResult.rows[0].id,
             displayName: (token.login as string) ?? '',
             email: (token.email as string | null) ?? null,
           });
@@ -150,10 +150,10 @@ export const authOptions: NextAuthOptions = {
         throw new Error('Session rejected');
       }
 
-      if (principal.legacyUserId !== null) {
+      if (principal.userId !== null) {
         const userResult = await query(
           'SELECT id, github_id, login, email, avatar_url, is_superadmin FROM users WHERE id = $1',
-          [principal.legacyUserId],
+          [principal.userId],
         );
         const dbUser = userResult.rows[0];
         if (!dbUser || (token.github_id !== undefined && token.github_id !== dbUser.github_id)) {

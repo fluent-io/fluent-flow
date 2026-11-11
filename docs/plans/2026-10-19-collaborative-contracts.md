@@ -16,7 +16,7 @@ Status: approved-scope implementation contract, 2026-10-19. These are decisions 
 
 ## Identity and permissions
 
-`Principal = {id,displayName,email,legacyUserId:number|null,disabledAt:null|timestamp,sessionVersion:number}`. GitHub login continues to use existing `users`/`user_orgs` behavior and also resolves a collaboration principal by legacy user ID. Invited users are stored only in additive identity tables and use an invitation plus a password (scrypt, random salt, bounded lengths, constant-time comparison). Invitation URLs carry a single-use random secret; store only its hash, target email, expiry, inviter, scope and role. Admin can copy the invitation to deliver privately; email delivery is not a prerequisite. Possessing an invite does not authorize linking an existing GitHub identity by matching email. Existing-principal invitation acceptance requires sign-in as that principal. Rate-limit redemption/login; uniform invalid-credential response; rotate sessions on password reset/revocation.
+`Principal = {id,displayName,email,userId:number|null,disabledAt:null|timestamp,sessionVersion:number}`. GitHub login continues to use existing `users`/`user_orgs` behavior and also resolves a collaboration principal by legacy user ID. Invited users are stored only in additive identity tables and use an invitation plus a password (scrypt, random salt, bounded lengths, constant-time comparison). Invitation URLs carry a single-use random secret; store only its hash, target email, expiry, inviter, scope and role. Admin can copy the invitation to deliver privately; email delivery is not a prerequisite. Possessing an invite does not authorize linking an existing GitHub identity by matching email. Existing-principal invitation acceptance requires sign-in as that principal. Rate-limit redemption/login; uniform invalid-credential response; rotate sessions on password reset/revocation.
 
 B adds `session.user.principalId:string` and makes legacy `session.user.id:number|null` explicit for non-GitHub users; legacy `orgs` is empty and `isSuperadmin` false for them. Audit every old route before enabling Credentials login: **empty org IDs must never mean unrestricted access**. Replace implicit empty-array bypass with explicit trusted `isSuperadmin` in shared query scope and migrate all callers. Invited-user direct requests to old `/api/agents`, `/api/pipelines`, claims, repos and detail URLs return empty lists/404 or 403, not other clients' internals. Keep genuine superadmin and GitHub onboarding behavior working. Collaboration-only users enter the board without a GitHub installation CTA.
 
@@ -27,14 +27,14 @@ A exports the following server-only interface from `@fluent-flow/db`, implemente
 ```ts
 type CollabActor = {principalId:string;sessionVersion:number};
 type CollabPrincipal = {id:string;displayName:string;email:string|null;
-  legacyUserId:number|null;disabledAt:string|null;sessionVersion:number};
-ensureGithubPrincipal(input:{legacyUserId:number;displayName:string;email:string|null}):Promise<CollabPrincipal>;
+  userId:number|null;disabledAt:string|null;sessionVersion:number};
+ensureGithubPrincipal(input:{userId:number;displayName:string;email:string|null}):Promise<CollabPrincipal>;
 getCollabPrincipal(id:string):Promise<CollabPrincipal|null>;
 authenticateCollabPassword(input:{email:string;password:string;rateLimitKey:string}):Promise<CollabPrincipal|null>;
 acceptCollabInvitation(input:{token:string;displayName:string;password?:string;
   rateLimitKey:string;actor?:CollabActor}):Promise<{principal:CollabPrincipal;workspaceId:string;projectId:string|null}>;
-getCollabBootstrapEligibility(actor:CollabActor):Promise<{eligible:boolean;legacyOrgIds:string[]}>;
-bootstrapCollaborationWorkspace(input:{actor:CollabActor;legacyOrgId:string;name:string;
+getCollabBootstrapEligibility(actor:CollabActor):Promise<{eligible:boolean;orgIds:string[]}>;
+bootstrapCollaborationWorkspace(input:{actor:CollabActor;orgId:string;name:string;
   idempotencyKey:string}):Promise<{id:string;name:string}>;
 signCollaborationActor(actor:CollabActor,secret:string,nowSeconds?:number):string;
 verifyCollaborationActor(assertion:string,secret:string,nowSeconds?:number):CollabActor;
@@ -46,7 +46,7 @@ Credentials `authorize()` calls `authenticateCollabPassword` directly. There is 
 
 Header `X-Fluent-Flow-Actor` contains `v1.<payloadBase64url>.<signatureBase64url>`, with payload UTF-8 JSON `{iss:'fluent-flow-dashboard',aud:'fluent-flow-collab',sub:principalId,sessionVersion,iat,exp:iat+60}`. Signature is HMAC-SHA256 over ASCII `v1.<payloadBase64url>` with server-only `FF_COLLAB_AUTH_SECRET`; compare decoded fixed-length signatures in constant time. Verify version/schema/issuer/audience, maximum 60-second lifetime and 5-second clock skew before returning actor, then DB-check identity/sessionVersion. Reject duplicate headers, missing/invalid secret and malformed assertions. B strips any browser actor header before signing. No assertion/secret/password/token enters logs or a response. Bootstrap eligibility is loaded from current legacy DB roles, never encoded as an asserted browser privilege.
 
-First existing GitHub org admin clicks Create client workspace. `bootstrapCollaborationWorkspace` queries current `user_orgs`/superadmin state from `principal.legacyUserId`, checks admin for the selected org, and atomically creates the workspace plus manager membership. It needs no prior collaboration membership and does not trust session-supplied admin booleans. A supplies an explicit non-production fixture/bootstrap CLI for an isolated database: two clients, at least three projects, collaborator/reviewer/operator principals, an internal GitHub admin fixture and one offline host. Random fixture passwords/tokens go only to a mode-0600 local file, never committed or logged.
+First existing GitHub org admin clicks Create client workspace. `bootstrapCollaborationWorkspace` queries current `user_orgs`/superadmin state from `principal.userId`, checks admin for the selected org, and atomically creates the workspace plus manager membership. It needs no prior collaboration membership and does not trust session-supplied admin booleans. A supplies an explicit non-production fixture/bootstrap CLI for an isolated database: two clients, at least three projects, collaborator/reviewer/operator principals, an internal GitHub admin fixture and one offline host. Random fixture passwords/tokens go only to a mode-0600 local file, never committed or logged.
 
 `Workspace = {id,name}` is a client boundary, not a Paseo workspace. `Project = {id,workspaceId,name,version,boardVersion,executionDefaults:ExecutionDefaults|null}`. Membership is explicit at workspace and/or project level. Workspace roles may inherit into its projects; project-only membership must not enumerate sibling projects or other workspace members. Cross-workspace IDs always fail 404. A default internal admin bootstrap may link existing org administrators to a newly created workspace only through an explicit, idempotent admin action; do not auto-enroll all org members.
 

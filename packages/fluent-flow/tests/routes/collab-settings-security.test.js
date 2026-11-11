@@ -7,7 +7,7 @@ vi.mock('../../src/logger.js',async()=>{
   const {createMockLogger}=await import('../helpers/mock-logger.js');
   return {default:createMockLogger()};
 });
-const {resolveCollabTestDatabaseUrl,resetCollabSchema,seedLegacyUser,seedLegacyOrgMembership}=await import('../helpers/collab-db.js');
+const {resolveCollabTestDatabaseUrl,resetCollabSchema,seedUser,seedOrgMembership}=await import('../helpers/collab-db.js');
 process.env.DATABASE_URL=resolveCollabTestDatabaseUrl();
 const db=await import('@fluent-flow/db');
 const {createApp}=await import('../../src/app.js');
@@ -35,11 +35,11 @@ describe('mounted Settings scope and configuration security',()=>{
   beforeAll(async()=>{
     process.env.FF_COLLAB_AUTH_SECRET=secret;
     await resetCollabSchema(process.env.DATABASE_URL);await db.runMigrations();
-    const legacy=await seedLegacyUser(process.env.DATABASE_URL,{githubId:98761,login:'settings-owner'});
-    await seedLegacyOrgMembership(process.env.DATABASE_URL,legacy,'settings-org','admin');
-    const principal=await db.ensureGithubPrincipal({legacyUserId:legacy,displayName:'Settings owner',email:'owner@settings.test'});
+    const legacy=await seedUser(process.env.DATABASE_URL,{githubId:98761,login:'settings-owner'});
+    await seedOrgMembership(process.env.DATABASE_URL,legacy,'settings-org','admin');
+    const principal=await db.ensureGithubPrincipal({userId:legacy,displayName:'Settings owner',email:'owner@settings.test'});
     owner={principalId:principal.id,sessionVersion:principal.sessionVersion};
-    workspace=await db.bootstrapCollaborationWorkspace({actor:owner,legacyOrgId:'settings-org',name:'Settings client',idempotencyKey:'settings-workspace'});
+    workspace=await db.bootstrapCollaborationWorkspace({actor:owner,orgId:'settings-org',name:'Settings client',idempotencyKey:'settings-workspace'});
     project=await db.createCollabProject({actor:owner,workspaceId:workspace.id,name:'Settings project'});
     sibling=await db.createCollabProject({actor:owner,workspaceId:workspace.id,name:'Sibling private project'});
     server=createApp().listen(0,'127.0.0.1');await new Promise(resolve=>server.once('listening',resolve));baseUrl=`http://127.0.0.1:${server.address().port}`;

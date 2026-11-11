@@ -22,7 +22,7 @@ const KNOWN_SESSION_VERSION = 2;
 async function insertPrincipal(id, { disabled = false, sessionVersion = KNOWN_SESSION_VERSION } = {}) {
   const { getPool } = await import('@fluent-flow/db');
   await getPool().query(
-    `INSERT INTO collab_principals (id, display_name, email, legacy_user_id, disabled_at, session_version)
+    `INSERT INTO collab_principals (id, display_name, email, user_id, disabled_at, session_version)
      VALUES ($1, $2, $3, NULL, $4, $5)`,
     [id, `Principal ${id.slice(0, 4)}`, `${id.slice(0, 4)}@example.test`, disabled ? new Date() : null, sessionVersion],
   );

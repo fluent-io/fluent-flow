@@ -2,8 +2,8 @@ import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import {
   resolveCollabTestDatabaseUrl,
   resetCollabSchema,
-  seedLegacyUser,
-  seedLegacyOrgMembership,
+  seedUser,
+  seedOrgMembership,
 } from '../helpers/collab-db.js';
 import { runMigrations } from '../../src/migrate.js';
 import { closePool, getPool } from '../../src/pool.js';
@@ -65,10 +65,10 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     await resetCollabSchema(DATABASE_URL);
     await runMigrations();
 
-    const legacyAdmin = await seedLegacyUser(DATABASE_URL, { githubId: 9501, login: 'exec-owner' });
-    await seedLegacyOrgMembership(DATABASE_URL, legacyAdmin, 'exec-org', 'admin');
+    const legacyAdmin = await seedUser(DATABASE_URL, { githubId: 9501, login: 'exec-owner' });
+    await seedOrgMembership(DATABASE_URL, legacyAdmin, 'exec-org', 'admin');
     const principal = await ensureGithubPrincipal({
-      legacyUserId: legacyAdmin,
+      userId: legacyAdmin,
       displayName: 'Exec Owner',
       email: 'exec-owner@example.test',
     });
@@ -76,7 +76,7 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
 
     const ws = await bootstrapCollaborationWorkspace({
       actor: managerActor,
-      legacyOrgId: 'exec-org',
+      orgId: 'exec-org',
       name: 'Exec Client',
       idempotencyKey: 'exec-ws-01',
     });

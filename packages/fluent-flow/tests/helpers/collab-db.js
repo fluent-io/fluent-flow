@@ -50,7 +50,7 @@ export async function resetCollabSchema(databaseUrl) {
   }
 }
 
-export async function seedLegacyUser(databaseUrl, { githubId, login, isSuperadmin = false }) {
+export async function seedUser(databaseUrl, { githubId, login, isSuperadmin = false }) {
   const client = new pg.Client({ connectionString: databaseUrl });
   try {
     await client.connect();
@@ -65,7 +65,7 @@ export async function seedLegacyUser(databaseUrl, { githubId, login, isSuperadmi
   }
 }
 
-export async function seedLegacyOrgMembership(databaseUrl, userId, orgId, role) {
+export async function seedOrgMembership(databaseUrl, userId, orgId, role) {
   const client = new pg.Client({ connectionString: databaseUrl });
   try {
     await client.connect();

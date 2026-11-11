@@ -69,11 +69,11 @@ beforeAll(async () => {
   await db.runMigrations();
   const suffix = randomUUID();
   const legacy = await db.getPool().query('INSERT INTO users(github_id,login,email,is_superadmin) VALUES($1,$2,$3,true) RETURNING id', [Math.floor(Math.random() * 1e9), `connector-${suffix}`, `${suffix}@example.test`]);
-  const principal = await db.ensureGithubPrincipal({ legacyUserId: legacy.rows[0].id, displayName: 'Connector owner', email: `${suffix}@example.test` });
+  const principal = await db.ensureGithubPrincipal({ userId: legacy.rows[0].id, displayName: 'Connector owner', email: `${suffix}@example.test` });
   actor = { principalId: principal.id, sessionVersion: principal.sessionVersion };
   const orgId = `connector-${suffix}`;
   await db.getPool().query('INSERT INTO orgs(id,name) VALUES($1,$1)', [orgId]);
-  const workspace = await db.bootstrapCollaborationWorkspace({ actor, legacyOrgId: orgId, name: 'Connector fixture', idempotencyKey: suffix });
+  const workspace = await db.bootstrapCollaborationWorkspace({ actor, orgId, name: 'Connector fixture', idempotencyKey: suffix });
   project = await db.createCollabProject({ actor, workspaceId: workspace.id, name: 'Real connector composition' });
   host = await db.createExecutionHost({ actor, name: 'Connector fixture PC' });
   server = createApp().listen(0, '127.0.0.1');

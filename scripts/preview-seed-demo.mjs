@@ -53,7 +53,7 @@ for (const role of roles) {
     [user.id, orgId, role.role],
   );
   const principal = await ensureGithubPrincipal({
-    legacyUserId: user.id,
+    userId: user.id,
     displayName: role.login,
     email: role.email,
   });
@@ -69,7 +69,7 @@ for (const role of roles) {
 const adminActor = { principalId: provisioned['admin@site.com'].principalId, sessionVersion: provisioned['admin@site.com'].sessionVersion };
 const workspace = await bootstrapCollaborationWorkspace({
   actor: adminActor,
-  legacyOrgId: orgId,
+  orgId,
   name: workspaceName,
   idempotencyKey: 'preview-demo-workspace',
 });

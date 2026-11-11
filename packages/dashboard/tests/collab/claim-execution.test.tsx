@@ -51,7 +51,7 @@ const me: MeResponse = {
     id: 'principal-1',
     displayName: 'Operator',
     email: 'operator@example.test',
-    legacyUserId: null,
+    userId: null,
     disabledAt: null,
     sessionVersion: 1,
   },

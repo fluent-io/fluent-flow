@@ -74,7 +74,7 @@ describe('password authentication failure work (real Postgres and scrypt)', () =
     const before = await getPool().query('SELECT c.* FROM collab_password_credentials c JOIN collab_principals p ON p.id=c.principal_id WHERE p.email=$1', [email('enabled')]);
     const principal = await authenticateCollabPassword({ email: email('enabled').toUpperCase(), password: password.normalize('NFKC'), rateLimitKey: `valid-login-${suffix}` });
     buckets.add(rateLimitBucket('login', `valid-login-${suffix}`, email('enabled').toLowerCase()));
-    expect(principal).toMatchObject({ email: email('enabled'), disabledAt: null, legacyUserId: null });
+    expect(principal).toMatchObject({ email: email('enabled'), disabledAt: null, userId: null });
     expectOneFixedKdf();
     const after = await getPool().query('SELECT * FROM collab_password_credentials WHERE principal_id=$1', [principal?.id]);
     expect(after.rows).toEqual(before.rows);

@@ -126,7 +126,7 @@ export async function acceptCollabInvitation(input: {
     let principal: CollabPrincipal;
     if (input2.actor) {
       const current = await tx.query(
-        `SELECT id, display_name, email, legacy_user_id, disabled_at, session_version
+        `SELECT id, display_name, email, user_id, disabled_at, session_version
          FROM collab_principals WHERE id = $1 AND disabled_at IS NULL AND session_version = $2`,
         [input2.actor.principalId, input2.actor.sessionVersion],
       );
@@ -158,7 +158,7 @@ export async function acceptCollabInvitation(input: {
       }
       const existing = await tx.query(
         `SELECT 1 FROM collab_principals
-         WHERE lower(email) = lower($1) AND legacy_user_id IS NULL`,
+         WHERE lower(email) = lower($1) AND user_id IS NULL`,
         [invitation.email],
       );
       if (existing.rows.length > 0) {
@@ -171,7 +171,7 @@ export async function acceptCollabInvitation(input: {
       const inserted = await tx.query(
         `INSERT INTO collab_principals (display_name, email)
          VALUES ($1, $2)
-         RETURNING id, display_name, email, legacy_user_id, disabled_at, session_version`,
+         RETURNING id, display_name, email, user_id, disabled_at, session_version`,
         [input2.displayName, invitation.email],
       );
       principal = rowToPrincipal(inserted.rows[0]);

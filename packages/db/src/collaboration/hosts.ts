@@ -12,7 +12,7 @@ export async function isInternalAdmin(principalId: string): Promise<boolean> {
        OR EXISTS (SELECT 1 FROM user_orgs uo WHERE uo.user_id = u.id AND uo.role = 'admin')
      ) AS ok
      FROM collab_principals p
-     JOIN users u ON u.id = p.legacy_user_id
+     JOIN users u ON u.id = p.user_id
      WHERE p.id = $1`,
     [principalId],
   );
@@ -64,7 +64,7 @@ async function assertHostAuthority(
     `SELECT 1
      FROM collab_hosts h
      JOIN collab_principals p ON p.id = $1
-     LEFT JOIN users u ON u.id = p.legacy_user_id
+     LEFT JOIN users u ON u.id = p.user_id
      WHERE h.id = $2
        AND (h.enrolled_by_principal_id = $1 OR u.is_superadmin)`,
     [principalId, hostId],
@@ -106,7 +106,7 @@ export async function listExecutionHosts(actor: {
     `SELECT h.id, h.name, h.revoked_at, h.last_heartbeat_at, u.is_superadmin
      FROM collab_hosts h
      JOIN collab_principals p ON p.id = $1
-     LEFT JOIN users u ON u.id = p.legacy_user_id
+     LEFT JOIN users u ON u.id = p.user_id
      WHERE h.enrolled_by_principal_id = $1 OR u.is_superadmin
      ORDER BY h.created_at`,
     [principal.id],

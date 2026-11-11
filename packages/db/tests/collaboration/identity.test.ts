@@ -4,8 +4,8 @@ import pg from 'pg';
 import {
   resolveCollabTestDatabaseUrl,
   resetCollabSchema,
-  seedLegacyUser,
-  seedLegacyOrgMembership,
+  seedUser,
+  seedOrgMembership,
 } from '../helpers/collab-db.js';
 import { runMigrations } from '../../src/migrate.js';
 import { getPool, closePool } from '../../src/pool.js';
@@ -54,19 +54,19 @@ describe('collaboration identity (real Postgres)', () => {
     await resetCollabSchema(DATABASE_URL);
     await runMigrations();
 
-    legacyAdminUserId = await seedLegacyUser(DATABASE_URL, {
+    legacyAdminUserId = await seedUser(DATABASE_URL, {
       githubId: 9001,
       login: 'client-a-admin',
     });
-    legacyMemberUserId = await seedLegacyUser(DATABASE_URL, {
+    legacyMemberUserId = await seedUser(DATABASE_URL, {
       githubId: 9002,
       login: 'client-a-member',
     });
-    await seedLegacyOrgMembership(DATABASE_URL, legacyAdminUserId, orgA, 'admin');
-    await seedLegacyOrgMembership(DATABASE_URL, legacyMemberUserId, orgA, 'member');
+    await seedOrgMembership(DATABASE_URL, legacyAdminUserId, orgA, 'admin');
+    await seedOrgMembership(DATABASE_URL, legacyMemberUserId, orgA, 'member');
 
     const adminPrincipal = await ensureGithubPrincipal({
-      legacyUserId: legacyAdminUserId,
+      userId: legacyAdminUserId,
       displayName: 'Client A Admin',
       email: 'client-a-admin@example.test',
     });
@@ -80,23 +80,23 @@ describe('collaboration identity (real Postgres)', () => {
 
   it('maps a GitHub user to a stable collaboration principal (idempotent)', async () => {
     const again = await ensureGithubPrincipal({
-      legacyUserId: legacyAdminUserId,
+      userId: legacyAdminUserId,
       displayName: 'Client A Admin',
       email: 'client-a-admin@example.test',
     });
     expect(again.id).toBe(ADMIN.principalId);
     const loaded = await getCollabPrincipal(ADMIN.principalId);
-    expect(loaded?.legacyUserId).toBe(legacyAdminUserId);
+    expect(loaded?.userId).toBe(legacyAdminUserId);
   });
 
   it('reports bootstrap eligibility from current legacy org roles', async () => {
     expect(await getCollabBootstrapEligibility(managerActor())).toEqual({
       eligible: true,
-      legacyOrgIds: [orgA],
+      orgIds: [orgA],
     });
 
     const memberPrincipal = await ensureGithubPrincipal({
-      legacyUserId: legacyMemberUserId,
+      userId: legacyMemberUserId,
       displayName: 'Client A Member',
       email: 'client-a-member@example.test',
     });
@@ -105,13 +105,13 @@ describe('collaboration identity (real Postgres)', () => {
         principalId: memberPrincipal.id,
         sessionVersion: memberPrincipal.sessionVersion,
       }),
-    ).toEqual({ eligible: false, legacyOrgIds: [] });
+    ).toEqual({ eligible: false, orgIds: [] });
   });
 
   it('bootstraps a workspace atomically with manager membership and system roles (idempotent key)', async () => {
     const first = await bootstrapCollaborationWorkspace({
       actor: managerActor(),
-      legacyOrgId: orgA,
+      orgId: orgA,
       name: 'Client A',
       idempotencyKey: 'bootstrap-org-a',
     });
@@ -119,7 +119,7 @@ describe('collaboration identity (real Postgres)', () => {
 
     const replay = await bootstrapCollaborationWorkspace({
       actor: managerActor(),
-      legacyOrgId: orgA,
+      orgId: orgA,
       name: 'Client A Renamed',
       idempotencyKey: 'bootstrap-org-a',
     });
@@ -151,14 +151,14 @@ describe('collaboration identity (real Postgres)', () => {
 
   it('refuses bootstrap for a non-admin legacy member', async () => {
     const memberPrincipal = await ensureGithubPrincipal({
-      legacyUserId: legacyMemberUserId,
+      userId: legacyMemberUserId,
       displayName: 'Client A Member',
       email: 'client-a-member@example.test',
     });
     await expect(
       bootstrapCollaborationWorkspace({
         actor: { principalId: memberPrincipal.id, sessionVersion: memberPrincipal.sessionVersion },
-        legacyOrgId: orgA,
+        orgId: orgA,
         name: 'Sneaky Workspace',
         idempotencyKey: 'bootstrap-sneaky',
       }),
@@ -168,7 +168,7 @@ describe('collaboration identity (real Postgres)', () => {
   it('creates a project under a workspace the actor administers', async () => {
     const workspace = await bootstrapCollaborationWorkspace({
       actor: managerActor(),
-      legacyOrgId: orgA,
+      orgId: orgA,
       name: 'Client A Projects',
       idempotencyKey: 'bootstrap-org-a-projects',
     });
@@ -192,7 +192,7 @@ describe('collaboration identity (real Postgres)', () => {
   it('denies mutations for disabled actors and stale session versions with 401', async () => {
     const workspace = await bootstrapCollaborationWorkspace({
       actor: managerActor(),
-      legacyOrgId: orgA,
+      orgId: orgA,
       name: 'Lifecycle Workspace',
       idempotencyKey: 'bootstrap-lifecycle',
     });
@@ -231,7 +231,7 @@ describe('collaboration identity (real Postgres)', () => {
     beforeAll(async () => {
       const workspace = await bootstrapCollaborationWorkspace({
         actor: managerActor(),
-        legacyOrgId: orgA,
+        orgId: orgA,
         name: 'Invite Workspace',
         idempotencyKey: 'bootstrap-invite-ws',
       });
@@ -298,7 +298,7 @@ describe('collaboration identity (real Postgres)', () => {
         rateLimitKey: 'rl-login-1',
       });
       expect(principal?.email).toBe(INVITE_EMAIL);
-      expect(principal?.legacyUserId).toBeNull();
+      expect(principal?.userId).toBeNull();
 
       expect(
         await authenticateCollabPassword({
@@ -552,10 +552,10 @@ describe('A2 boundary hardening (review findings)', () => {
   const hardeningOrg = 'hardening-org';
 
   beforeAll(async () => {
-    const legacyAdmin = await seedLegacyUser(DATABASE_URL, { githubId: 9401, login: 'hardening-owner' });
-    await seedLegacyOrgMembership(DATABASE_URL, legacyAdmin, hardeningOrg, 'admin');
+    const legacyAdmin = await seedUser(DATABASE_URL, { githubId: 9401, login: 'hardening-owner' });
+    await seedOrgMembership(DATABASE_URL, legacyAdmin, hardeningOrg, 'admin');
     const ownerPrincipal = await ensureGithubPrincipal({
-      legacyUserId: legacyAdmin,
+      userId: legacyAdmin,
       displayName: 'Hardening Owner',
       email: 'hardening-owner@example.test',
     });
@@ -566,7 +566,7 @@ describe('A2 boundary hardening (review findings)', () => {
     global.__hardeningManagerActor = localManagerActor;
     const ws = await bootstrapCollaborationWorkspace({
       actor: localManagerActor,
-      legacyOrgId: hardeningOrg,
+      orgId: hardeningOrg,
       name: 'Hardening Workspace',
       idempotencyKey: 'bootstrap-hardening',
     });
@@ -588,7 +588,7 @@ describe('A2 boundary hardening (review findings)', () => {
   });
 
   it('lets a true superadmin without any org membership bootstrap', async () => {
-    const superLegacy = await seedLegacyUser(DATABASE_URL, {
+    const superLegacy = await seedUser(DATABASE_URL, {
       githubId: 9301,
       login: 'true-super',
       isSuperadmin: true,
@@ -598,7 +598,7 @@ describe('A2 boundary hardening (review findings)', () => {
     await client.query(`INSERT INTO orgs (id, name) VALUES ('orphan-org', 'Orphan Org') ON CONFLICT DO NOTHING`);
     await client.end();
     const superPrincipal = await ensureGithubPrincipal({
-      legacyUserId: superLegacy,
+      userId: superLegacy,
       displayName: 'True Super',
       email: 'true-super@example.test',
     });
@@ -607,11 +607,11 @@ describe('A2 boundary hardening (review findings)', () => {
       sessionVersion: superPrincipal.sessionVersion,
     });
     expect(eligibility.eligible).toBe(true);
-    expect(eligibility.legacyOrgIds).toContain('orphan-org');
+    expect(eligibility.orgIds).toContain('orphan-org');
 
     const ws = await bootstrapCollaborationWorkspace({
       actor: { principalId: superPrincipal.id, sessionVersion: superPrincipal.sessionVersion },
-      legacyOrgId: 'orphan-org',
+      orgId: 'orphan-org',
       name: 'Orphan Workspace',
       idempotencyKey: 'bootstrap-orphan',
     });
@@ -621,22 +621,22 @@ describe('A2 boundary hardening (review findings)', () => {
   it('never returns a foreign workspace when replaying another actor bootstrap key', async () => {
     const superLegacy = await rawQuery(`SELECT id FROM users WHERE login = 'true-super'`);
     void superLegacy;
-    const superPrincipal = await rawQuery(`SELECT id, session_version FROM collab_principals WHERE legacy_user_id = (SELECT id FROM users WHERE login = 'true-super')`);
+    const superPrincipal = await rawQuery(`SELECT id, session_version FROM collab_principals WHERE user_id = (SELECT id FROM users WHERE login = 'true-super')`);
     await expect(
       bootstrapCollaborationWorkspace({
         actor: { principalId: superPrincipal[0].id, sessionVersion: superPrincipal[0].session_version },
-        legacyOrgId: 'orphan-org',
+        orgId: 'orphan-org',
         name: 'Sneaky Replay',
         idempotencyKey: 'bootstrap-orphan',
       }),
     ).resolves.toMatchObject({ name: 'Orphan Workspace' });
 
-    await seedLegacyOrgMembership(DATABASE_URL, (await rawQuery(`SELECT id FROM users WHERE login = 'true-super'`))[0].id, 'orphan-org-2', 'admin');
+    await seedOrgMembership(DATABASE_URL, (await rawQuery(`SELECT id FROM users WHERE login = 'true-super'`))[0].id, 'orphan-org-2', 'admin');
     await rawQuery(`INSERT INTO orgs (id, name) VALUES ('orphan-org-2', 'Orphan Two') ON CONFLICT DO NOTHING`);
     await expect(
       bootstrapCollaborationWorkspace({
         actor: { principalId: superPrincipal[0].id, sessionVersion: superPrincipal[0].session_version },
-        legacyOrgId: 'orphan-org-2',
+        orgId: 'orphan-org-2',
         name: 'Sneaky Replay 2',
         idempotencyKey: 'bootstrap-orphan',
       }),
@@ -734,10 +734,10 @@ describe('A2 boundary hardening (review findings)', () => {
 
 describe('A3 host isolation (foreign org admin), real Postgres', () => {
   it('never lets an unrelated org admin revoke, map, or see a foreign host', async () => {
-    const foreignLegacy = await seedLegacyUser(DATABASE_URL, { githubId: 9701, login: 'foreign-admin' });
-    await seedLegacyOrgMembership(DATABASE_URL, foreignLegacy, 'foreign-org', 'admin');
+    const foreignLegacy = await seedUser(DATABASE_URL, { githubId: 9701, login: 'foreign-admin' });
+    await seedOrgMembership(DATABASE_URL, foreignLegacy, 'foreign-org', 'admin');
     const foreignPrincipal = await ensureGithubPrincipal({
-      legacyUserId: foreignLegacy,
+      userId: foreignLegacy,
       displayName: 'Foreign Admin',
       email: 'foreign-admin@example.test',
     });

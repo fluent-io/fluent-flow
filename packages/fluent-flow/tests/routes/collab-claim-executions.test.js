@@ -9,8 +9,8 @@ vi.mock('../../src/logger.js', async () => {
 const {
   resolveCollabTestDatabaseUrl,
   resetCollabSchema,
-  seedLegacyUser,
-  seedLegacyOrgMembership,
+  seedUser,
+  seedOrgMembership,
 } = await import('../helpers/collab-db.js');
 process.env.DATABASE_URL = resolveCollabTestDatabaseUrl();
 
@@ -185,20 +185,20 @@ describe('collaboration claim execution routes', () => {
     await resetCollabSchema(process.env.DATABASE_URL);
     await db.runMigrations();
 
-    const ownerUserId = await seedLegacyUser(process.env.DATABASE_URL, {
+    const ownerUserId = await seedUser(process.env.DATABASE_URL, {
       githubId: 9911,
       login: 'claim-route-owner',
     });
-    await seedLegacyOrgMembership(process.env.DATABASE_URL, ownerUserId, orgId, 'admin');
+    await seedOrgMembership(process.env.DATABASE_URL, ownerUserId, orgId, 'admin');
     const ownerPrincipal = await db.ensureGithubPrincipal({
-      legacyUserId: ownerUserId,
+      userId: ownerUserId,
       displayName: 'Claim Route Owner',
       email: 'claim-route-owner@example.test',
     });
     owner = { id: ownerPrincipal.id, sessionVersion: ownerPrincipal.sessionVersion };
     const workspace = await db.bootstrapCollaborationWorkspace({
       actor: { principalId: owner.id, sessionVersion: owner.sessionVersion },
-      legacyOrgId: orgId,
+      orgId,
       name: 'Claim Route Workspace',
       idempotencyKey: 'claim-route-workspace',
     });
@@ -216,20 +216,20 @@ describe('collaboration claim execution routes', () => {
     );
 
     const foreignOrgId = 'claim-route-foreign-org';
-    const foreignUserId = await seedLegacyUser(process.env.DATABASE_URL, {
+    const foreignUserId = await seedUser(process.env.DATABASE_URL, {
       githubId: 9912,
       login: 'claim-route-foreign-owner',
     });
-    await seedLegacyOrgMembership(process.env.DATABASE_URL, foreignUserId, foreignOrgId, 'admin');
+    await seedOrgMembership(process.env.DATABASE_URL, foreignUserId, foreignOrgId, 'admin');
     const foreignPrincipal = await db.ensureGithubPrincipal({
-      legacyUserId: foreignUserId,
+      userId: foreignUserId,
       displayName: 'Foreign Claim Owner',
       email: 'foreign-claim-owner@example.test',
     });
     foreignOwner = { id: foreignPrincipal.id, sessionVersion: foreignPrincipal.sessionVersion };
     const foreignWorkspace = await db.bootstrapCollaborationWorkspace({
       actor: { principalId: foreignOwner.id, sessionVersion: foreignOwner.sessionVersion },
-      legacyOrgId: foreignOrgId,
+      orgId: foreignOrgId,
       name: 'Foreign Claim Workspace',
       idempotencyKey: 'foreign-claim-workspace',
     });

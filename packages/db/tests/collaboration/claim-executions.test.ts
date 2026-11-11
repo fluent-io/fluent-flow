@@ -5,8 +5,8 @@ import { fileURLToPath } from 'node:url';
 import {
   resetCollabSchema,
   resolveCollabTestDatabaseUrl,
-  seedLegacyOrgMembership,
-  seedLegacyUser,
+  seedOrgMembership,
+  seedUser,
 } from '../helpers/collab-db.js';
 import { closePool, getPool } from '../../src/pool.js';
 import { runMigrations } from '../../src/migrate.js';
@@ -53,13 +53,13 @@ describe('task-linked claim executions', () => {
     role?: 'admin' | 'member';
     workspaceRole?: string;
   }) {
-    const userId = await seedLegacyUser(DATABASE_URL, {
+    const userId = await seedUser(DATABASE_URL, {
       githubId: input.githubId,
       login: input.login,
     });
-    await seedLegacyOrgMembership(DATABASE_URL, userId, orgId, input.role ?? 'member');
+    await seedOrgMembership(DATABASE_URL, userId, orgId, input.role ?? 'member');
     const principal = await ensureGithubPrincipal({
-      legacyUserId: userId,
+      userId,
       displayName: input.login,
       email: `${input.login}@example.test`,
     });
@@ -97,13 +97,13 @@ describe('task-linked claim executions', () => {
     await resetCollabSchema(DATABASE_URL);
     await runMigrations();
 
-    const managerUserId = await seedLegacyUser(DATABASE_URL, {
+    const managerUserId = await seedUser(DATABASE_URL, {
       githubId: 9801,
       login: 'claim-exec-manager',
     });
-    await seedLegacyOrgMembership(DATABASE_URL, managerUserId, orgId, 'admin');
+    await seedOrgMembership(DATABASE_URL, managerUserId, orgId, 'admin');
     const manager = await ensureGithubPrincipal({
-      legacyUserId: managerUserId,
+      userId: managerUserId,
       displayName: 'Claim Exec Manager',
       email: 'claim-exec-manager@example.test',
     });
@@ -111,7 +111,7 @@ describe('task-linked claim executions', () => {
 
     const workspace = await bootstrapCollaborationWorkspace({
       actor: managerActor,
-      legacyOrgId: orgId,
+      orgId,
       name: 'Claim Execution Workspace',
       idempotencyKey: 'claim-exec-workspace',
     });
@@ -135,12 +135,12 @@ describe('task-linked claim executions', () => {
       workspaceRole: 'collaborator',
     });
 
-    const outsiderUserId = await seedLegacyUser(DATABASE_URL, {
+    const outsiderUserId = await seedUser(DATABASE_URL, {
       githubId: 9803,
       login: 'claim-exec-outsider',
     });
     const outsider = await ensureGithubPrincipal({
-      legacyUserId: outsiderUserId,
+      userId: outsiderUserId,
       displayName: 'Claim Exec Outsider',
       email: 'claim-exec-outsider@example.test',
     });
@@ -296,7 +296,7 @@ describe('task-linked claim executions', () => {
 
   it('rejects execution when the task workspace has no legacy organization', async () => {
     await getPool().query(
-      `UPDATE collab_workspaces SET legacy_org_id = NULL WHERE id = $1`,
+      `UPDATE collab_workspaces SET org_id = NULL WHERE id = $1`,
       [workspaceId],
     );
     try {
@@ -305,7 +305,7 @@ describe('task-linked claim executions', () => {
       }))).rejects.toMatchObject({ status: 404, code: 'not_found' });
     } finally {
       await getPool().query(
-        `UPDATE collab_workspaces SET legacy_org_id = $2 WHERE id = $1`,
+        `UPDATE collab_workspaces SET org_id = $2 WHERE id = $1`,
         [workspaceId, orgId],
       );
     }
