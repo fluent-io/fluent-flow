@@ -15,6 +15,7 @@
 work
 docs
 scripts
+!scripts/preview-webhook-router
 TASK.md
 ROADMAP.md
 docker-compose*.yml
