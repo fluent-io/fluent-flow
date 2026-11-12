@@ -19,6 +19,7 @@ import type { UserOrg } from '@fluent-flow/db';
 
 declare module 'next-auth' {
   interface Session {
+    githubApp?: { installUrl: string; preview: boolean };
     user: {
       id: number | null;
       principalId: string;
@@ -322,6 +323,9 @@ export const authOptions: NextAuthOptions = {
           orgs: [],
         };
       }
+      const preview = /^https:\/\/pr-[1-9]\d*-preview\.fluentflow\.tech\/?$/.test(process.env.NEXTAUTH_URL ?? '');
+      const appSlug = process.env.GITHUB_APP_SLUG || process.env.NEXT_PUBLIC_GITHUB_APP_SLUG || (preview ? 'fluent-flow-preview' : 'fluent-flow');
+      session.githubApp = { installUrl: `https://github.com/apps/${appSlug}/installations/new`, preview };
       return session;
     },
   },

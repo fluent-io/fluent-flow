@@ -632,6 +632,41 @@ describe('session callback', () => {
     return authOptions.callbacks!.session!(asSessionArgs({ session: { user: {}, expires: '' }, token }));
   }
 
+  it.each([
+    ['https://pr-149-preview.fluentflow.tech', 'fluent-flow-preview', true],
+    ['https://dashboard.fluentflow.tech', 'fluent-flow', false],
+    ['https://pr-149-preview.fluentflow.tech.example.test', 'fluent-flow', false],
+  ])('selects the App for runtime auth origin %s', async (origin, slug, preview) => {
+    vi.stubEnv('NEXTAUTH_URL', origin as string);
+    vi.stubEnv('GITHUB_APP_SLUG', '');
+    vi.stubEnv('NEXT_PUBLIC_GITHUB_APP_SLUG', '');
+    mockGetCollabPrincipal.mockResolvedValueOnce(PRINCIPAL);
+    try {
+      const session = await callSession({ principalId: 'p-1', sessionVersion: 2 });
+      expect(session).toMatchObject({ githubApp: { installUrl: `https://github.com/apps/${slug}/installations/new`, preview } });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each([
+    ['custom-app', '', 'custom-app', false],
+    ['', 'legacy-app', 'legacy-app', false],
+    ['custom-app', 'legacy-app', 'custom-app', false],
+    ['custom-app', '', 'custom-app', true],
+  ])('prefers server slug %j over public slug %j', async (serverSlug, publicSlug, expectedSlug, preview) => {
+    vi.stubEnv('NEXTAUTH_URL', preview ? 'https://pr-149-preview.fluentflow.tech' : 'https://dashboard.fluentflow.tech');
+    vi.stubEnv('GITHUB_APP_SLUG', serverSlug as string);
+    vi.stubEnv('NEXT_PUBLIC_GITHUB_APP_SLUG', publicSlug as string);
+    mockGetCollabPrincipal.mockResolvedValueOnce(PRINCIPAL);
+    try {
+      const session = await callSession({ principalId: 'p-1', sessionVersion: 2 });
+      expect(session).toMatchObject({ githubApp: { installUrl: `https://github.com/apps/${expectedSlug}/installations/new`, preview } });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('builds an invited collaborator session with no legacy identity or orgs', async () => {
     mockGetCollabPrincipal.mockResolvedValueOnce(PRINCIPAL);
 
