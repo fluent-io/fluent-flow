@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -689,19 +689,24 @@ describe('runner ownership and failure', () => {
     }
   });
 
-  it('aborts an active deterministic verification child when ownership is released', async () => {
+  it.each([false, true])('aborts an active deterministic verification child when ownership is released (ignores SIGTERM: %s)', async (ignoreTerm) => {
     const worktreePath = mkdtempSync(join(tmpdir(), 'ff-runner-verify-cancel-'));
     const childStartedPath = join(worktreePath, 'child-started');
     const childAbortedPath = join(worktreePath, 'child-aborted');
+    const childSignalledPath = join(worktreePath, 'child-signalled');
+    const childMayExitPath = join(worktreePath, 'child-may-exit');
     const childFallbackPath = join(worktreePath, 'child-fallback');
     const heartbeat = deferred();
-    const cleanup = vi.fn(async () => undefined);
+    let child;
+    let childClosed = false;
+    let cleanupAfterClose = false;
+    const cleanup = vi.fn(async () => { cleanupAfterClose = childClosed; });
     mockPrepareWorktree.mockResolvedValueOnce({ worktreePath, cleanup });
     const commandScript = [
       "const fs = require('node:fs')",
+      `process.once('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(childSignalledPath)}, 'signalled'); ${ignoreTerm ? '' : `setInterval(() => { if (fs.existsSync(${JSON.stringify(childMayExitPath)})) { fs.writeFileSync(${JSON.stringify(childAbortedPath)}, 'aborted'); process.exit(143); } }, 5);`} })`,
       `fs.writeFileSync(${JSON.stringify(childStartedPath)}, 'started')`,
-      `process.once('SIGTERM', () => { fs.writeFileSync(${JSON.stringify(childAbortedPath)}, 'aborted'); process.exit(143); })`,
-      `setTimeout(() => { fs.writeFileSync(${JSON.stringify(childFallbackPath)}, 'fallback'); process.exit(0); }, 2000)`,
+      `setTimeout(() => { fs.writeFileSync(${JSON.stringify(childFallbackPath)}, 'fallback'); process.exit(0); }, 10000)`,
     ].join(';');
     const work = {
       ...WORK,
@@ -735,21 +740,34 @@ describe('runner ownership and failure', () => {
 
     try {
       await waitFor(() => existsSync(childStartedPath));
+      const index = childProcessMocks.execFile.mock.calls.findIndex(([bin, args]) => bin === process.execPath && args?.[1] === commandScript);
+      child = childProcessMocks.execFile.mock.results[index].value;
+      child.once('close', () => { childClosed = true; });
       await waitFor(() => api.heartbeat.mock.calls.length > 0);
       heartbeat.resolve({ ok: true, claim: null });
-      await waitFor(() => cleanup.mock.calls.length === 1, 750);
+      if (process.platform !== 'win32') {
+        await waitFor(() => existsSync(childSignalledPath));
+        expect(cleanup).not.toHaveBeenCalled();
+      }
+      writeFileSync(childMayExitPath, 'exit');
+      await waitFor(() => cleanup.mock.calls.length === 1, 3000);
 
-      expect(existsSync(childAbortedPath)).toBe(process.platform !== 'win32');
+      expect(cleanupAfterClose).toBe(true);
+      expect(existsSync(childAbortedPath)).toBe(!ignoreTerm && process.platform !== 'win32');
+      if (ignoreTerm && process.platform !== 'win32') expect(child.signalCode).toBe('SIGKILL');
       expect(existsSync(childFallbackPath)).toBe(false);
       expect(runner.activeWork).toBeNull();
       expect(api.reportClaim).not.toHaveBeenCalled();
     } finally {
       heartbeat.resolve({ ok: true, claim: null });
+      writeFileSync(childMayExitPath, 'exit');
+      if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       await runner.shutdown();
       await started.catch(() => undefined);
+      if (child && !childClosed) await new Promise((resolve) => child.once('close', resolve));
       rmSync(worktreePath, { recursive: true, force: true });
     }
-  });
+  }, 10000);
 });
 
 describe('ACP events and requests', () => {

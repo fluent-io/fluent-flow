@@ -13,6 +13,7 @@ import type { MeResponse } from '@/lib/collab/types';
 import { ProjectCreate } from './settings-view';
 
 export interface ProjectOverview {
+  linkedRepoFullName: string | null;
   id: string;
   workspaceId: string;
   workspaceName: string;
@@ -77,6 +78,7 @@ export function ProjectsList({ me, onCreated }: { me: MeResponse; onCreated: () 
                   <li key={p.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5">
                     <Link href={`/projects/${p.id}`} className="min-w-0 break-words text-sm font-medium underline-offset-4 hover:underline">
                       {p.name}
+                      {p.linkedRepoFullName ? <span className="ml-2 text-xs font-normal text-muted-foreground">Linked to {p.linkedRepoFullName}</span> : null}
                     </Link>
                     <span className="text-xs text-muted-foreground">{accessLabel(capabilitiesFor(me, p.id))}</span>
                   </li>
@@ -248,6 +250,7 @@ export function ProjectOverviewPanel({
         <div className="min-w-0">
           <h1 className="break-words text-xl font-semibold">{overview.name}</h1>
           <p className="mt-1 text-sm text-muted-foreground">{overview.workspaceName}</p>
+          {overview.linkedRepoFullName ? <p className="mt-1 break-words text-sm text-muted-foreground">Linked to {overview.linkedRepoFullName}</p> : null}
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="sm" asChild>

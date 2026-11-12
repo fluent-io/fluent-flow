@@ -7,6 +7,7 @@ vi.mock('../../src/logger.js', async () => {
 
 const mockUpsertUser = vi.fn();
 const mockLinkUserToOrg = vi.fn();
+const mockEnsureDefaultWorkspace = vi.fn();
 // Captures every db.insert(...).values(...).onConflictDoUpdate(...) call.
 // Within this test, installation-lifecycle is the only exercised codepath
 // that calls onConflictDoUpdate, so the contents reflect repo shell-row
@@ -36,6 +37,7 @@ vi.mock('@fluent-flow/db', () => ({
   schema: { orgs: {}, agentClaims: {}, repos: { id: 'repos.id' } },
   upsertUser: (...args) => mockUpsertUser(...args),
   linkUserToOrg: (...args) => mockLinkUserToOrg(...args),
+  ensureDefaultWorkspace: (...args) => mockEnsureDefaultWorkspace(...args),
 }));
 
 const mockUpsertInstallation = vi.fn().mockResolvedValue({ id: 999 });
@@ -68,6 +70,7 @@ const {
   handleInstallationRepositoriesAdded,
   handleInstallationDeleted,
 } = await import('../../src/engine/installation-lifecycle.js');
+const { default: mockLogger } = await import('../../src/logger.js');
 
 function buildPayload(overrides = {}) {
   return {
@@ -86,6 +89,8 @@ describe('handleInstallationCreated', () => {
   beforeEach(() => {
     mockUpsertUser.mockReset();
     mockLinkUserToOrg.mockReset();
+    mockEnsureDefaultWorkspace.mockReset();
+    mockEnsureDefaultWorkspace.mockResolvedValue({ id: 'ws-1', name: 'acme', created: true });
     mockUpsertInstallation.mockClear();
     mockUpsertInstallation.mockResolvedValue({ id: 999 });
     mockAddRepoToInstallation.mockReset();
@@ -129,6 +134,53 @@ describe('handleInstallationCreated', () => {
 
     await expect(handleInstallationCreated(buildPayload())).resolves.toBeDefined();
     expect(mockUpsertInstallation).toHaveBeenCalled();
+  });
+
+  it('ensures a default collaboration workspace for the org with no creator principal', async () => {
+    mockUpsertUser.mockResolvedValue({ id: 42 });
+
+    await handleInstallationCreated(buildPayload());
+
+    expect(mockEnsureDefaultWorkspace).toHaveBeenCalledTimes(1);
+    expect(mockEnsureDefaultWorkspace).toHaveBeenCalledWith('acme', { createdByPrincipalId: null });
+  });
+
+  it('ensures the default workspace even when the sender link fails or there is no sender', async () => {
+    mockUpsertUser.mockResolvedValue({ id: 42 });
+    mockLinkUserToOrg.mockRejectedValue(new Error('db blew up'));
+    await handleInstallationCreated(buildPayload());
+    await handleInstallationCreated(buildPayload({ sender: undefined }));
+
+    expect(mockEnsureDefaultWorkspace).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not throw when default workspace creation fails — webhook completes installation anyway', async () => {
+    mockUpsertUser.mockResolvedValue({ id: 42 });
+    mockEnsureDefaultWorkspace.mockRejectedValue(new Error('collab db blew up'));
+    mockUpsertInstallation.mockResolvedValueOnce({ id: 42 });
+
+    await expect(handleInstallationCreated(buildPayload({
+      repositories: [{ id: 1, full_name: 'acme/one' }],
+    }))).resolves.toEqual({ id: 42 });
+    expect(mockLinkUserToOrg).toHaveBeenCalledWith(42, 'acme', 'admin');
+    expect(mockAddRepoToInstallation).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not log workspace success when the org is no longer provisioned', async () => {
+    mockEnsureDefaultWorkspace.mockResolvedValue(null);
+    mockLogger.info.mockClear();
+    mockLogger.warn.mockClear();
+
+    await handleInstallationCreated(buildPayload());
+
+    expect(mockLogger.info).not.toHaveBeenCalledWith(
+      expect.objectContaining({ msg: 'handleInstallationCreated: ensured default workspace' }),
+    );
+    expect(mockLogger.warn).toHaveBeenCalledWith(expect.objectContaining({
+      msg: 'handleInstallationCreated: default workspace unavailable',
+      orgId: 'acme',
+      safeToContinue: 'Org is not provisioned; sign-in retries workspace creation',
+    }));
   });
 
   it('materializes a repos shell row per payload.repositories entry', async () => {

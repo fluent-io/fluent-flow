@@ -25,7 +25,90 @@ const createProjectSchema = z.object({
   actor: z.object({ principalId: z.string().uuid(), sessionVersion: z.number().int().min(1) }),
   workspaceId: z.string().uuid(),
   name: z.string().min(1).max(200),
+  repoFullName: z.string().min(1).max(400).optional(),
 });
+
+const ensureDefaultWorkspaceSchema = z.object({
+  orgId: z.string().min(1).max(128),
+  createdByPrincipalId: z.string().uuid().nullable(),
+});
+
+const DEFAULT_WORKSPACE_IDEMPOTENCY_PREFIX = 'default-workspace:';
+
+export function defaultWorkspaceIdempotencyKey(orgId: string): string {
+  return `${DEFAULT_WORKSPACE_IDEMPOTENCY_PREFIX}${orgId}`;
+}
+
+export async function ensureDefaultWorkspace(
+  orgId: string,
+  opts: { createdByPrincipalId?: string | null } = {},
+): Promise<{ id: string; name: string; created: boolean } | null> {
+  const input = ensureDefaultWorkspaceSchema.parse({
+    orgId,
+    createdByPrincipalId: opts.createdByPrincipalId ?? null,
+  });
+  const idempotencyKey = defaultWorkspaceIdempotencyKey(input.orgId);
+  return withClientTransaction(async (tx) => {
+    await tx.query(`SELECT id FROM orgs WHERE id = $1 FOR UPDATE`, [input.orgId]);
+    const existing = await tx.query<{ id: string; name: string }>(
+      `SELECT id, name FROM collab_workspaces
+       WHERE org_id = $1
+       ORDER BY (idempotency_key = $2) DESC, created_at, id
+       LIMIT 1`,
+      [input.orgId, idempotencyKey],
+    );
+    if (existing.rows[0]) {
+      return { id: existing.rows[0].id, name: existing.rows[0].name, created: false };
+    }
+
+    const inserted = await tx.query<{ id: string; name: string }>(
+      `INSERT INTO collab_workspaces (name, created_by_principal_id, org_id, idempotency_key)
+       SELECT left(o.name, 200), $2, o.id, $3 FROM orgs o WHERE o.id = $1
+       ON CONFLICT (idempotency_key) DO NOTHING
+       RETURNING id, name`,
+      [input.orgId, input.createdByPrincipalId, idempotencyKey],
+    );
+    const workspace = inserted.rows[0];
+    if (!workspace) {
+      const winner = await tx.query<{ id: string; name: string; org_id: string }>(
+        `SELECT id, name, org_id FROM collab_workspaces WHERE idempotency_key = $1`,
+        [idempotencyKey],
+      );
+      if (!winner.rows[0]) return null;
+      if (winner.rows[0].org_id !== input.orgId) {
+        throw new CollabServiceError(409, 'workspace_conflict', 'Default workspace provisioning conflict.');
+      }
+      return { id: winner.rows[0].id, name: winner.rows[0].name, created: false };
+    }
+
+    for (const preset of SYSTEM_ROLE_PRESETS) {
+      await tx.query(
+        `INSERT INTO collab_roles (workspace_id, name, capabilities, is_system)
+         VALUES ($1, $2, $3, true)`,
+        [workspace.id, preset.name, preset.capabilities],
+      );
+    }
+    return { id: workspace.id, name: workspace.name, created: true };
+  });
+}
+
+export async function enrollOrgAdminInDefaultWorkspaces(principalId: string): Promise<string[]> {
+  const parsed = z.string().uuid().parse(principalId);
+  const { rows } = await getPool().query<{ workspace_id: string }>(
+    `INSERT INTO collab_memberships (workspace_id, principal_id, role_id)
+     SELECT w.id, p.id, r.id
+     FROM collab_principals p
+     JOIN user_orgs uo ON uo.user_id = p.user_id AND uo.role = 'admin'
+     JOIN collab_workspaces w
+       ON w.org_id = uo.org_id AND w.idempotency_key = 'default-workspace:' || uo.org_id
+     JOIN collab_roles r ON r.workspace_id = w.id AND r.name = 'manager' AND r.is_system
+     WHERE p.id = $1 AND p.disabled_at IS NULL
+     ON CONFLICT (workspace_id, principal_id) WHERE project_id IS NULL DO NOTHING
+     RETURNING workspace_id`,
+    [parsed],
+  );
+  return rows.map((row) => row.workspace_id);
+}
 
 export async function getCollabBootstrapEligibility(actor: {
   principalId: string;
@@ -77,8 +160,16 @@ export async function bootstrapCollaborationWorkspace(input: {
       'You do not have permission to perform this action.',
     );
   }
+  if (input2.idempotencyKey.startsWith(DEFAULT_WORKSPACE_IDEMPOTENCY_PREFIX)) {
+    throw new CollabServiceError(
+      422,
+      'invalid_idempotency_key',
+      'The selected idempotency key is reserved.',
+    );
+  }
 
   return withClientTransaction(async (tx) => {
+    await tx.query(`SELECT id FROM orgs WHERE id = $1 FOR UPDATE`, [input2.orgId]);
     const inserted = await tx.query(
       `INSERT INTO collab_workspaces (name, created_by_principal_id, org_id, idempotency_key)
        VALUES ($1, $2, $3, $4)
@@ -129,13 +220,26 @@ export async function createCollabProject(input: {
   actor: { principalId: string; sessionVersion: number };
   workspaceId: string;
   name: string;
+  repoFullName?: string;
 }): Promise<CollabProject> {
   const input2 = createProjectSchema.parse(input);
   await authorize(input2.actor, { workspaceId: input2.workspaceId }, ['project.admin']);
+  const repoFullName = input2.repoFullName ?? null;
+  if (repoFullName !== null) {
+    const repo = await getPool().query(
+      `SELECT 1 FROM repos r
+       JOIN collab_workspaces w ON w.org_id = r.org_id
+       WHERE w.id = $1 AND r.repo_full_name = $2`,
+      [input2.workspaceId, repoFullName],
+    );
+    if (repo.rows.length === 0) {
+      throw new CollabServiceError(422, 'invalid_repo', 'The selected repository is not available.');
+    }
+  }
   const { rows } = await getPool().query(
-    `INSERT INTO collab_projects (workspace_id, name) VALUES ($1, $2)
-     RETURNING id, workspace_id, name, version, board_version`,
-    [input2.workspaceId, input2.name],
+    `INSERT INTO collab_projects (workspace_id, name, linked_repo_full_name) VALUES ($1, $2, $3)
+     RETURNING id, workspace_id, name, version, board_version, linked_repo_full_name`,
+    [input2.workspaceId, input2.name, repoFullName],
   );
   const row = rows[0];
   return {
@@ -144,6 +248,7 @@ export async function createCollabProject(input: {
     name: row.name,
     version: row.version,
     boardVersion: row.board_version,
+    linkedRepoFullName: row.linked_repo_full_name,
   };
 }
 
@@ -153,6 +258,7 @@ export type CollabProject = {
   name: string;
   version: number;
   boardVersion: number;
+  linkedRepoFullName: string | null;
 };
 
 export type MeProject = {
@@ -161,12 +267,14 @@ export type MeProject = {
   name: string;
   version: number;
   boardVersion: number;
+  linkedRepoFullName: string | null;
   executionDefaults: unknown | null;
 };
 
 export type MeWorkspace = {
   id: string;
   name: string;
+  orgId: string | null;
   projects: MeProject[];
 };
 
@@ -177,8 +285,8 @@ export type MeProfile = {
 };
 
 export async function getPrincipalMeProfile(principalId: string): Promise<MeProfile> {
-  const workspaces = await getPool().query<{ id: string; name: string }>(
-    `SELECT DISTINCT w.id, w.name
+  const workspaces = await getPool().query<{ id: string; name: string; org_id: string | null }>(
+    `SELECT DISTINCT w.id, w.name, w.org_id
      FROM collab_memberships m
      JOIN collab_workspaces w ON w.id = m.workspace_id
      WHERE m.principal_id = $1
@@ -191,10 +299,11 @@ export async function getPrincipalMeProfile(principalId: string): Promise<MeProf
     name: string;
     version: number;
     board_version: number;
+    linked_repo_full_name: string | null;
     execution_defaults: unknown;
     capability: CollabCapability;
   }>(
-    `SELECT p.id, p.workspace_id, p.name, p.version, p.board_version, p.execution_defaults,
+    `SELECT p.id, p.workspace_id, p.name, p.version, p.board_version, p.linked_repo_full_name, p.execution_defaults,
             cap.capability
      FROM collab_projects p
      JOIN collab_memberships m
@@ -217,6 +326,7 @@ export async function getPrincipalMeProfile(principalId: string): Promise<MeProf
         name: row.name,
         version: row.version,
         boardVersion: row.board_version,
+        linkedRepoFullName: row.linked_repo_full_name,
         executionDefaults: row.execution_defaults ?? null,
       };
       projectsById.set(row.id, project);
@@ -231,7 +341,7 @@ export async function getPrincipalMeProfile(principalId: string): Promise<MeProf
 
   const workspacesById = new Map<string, MeWorkspace>();
   for (const w of workspaces.rows) {
-    workspacesById.set(w.id, { id: w.id, name: w.name, projects: [] });
+    workspacesById.set(w.id, { id: w.id, name: w.name, orgId: w.org_id, projects: [] });
   }
   for (const project of projectsById.values()) {
     if (!capabilitiesByProject.get(project.id)?.has('internal.read')) project.executionDefaults = null;
@@ -321,7 +431,7 @@ export async function updateProjectExecutionDefaults(input: {
     `UPDATE collab_projects
      SET execution_defaults = $1, version = version + 1, updated_at = now()
      WHERE id = $2 AND version = $3
-     RETURNING id, workspace_id, name, version, board_version, execution_defaults`,
+     RETURNING id, workspace_id, name, version, board_version, linked_repo_full_name, execution_defaults`,
     [JSON.stringify(input2.executionDefaults), input2.projectId, input2.expectedVersion],
   );
   if (updated.rows.length === 0) {
@@ -339,6 +449,7 @@ export async function updateProjectExecutionDefaults(input: {
     name: row.name,
     version: row.version,
     boardVersion: row.board_version,
+    linkedRepoFullName: row.linked_repo_full_name,
   };
   });
 }

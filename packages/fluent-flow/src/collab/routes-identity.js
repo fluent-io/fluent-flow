@@ -212,6 +212,7 @@ export function registerIdentityRoutes(router) {
         actor: req.collabActor,
         workspaceId: req.params.id,
         name: req.body?.name,
+        repoFullName: req.body?.repoFullName,
       });
       res.status(201).json({ data: project });
     } catch (err) {

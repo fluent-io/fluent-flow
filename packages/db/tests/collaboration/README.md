@@ -3,6 +3,7 @@
 [Database package](../../README.md) · [Services](../../src/collaboration/README.md) · [Fixture safety helpers](../helpers/README.md)
 
 - `auth.test.ts`: dashboard assertion signing, expiry and malformed input.
+- `default-workspace.test.ts`: default provisioning, concurrent replay, admin enrollment and tenant-scoped repo links.
 - `identity.test.ts`: invitation/password, scoped roles, membership and host ownership.
 - `passwords.test.ts`: real fixed-cost scrypt work for valid and failed login paths, malformed stored hashes, disabled identities and throttle ordering.
 - `board.test.ts`: durable ordering, compaction and optimistic concurrent writes.

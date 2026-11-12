@@ -88,7 +88,7 @@ function executeCommand(command, cwd, timeoutMs = 0, environment = {}, signal) {
     });
   }
   return new Promise((resolve) => {
-    execFileCb(
+    const child = execFileCb(
       command.bin,
       command.args ?? [],
       {
@@ -100,12 +100,22 @@ function executeCommand(command, cwd, timeoutMs = 0, environment = {}, signal) {
         windowsHide: true,
       },
       (error, stdout, stderr) => {
-        resolve({
+        const result = {
           exitCode: error ? (Number.isInteger(error.code) ? error.code : 1) : 0,
           stdout: String(stdout ?? ''),
           stderr: String(stderr ?? ''),
           timedOut: Boolean(error?.killed && error?.signal),
-        });
+        };
+        if (error?.code === 'ABORT_ERR') {
+          const killTimer = setTimeout(() => child.kill('SIGKILL'), 1000);
+          killTimer.unref?.();
+          child.once('close', () => {
+            clearTimeout(killTimer);
+            resolve(result);
+          });
+          return;
+        }
+        resolve(result);
       },
     );
   });

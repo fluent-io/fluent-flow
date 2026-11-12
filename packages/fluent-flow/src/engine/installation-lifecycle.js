@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from 'drizzle-orm';
-import { db, schema, upsertUser, linkUserToOrg } from '@fluent-flow/db';
+import { db, schema, upsertUser, linkUserToOrg, ensureDefaultWorkspace } from '@fluent-flow/db';
 import {
   upsertInstallation,
   softDeleteInstallation,
@@ -133,6 +133,17 @@ export async function handleInstallationCreated(payload) {
     events: events ?? [],
     repository_selection: installation.repository_selection ?? undefined,
   });
+
+  try {
+    const workspace = await ensureDefaultWorkspace(accountLogin, { createdByPrincipalId: null });
+    if (workspace) {
+      logger.info({ msg: 'handleInstallationCreated: ensured default workspace', orgId: accountLogin, workspaceId: workspace.id, created: workspace.created });
+    } else {
+      logger.warn({ msg: 'handleInstallationCreated: default workspace unavailable', orgId: accountLogin, safeToContinue: 'Org is not provisioned; sign-in retries workspace creation' });
+    }
+  } catch (err) {
+    logger.error({ msg: 'handleInstallationCreated: failed to ensure default workspace', safeToContinue: 'Installation persisted; sign-in retries workspace creation', error: err.message, orgId: accountLogin });
+  }
 
   // Link the installer so they have dashboard access to the newly-installed
   // org. Pre-creating the user row means they'll be linked even before their

@@ -11,7 +11,7 @@ const db=await import('@fluent-flow/db');
 const {createApp}=await import('../../src/app.js');
 const secret='project-overview-test-0123456789abcdef0123456789abcdef';
 const INTERNAL='INTERNAL_CONFIG_DO_NOT_DISCLOSE';
-const DTO_KEYS=['boardVersion','description','id','name','runInstructions','testInstructions','version','workspaceId','workspaceName'];
+const DTO_KEYS=['boardVersion','description','id','linkedRepoFullName','name','runInstructions','testInstructions','version','workspaceId','workspaceName'];
 
 describe('mounted project overview API',()=>{
   let server,baseUrl,owner,ownerB,workspace,project,sibling,foreign,mapping,host,task,memberIndex=0;
@@ -72,7 +72,7 @@ describe('mounted project overview API',()=>{
       const response=await api('GET',`/projects/${project.id}`,{actor});
       expect(response.status).toBe(200);
       expect(Object.keys(response.body.data).sort()).toEqual(DTO_KEYS);
-      expect(response.body.data).toEqual({id:project.id,workspaceId:workspace.id,workspaceName:'Overview client',name:'Overview project',version:before.version,boardVersion:before.board_version,description:'',runInstructions:'',testInstructions:''});
+      expect(response.body.data).toEqual({id:project.id,workspaceId:workspace.id,workspaceName:'Overview client',name:'Overview project',version:before.version,boardVersion:before.board_version,linkedRepoFullName:null,description:'',runInstructions:'',testInstructions:''});
       const raw=JSON.stringify(response.body);
       for(const secretValue of [INTERNAL,mapping.id,host.id,'work-model'])expect(raw).not.toContain(secretValue);
     }
@@ -82,7 +82,7 @@ describe('mounted project overview API',()=>{
     const me=await api('GET','/me',{actor:actors.viewer});
     expect(me.status).toBe(200);
     const listed=me.body.data.workspaces.flatMap(item=>item.projects).find(item=>item.id===project.id);
-    expect(Object.keys(listed).sort()).toEqual(['boardVersion','executionDefaults','id','name','version','workspaceId']);
+    expect(Object.keys(listed).sort()).toEqual(['boardVersion','executionDefaults','id','linkedRepoFullName','name','version','workspaceId']);
   });
 
   it('returns 404 for foreign, sibling and unknown projects without revealing them',async()=>{
@@ -159,7 +159,7 @@ describe('mounted project overview API',()=>{
     const before=await current();
     const defaultsChanged=await api('PATCH',`/projects/${project.id}`,{body:{expectedVersion:before.version,executionDefaults:{...defaults(),instructions:'second defaults'}}});
     expect(defaultsChanged.status).toBe(200);
-    expect(Object.keys(defaultsChanged.body.data).sort()).toEqual(['boardVersion','id','name','version','workspaceId']);
+    expect(Object.keys(defaultsChanged.body.data).sort()).toEqual(['boardVersion','id','linkedRepoFullName','name','version','workspaceId']);
     const stale=await api('PATCH',`/projects/${project.id}/overview`,{actor:actors.admin,body:{expectedVersion:before.version,name:'Stale rename',description:'stale'}});
     expect(stale.status).toBe(409);
     expect(stale.body.error.code).toBe('version_conflict');

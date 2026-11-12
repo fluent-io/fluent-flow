@@ -8,6 +8,8 @@ import {
   upsertUser,
   getUserOrgs,
   linkUserToOrgIfProvisioned,
+  ensureDefaultWorkspace,
+  enrollOrgAdminInDefaultWorkspaces,
   query,
   authenticateCollabPassword,
   ensureGithubPrincipal,
@@ -17,6 +19,7 @@ import type { UserOrg } from '@fluent-flow/db';
 
 declare module 'next-auth' {
   interface Session {
+    githubApp?: { installUrl: string; preview: boolean };
     user: {
       id: number | null;
       principalId: string;
@@ -170,6 +173,15 @@ async function reconcileGithubOrgAccess(userId: number, accessToken: string | un
         error: err instanceof Error ? err.message : String(err),
       });
     }
+    try {
+      await ensureDefaultWorkspace(orgId, { createdByPrincipalId: null });
+    } catch (err) {
+      console.error('reconcileGithubOrgAccess: failed to ensure default workspace', {
+        safeToContinue: 'Authentication succeeded; future sign-ins retry workspace creation',
+        orgId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }
 
@@ -233,6 +245,15 @@ export const authOptions: NextAuthOptions = {
         });
         token.principalId = principal.id;
         token.sessionVersion = principal.sessionVersion;
+        try {
+          await enrollOrgAdminInDefaultWorkspaces(principal.id);
+        } catch (err) {
+          console.error('jwt: failed to enroll org admin in default workspaces', {
+            safeToContinue: 'Authentication succeeded; future sign-ins retry enrollment',
+            principalId: principal.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
       if (user) {
         const authorized = user as Partial<AuthorizeUser>;
@@ -302,6 +323,9 @@ export const authOptions: NextAuthOptions = {
           orgs: [],
         };
       }
+      const preview = /^https:\/\/pr-[1-9]\d*-preview\.fluentflow\.tech\/?$/.test(process.env.NEXTAUTH_URL ?? '');
+      const appSlug = process.env.GITHUB_APP_SLUG || process.env.NEXT_PUBLIC_GITHUB_APP_SLUG || (preview ? 'fluent-flow-preview' : 'fluent-flow');
+      session.githubApp = { installUrl: `https://github.com/apps/${appSlug}/installations/new`, preview };
       return session;
     },
   },

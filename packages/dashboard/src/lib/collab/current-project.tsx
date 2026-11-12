@@ -137,7 +137,7 @@ export function CurrentProjectProvider({ children }: { children: React.ReactNode
       ready: resolved.status === 'ready',
       projectId: project?.id ?? null,
       project,
-      workspace: project ? { id: project.workspaceId, name: project.workspaceName } : null,
+      workspace: project ? me?.workspaces.find((w) => w.id === project.workspaceId) ?? null : null,
       workspaces: me?.workspaces ?? [],
       projects: catalogProjects(me),
       catalogError: me ? null : catalogError,
