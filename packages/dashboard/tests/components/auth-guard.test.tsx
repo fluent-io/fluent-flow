@@ -26,7 +26,7 @@ describe('GitHub installation onboarding', () => {
     render(<AuthGuard>Protected content</AuthGuard>);
     expect(screen.getByRole('link', { name: 'Open Preview App on GitHub' }).getAttribute('href')).toBe('https://github.com/apps/fluent-flow-preview/installations/new');
     expect(screen.getByText(/separate from your production installation/)).toBeTruthy();
-    expect(screen.getByText(/replay its installation event/)).toBeTruthy();
+    expect(screen.getByText(/connect its existing installation to this preview/)).toBeTruthy();
     expect(screen.queryByRole('link', { name: 'Install on GitHub' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
     expect(state.signOut).toHaveBeenCalledWith({ callbackUrl: '/login' });

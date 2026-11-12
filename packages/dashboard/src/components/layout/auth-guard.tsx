@@ -36,7 +36,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     const installUrl = session.githubApp?.installUrl ?? INSTALL_URL;
     return (
       <div className="flex min-h-screen items-center justify-center">
-        <div className="mx-auto flex max-w-md flex-col items-center gap-4 text-center">
+        <div className="mx-auto flex max-w-md flex-col items-center gap-4 px-4 text-center">
           <h2 className="text-lg font-semibold">Get started with Fluent Flow</h2>
           <p className="text-sm text-muted-foreground">
             {preview
@@ -45,7 +45,7 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
           </p>
           {preview ? (
             <p className="text-sm text-muted-foreground">
-              Already installed the Preview App? Ask an administrator to replay its installation event, then sign out and sign in again. You do not need to uninstall or reinstall it.
+              Already installed the Preview App? Ask an administrator to connect its existing installation to this preview, then sign out and sign in again. You do not need to uninstall or reinstall it.
             </p>
           ) : null}
           <Button asChild>
