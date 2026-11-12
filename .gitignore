@@ -20,3 +20,6 @@ tmp/
 # Deployment-specific overrides — configure locally, never commit
 packages/fluent-flow/config/agents.yml
 docker-compose.override.yml
+
+# Local design prototypes/mockups — not part of the shipped product
+design-proposals/

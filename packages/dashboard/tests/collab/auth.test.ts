@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { NextAuthOptions } from 'next-auth';
 import { createHash } from 'node:crypto';
 
@@ -9,6 +9,7 @@ const mockEnsureGithubPrincipal = vi.fn();
 const mockGetCollabPrincipal = vi.fn();
 const mockUpsertUser = vi.fn();
 const mockGetUserOrgs = vi.fn();
+const mockLinkUserToOrgIfProvisioned = vi.fn();
 const mockQuery = vi.fn();
 
 vi.mock('@fluent-flow/db', () => ({
@@ -18,6 +19,7 @@ vi.mock('@fluent-flow/db', () => ({
   getCollabPrincipal: (...args: unknown[]) => mockGetCollabPrincipal(...args),
   upsertUser: (...args: unknown[]) => mockUpsertUser(...args),
   getUserOrgs: (...args: unknown[]) => mockGetUserOrgs(...args),
+  linkUserToOrgIfProvisioned: (...args: unknown[]) => mockLinkUserToOrgIfProvisioned(...args),
   query: (...args: unknown[]) => mockQuery(...args),
 }));
 
@@ -157,6 +159,10 @@ describe('signIn callback', () => {
     ]) {
       m.mockReset();
     }
+    mockLinkUserToOrgIfProvisioned.mockReset();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('allows credentials sign-in without touching legacy GitHub upsert', async () => {
@@ -169,6 +175,7 @@ describe('signIn callback', () => {
   });
 
   it('upserts the legacy user for GitHub sign-in', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
     const result = await authOptions.callbacks!.signIn!(
       asSignInArgs({
         user: { email: 'v@example.com' },
@@ -181,6 +188,170 @@ describe('signIn callback', () => {
     expect(mockUpsertUser).toHaveBeenCalledWith(
       expect.objectContaining({ github_id: 9001, login: 'victor' }),
     );
+  });
+
+  it('reconciles org membership on GitHub sign-in, linking as member (never admin)', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ installations: [{ account: { login: 'acme' } }] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await authOptions.callbacks!.signIn!(
+      asSignInArgs({
+        user: { email: 'v@example.com' },
+        account: { provider: 'github', access_token: 'gh-token' },
+        profile: { id: 9001, login: 'victor', avatar_url: 'https://avatar' },
+      }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('https://api.github.com/user/installations?per_page=100&page=1'),
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer gh-token' }) }),
+    );
+    expect(mockLinkUserToOrgIfProvisioned).toHaveBeenCalledWith(7, 'acme', 'member');
+    expect(mockLinkUserToOrgIfProvisioned).not.toHaveBeenCalledWith(7, 'acme', 'admin');
+    // only one page: installations.length (1) < per_page (100), so no second request
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('relies on the atomic db-level guard, not an app-level pre-check, so it always attempts the link', async () => {
+    // No getUserOrgs call here: whether the link already exists is decided
+    // atomically inside linkUserToOrgIfProvisioned (see its own db-layer
+    // tests), not by reading state first in app code — that would reopen
+    // the race this PR closes.
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    mockLinkUserToOrgIfProvisioned.mockResolvedValueOnce(false); // already linked, db no-op
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ installations: [{ account: { login: 'acme' } }] }) }),
+    );
+
+    const result = await authOptions.callbacks!.signIn!(
+      asSignInArgs({
+        user: { email: 'v@example.com' },
+        account: { provider: 'github', access_token: 'gh-token' },
+        profile: { id: 9001, login: 'victor', avatar_url: 'https://avatar' },
+      }),
+    );
+
+    expect(result).toBe(true);
+    expect(mockGetUserOrgs).not.toHaveBeenCalled();
+    expect(mockLinkUserToOrgIfProvisioned).toHaveBeenCalledWith(7, 'acme', 'member');
+  });
+
+  it('continues to the next org, and still succeeds sign-in, when one org link throws', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    mockLinkUserToOrgIfProvisioned.mockRejectedValueOnce(new Error('db down'));
+    mockLinkUserToOrgIfProvisioned.mockResolvedValueOnce(true);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ installations: [{ account: { login: 'acme' } }, { account: { login: 'other-org' } }] }),
+      }),
+    );
+
+    const result = await authOptions.callbacks!.signIn!(
+      asSignInArgs({
+        user: { email: 'v@example.com' },
+        account: { provider: 'github', access_token: 'gh-token' },
+        profile: { id: 9001, login: 'victor', avatar_url: 'https://avatar' },
+      }),
+    );
+
+    expect(result).toBe(true);
+    expect(mockLinkUserToOrgIfProvisioned).toHaveBeenCalledWith(7, 'acme', 'member');
+    expect(mockLinkUserToOrgIfProvisioned).toHaveBeenCalledWith(7, 'other-org', 'member');
+  });
+
+  it('still succeeds when the GitHub installations call fails', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')));
+
+    const result = await authOptions.callbacks!.signIn!(
+      asSignInArgs({
+        user: { email: 'v@example.com' },
+        account: { provider: 'github', access_token: 'gh-token' },
+        profile: { id: 9001, login: 'victor', avatar_url: 'https://avatar' },
+      }),
+    );
+
+    expect(result).toBe(true);
+    expect(mockLinkUserToOrgIfProvisioned).not.toHaveBeenCalled();
+  });
+
+  it('still succeeds sign-in when GitHub returns a non-ok response', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 403 }));
+
+    const result = await authOptions.callbacks!.signIn!(
+      asSignInArgs({
+        user: { email: 'v@example.com' },
+        account: { provider: 'github', access_token: 'gh-token' },
+        profile: { id: 9001, login: 'victor', avatar_url: 'https://avatar' },
+      }),
+    );
+
+    expect(result).toBe(true);
+    expect(mockLinkUserToOrgIfProvisioned).not.toHaveBeenCalled();
+  });
+
+  it('still succeeds sign-in when GitHub returns an unexpected response shape', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ not: 'what we expect' }) }));
+
+    const result = await authOptions.callbacks!.signIn!(
+      asSignInArgs({
+        user: { email: 'v@example.com' },
+        account: { provider: 'github', access_token: 'gh-token' },
+        profile: { id: 9001, login: 'victor', avatar_url: 'https://avatar' },
+      }),
+    );
+
+    expect(result).toBe(true);
+    expect(mockLinkUserToOrgIfProvisioned).not.toHaveBeenCalled();
+  });
+
+  it('pages through installations until a short page ends the walk', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    mockLinkUserToOrgIfProvisioned.mockResolvedValue(true);
+    const fullPage = Array.from({ length: 100 }, (_, i) => ({ account: { login: `org-${i}` } }));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ installations: fullPage }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ installations: [{ account: { login: 'org-last' } }] }) });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await authOptions.callbacks!.signIn!(
+      asSignInArgs({
+        user: { email: 'v@example.com' },
+        account: { provider: 'github', access_token: 'gh-token' },
+        profile: { id: 9001, login: 'victor', avatar_url: 'https://avatar' },
+      }),
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenNthCalledWith(2, expect.stringContaining('page=2'), expect.anything());
+    expect(mockLinkUserToOrgIfProvisioned).toHaveBeenCalledWith(7, 'org-last', 'member');
+  });
+
+  it('skips reconciliation entirely when the GitHub OAuth account carries no access token', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await authOptions.callbacks!.signIn!(
+      asSignInArgs({
+        user: { email: 'v@example.com' },
+        account: { provider: 'github' },
+        profile: { id: 9001, login: 'victor', avatar_url: 'https://avatar' },
+      }),
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(mockLinkUserToOrgIfProvisioned).not.toHaveBeenCalled();
   });
 });
 

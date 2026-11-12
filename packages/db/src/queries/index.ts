@@ -8,7 +8,7 @@ export {
 export { getAgentSessions } from './sessions.js';
 export { getAgentClaims, dismissClaim, dismissStaleClaims, dismissPipelineClaims, insertPendingClaim } from './claims.js';
 export type { PendingClaimInput, PendingClaimRow } from './claims.js';
-export { upsertUser, getUserOrgs, linkUserToOrg } from './users.js';
+export { upsertUser, getUserOrgs, linkUserToOrg, linkUserToOrgIfProvisioned } from './users.js';
 export {
   regenerateKey,
   getKeyInfo,

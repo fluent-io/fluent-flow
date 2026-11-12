@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { z } from 'zod';
 import type { NextAuthOptions, Session } from 'next-auth';
 import type { JWT } from 'next-auth/jwt';
 import GitHubProvider from 'next-auth/providers/github';
@@ -6,6 +7,7 @@ import CredentialsProvider from 'next-auth/providers/credentials';
 import {
   upsertUser,
   getUserOrgs,
+  linkUserToOrgIfProvisioned,
   query,
   authenticateCollabPassword,
   ensureGithubPrincipal,
@@ -57,6 +59,120 @@ function rateLimitKeyFrom(req: { headers?: Record<string, unknown> } | undefined
   return createHash('sha256').update('unproxied').digest('hex');
 }
 
+const githubInstallationSchema = z.object({
+  account: z
+    .object({
+      login: z.string().min(1),
+    })
+    .nullable()
+    .optional(),
+});
+
+const githubInstallationsResponseSchema = z.object({
+  total_count: z.number().optional(),
+  installations: z.array(githubInstallationSchema),
+});
+
+const INSTALLATIONS_PAGE_SIZE = 100;
+const INSTALLATIONS_MAX_PAGES = 10; // 1000 installations — far beyond any real org's app installs
+const INSTALLATIONS_FETCH_TIMEOUT_MS = 8000;
+
+async function fetchGithubInstallationOrgIds(accessToken: string): Promise<string[]> {
+  const orgIds: string[] = [];
+  for (let page = 1; page <= INSTALLATIONS_MAX_PAGES; page++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), INSTALLATIONS_FETCH_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(
+        `https://api.github.com/user/installations?per_page=${INSTALLATIONS_PAGE_SIZE}&page=${page}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'User-Agent': 'fluent-flow-dashboard',
+          },
+          signal: controller.signal,
+        },
+      );
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (!res.ok) {
+      console.error('reconcileGithubOrgAccess: GitHub API error', { status: res.status, page });
+      break;
+    }
+    const parsed = githubInstallationsResponseSchema.safeParse(await res.json());
+    if (!parsed.success) {
+      console.error('reconcileGithubOrgAccess: unexpected GitHub API response shape', {
+        page,
+        error: parsed.error.message,
+      });
+      break;
+    }
+    for (const installation of parsed.data.installations) {
+      const login = installation.account?.login;
+      if (login) orgIds.push(login);
+    }
+    if (parsed.data.installations.length < INSTALLATIONS_PAGE_SIZE) break;
+  }
+  return orgIds;
+}
+
+/**
+ * Self-heals org membership on every GitHub sign-in against GitHub's own
+ * installation records, rather than relying solely on the one-shot
+ * `installation.created` webhook (handleInstallationCreated links the
+ * installer as org admin, but that link attempt is wrapped in a try/catch
+ * that only logs on failure — see installation-lifecycle.js). If that
+ * webhook was missed, mis-attributed, or errored, this recovers the link the
+ * next time the affected user signs in, without requiring any manual fix.
+ *
+ * Links as `member`, not `admin`: GitHub's `/user/installations` lists every
+ * installation the signed-in user can merely *see* (any org member with
+ * access to a covered repo), not just the one they personally installed —
+ * granting admin from that signal would be a privilege escalation, not a
+ * repair. Restoring a specific installer's admin role (if their webhook
+ * link failed) is out of scope here and needs a separate, stronger signal
+ * (e.g. GitHub's org-membership-role API) than this endpoint provides.
+ *
+ * Deliberately best-effort: never blocks or fails sign-in. Every failure
+ * path here is caught and logged, not rethrown, because org-access repair is
+ * a convenience on top of a successful authentication, not a prerequisite
+ * for it.
+ *
+ * Linking is atomic per org via `linkUserToOrgIfProvisioned`: it only
+ * inserts when the org is already provisioned and the user has no existing
+ * link, in one statement, so there's no read-then-write race and an
+ * existing link (at any role) is never touched — never downgraded, never
+ * escalated.
+ */
+async function reconcileGithubOrgAccess(userId: number, accessToken: string | undefined): Promise<void> {
+  if (!accessToken) return;
+
+  let orgIds: string[];
+  try {
+    orgIds = await fetchGithubInstallationOrgIds(accessToken);
+  } catch (err) {
+    console.error('reconcileGithubOrgAccess: failed to fetch installations', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return;
+  }
+
+  for (const orgId of orgIds) {
+    try {
+      await linkUserToOrgIfProvisioned(userId, orgId, 'member');
+    } catch (err) {
+      console.error('reconcileGithubOrgAccess: failed to link org', {
+        orgId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
+
 export const authOptions: NextAuthOptions = {
   providers: [
     GitHubProvider({
@@ -91,12 +207,13 @@ export const authOptions: NextAuthOptions = {
     async signIn({ user, account, profile }) {
       if (account?.provider !== 'github' || !profile) return true;
       const ghProfile = profile as { id: number; login: string; avatar_url?: string };
-      await upsertUser({
+      const dbUser = await upsertUser({
         github_id: ghProfile.id,
         login: ghProfile.login,
         email: user.email ?? null,
         avatar_url: ghProfile.avatar_url ?? null,
       });
+      await reconcileGithubOrgAccess(dbUser.id, account.access_token);
       return true;
     },
     async jwt({ token, user, profile }) {
