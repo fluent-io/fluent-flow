@@ -14,6 +14,7 @@ This directory contains product decisions, architecture specifications, implemen
 ## Architecture specifications
 
 - [Specifications](specs/) — approved and draft architecture documents covering agent routing, runner worktrees, the dashboard, GitHub integration, loop-engine exploration, and deterministic verification.
+- [Object graph and provisioning model](specs/2026-11-12-object-graph-and-provisioning.md) — what entities exist (orgs/repos/agents vs. workspaces/projects/tasks), how the two layers connect, and why a repo can exist with zero projects.
 
 ## Implementation plans
 
