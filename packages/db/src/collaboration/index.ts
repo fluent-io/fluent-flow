@@ -50,6 +50,9 @@ export {
 export {
   getCollabBootstrapEligibility,
   bootstrapCollaborationWorkspace,
+  ensureDefaultWorkspace,
+  enrollOrgAdminInDefaultWorkspaces,
+  defaultWorkspaceIdempotencyKey,
   createCollabProject,
   updateProjectExecutionDefaults,
   getPrincipalMeProfile,

@@ -36,6 +36,7 @@ export interface Principal {
 }
 
 export interface Workspace {
+  orgId: string | null;
   id: string;
   name: string;
 }
@@ -49,6 +50,7 @@ export interface ExecutionDefaults {
 }
 
 export interface Project {
+  linkedRepoFullName: string | null;
   id: string;
   workspaceId: string;
   name: string;

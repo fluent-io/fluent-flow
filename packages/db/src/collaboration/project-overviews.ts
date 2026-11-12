@@ -12,6 +12,7 @@ export type CollabProjectOverview = {
   name: string;
   version: number;
   boardVersion: number;
+  linkedRepoFullName: string | null;
   description: string;
   runInstructions: string;
   testInstructions: string;
@@ -42,7 +43,7 @@ const updateSchema = z
     { message: 'Nothing to update.' },
   );
 
-const SELECT_OVERVIEW = `SELECT p.id, p.workspace_id, w.name AS workspace_name, p.name, p.version, p.board_version,
+const SELECT_OVERVIEW = `SELECT p.id, p.workspace_id, w.name AS workspace_name, p.name, p.version, p.board_version, p.linked_repo_full_name,
        COALESCE(o.description, '') AS description,
        COALESCE(o.run_instructions, '') AS run_instructions,
        COALESCE(o.test_instructions, '') AS test_instructions
@@ -62,6 +63,7 @@ async function readOverview(client: Pick<PoolClient, 'query'>, projectId: string
     name: row.name,
     version: row.version,
     boardVersion: row.board_version,
+    linkedRepoFullName: row.linked_repo_full_name,
     description: row.description,
     runInstructions: row.run_instructions,
     testInstructions: row.test_instructions,

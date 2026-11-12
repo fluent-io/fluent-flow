@@ -31,13 +31,13 @@ const { ProjectOverviewPanel, ProjectsList } = await import('@/components/collab
 const A1 = '11111111-1111-4111-8111-111111111111';
 const A2 = '22222222-2222-4222-8222-222222222222';
 const B1 = '33333333-3333-4333-8333-333333333333';
-const project = (id: string, workspaceId: string, name: string) => ({ id, workspaceId, name, version: 1, boardVersion: 1, executionDefaults: null });
+const project = (id: string, workspaceId: string, name: string) => ({ id, workspaceId, name, version: 1, boardVersion: 1, executionDefaults: null, linkedRepoFullName: null });
 
 const ownerMe: MeResponse = {
   principal: { id: 'p-owner', displayName: 'Owner', disabledAt: null, sessionVersion: 1 } as MeResponse['principal'],
   workspaces: [
-    { id: 'w-a', name: 'Client A', projects: [project(A1, 'w-a', 'A1'), project(A2, 'w-a', 'A2')] },
-    { id: 'w-b', name: 'Client B', projects: [project(B1, 'w-b', 'B1')] },
+    { id: 'w-a', name: 'Client A', orgId: null, projects: [project(A1, 'w-a', 'A1'), project(A2, 'w-a', 'A2')] },
+    { id: 'w-b', name: 'Client B', orgId: null, projects: [project(B1, 'w-b', 'B1')] },
   ],
   capabilities: { [A1]: ['task.read', 'task.write', 'project.admin'], [A2]: ['task.read'], [B1]: ['task.read', 'task.write'] },
   workspaceCapabilities: { 'w-a': ['project.admin'], 'w-b': [] },
@@ -46,7 +46,7 @@ const ownerMe: MeResponse = {
 const collaboratorMe: MeResponse = {
   ...ownerMe,
   principal: { id: 'p-collab', displayName: 'Collaborator', disabledAt: null, sessionVersion: 1 } as MeResponse['principal'],
-  workspaces: [{ id: 'w-a', name: 'Client A', projects: [project(A1, 'w-a', 'A1')] }],
+  workspaces: [{ id: 'w-a', name: 'Client A', orgId: null, projects: [project(A1, 'w-a', 'A1')] }],
   capabilities: { [A1]: ['task.read', 'task.write'] },
   workspaceCapabilities: {},
 };
@@ -179,7 +179,7 @@ describe('shell navigation and header', () => {
 });
 
 describe('project pages', () => {
-  const overview = { id: A1, workspaceId: 'w-a', workspaceName: 'Client A', name: 'A1', version: 3, boardVersion: 2, description: 'Arithmetic demo', runInstructions: '', testInstructions: 'npm test' };
+  const overview = { id: A1, workspaceId: 'w-a', workspaceName: 'Client A', name: 'A1', version: 3, boardVersion: 2, linkedRepoFullName: null, description: 'Arithmetic demo', runInstructions: '', testInstructions: 'npm test' };
 
   it('lets a collaborator read the overview without edit controls', () => {
     const html = renderToStaticMarkup(<ProjectOverviewPanel overview={overview} canEdit={false} canOpenSettings={false} onSaved={() => {}} />);
@@ -189,6 +189,13 @@ describe('project pages', () => {
     expect(html).not.toContain('Edit overview');
     expect(html).not.toContain('href="/settings');
     expect(html).toContain(`href="/board?projectId=${A1}"`);
+  });
+
+  it('shows linked repositories on project lists and details', () => {
+    const linked = { ...overview, linkedRepoFullName: 'acme/app' };
+    expect(renderToStaticMarkup(<ProjectOverviewPanel overview={linked} canEdit={false} canOpenSettings={false} onSaved={() => {}} />)).toContain('acme/app');
+    const me = { ...ownerMe, workspaces: [{ ...ownerMe.workspaces[0], projects: [{ ...ownerMe.workspaces[0].projects[0], linkedRepoFullName: 'acme/app' }] }] };
+    expect(renderToStaticMarkup(<ProjectsList me={me} onCreated={async () => {}} />)).toContain('acme/app');
   });
 
   it('gives a project admin edit and settings controls', () => {

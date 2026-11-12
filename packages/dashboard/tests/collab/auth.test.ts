@@ -10,6 +10,8 @@ const mockGetCollabPrincipal = vi.fn();
 const mockUpsertUser = vi.fn();
 const mockGetUserOrgs = vi.fn();
 const mockLinkUserToOrgIfProvisioned = vi.fn();
+const mockEnsureDefaultWorkspace = vi.fn();
+const mockEnrollOrgAdminInDefaultWorkspaces = vi.fn();
 const mockQuery = vi.fn();
 
 vi.mock('@fluent-flow/db', () => ({
@@ -20,6 +22,8 @@ vi.mock('@fluent-flow/db', () => ({
   upsertUser: (...args: unknown[]) => mockUpsertUser(...args),
   getUserOrgs: (...args: unknown[]) => mockGetUserOrgs(...args),
   linkUserToOrgIfProvisioned: (...args: unknown[]) => mockLinkUserToOrgIfProvisioned(...args),
+  ensureDefaultWorkspace: (...args: unknown[]) => mockEnsureDefaultWorkspace(...args),
+  enrollOrgAdminInDefaultWorkspaces: (...args: unknown[]) => mockEnrollOrgAdminInDefaultWorkspaces(...args),
   query: (...args: unknown[]) => mockQuery(...args),
 }));
 
@@ -160,9 +164,84 @@ describe('signIn callback', () => {
       m.mockReset();
     }
     mockLinkUserToOrgIfProvisioned.mockReset();
+    mockEnsureDefaultWorkspace.mockReset();
   });
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('ensures a default workspace for every processed org, whether or not the link was new', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    mockLinkUserToOrgIfProvisioned.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ installations: [{ account: { login: 'acme' } }, { account: { login: 'other-org' } }] }),
+      }),
+    );
+
+    await authOptions.callbacks!.signIn!(
+      asSignInArgs({
+        user: { email: 'v@example.com' },
+        account: { provider: 'github', access_token: 'gh-token' },
+        profile: { id: 9001, login: 'victor', avatar_url: 'https://avatar' },
+      }),
+    );
+
+    expect(mockEnsureDefaultWorkspace).toHaveBeenCalledTimes(2);
+    expect(mockEnsureDefaultWorkspace).toHaveBeenCalledWith('acme', { createdByPrincipalId: null });
+    expect(mockEnsureDefaultWorkspace).toHaveBeenCalledWith('other-org', { createdByPrincipalId: null });
+  });
+
+  it('still succeeds sign-in, and keeps going to the next org, when ensuring a default workspace throws', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    mockLinkUserToOrgIfProvisioned.mockResolvedValue(true);
+    mockEnsureDefaultWorkspace.mockRejectedValueOnce(new Error('collab db down')).mockResolvedValueOnce(null);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ installations: [{ account: { login: 'acme' } }, { account: { login: 'other-org' } }] }),
+      }),
+    );
+
+    const result = await authOptions.callbacks!.signIn!(
+      asSignInArgs({
+        user: { email: 'v@example.com' },
+        account: { provider: 'github', access_token: 'gh-token' },
+        profile: { id: 9001, login: 'victor', avatar_url: 'https://avatar' },
+      }),
+    );
+
+    expect(result).toBe(true);
+    expect(mockLinkUserToOrgIfProvisioned).toHaveBeenCalledWith(7, 'other-org', 'member');
+    expect(mockEnsureDefaultWorkspace).toHaveBeenCalledWith('other-org', { createdByPrincipalId: null });
+    expect(errorSpy).toHaveBeenCalledWith(
+      'reconcileGithubOrgAccess: failed to ensure default workspace',
+      expect.objectContaining({ orgId: 'acme' }),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it('still ensures the default workspace when the org link itself throws', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    mockLinkUserToOrgIfProvisioned.mockRejectedValueOnce(new Error('db down'));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ installations: [{ account: { login: 'acme' } }] }) }),
+    );
+
+    await authOptions.callbacks!.signIn!(
+      asSignInArgs({
+        user: { email: 'v@example.com' },
+        account: { provider: 'github', access_token: 'gh-token' },
+        profile: { id: 9001, login: 'victor', avatar_url: 'https://avatar' },
+      }),
+    );
+
+    expect(mockEnsureDefaultWorkspace).toHaveBeenCalledWith('acme', { createdByPrincipalId: null });
   });
 
   it('allows credentials sign-in without touching legacy GitHub upsert', async () => {
@@ -415,6 +494,45 @@ describe('jwt callback', () => {
     ]) {
       m.mockReset();
     }
+    mockEnrollOrgAdminInDefaultWorkspaces.mockReset();
+    mockEnrollOrgAdminInDefaultWorkspaces.mockResolvedValue([]);
+  });
+
+  it('enrolls the GitHub user into their admin orgs\' default workspaces after resolving the principal', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [userRow()] });
+    mockEnsureGithubPrincipal.mockResolvedValueOnce({ ...PRINCIPAL, userId: 7 });
+
+    await authOptions.callbacks!.jwt!(
+      asJwtArgs({ token: {}, profile: { id: 9001, login: 'victor' }, user: { email: 'v@example.com' } }),
+    );
+
+    expect(mockEnrollOrgAdminInDefaultWorkspaces).toHaveBeenCalledWith('p-1');
+  });
+
+  it('still issues the token when default-workspace enrollment throws', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [userRow()] });
+    mockEnsureGithubPrincipal.mockResolvedValueOnce({ ...PRINCIPAL, userId: 7 });
+    mockEnrollOrgAdminInDefaultWorkspaces.mockRejectedValueOnce(new Error('collab db down'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const token: Record<string, unknown> = {};
+    await authOptions.callbacks!.jwt!(
+      asJwtArgs({ token, profile: { id: 9001, login: 'victor' }, user: { email: 'v@example.com' } }),
+    );
+
+    expect(token).toMatchObject({ principalId: 'p-1', sessionVersion: 2 });
+    expect(errorSpy).toHaveBeenCalledWith(
+      'jwt: failed to enroll org admin in default workspaces',
+      expect.objectContaining({ principalId: 'p-1' }),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it('does not enroll for credentials sign-ins', async () => {
+    await authOptions.callbacks!.jwt!(
+      asJwtArgs({ token: {}, user: { id: null, principalId: 'p-1', sessionVersion: 2, login: 'C', email: 'c@x' } }),
+    );
+    expect(mockEnrollOrgAdminInDefaultWorkspaces).not.toHaveBeenCalled();
   });
 
   it('carries principal identity from a credentials sign-in', async () => {

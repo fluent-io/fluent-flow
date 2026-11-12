@@ -8,6 +8,8 @@ import {
   upsertUser,
   getUserOrgs,
   linkUserToOrgIfProvisioned,
+  ensureDefaultWorkspace,
+  enrollOrgAdminInDefaultWorkspaces,
   query,
   authenticateCollabPassword,
   ensureGithubPrincipal,
@@ -170,6 +172,15 @@ async function reconcileGithubOrgAccess(userId: number, accessToken: string | un
         error: err instanceof Error ? err.message : String(err),
       });
     }
+    try {
+      await ensureDefaultWorkspace(orgId, { createdByPrincipalId: null });
+    } catch (err) {
+      console.error('reconcileGithubOrgAccess: failed to ensure default workspace', {
+        safeToContinue: 'Authentication succeeded; future sign-ins retry workspace creation',
+        orgId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }
 
@@ -233,6 +244,15 @@ export const authOptions: NextAuthOptions = {
         });
         token.principalId = principal.id;
         token.sessionVersion = principal.sessionVersion;
+        try {
+          await enrollOrgAdminInDefaultWorkspaces(principal.id);
+        } catch (err) {
+          console.error('jwt: failed to enroll org admin in default workspaces', {
+            safeToContinue: 'Authentication succeeded; future sign-ins retry enrollment',
+            principalId: principal.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
       if (user) {
         const authorized = user as Partial<AuthorizeUser>;

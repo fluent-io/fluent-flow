@@ -57,14 +57,14 @@ const me: MeResponse = {
   },
   workspaces: [{
     id: 'workspace-1',
-    name: 'Workspace',
+    name: 'Workspace', orgId: null,
     projects: [{
       id: PROJECT_ID,
       workspaceId: 'workspace-1',
       name: 'Project',
       version: 1,
       boardVersion: 1,
-      executionDefaults: null,
+      executionDefaults: null, linkedRepoFullName: null,
     }],
   }],
   capabilities: { [PROJECT_ID]: allCapabilities },
