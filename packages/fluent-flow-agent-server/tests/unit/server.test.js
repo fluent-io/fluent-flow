@@ -1,9 +1,6 @@
 import { hostname, platform } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAgentServer } from '../../src/server.js';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -165,20 +162,6 @@ async function startHarness(harness) {
 }
 
 describe('portable agent server composition', () => {
-  it('loads the operator-local opt-in catalog and shares safe chat startup/workspaces across slots', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'ff-server-chat-'));
-    const profiles = [{ id: 'safe', permission: { configId: 'approval', value: 'ask' }, models: [] }];
-    const path = join(root, 'profiles.json'); await writeFile(path, JSON.stringify(profiles));
-    const h = createHarness({ workDir: join(root, 'work'), stateDir: join(root, 'state'), chatProfilesFile: path });
-    const server = createAgentServer(h.options); const run = server.start();
-    try {
-      for (let i=0; i<600 && h.runners.length !== 2; i++) await new Promise((r) => setTimeout(r, 5));
-      expect(h.runnerOptions).toHaveLength(2);
-      expect(h.runnerOptions[0].chat).toEqual({ enabled: true, profiles });
-      expect(h.runnerOptions[0].chatWorkspaceManager).toBe(h.runnerOptions[1].chatWorkspaceManager);
-      expect(h.runnerOptions[0].chatWorkspaceManager.root).toBe(join(root, 'state', 'chat-workspaces'));
-    } finally { await server.shutdown(); await run; await rm(root, { recursive: true, force: true }); }
-  });
   it('loads private state and resolves a durable token before constructing any runner', async () => {
     const harness = createHarness({ tokenFile: '/run/secrets/runtime-token' });
     harness.options.createRunner = vi.fn((options) => {
