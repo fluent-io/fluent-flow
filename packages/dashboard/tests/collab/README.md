@@ -3,7 +3,8 @@
 [Parent documentation](<../../README.md>)
 
 - [api.test.ts](<api.test.ts>) — Behavior regressions for api.
-- [auth.test.ts](<auth.test.ts>) — Behavior regressions for auth.
+- [auth.test.ts](<auth.test.ts>) — Authentication callbacks, runtime App selection, and independent workspace repair for established org memberships when GitHub discovery fails.
+- [auth-workspace-repair.test.ts](auth-workspace-repair.test.ts) — Real PostgreSQL regression for GitHub 403 with an existing org admin: default workspace, manager capabilities, zero automatic projects, linked/standalone creation and idempotent sign-in; ordinary members and manual workspace boundaries stay unchanged. Requires `COLLAB_AUTH_TEST_DATABASE_URL` on a disposable loopback `ff_*` database; it resets that database only.
 - [board.test.ts](<board.test.ts>) — Behavior regressions for board.
 - [claim-execution.test.tsx](claim-execution.test.tsx) — RED-first ACP claim panel coverage for execution states, pagination, event reduction, safe terminal and rich-content rendering, idempotent drafts, cancellation, interactions, capability gates, revocation, loading failures and keyboard semantics.
 - [claim-execution-actual.browser.mjs](claim-execution-actual.browser.mjs) — disposable PostgreSQL, actual password session, HMAC dashboard proxy, in-process service, spawned agent server CLI and deterministic ACP v2 child acceptance for claim creation, streaming, permission, follow-up, refresh, cancellation and persisted interaction rows. It has no HTTP product mocks.

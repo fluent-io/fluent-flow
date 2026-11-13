@@ -87,8 +87,11 @@ The `tests/collaboration/` suites and the real-database query suites (see
 disposable Postgres and require `COLLAB_DB_TEST_DATABASE_URL` pointing at a
 dedicated loopback `ff_*` database (never the project default or a shared
 database — resets drop and recreate the public schema; the guard enforces
-naming + loopback + test mode). CI provisions independent `ff_db_test`, `ff_server_test`, `ff_connector_test` and `ff_legacy_test`
-automatically (see `.github/workflows/ci.yml`).
+naming + loopback + test mode). The dashboard auth-workspace regression additionally
+requires `COLLAB_AUTH_TEST_DATABASE_URL` pointing at its own dedicated loopback
+`ff_*` database. CI provisions independent `ff_db_test`, `ff_server_test`,
+`ff_connector_test`, `ff_legacy_test` and `ff_auth_test` automatically
+(see `.github/workflows/ci.yml`).
 
 For local browser/UAT fixtures run `node scripts/collab-fixture.mjs
 --database postgres://…ff_fixture` (see [scripts/README.md](scripts/README.md)).

@@ -152,19 +152,31 @@ async function fetchGithubInstallationOrgIds(accessToken: string): Promise<strin
  * escalated.
  */
 async function reconcileGithubOrgAccess(userId: number, accessToken: string | undefined): Promise<void> {
-  if (!accessToken) return;
-
-  let orgIds: string[];
+  const workspaceOrgIds = new Set<string>();
   try {
-    orgIds = await fetchGithubInstallationOrgIds(accessToken);
+    for (const org of await getUserOrgs(userId)) workspaceOrgIds.add(org.org_id);
   } catch (err) {
-    console.error('reconcileGithubOrgAccess: failed to fetch installations', {
+    console.error('reconcileGithubOrgAccess: failed to read existing orgs', {
+      safeToContinue: 'Authentication succeeded; installation discovery and future sign-ins retry repair',
+      userId,
       error: err instanceof Error ? err.message : String(err),
     });
-    return;
   }
 
-  for (const orgId of orgIds) {
+  let discoveredOrgIds: string[] = [];
+  if (accessToken) {
+    try {
+      discoveredOrgIds = await fetchGithubInstallationOrgIds(accessToken);
+    } catch (err) {
+      console.error('reconcileGithubOrgAccess: failed to fetch installations', {
+        safeToContinue: 'Authentication succeeded; established org workspace repair continues and future sign-ins retry installation discovery',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  for (const orgId of discoveredOrgIds) {
+    workspaceOrgIds.add(orgId);
     try {
       await linkUserToOrgIfProvisioned(userId, orgId, 'member');
     } catch (err) {
@@ -173,6 +185,8 @@ async function reconcileGithubOrgAccess(userId: number, accessToken: string | un
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+  for (const orgId of workspaceOrgIds) {
     try {
       await ensureDefaultWorkspace(orgId, { createdByPrincipalId: null });
     } catch (err) {

@@ -114,6 +114,8 @@ Dashboard-created agent servers always use `long_poll`. Provider selects the loc
 
 ## Testing
 
+Set `COLLAB_AUTH_TEST_DATABASE_URL` to a dedicated disposable loopback `ff_*` PostgreSQL database before running the suite. The real authentication/workspace regression resets only that database; CI creates a separate `ff_auth_test` database for it. Never use the application or production database. See [the collaboration test README](tests/collab/README.md).
+
 ```bash
 npm test        # dashboard API, auth, proxy, board and interaction-contract regressions
 npm run test:watch

@@ -1,6 +1,6 @@
 import pg from 'pg';
 
-export function assertDedicatedCollabTestDatabaseUrl(url) {
+export function assertDedicatedCollabTestDatabaseUrl(url: string) {
   const parsed = new URL(url);
   if (!['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname)) {
     throw new Error(`refusing non-loopback database host for collab tests: ${parsed.hostname}`);
@@ -34,7 +34,7 @@ export function resolveCollabTestDatabaseUrl() {
   return assertDedicatedCollabTestDatabaseUrl(url);
 }
 
-export async function resetCollabSchema(databaseUrl) {
+export async function resetCollabSchema(databaseUrl: string) {
   assertDedicatedCollabTestDatabaseUrl(databaseUrl);
   const client = new pg.Client({ connectionString: databaseUrl });
   try {
