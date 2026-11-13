@@ -120,15 +120,15 @@ function WorkspacePanel({ me, reload }: { me: MeResponse; reload: () => Promise<
       setName('');
       await reload();
     } catch (err) {
-      setError(err instanceof ApiError && (err.status === 403 || err.status === 422) ? 'Only an internal organization admin can create a client workspace.' : err instanceof Error ? err.message : 'Could not create the workspace.');
+      setError(err instanceof ApiError && (err.status === 403 || err.status === 422) ? 'Only an internal organization admin can create a workspace.' : err instanceof Error ? err.message : 'Could not create the workspace.');
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <section aria-label="Client workspaces" className="rounded-lg border border-border bg-card p-4">
-      <h2 className="text-sm font-medium">Client workspaces</h2>
+    <section aria-label="Workspaces" className="rounded-lg border border-border bg-card p-4">
+      <h2 className="text-sm font-medium">Workspaces</h2>
       <ul className="mt-2 flex flex-col gap-1 text-sm">
         {me.workspaces.length === 0 ? <li className="text-xs text-muted-foreground">No workspaces yet.</li> : null}
         {me.workspaces.map((w) => (
@@ -140,7 +140,7 @@ function WorkspacePanel({ me, reload }: { me: MeResponse; reload: () => Promise<
       </ul>
       {eligible ? (
         <form onSubmit={createWorkspace} className="mt-3 flex flex-wrap gap-2">
-          <Input placeholder="New client workspace name" value={name} onChange={(e) => setName(e.target.value)} required />
+          <Input placeholder="New workspace name" value={name} onChange={(e) => setName(e.target.value)} required />
           {orgIds.length > 1 ? (
             <select aria-label="Organization" className="h-9 rounded-md border border-border bg-background px-2 text-sm" value={orgId} onChange={(e) => setOrgId(e.target.value)}>
               {orgIds.map((id) => (
@@ -156,7 +156,7 @@ function WorkspacePanel({ me, reload }: { me: MeResponse; reload: () => Promise<
         </form>
       ) : (
         <p className="mt-2 text-xs text-muted-foreground">
-          Client workspace creation requires an internal organization administrator.
+          Workspace creation requires an internal organization administrator.
         </p>
       )}
       {error ? <p role="alert" className="mt-2 text-xs text-destructive">{error}</p> : null}

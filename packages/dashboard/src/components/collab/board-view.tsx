@@ -269,7 +269,7 @@ export function BoardView() {
             />
           </div>
           <select
-            aria-label="Client workspace"
+            aria-label="Workspace"
             className="h-9 rounded-md border border-border bg-background px-2 text-sm"
             value={workspaceId}
             onChange={(e) => {
