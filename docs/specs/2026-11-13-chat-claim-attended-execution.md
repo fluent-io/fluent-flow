@@ -139,6 +139,22 @@ Steering a chat is **code execution on the agent host**. This replaces the conne
 - **Delivery-time authorization** (X10): claim commands gain an originator record; leasing revalidates the originator's current capabilities before delivery, including queued prompts and permission answers — the connector tier rechecked authority at delivery and claim commands today check only runner ownership.
 - **Credential lifetime** (C12): GitHub installation tokens resolved once at delivery expire (~1 h) while chats run longer. Chat sessions cap at the token TTL unless a token-refresh command is implemented; v1 ships the cap, the refresh command is follow-up.
 
+### Handoff: chat → unattended pipeline
+
+A chat session is a natural place to design work; building it belongs to the unattended flow (`spec` → `build` → verification). Handoff is an explicit, user-driven action with **artifact transfer, not context transfer** — an unattended claim spawns a fresh ACP session, so nothing of the conversation carries over implicitly.
+
+**Trigger.** A "Build this" control on the chat panel (and task page), gated by the same capabilities as starting execution (`run.start`, plus `task.create` on the project when the handoff creates a new task rather than attaching to an existing one). The chat agent may *propose* a handoff as a suggested control; the pipeline is never triggered by the model deciding it should build, and never by free-text intent detection — Ready alone never spends tokens remains the rule.
+
+**What transfers.**
+
+1. **Workspace artifacts.** Chat sessions on repo-linked tasks work on the task branch `ff/task-<task_id>`. Handoff prompts the user to commit pending changes (the safe-teardown checks apply). The unattended `spec`/`build` claims for that task are based on that branch instead of the default branch, so design docs, scaffolding, and edits the chat made are physically present in the build worktree.
+2. **A handoff digest.** On handoff, the runner asks the *chat* session (one final ACP prompt) to produce a structured design summary: goal, decisions made, acceptance criteria, open questions, files touched. It lands in the task's description/acceptance criteria and the first `spec` claim payload. This is a fresh summary generated while context is still alive — not a transcript replay into the new session, which stays rejected.
+3. **Lineage.** The `root_claim_id` grouping already lets history show chat claim(s) followed by spec/build/verification claims under one task. A `handed_off_from` reference on the first unattended claim records the originating chat claim for audit and UI ("designed in session N").
+
+**Lifecycle.** The chat claim stays open after handoff (the user may keep designing); the new task/claims go through the normal unattended state machine — no special phases, no pinned runner. The build may execute on a different agent server than the chat did; artifacts travel through the git branch and the digest, not session state. If the project has no repository, handoff is unavailable — unattended work claims require a repo; the UI says so rather than creating a repo implicitly.
+
+**Failure semantics.** The unattended claims are ordinary work claims from birth: redispatch, expiry, and retry rules apply in full (unlike chat claims). A failed build does not loop back into the chat automatically; the user may open a new chat session to iterate and hand off again.
+
 ### Transcript limits
 
 - The 16 MiB per-claim event budget (X12) becomes a documented session limit: the runner applies backpressure (drops oldest non-terminal verbose events to a stub, keeping prompts, permission requests/answers, and terminal messages) before upload; the UI renders a "transcript truncated" marker. A task-wide view paginates across the chat claims under one `root_claim_id`; event sequences are already claim-scoped.
