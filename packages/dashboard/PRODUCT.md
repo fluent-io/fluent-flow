@@ -11,7 +11,7 @@ Confirmed facts only. Design decisions that have not been agreed with the produc
 
 ## Projects
 
-- Projects is visible to every signed-in collaboration user and lists only their authorized projects, grouped by client workspace.
+- Projects is visible to every signed-in collaboration user and lists only their authorized projects, grouped by workspace.
 - Members can read a project's name, overview, run instructions and test instructions. Project administrators can edit them. Workspace administrators can create projects.
 - A project page links to its Board, and to Settings when the user can administer the project or its members. It never shows execution configuration or hosts.
 

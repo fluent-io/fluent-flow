@@ -24,15 +24,29 @@ function parsePoolNumber(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-// Defaults carried over from the legacy raw-pg pool (pre-Drizzle):
-// max=10, idleTimeoutMillis=30s, connectionTimeoutMillis=5s. Overridable via
-// PGPOOL_* env vars for deployments that need different limits.
+// The Pool is constructed at import time but resolves DATABASE_URL lazily on
+// first connect. `next build` imports every route module while collecting page
+// data, so throwing here (or in resolveDatabaseUrl at import) breaks env-less
+// production builds. pg-pool passes `this.options` to each new Client at
+// connect time, so assigning connectionString before the first connect is
+// picked up. A missing DATABASE_URL still fails fast — at first use instead of
+// at import.
 export const pool = new Pool({
-  connectionString: resolveDatabaseUrl(),
   max: parsePoolNumber(process.env.PGPOOL_MAX, 10),
   idleTimeoutMillis: parsePoolNumber(process.env.PGPOOL_IDLE_TIMEOUT_MILLIS, 30_000),
   connectionTimeoutMillis: parsePoolNumber(process.env.PGPOOL_CONNECTION_TIMEOUT_MILLIS, 5_000),
 });
+
+const baseConnect = pool.connect.bind(pool) as typeof pool.connect;
+let connectionStringResolved = false;
+const wrappedConnect = function connect(...args: Parameters<typeof baseConnect>): ReturnType<typeof baseConnect> {
+  if (!connectionStringResolved) {
+    connectionStringResolved = true;
+    (pool.options as { connectionString?: string }).connectionString = resolveDatabaseUrl();
+  }
+  return baseConnect(...args);
+};
+Object.defineProperty(pool, 'connect', { value: wrappedConnect, writable: true, configurable: true });
 
 // Without this handler a disconnected idle client crashes the process with an
 // unhandled 'error' event. Logging keeps the process alive and alerts ops.

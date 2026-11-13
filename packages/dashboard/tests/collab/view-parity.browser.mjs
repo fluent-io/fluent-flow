@@ -114,7 +114,7 @@ try {
   await o.page.locator('aside nav').getByText('Settings', { exact: true }).click();
   await o.page.waitForURL(`${origin}/settings`, { timeout: 30000 });
   await o.page.getByRole('heading', { name: 'Settings', exact: true }).waitFor({ timeout: 30000 });
-  const workspaces = o.page.getByRole('region', { name: 'Client workspaces', exact: true });
+  const workspaces = o.page.getByRole('region', { name: 'Workspaces', exact: true });
   await workspaces.getByText(names.workspace, { exact: true }).waitFor({ timeout: 30000 });
   await o.page.getByRole('combobox', { name: 'Settings scope', exact: true }).selectOption(`project:${project.id}`);
   const members = o.page.getByRole('region', { name: 'Members', exact: true });

@@ -79,6 +79,14 @@ jobs:
       - name: Typecheck agent server connector
         run: npm run typecheck -w @fluent-flow/agent-server
 
+      # `next build` imports every dashboard route module while collecting page
+      # data, so anything @fluent-flow/db evaluates at import time runs here.
+      # Build with no DATABASE_URL in the environment to catch import-time
+      # connection attempts before they reach a deploy (packages/db is built by
+      # the turbo ^build dependency of the `npm test` step above).
+      - name: Build dashboard without DATABASE_URL
+        run: npm run build -w @fluent-flow/dashboard
+
       - name: Run agent server smoke
         run: npm run smoke -w @fluent-flow/agent-server
 
