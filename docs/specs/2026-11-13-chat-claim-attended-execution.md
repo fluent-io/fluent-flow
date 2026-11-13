@@ -141,6 +141,8 @@ Steering a chat is **code execution on the agent host**. This replaces the conne
 
 ### Handoff: chat → unattended pipeline
 
+A task in the Ready state keeps its existing **Start** button and behavior: Start goes directly into the unattended pipeline (`spec` → `build` → verification) with no chat involved. Chat is an *optional* front door for work you want to design interactively first; the handoff below covers that path only.
+
 A chat session is a natural place to design work; building it belongs to the unattended flow (`spec` → `build` → verification). Handoff is an explicit, user-driven action with **artifact transfer, not context transfer** — an unattended claim spawns a fresh ACP session, so nothing of the conversation carries over implicitly.
 
 **Trigger.** A "Build this" control on the chat panel (and task page), gated by the same capabilities as starting execution (`run.start`, plus `task.create` on the project when the handoff creates a new task rather than attaching to an existing one). The chat agent may *propose* a handoff as a suggested control; the pipeline is never triggered by the model deciding it should build, and never by free-text intent detection — Ready alone never spends tokens remains the rule.
