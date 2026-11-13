@@ -96,7 +96,7 @@ async function withHostFence<T>(token: string, connectorSessionId: string, lease
   return withClientTransaction(async (client) => {
     await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`connector:${host.id}`]);
     const current = await client.query<{ lease_epoch: string; connector_session_id: string | null; revoked_at: Date | null }>(
-      `SELECT lease_epoch, connector_session_id, revoked_at FROM collab_hosts WHERE id = $1 FOR UPDATE`,
+      `SELECT lease_epoch, connector_session_id, revoked_at FROM collab_hosts WHERE id = $1 FOR NO KEY UPDATE`,
       [host.id],
     );
     if (

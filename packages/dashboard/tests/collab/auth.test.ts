@@ -165,9 +165,69 @@ describe('signIn callback', () => {
     }
     mockLinkUserToOrgIfProvisioned.mockReset();
     mockEnsureDefaultWorkspace.mockReset();
+    mockGetUserOrgs.mockResolvedValue([]);
   });
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it.each(['denied', 'network error', 'empty installations', 'invalid response', 'missing token'])(
+    'repairs established org workspaces when GitHub discovery has %s',
+    async (failure) => {
+      mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+      mockGetUserOrgs.mockResolvedValueOnce([{ org_id: 'known-org', role: 'admin' }]);
+      const fetchMock = vi.fn();
+      if (failure === 'network error') fetchMock.mockRejectedValue(new Error('network down'));
+      else if (failure === 'denied') fetchMock.mockResolvedValue({ ok: false, status: 403 });
+      else fetchMock.mockResolvedValue({ ok: true, json: async () => failure === 'invalid response' ? {} : { installations: [] } });
+      vi.stubGlobal('fetch', fetchMock);
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const result = await authOptions.callbacks!.signIn!(asSignInArgs({
+          user: { email: 'admin@example.test' },
+          account: { provider: 'github', ...(failure === 'missing token' ? {} : { access_token: 'gh-token' }) },
+          profile: { id: 9001, login: 'admin' },
+        }));
+        expect(result).toBe(true);
+        expect(mockGetUserOrgs).toHaveBeenCalledWith(7);
+        expect(mockEnsureDefaultWorkspace).toHaveBeenCalledExactlyOnceWith('known-org', { createdByPrincipalId: null });
+        expect(mockLinkUserToOrgIfProvisioned).not.toHaveBeenCalled();
+        if (failure === 'missing token') expect(fetchMock).not.toHaveBeenCalled();
+      } finally {
+        errorSpy.mockRestore();
+      }
+    },
+  );
+
+  it('repairs the union of established and discovered orgs without changing link authorization', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    mockGetUserOrgs.mockResolvedValueOnce([{ org_id: 'acme', role: 'admin' }, { org_id: 'local-only', role: 'member' }]);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ installations: [{ account: { login: 'acme' } }, { account: { login: 'discovered' } }] }) }));
+    await authOptions.callbacks!.signIn!(asSignInArgs({
+      user: { email: null }, account: { provider: 'github', access_token: 'gh-token' }, profile: { id: 9001, login: 'admin' },
+    }));
+    expect(mockEnsureDefaultWorkspace).toHaveBeenCalledTimes(3);
+    for (const orgId of ['acme', 'local-only', 'discovered']) {
+      expect(mockEnsureDefaultWorkspace).toHaveBeenCalledWith(orgId, { createdByPrincipalId: null });
+    }
+    expect(mockLinkUserToOrgIfProvisioned.mock.calls).toEqual([[7, 'acme', 'member'], [7, 'discovered', 'member']]);
+  });
+
+  it('keeps discovery and sign-in working when reading established orgs fails', async () => {
+    mockUpsertUser.mockResolvedValueOnce({ id: 7 });
+    mockGetUserOrgs.mockRejectedValueOnce(new Error('db unavailable'));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => ({ installations: [{ account: { login: 'discovered' } }] }) }));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await authOptions.callbacks!.signIn!(asSignInArgs({
+        user: { email: null }, account: { provider: 'github', access_token: 'gh-token' }, profile: { id: 9001, login: 'admin' },
+      }));
+      expect(result).toBe(true);
+      expect(mockEnsureDefaultWorkspace).toHaveBeenCalledWith('discovered', { createdByPrincipalId: null });
+      expect(errorSpy).toHaveBeenCalledWith('reconcileGithubOrgAccess: failed to read existing orgs', expect.objectContaining({ userId: 7, safeToContinue: expect.any(String) }));
+    } finally {
+      errorSpy.mockRestore();
+    }
   });
 
   it('ensures a default workspace for every processed org, whether or not the link was new', async () => {
@@ -296,10 +356,6 @@ describe('signIn callback', () => {
   });
 
   it('relies on the atomic db-level guard, not an app-level pre-check, so it always attempts the link', async () => {
-    // No getUserOrgs call here: whether the link already exists is decided
-    // atomically inside linkUserToOrgIfProvisioned (see its own db-layer
-    // tests), not by reading state first in app code — that would reopen
-    // the race this PR closes.
     mockUpsertUser.mockResolvedValueOnce({ id: 7 });
     mockLinkUserToOrgIfProvisioned.mockResolvedValueOnce(false); // already linked, db no-op
     vi.stubGlobal(
@@ -316,7 +372,6 @@ describe('signIn callback', () => {
     );
 
     expect(result).toBe(true);
-    expect(mockGetUserOrgs).not.toHaveBeenCalled();
     expect(mockLinkUserToOrgIfProvisioned).toHaveBeenCalledWith(7, 'acme', 'member');
   });
 
