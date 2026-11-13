@@ -1,0 +1,16 @@
+{
+  "sha": "8a0a95ffd81e2f3eeadb73117c9187e2f5447d37",
+  "initialTargetWorkspaces": 0,
+  "initialTargetProjects": 0,
+  "afterOAuthTargetWorkspaces": 1,
+  "afterOAuthTargetProjects": 0,
+  "afterRepeatOAuthTargetWorkspaces": 1,
+  "afterRepeatOAuthTargetProjects": 2,
+  "membershipCount": 1,
+  "role": "manager",
+  "sameWorkspaceMembershipAndRoleIds": true,
+  "linkedRepo": "fluent-io/fluent-flow",
+  "standaloneRepo": null,
+  "taskStatus": "backlog",
+  "runs": 0
+}

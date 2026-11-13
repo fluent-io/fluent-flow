@@ -1,0 +1,1 @@
+[{"path": "/repos", "expectedVisible": true, "errors": []}, {"path": "/projects", "expectedVisible": true, "errors": []}, {"path": "/projects/<project-id>", "expectedVisible": true, "errors": []}, {"path": "/settings", "expectedVisible": true, "errors": []}, {"path": "/board?projectId=<project-id>", "expectedVisible": true, "errors": []}]
