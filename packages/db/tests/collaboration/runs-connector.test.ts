@@ -1,3 +1,4 @@
+import pg from 'pg';
 import { beforeAll, afterAll, describe, expect, it } from 'vitest';
 import {
   resolveCollabTestDatabaseUrl,
@@ -878,6 +879,113 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     expect(results.filter(r=>r.status==='rejected' && r.reason.status===409)).toHaveLength(1);
     const active=await rawQuery("SELECT id FROM collab_runs WHERE task_id=$1 AND state IN ('queued','launching','running','needs_input','cancel_requested','reconciling')",[task.id]);
     expect(active).toHaveLength(1);
+  });
+  it('does not deadlock session enqueue against observation host fencing', async () => {
+    const task = await createCollabTask({ actor: managerActor, projectId, title: 'Connector lock ordering' });
+    const started = await startCollabRun({
+      actor: managerActor,
+      taskId: task.id,
+      expectedVersion: task.version,
+      idempotencyKey: 'connector-lock-ordering-run',
+    });
+    await submitConnectorObservations({
+      token: hostToken,
+      ...connector,
+      events: [
+        {
+          eventId: 'connector-lock-ordering-idle',
+          runId: started.run.id,
+          sessionId: started.sessionId,
+          kind: 'state',
+          observedAt: new Date().toISOString(),
+          payload: { state: 'idle' },
+        },
+      ],
+    });
+
+    const gate = new pg.Client({ connectionString: DATABASE_URL });
+    const monitor = new pg.Client({ connectionString: DATABASE_URL });
+    await gate.connect();
+    await monitor.connect();
+
+    let queued;
+    let observed;
+    let gateInTransaction = false;
+    const waitFor = async (query, label) => {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const result = await monitor.query(query);
+        if (result.rows[0].ready) return;
+        await monitor.query('SELECT 1');
+      }
+      throw new Error(`timed out waiting for ${label}`);
+    };
+
+    try {
+      await gate.query('BEGIN');
+      gateInTransaction = true;
+      await gate.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`run-cmds:${started.run.id}`]);
+
+      queued = createRunSession({
+        actor: managerActor,
+        runId: started.run.id,
+        idempotencyKey: 'connector-lock-ordering-session',
+        title: 'Second session',
+        instructions: '',
+      });
+      await waitFor(
+        `SELECT EXISTS (
+           SELECT 1
+           FROM pg_stat_activity
+           WHERE datname = current_database()
+             AND state = 'active'
+             AND wait_event_type = 'Lock'
+             AND wait_event = 'advisory'
+             AND query LIKE '%pg_advisory_xact_lock%'
+         ) AS ready`,
+        'session task lock',
+      );
+
+      observed = submitConnectorObservations({
+        token: hostToken,
+        ...connector,
+        events: [
+          {
+            eventId: 'connector-lock-ordering-timeline',
+            runId: started.run.id,
+            sessionId: started.sessionId,
+            kind: 'timeline',
+            observedAt: new Date().toISOString(),
+            payload: { seq: 1 },
+            providerCursor: { epoch: 'connector-lock-ordering', seq: '1' },
+          },
+        ],
+      });
+      await waitFor(
+        `SELECT EXISTS (
+           SELECT 1
+           FROM pg_stat_activity
+           WHERE datname = current_database()
+             AND state = 'active'
+             AND wait_event_type = 'Lock'
+             AND wait_event = 'transactionid'
+             AND query LIKE '%FROM collab_runs r JOIN collab_tasks t%'
+         ) AS ready`,
+        'observation host lock',
+      );
+      await gate.query('COMMIT');
+      gateInTransaction = false;
+
+      const results = await Promise.allSettled([queued, observed]);
+      expect(results[0].status).toBe('fulfilled');
+      expect(results[1].status).toBe('fulfilled');
+    } finally {
+      if (gateInTransaction) {
+        await gate.query('ROLLBACK');
+        gateInTransaction = false;
+      }
+      await Promise.allSettled([queued, observed].filter(Boolean));
+      await Promise.all([gate.end(), monitor.end()]);
+    }
   });
 
   it('does not grant a demoted command originator access to internal results',async()=>{
