@@ -26,10 +26,11 @@ import {
   leaseClaimCommands,
   renewClaimCommand,
   upsertClaimRequest,
+  recordClaimWorkspace,
 } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 import logger from '../logger.js';
-import { getInstallationToken } from '../providers/github/token-cache.js';
+import { getInstallationToken, getInstallationCredential } from '../providers/github/token-cache.js';
 import { installationCtxForRepo } from '../config/loader.js';
 import {
   applyVerifyTransitionOnce,
@@ -118,13 +119,14 @@ const PollSchema = z.object({
 
 const ClaimResultSchema = z.object({
   status: z.enum(['completed', 'failed', 'cancelled']),
-  repo: z.string().min(1),
+  repo: z.string().min(1).nullable(),
   pr_number: z.number().int().positive().nullable(),
   attempt: z.number().int().positive(),
   verdict: z.enum(['pass', 'fail']).optional(),
   claim_id: z.number().int().positive(),
   session_id: z.number().int().positive(),
   failure_kind: z.enum(['transient', 'terminal']).optional(),
+  end_reason: z.enum(['user','idle','no_capacity','max_duration','host_lost']).optional(),
   verification: VerificationResultSchema.optional(),
 });
 
@@ -189,6 +191,11 @@ const ClaimCommandAckSchema = z.object({
   status: z.enum(['acked', 'failed', 'uncertain']),
   result: z.record(z.any()),
 });
+const ClaimWorkspaceSchema = z.object({
+  session_id: z.number().int().positive(),
+  retained: z.boolean(),
+  reason: z.enum(['dirty','unpushed','scratch','clean_pushed','inspection_failed','preparation_failed']),
+}).strict();
 
 const MAX_EVENT_COUNT = 100;
 const MAX_INTERACTION_BYTES = 256 * 1024;
@@ -249,10 +256,20 @@ const KNOWN_SESSION_META_KEYS = new Set([
   'slot_id',
   'capacity',
   'supported_claim_types',
+  'profiles',
   'cwd',
 ]);
 const MAX_UNKNOWN_SESSION_META_BYTES = 4096;
 const SessionMetaText = z.string().max(256).optional();
+const CatalogIdentifier = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/u);
+const PublicChatProfiles = z.array(z.object({
+  id: CatalogIdentifier,
+  models: z.array(CatalogIdentifier).max(100),
+  default_model: CatalogIdentifier.optional(),
+}).strict().refine((p) => new Set(p.models).size === p.models.length
+  && (p.models.length === 0 ? p.default_model === undefined : p.models.includes(p.default_model))))
+  .min(1).max(32).refine((profiles) => new Set(profiles.map((p) => p.id)).size === profiles.length
+    && serializedBytes(profiles) <= 64 * 1024);
 const SessionMetaSchema = z.object({
   runtime: SessionMetaText,
   instance_id: SessionMetaText,
@@ -264,6 +281,7 @@ const SessionMetaSchema = z.object({
   slot_id: z.number().int().min(0).max(1023).optional(),
   capacity: z.number().int().min(1).max(16).optional(),
   supported_claim_types: z.array(z.string().max(64)).max(32).optional(),
+  profiles: PublicChatProfiles.optional(),
   cwd: z.string().max(1024).optional(),
 }).catchall(z.unknown()).refine(
   (meta) => (
@@ -317,7 +335,14 @@ export async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 6
         WHERE pending.org_id = ${orgId}
           AND pending.status = 'pending'
           AND pending.session_id IS NULL
-          AND (agent.repos = '{}' OR pending.repo = ANY(agent.repos))
+          AND (pending.target_agent_id IS NULL OR pending.target_agent_id = agent.id)
+          AND ((pending.claim_type = 'chat' AND pending.repo IS NULL) OR agent.repos = '{}' OR pending.repo = ANY(agent.repos))
+          AND CASE WHEN pending.claim_type = 'chat' THEN
+            pending.pending_deadline_at > NOW()
+            AND chat_slot_available(pending.org_id, agent.id,
+              CASE WHEN live_session.session_meta->>'capacity' IN ('1','2','3','4','5','6','7','8','9','10','11','12','13','14','15','16')
+                THEN (live_session.session_meta->>'capacity')::integer ELSE 1 END)
+            ELSE true END
           AND CASE
             WHEN jsonb_typeof(live_session.session_meta->'supported_claim_types') = 'array'
               THEN (live_session.session_meta->'supported_claim_types') ? pending.claim_type
@@ -438,7 +463,10 @@ export async function handlePoll(req, res, opts = {}) {
       }
       const payload = typeof claim.payload === 'string' ? JSON.parse(claim.payload) : claim.payload;
       const githubContext = await resolveGitHubContext(claim.repo);
-      const githubToken = await resolveGitHubToken(claim.repo, githubContext);
+      const credential = claim.claim_type === 'chat' && githubContext?.installation_id
+        ? await getInstallationCredential(githubContext.installation_id) : null;
+      const githubToken = claim.repo == null ? undefined : claim.claim_type === 'chat'
+        ? credential?.token : await resolveGitHubToken(claim.repo, githubContext);
       if (githubContext?.installation_id) {
         try {
           const provider = getProvider({ provider: 'github', installation_id: githubContext.installation_id });
@@ -455,10 +483,12 @@ export async function handlePoll(req, res, opts = {}) {
           prNumber: claim.pr_number,
           attempt: claim.attempt,
           claim_id: claim.id,
+          ...(claim.claim_type === 'chat' ? { task_id: claim.task_id } : {}),
           claim_type: claim.claim_type,
           claimType: claim.claim_type,
           agentType,
           githubToken,
+          githubTokenExpiresAt: credential?.expiresAt.toISOString(),
         },
       });
     } finally {
@@ -545,6 +575,12 @@ export async function handleClaimResult(req, res) {
     try {
       activeClaim = await assertClaimOwner({ orgId: org_id, agentId: agent_id, sessionId, claimId });
     } catch (error) {
+      if ((status === 'cancelled' || status === 'failed') && error?.statusCode === 409) {
+        const existing = await assertClaimReporter({ orgId: org_id, agentId: agent_id, sessionId, claimId });
+        if (existing.claim_type === 'chat' && existing.status === status && existing.repo === repo && existing.attempt === attempt && pr_number === null) {
+          return res.json({ ok: true, claim_id: existing.id, status: existing.status, end_reason: existing.end_reason, note: 'already_resolved' });
+        }
+      }
       if (status === 'completed' && verification && error?.statusCode === 409) {
         const existing = await assertClaimReporter({ orgId: org_id, agentId: agent_id, sessionId, claimId });
         if (existing?.claim_type === 'verify' && existing.status === 'completed') {
@@ -567,6 +603,8 @@ export async function handleClaimResult(req, res) {
       }
       throw error;
     }
+    if (activeClaim.claim_type === 'chat' && status === 'completed') return validationError(res);
+    if (activeClaim.claim_type !== 'chat' && (repo === null || parsed.data.end_reason !== undefined)) return validationError(res);
     if (activeClaim.claim_type === 'verify' && status === 'completed' && !verification) {
       return validationError(res);
     }
@@ -600,8 +638,16 @@ export async function handleClaimResult(req, res) {
           return inserted;
         }
       : null;
-    const claim = await finalize(org_id, claimId, sessionId, onFinalize);
-    if (!claim) return res.status(409).json({ error: 'Claim is not active for this runner' });
+    const claim = await finalize(org_id, claimId, sessionId, activeClaim.claim_type === 'chat' ? parsed.data.end_reason ?? (status === 'failed' ? 'host_lost' : 'user') : onFinalize);
+    if (!claim) {
+      if (activeClaim.claim_type === 'chat' && status === 'cancelled') {
+        const existing = await assertClaimReporter({ orgId: org_id, agentId: agent_id, sessionId, claimId });
+        if (existing.status === 'cancelled') {
+          return res.json({ ok: true, claim_id: existing.id, status: existing.status, end_reason: existing.end_reason, note: 'already_resolved' });
+        }
+      }
+      return res.status(409).json({ error: 'Claim is not active for this runner' });
+    }
 
     if (status === 'cancelled') {
       audit('claim_result', { repo, data: { claimId: claim.id, pr_number, attempt, status } });
@@ -619,7 +665,7 @@ export async function handleClaimResult(req, res) {
           failure_kind: failureKind ?? 'terminal',
         },
       });
-      if (failureKind === 'transient') {
+      if (failureKind === 'transient' && claim.claim_type !== 'chat') {
         try {
           const redispatched = await redispatchClaim(claim);
           logger.info({
@@ -684,7 +730,7 @@ export async function handleClaimResult(req, res) {
           repo: claim.repo,
           prNumber: claim.pr_number,
           claimType: 'build',
-          payload: { source_claim_id: claim.id },
+          payload: { ...(claim.payload?.source === 'collab' ? claim.payload : {}), source_claim_id: claim.id },
           headSha: claim.head_sha,
         });
         if (nextClaim) {
@@ -919,6 +965,25 @@ export async function handleHeartbeat(req, res) {
 }
 
 router.post('/agent-server/enroll', handleEnrollment);
+export async function handleClaimWorkspace(req, res) {
+  const path = ClaimPathSchema.safeParse(req.params);
+  const body = ClaimWorkspaceSchema.safeParse(req.body);
+  if (!path.success || !body.success || body.data.retained !== (body.data.reason !== 'clean_pushed')) return validationError(res);
+  const { org_id: orgId, agent_id: agentId } = req.tokenInfo;
+  const claimId = path.data.claimId;
+  const sessionId = body.data.session_id;
+  try {
+    const claim = await assertClaimReporter({ orgId, agentId, sessionId, claimId });
+    if (claim.claim_type !== 'chat') return validationError(res);
+    const receipt = await recordClaimWorkspace({ orgId, agentId, sessionId, claimId,
+      retained: body.data.retained, reason: body.data.reason });
+    if (!receipt) return res.status(409).json({ error: 'Workspace report conflict' });
+    return res.json({ ok: true });
+  } catch (error) {
+    return interactionErrorResponse(error, res, 'report workspace outcome');
+  }
+}
+
 router.use('/agent-server', authenticateAgentServer);
 router.post('/agent-server/register', handleRegister);
 router.post('/agent-server/poll', handlePoll);
@@ -930,5 +995,6 @@ router.post('/agent-server/claims/:claimId/requests/:requestKey/cancel', handleC
 router.post('/agent-server/claims/:claimId/commands/poll', handleClaimCommandsPoll);
 router.post('/agent-server/claims/:claimId/commands/:commandId/renew', handleClaimCommandRenewal);
 router.post('/agent-server/claims/:claimId/commands/:commandId/ack', handleClaimCommandAck);
+router.post('/agent-server/claims/:claimId/workspace', handleClaimWorkspace);
 
 export default router;

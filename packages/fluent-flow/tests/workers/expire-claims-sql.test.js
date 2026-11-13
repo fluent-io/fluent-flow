@@ -102,7 +102,7 @@ describe('expireClaims atomic interaction cancellation', () => {
 
     const updateCall = state.client.query.mock.calls.find(([text]) => /UPDATE\s+agent_claims/i.test(String(text)));
     expect(updateCall).toBeDefined();
-    expect(updateCall[0]).toMatch(/status\s*=\s*'expired'/i);
+    expect(updateCall[0]).toMatch(/status\s*=\s*CASE WHEN claim.claim_type='chat' THEN 'cancelled' ELSE 'expired' END/i);
     expect(updateCall[0]).toMatch(/completed_at\s*=\s*NOW\(\)/i);
     expect(updateCall[0]).not.toMatch(/archived_at/i);
     expect(cancelOpenClaimInteractions).toHaveBeenNthCalledWith(1, { orgId: 'o1', claimId: 7 }, state.client);

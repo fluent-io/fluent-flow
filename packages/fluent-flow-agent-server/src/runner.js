@@ -9,6 +9,11 @@ import { prepareWorktree } from './worktree.js';
 import { CLAIM_TYPES, promptSizeViolation, resolvePrompt } from './prompts.js';
 import { safeError } from './safe-error.js';
 import { runVerifyClaim } from './verify.js';
+import { runChatSession } from './chat-loop.js';
+import { createChatWorkspaceManager } from './chat-workspace.js';
+import { validateChatProfiles, resolveChatProfile, advertisedChatProfiles } from './chat-profiles.js';
+import { createChatEventBudget } from './chat-event-budget.js';
+import { prepareChatHandoff } from './chat-handoff.js';
 
 const DEFAULT_MAX_POLL_FAILURES = 30;
 const BASE_BACKOFF_MS = 2000;
@@ -142,6 +147,8 @@ export function createRunner({
   secretValues = [],
   runtimeLimits,
   executionTimeoutMs = DEFAULT_EXECUTION_TIMEOUT_MS,
+  chat,
+  chatWorkspaceManager,
 }) {
   if (!Number.isFinite(executionTimeoutMs) || executionTimeoutMs < 1) {
     throw new Error('Execution timeout must be a positive number of milliseconds.');
@@ -157,6 +164,9 @@ export function createRunner({
   const heartbeatMs = heartbeatIntervalMs ?? numFromEnv('FLUENT_FLOW_HEARTBEAT_MS', DEFAULT_HEARTBEAT_MS);
   const leaseRenewMs = Math.max(1, Math.floor(commandLeaseRenewMs));
   const baseCwd = resolvePath(cwd ?? process.cwd());
+  const chatProfiles = chat?.enabled === true ? validateChatProfiles(chat.profiles) : [];
+  const chatWorkspaces = chatProfiles.length ? chatWorkspaceManager ?? createChatWorkspaceManager({ workDir: baseCwd, environment: childEnvironment }) : null;
+  const workspaceReleases = new Set();
   const batchSize = Math.max(1, Math.floor(eventBatchSize));
   const textLimit = Math.max(0, Math.floor(agentTextLimitBytes));
   const sessionMeta = {
@@ -165,7 +175,8 @@ export function createRunner({
       os: platform(),
       ...(cwd && { cwd }),
     }),
-    supported_claim_types: CLAIM_TYPES,
+    supported_claim_types: chatProfiles.length ? [...CLAIM_TYPES, 'chat'] : CLAIM_TYPES,
+    ...(chatProfiles.length && { profiles: advertisedChatProfiles(chatProfiles) }),
   };
 
   function claimIdOf(work) {
@@ -215,7 +226,8 @@ export function createRunner({
       await drainHeartbeat(state);
       if (state.ownershipLost) return;
       const finalStatus = state.shuttingDown ? 'failed' : status;
-      const finalExtra = state.shuttingDown ? { failure_kind: 'transient' } : extra;
+      const finalExtra = state.shuttingDown ? state.isChat
+        ? { failure_kind: 'terminal', end_reason: 'host_lost' } : { failure_kind: 'transient' } : extra;
       const finalOptions = state.shuttingDown ? { delays: [1000] } : options;
       const claimFields = {
         claimId: claimIdOf(state.work),
@@ -232,6 +244,7 @@ export function createRunner({
         });
       } catch (error) {
         log.error('Failed to report claim', { event: 'claim_report_failed', ...claimFields, reason: safeError(error) });
+        if (state.isChat) throw error;
       }
     })();
     return state.reportPromise;
@@ -368,6 +381,7 @@ export function createRunner({
 
   function createInteractionBridge(state, claimId, runtimeEnvironment) {
     const eventQueue = [];
+    const eventBudget = state.isChat ? createChatEventBudget(chat?.eventBudget) : null;
     const agentText = [];
     let agentTextBytes = 0;
     let sequence = 0;
@@ -377,6 +391,7 @@ export function createRunner({
       runnerToken,
       ...secretValues,
       state.work.githubToken,
+      ...(state.redactionPaths ?? []),
       ...environmentSecrets(runtimeEnvironment),
       ...environmentSecrets(process.env),
     ].filter((value) => typeof value === 'string' && value.length > 0);
@@ -453,13 +468,11 @@ export function createRunner({
         update,
         secretValues: redactionValues,
       });
-      sequence = nextSequence;
       if (event.kind === 'agent_message') {
         const pieces = [];
         collectText(event.payload.raw, pieces);
         for (const piece of pieces) appendAgentText(piece);
       }
-      eventQueue.push(event);
       if (event.payload.raw.sessionUpdate === 'state_update') {
         if (event.payload.raw.state === 'running' || event.payload.raw.state === 'requires_action') {
           state.turnSawActive = true;
@@ -467,9 +480,17 @@ export function createRunner({
         } else if (event.payload.raw.state === 'idle' && state.turnSawActive) {
           state.turnSawActive = false;
           state.turnReachedIdle = true;
-          if (state.queuedPromptCount === 0 && !state.commandBatchActive) stopCommandService(state);
+          if (!state.isChat && state.queuedPromptCount === 0 && !state.commandBatchActive) stopCommandService(state);
         }
       }
+      const admission = eventBudget?.admit(event) ?? 'keep';
+      if (admission === 'drop') return;
+      if (admission === 'truncate') {
+        event.kind = 'notice';
+        event.payload = { claimId, sessionId, raw: { sessionUpdate: 'notice', type: 'transcript_truncated', message: 'Transcript truncated; later verbose output is omitted.' } };
+      }
+      sequence = nextSequence;
+      eventQueue.push(event);
       if (eventQueue.length >= batchSize) await flushEvents();
       else scheduleFlush();
     }
@@ -508,6 +529,7 @@ export function createRunner({
       clearFlushTimer,
       finalizeEvents,
       agentMessageText: () => Buffer.concat(agentText, agentTextBytes).toString('utf8'),
+      resetAgentMessageText: () => { agentText.length = 0; agentTextBytes = 0; },
     };
   }
 
@@ -721,18 +743,17 @@ export function createRunner({
     const renewal = await client.renewClaimCommand(sessionId, claimId, commandId);
     if (!renewal?.renewed) return;
     const payload = command.payload ?? {};
-    let cancelBarrierResolve;
+    let cancellation;
     let cancelBarrier;
     try {
       if (command.kind === 'cancel') {
-        cancelBarrier = new Promise((resolve) => {
-          cancelBarrierResolve = resolve;
-        });
+        cancellation = new AbortController();
+        cancelBarrier = new Promise(resolve => cancellation.signal.addEventListener('abort', () => resolve(undefined), { once: true }));
         state.cancelBarrier = cancelBarrier;
         await state.runtime.cancel();
         state.dashboardCancelApplied = true;
         stopCommandService(state);
-        cancelBarrierResolve();
+        cancellation.abort();
       } else if (command.kind === 'permission' || command.kind === 'elicitation') {
         const requestKey = command.request_key ?? command.requestKey ?? payload.requestKey;
         if (typeof requestKey !== 'string' || requestKey.length === 0) throw new Error('ACP request key is required');
@@ -741,7 +762,7 @@ export function createRunner({
         throw new Error('ACP command kind is unsupported');
       }
     } catch (error) {
-      if (cancelBarrierResolve) cancelBarrierResolve();
+      cancellation?.abort();
       if (state.cancelBarrier === cancelBarrier) state.cancelBarrier = null;
       const uncertain = commandFailureIsUncertain(error);
       try {
@@ -1022,6 +1043,7 @@ export function createRunner({
     const claimId = claimIdOf(work);
     const state = {
       work,
+      isChat: (work.claim_type ?? work.claimType) === 'chat',
       runtime: null,
       closePromise: null,
       bridge: null,
@@ -1072,6 +1094,74 @@ export function createRunner({
 
     try {
       log.info('Claim accepted', { event: 'claim_accepted', claimId, repo: work.repo, attempt: work.attempt });
+      if (state.isChat) {
+        let workspace;
+        let outcome;
+        try {
+          if (!chatProfiles.length || !agentMatchesProvider(work.agentType)) throw new Error('Chat execution is unavailable');
+          const profile = resolveChatProfile(chatProfiles, work);
+          if (work.repo != null && (!work.githubToken || !Number.isFinite(Date.parse(work.githubTokenExpiresAt)))) throw new Error('Chat credential expiry is required');
+          if (work.repo != null && Date.parse(work.githubTokenExpiresAt) <= Date.now()) {
+            outcome = { status: 'cancelled', end_reason: 'max_duration' };
+          } else {
+            const baseEnvironment = Object.fromEntries(Object.entries(childEnvironment).filter(([key]) => !/^(?:GH_|GITHUB_|GIT_|SSH_)/iu.test(key)));
+            const runtimeEnvironment = withClaimGitHubToken(baseEnvironment, work.repo == null ? undefined : work.githubToken);
+            workspace = await chatWorkspaces.prepare(work);
+            if (state.ownershipLost || state.shuttingDown) return;
+            state.redactionPaths = [workspace.path, chatWorkspaces.root, chatWorkspaces.scratch, baseCwd];
+            bridge = createInteractionBridge(state, claimId, runtimeEnvironment);
+            state.bridge = bridge;
+            state.runtime = createAcpRuntime({
+              command: resolveAcpCommand({ agentType: work.agentType, command: acpCommand, args: acpArgs }),
+              cwd: workspace.path, env: runtimeEnvironment, sessionPolicy: profile,
+              onEvent: bridge.onEvent, onRequest: bridge.onRequest, onRequestCancelled: bridge.onRequestCancelled,
+              log: createRuntimeLog(log), ...(runtimeLimits && { limits: runtimeLimits }),
+            });
+            outcome = await runChatSession({ runtime: state.runtime, client, sessionId, claimId, repo: work.repo,
+              githubTokenExpiresAt: work.githubTokenExpiresAt, instructions: work.instructions ?? '', maxSessionDurationMs: chat?.maxSessionDurationMs,
+              commandPollMs, commandLeaseRenewMs, signal: state.verificationController.signal,
+              failurePromise: state.interactionFailurePromise,
+              handoff: onAccepted => prepareChatHandoff({ runtime: state.runtime, workspace, bridge, onAccepted }) });
+            await bridge.finalizeEvents();
+          }
+        } catch (error) {
+          log.error('Chat execution failed', { claimId, reason: safeError(error) });
+          outcome = outcome ?? error.chatOutcome ?? { status: 'failed', failure_kind: 'terminal', end_reason: 'host_lost' };
+        } finally {
+          try {
+            await closeStateRuntime(state);
+          } catch (error) {
+            cleanupFailed = true;
+            log.error('Chat runtime cleanup failed', { claimId, reason: safeError(error) });
+          } finally {
+            bridge?.clearFlushTimer();
+            if (workspace) {
+              const workspaceSessionId = sessionId;
+              const release = workspace.release().then(receipt =>
+                client.reportClaimWorkspace(workspaceSessionId, claimId, { retained: receipt.retained, reason: receipt.reason }),
+              ).catch((error) => {
+                cleanupFailed = true;
+                log.error('Chat workspace cleanup or reporting failed', { claimId, reason: safeError(error) });
+              });
+              workspaceReleases.add(release);
+              void release.then(() => workspaceReleases.delete(release));
+            }
+          }
+        }
+        if (!state.ownershipLost) {
+          try {
+            const heartbeat = await client.heartbeat(sessionId, claimId);
+            if (heartbeat?.claim === null) await releaseOwnership(state, claimId);
+          } catch (error) {
+            if (/failed: 410/u.test(error?.message ?? '')) await releaseOwnership(state, claimId);
+            else {
+              log.warn('Final chat heartbeat failed; reconciling through result', { claimId, reason: safeError(error) });
+            }
+          }
+        }
+        if (!state.ownershipLost) await reportState(state, outcome.status, Object.fromEntries(Object.entries(outcome).filter(([key]) => key !== 'status')));
+        return;
+      }
       const claimEnvironment = withClaimGitHubToken(childEnvironment, work.githubToken);
 
       if (!agentMatchesProvider(work.agentType)) {
@@ -1186,6 +1276,8 @@ export function createRunner({
             workDir: baseCwd,
             repo: work.repo,
             branch: work.branch,
+            createBranch: work.source === 'collab' && work.create_branch === true,
+            ...(requestedClaimType === 'spec' && work.handoff_base_sha ? { ref: work.handoff_base_sha } : {}),
             claimId,
             environment: childEnvironment,
             githubToken: work.githubToken,

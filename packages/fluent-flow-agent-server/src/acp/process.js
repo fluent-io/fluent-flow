@@ -9,10 +9,10 @@ function boundedLimit(value) {
 }
 
 export function spawnAcpProcess({
-  bin,
+  bin = undefined,
   args = [],
-  cwd,
-  env,
+  cwd = undefined,
+  env = undefined,
   spawnImpl = spawn,
   stderrLimitBytes = DEFAULT_STDERR_LIMIT_BYTES,
 } = {}) {
@@ -21,15 +21,14 @@ export function spawnAcpProcess({
     throw new Error('ACP arguments must be an array of strings');
   }
   const limit = boundedLimit(stderrLimitBytes);
-  const options = {
+  const child = spawnImpl(bin, [...args], {
     ...(cwd === undefined ? {} : { cwd }),
     ...(env === undefined ? {} : { env }),
     shell: false,
     stdio: ['pipe', 'pipe', 'pipe'],
     detached: false,
     windowsHide: true,
-  };
-  const child = spawnImpl(bin, [...args], options);
+  });
 
   let stderrTail = Buffer.alloc(0);
   child.stderr.on('data', (chunk) => {

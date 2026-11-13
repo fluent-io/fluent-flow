@@ -4,7 +4,7 @@ export function createClient({ serverUrl, token, fetch: fetchFn = globalThis.fet
     'Content-Type': 'application/json',
     Authorization: `Bearer ${token}`,
   };
-  async function post(path, body, label, { signal, authorization } = {}) {
+  async function post(path, body, label, { signal = undefined, authorization = undefined } = {}) {
     const timeoutMs = 35_000;
     const controller = new AbortController();
     const forwardAbort = () => controller.abort();
@@ -56,6 +56,11 @@ export function createClient({ serverUrl, token, fetch: fetchFn = globalThis.fet
       'Heartbeat',
     ),
     reportClaim: (claim) => post('/api/agent-server/claim', claim, 'Claim report'),
+    reportClaimWorkspace: (sessionId, claimId, receipt) => post(
+      `/api/agent-server/claims/${encodeURIComponent(claimId)}/workspace`,
+      { session_id: sessionId, retained: receipt.retained, reason: receipt.reason },
+      'Workspace report',
+    ),
     postClaimEvents: (sessionId, claimId, events) => post(
       `/api/agent-server/claims/${encodeURIComponent(claimId)}/events`,
       { session_id: sessionId, events },

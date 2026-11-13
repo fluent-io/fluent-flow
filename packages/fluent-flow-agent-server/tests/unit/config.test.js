@@ -19,6 +19,10 @@ function providerConfig(provider, providerSecretFile = '/run/secrets/provider') 
 }
 
 describe('agent server configuration', () => {
+  it('keeps chat disabled by default and accepts only an explicit local profile file opt-in', () => {
+    expect(parse().chatProfilesFile).toBeUndefined();
+    expect(parse([...baseArgv, '--chat-profiles-file', '/operator/chat.json']).chatProfilesFile).toBe('/operator/chat.json');
+  });
   it('applies portable local defaults', () => {
     expect(parse()).toEqual({
       serverUrl: 'https://flow.example.com',

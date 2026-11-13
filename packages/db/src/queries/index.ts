@@ -4,6 +4,8 @@ export {
   createAgent,
   createAgentWithEnrollment,
   deleteAgentIfNoCollaborationClaims,
+  updateAgentChatSlots,
+  isValidChatSlotValue,
 } from './agents.js';
 export { getAgentSessions } from './sessions.js';
 export { getAgentClaims, dismissClaim, dismissStaleClaims, dismissPipelineClaims, insertPendingClaim } from './claims.js';

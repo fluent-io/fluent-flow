@@ -65,7 +65,7 @@ function isReservedProviderKey(key) {
 
 export function buildChildEnvironment({
   source = process.env,
-  providerEnvironment,
+  providerEnvironment = undefined,
   platform = process.platform,
 } = {}) {
   const environment = portableEnvironment(source, platform);

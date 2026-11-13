@@ -166,7 +166,7 @@ describe('withClaimOwner', () => {
       }
       if (/SELECT/i.test(sql) && /agent_claims/i.test(sql)) {
         state.order.push('LOCK_OWNER');
-        expect(sql).toMatch(/FOR SHARE/i);
+        expect(sql).toMatch(/FOR UPDATE/i);
         expect(sql).toMatch(/agent_sessions/i);
         expect(params).toEqual(expect.arrayContaining(['o1', 'a1', 3, 7]));
         return { rows: [{ ...RAW_CLAIM, status: 'claimed' }] };

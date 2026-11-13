@@ -13,7 +13,7 @@ function exec(cmd, args, opts) {
   return new Promise((resolvePromise, reject) => {
     execFileCb(cmd, args, opts, (err, stdout, stderr) => {
       if (err) {
-        err.stderr = stderr;
+        err.stderr = stderr.toString();
         reject(err);
         return;
       }
@@ -22,20 +22,15 @@ function exec(cmd, args, opts) {
   });
 }
 
-async function withRepositoryLock(key, operation) {
+export async function withRepositoryLock(key, operation) {
   const previous = repositoryLocks.get(key) ?? Promise.resolve();
-  let release;
-  const released = new Promise((resolvePromise) => {
-    release = resolvePromise;
-  });
-  const tail = previous.catch(() => undefined).then(() => released);
-  repositoryLocks.set(key, tail);
-  await previous.catch(() => undefined);
+  const run = () => operation();
+  const pending = previous.then(run, run);
+  repositoryLocks.set(key, pending);
   try {
-    return await operation();
+    return await pending;
   } finally {
-    release();
-    if (repositoryLocks.get(key) === tail) repositoryLocks.delete(key);
+    if (repositoryLocks.get(key) === pending) repositoryLocks.delete(key);
   }
 }
 
@@ -103,12 +98,13 @@ export class WorktreeRefUnavailableError extends Error {
 export async function prepareWorktree({
   workDir,
   repo,
-  branch,
+  branch = undefined,
   claimId,
-  name,
-  ref,
-  environment,
-  githubToken,
+  name = undefined,
+  ref = undefined,
+  createBranch = false,
+  environment = undefined,
+  githubToken = undefined,
 }) {
   const { owner, repoName } = parseRepository(repo);
   const safeClaim = safeClaimId(claimId);
@@ -174,11 +170,24 @@ export async function prepareWorktree({
     } else {
       await exec('git', ['fetch', 'origin'], { cwd: baseDir, env: claimEnvironment });
     }
+    let newBranch = false;
+    if (createBranch && branch && !ref) {
+      const remoteRef = `refs/remotes/origin/${branch}`;
+      const localRef = `refs/heads/${branch}`;
+      const { stdout } = await exec('git', ['for-each-ref', '--format=%(refname)', remoteRef, localRef], { cwd: baseDir, env: claimEnvironment });
+      const refs = stdout.trim().split('\n');
+      if (!refs.includes(remoteRef)) {
+        newBranch = !refs.includes(localRef);
+        checkoutRef = newBranch ? 'origin/HEAD' : branch;
+      }
+    }
 
     mkdirSync(join(baseDir, '.worktrees'), { recursive: true });
-    const worktreeArgs = ref
-      ? ['worktree', 'add', '--detach', worktreePath, checkoutRef]
-      : ['worktree', 'add', worktreePath, checkoutRef];
+    const worktreeArgs = newBranch
+      ? ['worktree', 'add', '-b', branch, worktreePath, checkoutRef]
+      : ref
+        ? ['worktree', 'add', '--detach', worktreePath, checkoutRef]
+        : ['worktree', 'add', worktreePath, checkoutRef];
     await exec('git', worktreeArgs, { cwd: baseDir, env: claimEnvironment });
   });
 

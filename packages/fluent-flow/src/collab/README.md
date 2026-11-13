@@ -25,6 +25,48 @@ rate-limited secret invitation redemption.
 - `routes-claim-executions.js`: task-linked ACP claim start/history, safe detail
   projection, internal event/request history and idempotent steering, answers
   and cancellation.
+  The additive chat backend accepts `claimType: 'chat'` at
+  `POST /tasks/:id/claim-executions` with `expectedVersion` and an
+  `Idempotency-Key`; `repo` may be null/omitted. Chat requires both `run.start`
+  and `internal.read`, never changes the task lane, and allows one pending or
+  claimed chat per task. `targetAgentId` overrides the project's default agent;
+  an offline target never silently fails over. `POST /projects/:id/chat-sessions`
+  accepts `title`, optional `repo`/`targetAgentId`, and the same header to create
+  one Backlog task plus chat atomically. It additionally requires `task.write`
+  (the repository's actual task-creation capability).
+  Chat `cancel` interrupts a turn; `end_session` requests termination and needs
+  `internal.read` + `run.cancel`. A pending end is immediate; a claimed end is
+  queued for the runner. Terminal reasons appear as `endReason` in chat detail;
+  expiry/repeated ends preserve the first reason. Commands recheck the recorded
+  originator's current authorization at delivery. Heartbeat/polling do not count
+  as chat activity, and expired/failed chat sessions are never auto-retried.
+  Granting `run.steer` permits code execution with the agent operator's filesystem
+  and credentials; client-facing roles must not receive it by default. Use a
+  dedicated agent server per mutually untrusted organization.
+  Runners advertise chat only with the operator's explicit local
+  `--chat-profiles-file` opt-in; safe chat storage currently requires Linux.
+  The production drawer is claim-backed. Connector history and configuration
+  remain until the separate re-key/archive/drain gates pass.
+  `POST /claim-executions/:id/commands` also accepts `{kind:"handoff",payload:{}}`
+  for an open repository chat with `internal.read`, `run.start` and `run.steer`.
+  It prepares a digest without creating work. `GET /claim-executions/:id/handoffs/:commandId`
+  returns its protected status, validated summary and published snapshot.
+  `POST` to that handoff resource requires `Idempotency-Key` and
+  `{expectedVersion,destinationTitle?}` to confirm. It returns
+  `{claimId,taskId,created}` (202 new / 200 replay). A separate destination title
+  creates a task in the same project and additionally requires `task.write`.
+  Confirmation updates task content and creates a normal unattended `spec`
+  claim atomically; the chat stays open. Stale versions return409
+  `version_conflict`, invalid/unready summaries return409 `handoff_not_ready`,
+  and a second distinct confirmation returns409 `handoff_already_started`.
+  The UI reports commit/push/summary failures without returning runner errors,
+  absolute machine paths or raw command results.
+  `GET /tasks/:id/retained-work` returns paginated last-reported workspace
+  outcomes to `task.read` + `internal.read` readers. Missing reports remain
+  unknown; clean/pushed releases are omitted. The agent reports metadata after
+  child/slot release through its authenticated claim workspace endpoint.
+  Reports expose no local paths or file contents. Saving/discarding retained
+  work remains an explicit operator action, not an automatic cleanup API.
 - `routes-hosts.js`: owner-scoped host enrollment and allowlisted mappings.
   `POST /hosts` returns the one-time `{id,name,token}` enrollment DTO.
   `GET /hosts` returns token-free summaries with nullable `lastHeartbeatAt`;

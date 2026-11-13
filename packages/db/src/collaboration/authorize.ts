@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { PoolClient } from 'pg';
 import { getPool } from '../pool.js';
 import { CollabServiceError } from './errors.js';
 import { collabActorSchema, requireCurrentPrincipal } from './principals.js';
@@ -7,8 +8,9 @@ import type { CollabCapability } from './capabilities.js';
 export async function getProjectCapabilities(
   principalId: string,
   projectId: string,
+  executor?: Pick<PoolClient, 'query'>,
 ): Promise<Set<CollabCapability>> {
-  const { rows } = await getPool().query<{ capability: CollabCapability }>(
+  const { rows } = await (executor ?? getPool()).query<{ capability: CollabCapability }>(
     `SELECT DISTINCT cap.capability
      FROM collab_projects p
      JOIN collab_memberships m
@@ -24,8 +26,9 @@ export async function getProjectCapabilities(
 export async function getWorkspaceCapabilities(
   principalId: string,
   workspaceId: string,
+  executor?: Pick<PoolClient, 'query'>,
 ): Promise<Set<CollabCapability>> {
-  const { rows } = await getPool().query<{ capability: CollabCapability }>(
+  const { rows } = await (executor ?? getPool()).query<{ capability: CollabCapability }>(
     `SELECT DISTINCT cap.capability
      FROM collab_memberships m
      JOIN collab_roles r ON r.id = m.role_id
@@ -78,22 +81,24 @@ export async function authorize(
   actor: { principalId: string; sessionVersion: number },
   scope: CapabilityScope,
   needed: readonly CollabCapability[],
+  executor?: Pick<PoolClient, 'query'>,
 ): Promise<void> {
-  const capabilities = await resolveScopeCapabilities(actor, scope);
+  const capabilities = await resolveScopeCapabilities(actor, scope, executor);
   requireCapabilities(capabilities, needed);
 }
 
 export async function resolveScopeCapabilities(
   actor: { principalId: string; sessionVersion: number },
   scope: CapabilityScope,
+  executor?: Pick<PoolClient, 'query'>,
 ): Promise<Set<CollabCapability>> {
   const { principalId } = collabActorSchema.parse(actor);
-  await requireCurrentPrincipal(actor);
+  await requireCurrentPrincipal(actor, executor);
   if (scope.projectId) {
-    return getProjectCapabilities(principalId, scope.projectId);
+    return getProjectCapabilities(principalId, scope.projectId, executor);
   }
   if (scope.workspaceId) {
-    return getWorkspaceCapabilities(principalId, scope.workspaceId);
+    return getWorkspaceCapabilities(principalId, scope.workspaceId, executor);
   }
   throw new CollabServiceError(500, 'internal_error', 'Configuration error. Contact support.');
 }

@@ -191,6 +191,7 @@ Every option takes one value except `--acp-arg`, which can repeat. Unknown optio
 | `--health-host` | `127.0.0.1` | Bind address of the status listener. |
 | `--health-port` | `3860` | Integer from 1 to 65535. |
 | `--acp-command` | none | One executable name or path, without whitespace or shell text. Replaces the built-in adapter for `--provider`. |
+| `--chat-profiles-file` | absent (chat disabled) | Explicit operator-local preview opt-in. JSON profile allowlist, at most 64 KiB; see below. Never set by a claim payload. |
 | `--execution-timeout-minutes` | `60` | Integer from 1 to 1440. Time limit for one claim's ACP execution. See [Capacity and slots](#capacity-and-slots). |
 | `--acp-arg` | none | One literal argument for `--acp-command`. Repeat it for more. Requires `--acp-command`. |
 | `FLUENT_FLOW_TOKEN_FILE` | none | Path to a durable `ff_` token. Wins over stored state and enrollment. |
@@ -248,6 +249,47 @@ The server reads the file once at startup, rejects it above 64 KiB or when empty
 
 There is no API-key fallback. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and any other variable in the host environment are not passed to the child, because the child environment is an allowlist. A server without a working subscription login fails its claims instead of billing an API key.
 
+## Opt-in attended chat (preview)
+
+Chat execution is integrated into the ordinary claim transport but remains **off by default** until the settings/UI/release gates ship. Omitting `--chat-profiles-file` keeps existing unattended behavior and does not advertise `chat`. The connector is unchanged and remains available.
+
+The local JSON file is an array of strict objects:
+
+```json
+[
+  {
+    "id": "attended",
+    "permission": { "configId": "operator-verified-selector", "value": "ask" },
+    "modelConfigId": "operator-verified-model-selector",
+    "models": ["operator-verified-model"],
+    "defaultModel": "operator-verified-model"
+  }
+]
+```
+
+These selector/model strings are placeholders, **not supported-provider defaults**. Inspect the installed ACP v2 adapter's advertised session configuration and pin its actual selector/value. Permission value must be `ask` or `confirm`; unsupported configurations fail closed before prompting. Each selected value must exist in the provider's selector list and be confirmed after setting it. Later permission/model drift terminates the session. Omit model fields and use `"models": []` to leave the provider model unchanged. Profiles never contain an executable, argv or environment. Those remain local server configuration. Delivered `profile` and `model` select only this allowlist; omitted profile selects the first local profile.
+
+- A chat opens without an initial prompt, services commands while idle, and has a maximum duration of 8 hours (or the earlier provider-issued GitHub credential expiry). It is exempt from the work-claim execution timeout. No token refresh or context replay is implemented.
+- `cancel` stops the current response; `end_session` closes the session. Heartbeats continue while idle but do not refresh user activity. Authoritative control-plane idle/host expiry always wins; terminal chats never redispatch.
+- Repo-null chats receive no delivered/inherited GitHub token or Git/SSH authentication environment. Children still run as the operator OS user; this is **not filesystem sandboxing**. Dedicate an agent/OS or container boundary to one trusted organization.
+- Backend admission reserves at least one work slot using the polling instance's bounded advertised capacity. Capacity 1 admits no chats. Lowering admission settings never kills live sessions; existing chats drain at their inactivity/duration/end boundaries. Heterogeneous instances can conservatively under-admit; live aggregate resizing is not implemented.
+- Future verbose transcript events are bounded before the immutable 16 MiB server limit. A single `notice` with `raw.type: "transcript_truncated"` marks omitted output. State/user/config notices have reserved space; commands, permission requests/answers and final results use independent persistence. Exhaustion does not itself fail the chat.
+- Production chat clones/worktrees and task-scoped retention receipts live in `<state-dir>/chat-workspaces`; repo-null scratch lives in `<state-dir>/chat-scratch`, both outside `--work-dir`. Keep the state volume durable and private. Ordinary work claims keep their existing work-root layout. Do not point two agent-server processes at the same state/work directories.
+- Repo-linked chats check out `ff/task-<task UUID>` in a per-claim worktree. Later sessions move/resume inactive retained work without discarding edits. Release removes only a clean checkout whose HEAD is still reachable on freshly fetched origin refs. Dirty (including ignored files), unpushed and uninspectable work stays. Repo-null scratch always stays until explicit local discard. Startup reconciles dead leases and receipts but deletes no chat work. Child/slot release does not wait for filesystem inspection.
+- **Build this** prepares a structured digest in the same live ACP context; it does not start a build yet. The task branch must be clean and its exact HEAD published on origin. The runner never commits or pushes on behalf of this control. After the user reviews and confirms the digest, the control plane creates an ordinary `spec` claim, preserving the published snapshot and source-chat lineage. Spec-to-build chaining preserves the branch and digest; the chat remains open. An interrupted or invalid summary creates no unattended claim.
+
+Explicit local discard (irreversible; verify the task/claim identity first):
+
+```bash
+node packages/fluent-flow-agent-server/bin/fluent-flow-chat-discard.js \
+  --work-dir /operator/work --state-dir /operator/private-state \
+  --task-id TASK_UUID --claim-id CLAIM_NUMBER --confirm
+```
+
+The shipped `bin/fluent-flow-chat-discard.js` refuses active work, unknown identities, symlinked workspace targets and missing confirmation. There is no remote discard command. The runtime catalog, retention receipts and exact follow-up UI/API contracts are documented in [the integration report](../../docs/plans/2026-11-13-chat-claims-runtime-integration-report.md).
+
+The local confirmation is an operational safeguard, not a sandbox or proof of human origin. A steered agent runs as the same OS user and can execute filesystem commands with that user's access. Retention checks prevent automatic cleanup from destroying unfinished work; isolate mutually untrusted organizations at the machine/container boundary.
+
 ## Capacity and slots
 
 Capacity is the number of slots, set with `--capacity`. Every slot registers its own control-plane session, so the dashboard shows `active slots / capacity` for a server. Slots share the durable token, the provider credential, the work directory and one base clone per repository. They do not share worktrees or ACP children: each claim gets `claim-<claim id>` and its own child.
@@ -258,7 +300,7 @@ A slot that crashes is restarted without disturbing the other slots, with a dela
 
 Limits per claim:
 
-- **Execution time.** Every claim stops after `--execution-timeout-minutes` (default 60), counted from the moment the slot accepts it. At the deadline the server cancels the ACP session if one is running, ends the child through the normal close path, aborts any deterministic verification command, removes the worktree and reports one `failed` result with `failure_kind: transient`, so the control plane redispatches the claim. It logs `Claim execution timed out` with the claim ID. A verification claim has one deadline for the whole claim, not one per authoring turn. Ownership loss and shutdown clear the deadline, and neither reports a second result. Deterministic verification phases also keep their own command timeouts.
+- **Execution time.** Unattended work claims stop after `--execution-timeout-minutes` (default 60), counted from the moment the slot accepts it. At the deadline the server cancels the ACP session if one is running, ends the child through the normal close path, aborts any deterministic verification command, removes the worktree and reports one `failed` result with `failure_kind: transient`, so the control plane redispatches the claim. It logs `Claim execution timed out` with the claim ID. A verification claim has one deadline for the whole claim, not one per authoring turn. Ownership loss and shutdown clear the deadline, and neither reports a second result. Deterministic verification phases also keep their own command timeouts.
 - **Prompt size.** A resolved prompt larger than 131072 bytes (128 KiB, measured in UTF-8) fails the claim before any worktree or ACP child exists. The server reports one `failed` result with `failure_kind: terminal`, because redispatching cannot shrink the prompt, and logs `Claim prompt exceeds size limit` with the size and no prompt text. The cap covers verification authoring prompts too, and a verification claim over the cap fails before its worktree is created.
 - **Verification settings.** The control plane's claim can carry `verification` settings. The server clamps them instead of trusting them: command timeouts `timeouts_min.red` and `timeouts_min.green` to 1 to 1440 minutes, `authoring.retries` to 0 to 10, `authoring.max_requirements` to 1 to 100, `authoring.red_reproductions` to 1 to 10 and `flake.retries` to 0 to 10. A value that is not a number falls back to its default.
 - **Result text.** Collected result text is capped at 5 MiB.

@@ -9,6 +9,7 @@ function listItem(overrides: Record<string, unknown> = {}) {
     transport: 'long_poll',
     transport_meta: { provider: 'codex', capacity: 4, deployment: 'self_hosted' },
     repos: [],
+    max_chat_slots: null,
     created_at: new Date('2026-11-08T12:00:00.000Z'),
     updated_at: new Date('2026-11-08T12:00:00.000Z'),
     status: 'online',
@@ -16,6 +17,8 @@ function listItem(overrides: Record<string, unknown> = {}) {
     deployment: 'self_hosted',
     capacity: 4,
     active_slots: 2,
+    busy_chat: 0,
+    busy_work: 0,
     ...overrides,
   };
 }

@@ -5,8 +5,9 @@ import { useRouter } from 'next/navigation';
 import type { AgentDetail } from '@fluent-flow/db';
 import { StatusBadge } from './status-badge';
 import { TypeBadge } from './type-badge';
-import { formatDeployment, formatSlots } from './agent-format';
+import { formatBusy, formatChatCapacity, formatDeployment, formatSlots } from './agent-format';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger,
 } from '@/components/ui/dialog';
@@ -24,6 +25,43 @@ export function AgentDetailHeader({ agent, keyInfo, status, isAdmin }: AgentDeta
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [chatSlots, setChatSlots] = useState<number | null>(agent.max_chat_slots);
+  const [slotsDraft, setSlotsDraft] = useState('');
+  const [savingSlots, setSavingSlots] = useState(false);
+  const [slotsError, setSlotsError] = useState<string | null>(null);
+  const [slotsSaved, setSlotsSaved] = useState(false);
+
+  async function handleSaveSlots() {
+    const trimmed = slotsDraft.trim();
+    if (trimmed === '') return;
+    const parsed = trimmed.toLowerCase() === 'default' ? null : Number(trimmed);
+    if (parsed !== null && (!Number.isInteger(parsed) || parsed < 0 || parsed > 15)) {
+      setSlotsError('Enter a whole number from 0 to 15, or "default".');
+      return;
+    }
+    setSavingSlots(true);
+    setSlotsError(null);
+    setSlotsSaved(false);
+    try {
+      const res = await fetch(`/api/agents/${agent.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ maxChatSlots: parsed }),
+      });
+      if (!res.ok) {
+        setSlotsError(res.status === 403 ? 'You do not have permission to change this.' : 'Could not save. Try again.');
+        return;
+      }
+      const data = await res.json();
+      setChatSlots(data.agent?.max_chat_slots ?? parsed);
+      setSlotsDraft('');
+      setSlotsSaved(true);
+    } catch {
+      setSlotsError('Could not save. Try again.');
+    } finally {
+      setSavingSlots(false);
+    }
+  }
 
   async function handleRegenerate() {
     setRegenerating(true);
@@ -52,11 +90,33 @@ export function AgentDetailHeader({ agent, keyInfo, status, isAdmin }: AgentDeta
           <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
             <div>Provider: <TypeBadge type={agent.agent_type} /></div>
             <div>Slots: {formatSlots(agent)}</div>
+            <div>Busy: {agent.busy_chat + agent.busy_work} ({formatBusy(agent)})</div>
+            <div>Chat slots: <span data-chat-capacity>{formatChatCapacity({ ...agent, max_chat_slots: chatSlots })}</span></div>
             <div>Deployment: {formatDeployment(agent.deployment)}</div>
             <div>Transport: {agent.transport}</div>
             <div>Registered: {new Date(agent.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</div>
             <div>Repos: {agent.repos.join(', ')}</div>
           </div>
+          {isAdmin && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border pt-3">
+              <label className="text-xs text-muted-foreground" htmlFor="max-chat-slots">Max chat slots</label>
+              <Input
+                id="max-chat-slots"
+                aria-label="Max chat slots"
+                className="h-8 w-36 text-xs"
+                placeholder="default"
+                maxLength={7}
+                value={slotsDraft}
+                onChange={(event) => { setSlotsDraft(event.target.value); setSlotsError(null); setSlotsSaved(false); }}
+              />
+              <Button variant="outline" size="sm" className="h-8 text-xs" disabled={savingSlots || slotsDraft.trim() === ''} onClick={() => void handleSaveSlots()}>
+                {savingSlots ? 'Saving...' : 'Save'}
+              </Button>
+              <span className="text-xs text-muted-foreground">0 disables chats. Shrinking never ends live sessions.</span>
+              {slotsError && <span role="alert" className="text-xs text-destructive">{slotsError}</span>}
+              {slotsSaved && !slotsError && <span role="status" className="text-xs text-muted-foreground">Saved.</span>}
+            </div>
+          )}
         </div>
         {isAdmin && (
           <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>

@@ -31,9 +31,9 @@ Next.js 15 (App Router), TypeScript, Tailwind CSS, shadcn/ui, NextAuth.js, @flue
 ## Features
 
 ### Agent Management
-- Agent server list with provider badges, slots (`active / capacity`), status badges (online/offline/busy), deployment (Local, Self-hosted, Hosted) and last seen
-- Agent server detail with provider, slots and deployment, sessions tab, claims tab, and API key management
-- Role-gated admin actions: delete agent, regenerate API key (admin+ only)
+- Agent server list with provider, live slots, busy chat/work split, status, deployment and last seen
+- Agent server detail with configured/effective chat capacity, sessions, claims and API key management
+- Admin-only maximum-chat-slot updates (`0` disables new chats; `null` restores capacity-minus-one), agent deletion and API key regeneration
 - API key one-time reveal on regeneration (hash-only storage)
 
 ### Pipeline Status
@@ -107,6 +107,7 @@ Dashboard-created agent servers always use `long_poll`. Provider selects the loc
 | `/api/agents` | GET | any | List agents (org-scoped) |
 | `/api/agents` | POST | admin | Body `{ org_id, agent_id, provider, capacity, deployment }`. Creates the agent and a 15-minute single-use enrollment token in one transaction and returns `{ agent, command, enrollment_expires_at }`. The token appears only inside `command` |
 | `/api/agents/[id]` | GET | any | Agent detail with sessions, claims, key info |
+| `/api/agents/[id]` | PATCH | admin+ | Body `{ maxChatSlots: 0..15 \| null }`. Updates future chat admission without terminating live claims |
 | `/api/agents/[id]` | DELETE | admin+ | Delete agent and cascade |
 | `/api/agents/[id]/key` | POST | admin+ | Regenerate API key |
 | `/api/pipelines` | GET | any | List pipelines (org-scoped) |

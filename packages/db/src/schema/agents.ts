@@ -9,6 +9,7 @@ export const agents = pgTable('agents', {
   transport: text('transport').notNull(),
   transportMeta: jsonb('transport_meta').default({}),
   repos: text('repos').array().default(sql`ARRAY[]::text[]`),
+  maxChatSlots: integer('max_chat_slots'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow(),
 }, (t) => ({
@@ -68,7 +69,13 @@ export const agentTokens = pgTable('agent_tokens', {
 export const agentClaims = pgTable('agent_claims', {
   id: integer('id').primaryKey().generatedByDefaultAsIdentity(),
   orgId: text('org_id').notNull().references(() => orgs.id),
-  repo: text('repo').notNull(),
+  repo: text('repo'),
+  taskId: uuid('task_id'),
+  targetAgentId: text('target_agent_id'),
+  lastActivityAt: timestamp('last_activity_at', { withTimezone: true }).notNull().defaultNow(),
+  pendingDeadlineAt: timestamp('pending_deadline_at', { withTimezone: true }),
+  idleTimeoutSeconds: integer('idle_timeout_seconds').notNull().default(900),
+  endReason: text('end_reason'),
   prNumber: integer('pr_number'),
   attempt: integer('attempt').notNull(),
   sessionId: integer('session_id').references(() => agentSessions.id),
@@ -84,7 +91,10 @@ export const agentClaims = pgTable('agent_claims', {
   headSha: text('head_sha'),
 }, (t) => ({
   uniqAttempt: uniqueIndex('agent_claims_org_id_repo_pr_number_attempt_key')
-    .on(t.orgId, t.repo, t.prNumber, t.claimType, t.attempt),
+    .on(t.orgId, t.repo, t.prNumber, t.claimType, t.attempt)
+    .where(sql`${t.claimType} IS DISTINCT FROM 'chat'`),
+  chatTaskAttempt: uniqueIndex('agent_claims_chat_task_attempt').on(t.orgId, t.taskId, t.attempt).where(sql`${t.claimType} = 'chat'`),
+  activeChatTask: uniqueIndex('agent_claims_one_active_chat_per_task').on(t.orgId, t.taskId).where(sql`${t.claimType} = 'chat' AND ${t.status} IN ('pending','claimed')`),
   activeIdx: index('idx_agent_claims_active')
     .on(t.orgId, t.repo, t.prNumber)
     .where(sql`${t.status} = ANY (ARRAY['pending', 'claimed'])`),
@@ -128,6 +138,8 @@ export const agentClaimCommands = pgTable('agent_claim_commands', {
   kind: text('kind').notNull(),
   payload: jsonb('payload').notNull(),
   requestKey: text('request_key'),
+  originatorPrincipalId: uuid('originator_principal_id'),
+  originatorSessionVersion: integer('originator_session_version'),
   status: text('status').notNull().default('pending'),
   result: jsonb('result'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

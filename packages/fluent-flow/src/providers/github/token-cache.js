@@ -37,17 +37,21 @@ export function clearTokenCache() {
  * @returns {Promise<string>} installation token
  */
 export async function getInstallationToken(installationId) {
+  return (await getInstallationCredential(installationId)).token;
+}
+
+export async function getInstallationCredential(installationId) {
   const entry = cache.get(installationId);
 
   // Return cached token if still valid (past refreshAt triggers a jittered refresh)
   if (entry && !entry.inflight && entry.refreshAt > new Date()) {
-    return entry.token;
+    return { token: entry.token, expiresAt: new Date(entry.expiresAt) };
   }
 
   // If there's already an in-flight request for this installation, wait for it
   if (entry?.inflight) {
-    const { token } = await entry.inflight;
-    return token;
+    const { token, expiresAt } = await entry.inflight;
+    return { token, expiresAt: new Date(expiresAt) };
   }
 
   // Kick off a new fetch
@@ -71,7 +75,7 @@ export async function getInstallationToken(installationId) {
       inflight: null,
     });
     logger.info({ msg: 'getInstallationToken', installationId, expiresAt: result.expiresAt });
-    return result.token;
+    return { token: result.token, expiresAt: new Date(result.expiresAt) };
   } catch (err) {
     // Clear the inflight entry on error so callers can retry
     const stale = cache.get(installationId);

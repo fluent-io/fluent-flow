@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getServerSession, type Session } from 'next-auth';
-import { deleteAgentIfNoCollaborationClaims, getAgentDetail, getAgentSessions, getAgentClaims, getKeyInfo } from '@fluent-flow/db';
+import { deleteAgentIfNoCollaborationClaims, getAgentDetail, getAgentSessions, getAgentClaims, getKeyInfo, updateAgentChatSlots, isValidChatSlotValue } from '@fluent-flow/db';
 import { authOptions, getOrgScope, hasRole } from '@/lib/auth';
 
 /**
@@ -69,6 +69,50 @@ export async function GET(
   ]);
 
   return NextResponse.json({ agent, sessions, claims, key });
+}
+
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const session = await getServerSession(authOptions);
+  if (!session) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const { id } = await params;
+  const resolved = await resolveAgent(request, session, id);
+  if (resolved.error) return resolved.error;
+
+  const agent = resolved.agent;
+  if (!agent) {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  }
+
+  if (!hasRole(session, agent.org_id, 'admin')) {
+    return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+  }
+
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json({ error: 'Invalid request body' }, { status: 400 });
+  }
+  const maxChatSlots = (body as { maxChatSlots?: unknown } | null)?.maxChatSlots;
+  if (!isValidChatSlotValue(maxChatSlots)) {
+    return NextResponse.json(
+      { error: 'maxChatSlots must be an integer between 0 and 15 or null' },
+      { status: 400 },
+    );
+  }
+
+  const updated = await updateAgentChatSlots(agent.org_id, agent.id, maxChatSlots ?? null);
+  if (!updated) {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  }
+
+  return NextResponse.json({ agent: updated });
 }
 
 export async function DELETE(

@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     services:
       postgres:
@@ -63,7 +63,7 @@ jobs:
           (async () => {
             const client = new Client({ connectionString: 'postgres://postgres:postgres@127.0.0.1:5432/postgres' });
             await client.connect();
-            for (const db of ['ff_db_test', 'ff_server_test', 'ff_connector_test', 'ff_legacy_test', 'ff_auth_test']) {
+            for (const db of ['ff_db_test', 'ff_server_test', 'ff_connector_test', 'ff_legacy_test', 'ff_auth_test', 'ff_browser_test']) {
               await client.query('CREATE DATABASE ' + db);
             }
             await client.end();
@@ -79,6 +79,9 @@ jobs:
       - name: Typecheck agent server connector
         run: npm run typecheck -w @fluent-flow/agent-server
 
+      - name: Typecheck agent server runtime
+        run: npm run typecheck:runtime -w @fluent-flow/agent-server
+
       # `next build` imports every dashboard route module while collecting page
       # data, so anything @fluent-flow/db evaluates at import time runs here.
       # Build with no DATABASE_URL in the environment to catch import-time
@@ -86,6 +89,28 @@ jobs:
       # the turbo ^build dependency of the `npm test` step above).
       - name: Build dashboard without DATABASE_URL
         run: npm run build -w @fluent-flow/dashboard
+
+      - name: Install browser runtime
+        run: npx playwright install --with-deps chromium
+
+      - name: Exercise production chat drawer
+        env:
+          DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ff_browser_test
+          FF_CLAIM_EXECUTION_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ff_browser_test
+          FF_COLLAB_TEST_DB_OPTIN: '1'
+          NEXTAUTH_URL: http://127.0.0.1:3194
+          NEXTAUTH_SECRET: chat-browser-ci-session-fixture-0123456789
+          FF_COLLAB_AUTH_SECRET: chat-browser-ci-hmac-fixture-0123456789
+          FF_COLLAB_API_URL: http://127.0.0.1:3195
+          FF_UI_TEST_ORIGIN: http://127.0.0.1:3194
+          FF_CLAIM_EXECUTION_API_PORT: '3195'
+          GITHUB_CLIENT_ID: unused
+          GITHUB_CLIENT_SECRET: unused
+        run: |
+          node node_modules/next/dist/bin/next start packages/dashboard --hostname 127.0.0.1 --port 3194 &
+          dashboard_pid=$!
+          trap 'kill "$dashboard_pid" 2>/dev/null || true' EXIT
+          node packages/dashboard/tests/collab/chat-drawer-actual.browser.mjs
 
       - name: Run agent server smoke
         run: npm run smoke -w @fluent-flow/agent-server
@@ -141,6 +166,28 @@ jobs:
 
       - name: Typecheck agent server
         run: npm run typecheck -w @fluent-flow/agent-server
+
+  chat-runtime-node20:
+    name: Chat runtime (Node 20, Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 20
+      - name: Install dependencies from committed lockfile
+        run: npm ci
+      - name: Exercise minimum-runtime chat paths
+        run: >-
+          npm test -w @fluent-flow/agent-server --
+          tests/unit/chat-loop.test.js
+          tests/unit/chat-event-budget.test.js
+          tests/unit/chat-profiles.test.js
+          tests/unit/chat-workspace.test.js
+          tests/unit/chat-handoff.test.js
+          tests/unit/runner-chat.test.js
+      - name: Typecheck runtime
+        run: npm run typecheck:runtime -w @fluent-flow/agent-server
 
   agent-server-image-changes:
     runs-on: ubuntu-latest
