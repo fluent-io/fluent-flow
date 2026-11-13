@@ -1,0 +1,12 @@
+{
+  "sha": "c38009756b6fa2bfa9f3adb55152b26e07f36f04",
+  "sameSingleDefaultWorkspace": true,
+  "sameSingleManagerMembershipAndRole": true,
+  "projectAdmin": true,
+  "targetProjects": 2,
+  "linkedRepo": "fluent-io/fluent-flow",
+  "standaloneRepo": null,
+  "backlogTaskCount": 1,
+  "targetRuns": 0,
+  "syntheticFixtureHostRevoked": true
+}

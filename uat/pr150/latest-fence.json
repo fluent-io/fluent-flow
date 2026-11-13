@@ -1,0 +1,12 @@
+{
+  "sha": "c38009756b6fa2bfa9f3adb55152b26e07f36f04",
+  "compiledNoKeyUpdate": true,
+  "actualDeployedServiceAndDatabase": true,
+  "sessionAndObservationCompleted": true,
+  "persistedSessions": 2,
+  "staleLeaseRejected": 409,
+  "revokedHostRejected": 401,
+  "hostRevoked": true,
+  "syntheticForeignTenantOnly": true,
+  "noExecutorOrModelLaunched": true
+}

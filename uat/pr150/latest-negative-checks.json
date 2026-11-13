@@ -1,0 +1,16 @@
+{
+  "preview": "https://pr-150-preview.fluentflow.tech",
+  "authentication": "synthetic viewer password, separate browser; actual OAuth verified separately",
+  "sameOrgCreateDisabled": true,
+  "foreignWorkspaceAdminCannotAuthorizeTarget": true,
+  "capabilityDenial": 403,
+  "foreignRepoDenial": 422,
+  "mobileNoOverflow": true,
+  "applicationConsoleErrors": [],
+  "knownResourceErrors": [
+    {
+      "message": "Failed to load resource: the server responded with a status of 404 ()",
+      "path": "/favicon.ico"
+    }
+  ]
+}
