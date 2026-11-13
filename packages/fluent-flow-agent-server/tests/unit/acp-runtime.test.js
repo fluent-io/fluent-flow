@@ -107,6 +107,31 @@ afterEach(async () => {
 });
 
 describe('createAcpRuntime', () => {
+  it('opens an attended session without spending a prompt and keeps one child across idle turns', async () => {
+    const { runtime, tracePath } = makeHarness();
+    await expect(runtime.openSession()).resolves.toEqual({ sessionId: 'fake-session-1' });
+    expect(entriesOf(tracePath, 'session_prompt')).toHaveLength(0);
+    expect(await settleWithin(runtime.exited, 25)).toEqual({ status: 'timeout' });
+    await expect(runtime.prompt('First explicit intent.')).resolves.toMatchObject({ stopReason: 'end_turn' });
+    expect(await settleWithin(runtime.exited, 25)).toEqual({ status: 'timeout' });
+    await expect(runtime.prompt('Second explicit intent.')).resolves.toMatchObject({ messageId: 'fake-user-message-2' });
+    await finish(runtime);
+    expect(entriesOf(tracePath, 'process_start')).toHaveLength(1);
+    expect(entriesOf(tracePath, 'session_new')).toHaveLength(1);
+    expect(entriesOf(tracePath, 'session_prompt')).toHaveLength(2);
+    expect(entriesOf(tracePath, 'session_close')).toHaveLength(1);
+  });
+
+  it('never reconnects or replays an attended turn after accepted child loss', async () => {
+    const { runtime, tracePath } = makeHarness('accepted-loss-resume-running');
+    await runtime.openSession();
+    await expect(runtime.prompt('Do not reconnect this attended intent.')).rejects.toThrow(/connection|ended|lost/i);
+    await runtime.exited;
+    expect(entriesOf(tracePath, 'process_start')).toHaveLength(1);
+    expect(entriesOf(tracePath, 'session_prompt')).toHaveLength(1);
+    expect(entriesOf(tracePath, 'session_resume')).toHaveLength(0);
+  });
+
   it('initializes with pinned protocol v2 and explicit client interaction capabilities', async () => {
     const { runtime, tracePath } = makeHarness();
     await runtime.runInitialPrompt('Review the change.');

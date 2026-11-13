@@ -1,6 +1,6 @@
 # Attended execution as chat claims
 
-**Status:** Draft v2 — revised after cross-provider review (Claude Code + Codex, 2026-11-13). v1's idle-expiry, redispatch, teardown, uniqueness, and removal designs were wrong or incomplete; this version incorporates the corrections. Reviewer findings are cited inline as (C#) for Claude Code and (X#) for Codex.
+**Status:** Draft v3 — execution design revised after cross-provider review (Claude Code + Codex, 2026-11-13), with subsequent user-approved initiation, handoff, and Flowly-style UX decisions. These subsequent additions have not yet had cross-provider re-review. Reviewer findings from the earlier execution review are cited inline as (C#) for Claude Code and (X#) for Codex.
 
 ## Purpose
 
@@ -11,7 +11,7 @@ Today Fluent Flow runs AI work through two unrelated execution stacks:
 
 The connector tier exists only because, in October, attended execution needed a place to run that was not the claim pipeline. The claim pipeline now covers everything the connector tier provides — ACP sessions, live events, permission requests, steering commands, worktrees, verification — without Paseo and without the host's credential custody. Running two stacks doubles the settings surface, doubles the failure modes, and keeps a hard integration on an external daemon for the only path that uses it.
 
-This spec collapses the two stacks. **Attended execution becomes a new claim type, `chat`.** Starting work on a task creates a `chat` claim; the assigned agent-server slot holds it as a sticky, interactive session; the dashboard exchanges prompts, permission answers, and steering with it through the claim-scoped tables #127 delivered. When the session ends — explicitly, or by inactivity expiry — the claim terminates and the slot and child process are released, and the workspace is torn down only when it is safe to do so.
+This spec collapses the two stacks. **Attended execution becomes a new claim type, `chat`.** Opening a session on a task creates a `chat` claim; the assigned agent-server slot holds it as a sticky, interactive session; the dashboard exchanges prompts, permission answers, and steering with it through the claim-scoped tables #127 delivered. The separate **Start** action on a Ready task launches unattended work without requiring chat. When a chat session ends — explicitly, or by inactivity expiry — the claim terminates and the slot and child process are released, and the workspace is torn down only when it is safe to do so.
 
 Session history is display data rendered from persisted claim events; it survives anything. The model's in-context state dies with the child process; the UI says so honestly instead of fabricating continuity.
 
@@ -22,6 +22,7 @@ In scope:
 - A `chat` claim type with sticky-session lease semantics: no auto-completion on turn end, explicit end, **activity-based** inactivity expiry (distinct from runner-liveness heartbeat).
 - **No automatic redispatch for chat claims** on expiry, failure, or shutdown — the three paths that redispatch work claims.
 - Chat claim creation from the task page with a nullable repository, task-scoped identity and uniqueness, and a pending (queue) TTL.
+- A Flowly-style board-preserving task drawer: task context, progress, and sessions inline; supporting evidence progressively disclosed instead of separate task-detail tabs.
 - A dedicated runner chat loop: session opened without an initial prompt, command service alive while idle, exempt from the per-claim execution timeout.
 - An `end_session` command kind distinct from `cancel`; chat claims end as `cancelled` with an `end_reason`.
 - Interactive command cadence (1 s poll, unchanged from the existing default) and an end-to-end latency target that includes the dashboard's read side.
@@ -57,6 +58,34 @@ Out of scope:
 
 ## Design
 
+### Task drawer and interaction model
+
+**UX reference:** the screenshots on [Flowly's plugin page](https://paseo.sh/plugins/jasprw/flowly), pinned there to source revision `825dec13c0f4e89ff1f2b41cae741f0fed640131`. The reference is the presentation and interaction hierarchy, not its Paseo runtime. All AI execution here uses distributed claims.
+
+**Approved visual target:** the user approved the Fluent Flow interactive drawer preview (task overview and selected-session views). Keep Fluent Flow's existing dark theme, a visible board behind the right-side task drawer, compact progress/session content, expandable evidence, and a separate human discussion composer. The session view stays inside that drawer with Back to task, a bottom agent composer, and explicit End session. The preview's sample content is illustrative, not application data; production must render authorized real task/claim data. Preview source at approval time: `/home/victor/.hermes/cache/scratch/fluent-flow-task-preview.html`; screenshots: `fluent-flow-task-drawer.png` and `fluent-flow-task-chat.png` in the same directory. These scratch files are reference artifacts, not a shipping implementation or permanent asset URLs.
+
+**Board stays in context.** Selecting a task opens a side drawer with the board still visible. Closing the drawer returns to the same board filters, lane, and scroll position. Task deep links open that task in the drawer; narrow screens use the same content hierarchy at full width with a clear return-to-board action. Browser back restores the prior selection. The existing standalone task URL remains a supported entry point, not a second task-detail UX.
+
+**One vertical task flow**, in this order:
+
+1. **Task context:** title, status, priority, concise description and acceptance criteria. Edit and status controls remain contextual; internal version numbers are not primary task content.
+2. **Progress / needs your input:** latest factual progress summary, current unattended phase or active chat state, and any pending question, approval, failure, or blocked condition. Show the next applicable action directly beside the condition. Detailed activity is expandable; agent turn completion is not task completion.
+3. **Agent sessions:** compact session cards with title/profile, state, and unread or attention indicators. **Open session** starts optional attended work. Selecting a session reveals its transcript and follow-up composer inline in the drawer, with **Back to task** returning to task details without losing board context. The composer stays reachable at the bottom of the session view; output follows new events until the user scrolls away, with **Jump to latest** to resume. Show **Stop response** separately from **End session**.
+4. **Supporting details:** expandable Workpad (plans, checks, evidence, open questions), artifacts, ideas, and prior run history. Surface a relevant failure or actionable item in the progress area rather than requiring users to inspect every disclosure. Historical unattended phases/attempts remain available without turning every phase into a chat session.
+5. **Human discussion:** comments with explicit audience labels. Human comments remain distinct from agent instructions, but that distinction does not require separate tabs.
+
+**No Overview / Execution / Workpad / Ideas tab strip.** Do not relocate the old four destinations into four equally prominent drawer tabs. Use progressive disclosure and session selection within the task flow. The existing claim panel's event/command behavior can be reused, but its tab-based mount is replaced.
+
+**Action semantics:**
+
+- **Start**, shown on Ready tasks, launches unattended work directly; no chat session is required.
+- **Open session** opens an existing task's attended chat; **New session** creates the minimal task plus chat as specified below.
+- **Build this** inside a chat performs the explicit handoff to the unattended pipeline. The resulting work is visible in the same task flow (or on the explicitly created destination task).
+- Opening a drawer, selecting a session, reading output, posting a human comment, or moving a task to Ready never starts AI work.
+- Closing a drawer is navigation, not session termination. **End session** and the inactivity policy release the claim; reopening shows the current claim state rather than silently creating another.
+
+**Audience and authorization:** comment composers use **Comment** and an audience selector; agent composers use **Send to agent** with the selected session identity. They are not one ambiguous input. A session question's **Reply** action targets the agent composer or the structured request control, not human discussion. Internal transcripts, tool output, paths, and permission requests remain capability-protected and are never automatically published as client-visible comments or progress summaries. Users lacking those capabilities see only authorized task progress and intentionally published evidence; the drawer layout is not an authorization boundary.
+
 ### The `chat` claim type
 
 `claim_type` is a text column; `chat` joins `review_fix`, `spec`, and `build`. Two lifecycle rules differ:
@@ -76,7 +105,14 @@ Otherwise an abandoned chat resurrects up to `MAX_RETRY_ATTEMPTS` times, each ho
 
 ### Claim creation
 
-The start transaction requires only the task, an Idempotency-Key, and the expected task version, plus:
+**Entry points and board identity:**
+
+- **Open session** on an existing task creates a chat claim attached to that task, then opens its chat panel. It does not create another board card or start the unattended pipeline.
+- **New session** from the project context lets a user begin without an existing task. The user supplies a title and project; one server transaction creates a minimal Backlog task, its chat claim, and the execution link. This requires `task.create`, `run.start`, and `internal.read` in that project. Repository selection is optional. Creating the task and claim is one idempotent operation: retries return the same task/session; a failed transaction leaves neither an orphan task nor a claim.
+- The board item is always the task, never the claim. Active chat is an activity indicator on that card, not a separate card or an automatic lane transition. Opening or ending chat does not move the task to Ready, In progress, or Done.
+- **Start** on a Ready task remains the explicit trigger for unattended work. **Build this** in chat performs the handoff described below. Neither action requires creating a second chat card.
+
+For an existing task, the chat-creation transaction requires the task, an Idempotency-Key, and the expected task version, plus:
 
 - **Capabilities:** `run.start` **and** `internal.read` (C16 — transcript visibility requires `internal.read`; start-without-see is a hole).
 - **One open chat per task:** inside the same transaction and advisory lock, reject if an open (`pending`/`claimed`) chat exists for the task (C14, X9). Enforced by a partial unique index (below) plus an explicit check for a good error message.
@@ -117,7 +153,7 @@ Chat execution is a separate loop in the runner, not a flag on the work loop (C7
 v1's "reuse the worktree for `root_claim_id`" contradicted force-remove teardown. The rule set:
 
 - Chat worktrees are per-claim, on a task branch `ff/task-<task_id>` (checked out; subsequent chat sessions on the same task resume that branch).
-- **Release of slot and child process is independent of workspace deletion.** On claim end: reap child, free slot immediately; workspace deletion follows the wrapup safety checks adopted from the connector (`wrapup.js`): clean and pushed → remove; dirty or unpushed → **retain**, record in a task-scoped GC list, and surface in the UI ("unsaved work from session N — push or discard"). Startup cleanup's recursive claim-directory deletion gains the same check.
+- **Release of slot and child process is independent of workspace deletion.** On claim end: reap child, free slot immediately; workspace deletion follows the wrapup safety checks adopted from the connector (`wrapup.js`): clean and pushed → remove; dirty or unpushed → **retain**, record in a task-scoped GC list, and surface the last cleanup result or missing-report state in the UI. Recovery guidance directs the user to the agent operator to push or explicitly discard retained work. The additive stage exposes confirmed local operator discard, not a remote destructive-control API. Chat storage stays outside legacy startup GC; chat startup reconciles dead leases without deleting retained work.
 - Repo-less chats run in a per-claim scratch directory **outside** the shared worktree root (C3), created and GC'd with the claim; contents are never considered safe-by-default and are deleted only on explicit user discard or `max_duration` age.
 
 ### Routing
@@ -165,7 +201,7 @@ A chat session is a natural place to design work; building it belongs to the una
 
 Staged; **deletion is gated on the re-key stage, not on one preview cycle** (C15/X15, C16/X14, C4/X9):
 
-1. **Ship chat claims** (additive migrations only: `task_id`, `last_activity_at`, `end_reason`, `end_session` command CHECK, `collab_projects.default_agent_id`, `max_chat_slots`). Task page Start creates a chat claim; the claim panel is the default attended UI. The connector path stays available and is not the opt-out — the opt-in flag is a `collab_projects` column (`execution_mode: 'chat' | 'connector'`, named migration), flipped to `'chat'` for new projects.
+1. **Ship chat claims** (additive migrations only: `task_id`, `last_activity_at`, `end_reason`, `end_session` command CHECK, `collab_projects.default_agent_id`, `max_chat_slots`). Task page **Open session** creates a chat claim; **New session** atomically creates a minimal task and chat claim. The claim panel is the default attended UI; Ready-task **Start** continues to launch unattended work. The connector path stays available and is not the opt-out — the opt-in flag is a `collab_projects` column (`execution_mode: 'chat' | 'connector'`, named migration), flipped to `'chat'` for new projects. This flag selects only the attended implementation; it never changes Start into a chat action.
 2. **Re-key** (separate migration + PR): re-key evidence, artifacts, workpad plans/questions, summaries, usage samples, and scoped tokens from `collab_runs`/`collab_sessions` to `claim_id`/`root_claim_id`; re-bind the collab MCP reporting tools (`report_check`, `add_artifact`, `report_plan`, …) to claim-scoped tokens; migrate or archive historic run transcripts so pre-cutover history survives; migrate project execution defaults.
 3. **Freeze**: server-side, `collaboration_start_run`/`collaboration_send_prompt` and the host/mapping write APIs stop accepting new runs/hosts/mappings; existing host executions keep working until drained (active runs complete or are reconciled), connector credentials revoked at drain.
 4. **Delete** — gated on: zero active connector runs, re-key migration shipped, historic transcripts archived. The PR removes:
@@ -194,12 +230,16 @@ Staged; **deletion is gated on the re-key stage, not on one preview cycle** (C15
 
 ## Rollout
 
-1. Stage 1 behind the `collab_projects.execution_mode` flag; new projects default `'chat'`.
+1. Stage 1 behind the `collab_projects.execution_mode` flag; new projects default `'chat'`. Mount claim-backed sessions and unattended progress in the board-preserving drawer; replace the old task-detail tab strip. The flag selects the attended backend, not a different meaning for Ready-task Start.
 2. Re-key migration + PR.
 3. Freeze; drain; then the delete PR, gated as above. Docs updated at freeze and again at delete.
 
 ## Success criteria
 
+- Selecting a card keeps the board visible on desktop; closing restores board state. Deep links, browser back, and narrow-screen navigation preserve the same task flow. No Overview / Execution / Workpad / Ideas tab strip remains.
+- Latest progress and pending input are visible without opening Workpad or history. Selecting a session reveals its transcript/composer and returns to task details without losing board context. Stop response and End session are distinct; closing the drawer ends neither.
+- Human comments and agent prompts have distinct composers/actions. Posting a comment cannot enqueue an agent command. Unauthorized readers cannot retrieve internal session content, and client-visible progress does not automatically include it.
+- **New session** creates exactly one Backlog task and one attached chat claim, including on request retry; failures roll both back. **Open session** on an existing task creates no new card and does not change its lane. Ready-task **Start** launches unattended claims without opening chat.
 - A user can open a task, start a session, exchange prompts/permission answers end-to-end (action → first token visible) in ≤ 5 s p95, and end it; slot released on end; workspace removed only when clean-and-pushed, otherwise retained and surfaced.
 - An abandoned chat ends within the idle window on a healthy host and is **never** redispatched (unit tests on all three redispatch paths).
 - `max_chat_slots` guarantees ≥ 1 slot for work claims; pending chats expire by TTL.

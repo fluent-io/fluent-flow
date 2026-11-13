@@ -38,6 +38,7 @@ export const collabTaskSchema = z.object({
   blockedReason: z.string().nullable(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
+  claimActivity: z.object({claimId:z.number().int().positive(),claimType:z.string(),status:z.string(),needsInput:z.boolean(),endReason:z.string().nullable()}).nullable().optional(),
   execution: z.object({
     latestRun: z.object({ id: z.string().uuid(), state: runStateSchema, stage: executionStageSchema, lastObservedAt: z.string().datetime().nullable() }).nullable(),
     hostReachability: hostReachabilitySchema.nullable(),

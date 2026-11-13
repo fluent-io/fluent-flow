@@ -55,6 +55,7 @@ vi.mock('../../src/providers/index.js', () => ({
 
 vi.mock('../../src/providers/github/token-cache.js', () => ({
   getInstallationToken: vi.fn(),
+  getInstallationCredential: vi.fn(),
 }));
 
 vi.mock('@fluent-flow/db', async (importOriginal) => {
@@ -75,7 +76,7 @@ import { hasPending, dequeue } from '../../src/notifications/transports/long-pol
 import { installationCtxForRepo } from '../../src/config/loader.js';
 import { onClaimStarted } from '../../src/engine/check-run.js';
 import { getProvider } from '../../src/providers/index.js';
-import { getInstallationToken } from '../../src/providers/github/token-cache.js';
+import { getInstallationToken, getInstallationCredential } from '../../src/providers/github/token-cache.js';
 import { handlePoll } from '../../src/routes/agent-server.js';
 
 function makeRes() {
@@ -110,6 +111,28 @@ beforeEach(() => {
 });
 
 describe('handlePoll — long-poll hints are wake-up signals only', () => {
+  it('delivers provider-issued chat credential expiry, never payload expiry', async () => {
+    const expiresAt = new Date(Date.now() + 3600000);
+    getInstallationCredential.mockResolvedValueOnce({ token: 'chat-test-token', expiresAt });
+    db.execute.mockResolvedValueOnce({ rows: [{ agent_type: 'claude-code' }] })
+      .mockResolvedValueOnce({ rows: [{ ...DB_CLAIM, claim_type: 'chat', task_id: 'task-1',
+        payload: { githubTokenExpiresAt: '2099-01-01T00:00:00Z' } }] });
+    const res = makeRes();
+    await handlePoll(REQ, res, { pollTimeoutMs: 0 });
+    expect(res.body.work).toMatchObject({ githubToken: 'chat-test-token', githubTokenExpiresAt: expiresAt.toISOString() });
+  });
+
+  it('never resolves or delivers any GitHub credential for repo-null chat', async () => {
+    db.execute.mockResolvedValueOnce({ rows: [{ agent_type: 'claude-code' }] })
+      .mockResolvedValueOnce({ rows: [{ ...DB_CLAIM, repo: null, claim_type: 'chat', task_id: 'task-1',
+        payload: { githubToken: 'hostile', githubTokenExpiresAt: '2099-01-01T00:00:00Z' } }] });
+    const res = makeRes();
+    await handlePoll(REQ, res, { pollTimeoutMs: 0 });
+    expect(res.body.work.githubToken).toBeUndefined();
+    expect(res.body.work.githubTokenExpiresAt).toBeUndefined();
+    expect(getInstallationCredential).not.toHaveBeenCalled();
+    expect(getInstallationToken).not.toHaveBeenCalled();
+  });
   it('drains a queued hint and answers with the DB claim row, never the hint payload', async () => {
     hasPending.mockReturnValueOnce(true);
     dequeue.mockReturnValueOnce({ agentId: 'a1', event: 'review', repo: 'o/r', prNumber: 5, session_id: 3 });

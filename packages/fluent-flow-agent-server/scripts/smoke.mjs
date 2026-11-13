@@ -352,6 +352,7 @@ async function createControlPlane({ deployment, version }) {
 }
 
 async function createFakeGit(binDir, tracePath, mode) {
+  await writeFile(join(binDir, 'package.json'), JSON.stringify({ type: 'module' }), { mode });
   const executable = join(binDir, 'git');
   const source = `#!/usr/bin/env node
 import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -625,7 +626,7 @@ async function createProcessLauncher(root) {
       assert.equal(healthStopped, true);
     },
     logs: () => logEntries,
-    diagnostics: () => '',
+    diagnostics: () => SECRETS.reduce((text, secret) => text.replaceAll(secret, '[REDACTED]'), JSON.stringify(logEntries, null, 2)),
     dispose: stopAgentServer,
   };
 }

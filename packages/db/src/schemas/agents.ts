@@ -7,6 +7,7 @@ export const agentSchema = z.object({
   transport: z.string(),
   transport_meta: z.record(z.unknown()).default({}),
   repos: z.array(z.string()).default([]),
+  max_chat_slots: z.number().int().min(0).max(15).nullable().default(null),
   created_at: z.coerce.date(),
   updated_at: z.coerce.date(),
 });
@@ -17,6 +18,8 @@ export const agentDetailSchema = agentSchema.extend({
   deployment: z.enum(['local', 'self_hosted', 'hosted']).nullable(),
   capacity: z.number().int().nullable(),
   active_slots: z.number().int().nonnegative(),
+  busy_chat: z.number().int().nonnegative(),
+  busy_work: z.number().int().nonnegative(),
   status: z.string().nullable(),
   last_seen_at: z.coerce.date().nullable(),
 });

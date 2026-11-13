@@ -1,11 +1,17 @@
 import {
   CollabServiceError,
+  listCollabClaimPrompts,
+  getCollabClaimCommand,
+  getCollabClaimHandoff,
+  startCollabClaimHandoff,
   getCollabClaimExecution,
   listCollabClaimEvents,
   listCollabClaimExecutions,
   listCollabClaimRequests,
   startCollabClaimExecution,
+  startCollabChatSession,
   submitCollabClaimCommand,
+  listCollabRetainedWork,
 } from '@fluent-flow/db';
 
 function requireIdempotencyKey(req) {
@@ -48,6 +54,50 @@ function queryCursor(value) {
 }
 
 export function registerClaimExecutionRoutes(router) {
+  router.get('/tasks/:id/retained-work', async (req, res, next) => {
+    try {
+      const result = await listCollabRetainedWork({ actor: req.collabActor, taskId: req.params.id,
+        cursor: queryCursor(req.query.cursor), limit: parseLimit(req.query.limit) });
+      res.json({ data: result.items, nextCursor: result.nextCursor });
+    } catch (error) { next(error); }
+  });
+  router.get('/claim-executions/:claimId/handoffs/:commandId', async (req, res, next) => {
+    try {
+      res.json({ data: await getCollabClaimHandoff({ actor: req.collabActor,
+        claimId: parseClaimId(req.params.claimId), commandId: parseClaimId(req.params.commandId) }) });
+    } catch (error) { next(error); }
+  });
+  router.post('/claim-executions/:claimId/handoffs/:commandId', async (req, res, next) => {
+    try {
+      const result = await startCollabClaimHandoff({ actor: req.collabActor,
+        claimId: parseClaimId(req.params.claimId), commandId: parseClaimId(req.params.commandId),
+        expectedVersion: req.body?.expectedVersion, destinationTitle: req.body?.destinationTitle,
+        idempotencyKey: requireIdempotencyKey(req) });
+      res.status(result.created ? 202 : 200).json({ data: result });
+    } catch (error) { next(error); }
+  });
+  router.get('/claim-executions/:claimId/prompts',async(req,res,next)=>{
+    try {const result=await listCollabClaimPrompts({actor:req.collabActor,claimId:parseClaimId(req.params.claimId),cursor:queryCursor(req.query.cursor),limit:parseLimit(req.query.limit)});res.json({data:result.prompts,nextCursor:result.nextCursor});}catch(err){next(err);}
+  });
+  router.get('/claim-executions/:claimId/commands/:commandId',async(req,res,next)=>{
+    try {res.json({data:await getCollabClaimCommand({actor:req.collabActor,claimId:parseClaimId(req.params.claimId),commandId:parseClaimId(req.params.commandId)})});}catch(err){next(err);}
+  });
+  router.post('/projects/:id/chat-sessions', async (req, res, next) => {
+    try {
+      const result = await startCollabChatSession({
+        actor: req.collabActor,
+        projectId: req.params.id,
+        title: req.body?.title,
+        repo: req.body?.repo ?? null,
+        targetAgentId: req.body?.targetAgentId,
+        idempotencyKey: requireIdempotencyKey(req),
+      });
+      res.status(result.created ? 202 : 200).json({ data: result });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post('/tasks/:id/claim-executions', async (req, res, next) => {
     try {
       const result = await startCollabClaimExecution({
@@ -55,7 +105,8 @@ export function registerClaimExecutionRoutes(router) {
         taskId: req.params.id,
         expectedVersion: req.body?.expectedVersion,
         idempotencyKey: requireIdempotencyKey(req),
-        repo: req.body?.repo,
+        repo: req.body?.repo ?? null,
+        targetAgentId: req.body?.targetAgentId,
         prNumber: req.body?.prNumber,
         branch: req.body?.branch,
         claimType: req.body?.claimType,

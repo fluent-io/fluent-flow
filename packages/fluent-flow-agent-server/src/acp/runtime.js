@@ -9,6 +9,7 @@ import {
   ndJsonStream,
 } from '@agentclientprotocol/sdk/experimental/v2';
 import { spawnAcpProcess } from './process.js';
+import { assertChatConfigOption } from '../chat-profiles.js';
 
 const restartHistory = new Map();
 
@@ -25,22 +26,21 @@ const DEFAULT_LIMITS = Object.freeze({
 });
 
 function deferred() {
-  let resolve;
-  let reject;
   let settled = false;
-  const promise = new Promise((resolvePromise, rejectPromise) => {
-    resolve = (value) => {
+  const pending = { promise: null, resolve: null, reject: null, get settled() { return settled; } };
+  pending.promise = new Promise((resolvePromise, rejectPromise) => {
+    pending.resolve = (value = undefined) => {
       if (settled) return;
       settled = true;
       resolvePromise(value);
     };
-    reject = (error) => {
+    pending.reject = error => {
       if (settled) return;
       settled = true;
       rejectPromise(error);
     };
   });
-  return { promise, resolve, reject, get settled() { return settled; } };
+  return pending;
 }
 
 function safeError(message) {
@@ -164,17 +164,18 @@ function validateElicitationAnswer(answer, request) {
 }
 
 export function createAcpRuntime({
-  command,
-  cwd,
-  env,
-  onEvent = async () => {},
-  onRequest = async () => {},
-  onRequestCancelled = async () => {},
+  command = undefined,
+  cwd = undefined,
+  env = undefined,
+  onEvent = async (_params = undefined) => {},
+  sessionPolicy = undefined,
+  onRequest = async (_request = undefined) => {},
+  onRequestCancelled = async (_request = undefined) => {},
   log = {},
   spawnProcess = spawnAcpProcess,
   now = () => Date.now(),
   timers = { setTimeout, clearTimeout },
-  limits: limitInput,
+  limits: limitInput = undefined,
 } = {}) {
   if (!isObject(command) || typeof command.bin !== 'string' || command.bin.length === 0) {
     throw safeError('ACP command is required');
@@ -203,9 +204,12 @@ export function createAcpRuntime({
   const app = client({ name: 'fluent-flow-agent-server' });
   let phase = 'new';
   let initialPromptStarted = false;
+  let attended = false;
   let current = null;
   let lastRecord = null;
   let sessionId = null;
+  let sessionConfiguration;
+  let chatPolicyReady = false;
   let foreground = null;
   let recoveryUsed = false;
   let eventTail = Promise.resolve();
@@ -422,6 +426,11 @@ export function createAcpRuntime({
     const record = current;
     const updatePhase = record?.resumeState ?? null;
     const delivery = eventTail.then(async () => {
+      if (chatPolicyReady && params.update?.sessionUpdate === 'config_option_update') {
+        sessionConfiguration = params.update.configOptions;
+        assertChatConfigOption(sessionConfiguration, sessionPolicy.permission.configId, sessionPolicy.permission.value, { current: true });
+        if (sessionPolicy.model != null) assertChatConfigOption(sessionConfiguration, sessionPolicy.modelConfigId, sessionPolicy.model, { current: true });
+      }
       await onEvent(params);
       if (record === current) {
         applyUpdate(params, updatePhase, ordinal);
@@ -564,6 +573,7 @@ export function createAcpRuntime({
       throw safeError('ACP session setup failed');
     }
     sessionId = created.sessionId;
+    sessionConfiguration = created.configOptions;
     try {
       const listed = await requestWithDeadline(record.agent, AGENT_METHODS.session_list, { cwd }, 'ACP session/list compatibility probe failed');
       if (!Array.isArray(listed.sessions)) throw safeError('ACP session/list compatibility probe failed');
@@ -653,6 +663,7 @@ export function createAcpRuntime({
   }
 
   async function recover(failedRecord) {
+    if (attended) throw terminalFailure(safeError('ACP attended connection ended unexpectedly'));
     if (recoveryUsed) throw terminalFailure(safeError('ACP session recovery is exhausted'));
     recoveryUsed = true;
     phase = 'recovering';
@@ -706,7 +717,7 @@ export function createAcpRuntime({
     if (phase === 'foreground') scheduleSilence(replacement);
   }
 
-  async function submitPrompt(text, { onAccepted = async () => {} } = {}) {
+  async function submitPrompt(text, { onAccepted = async (_result = undefined) => {} } = {}) {
     if (typeof text !== 'string' || text.trim().length === 0) throw safeError('ACP prompt must be non-empty text');
     if (typeof onAccepted !== 'function') throw safeError('ACP prompt acceptance callback is invalid');
     if (phase !== 'idle' || !current || !sessionId) throw safeError('ACP session is not ready for a prompt');
@@ -738,6 +749,32 @@ export function createAcpRuntime({
     return turn.completion.promise;
   }
 
+  async function openSession() {
+    if (initialPromptStarted) throw safeError('ACP session has already started');
+    initialPromptStarted = true;
+    attended = true;
+    await setupWithRetry();
+    if (sessionPolicy) {
+      try {
+        const desired = [sessionPolicy.permission];
+        if (sessionPolicy.model != null) desired.unshift({ configId: sessionPolicy.modelConfigId, value: sessionPolicy.model });
+        for (const { configId, value } of desired) {
+          assertChatConfigOption(sessionConfiguration, configId, value);
+          const response = await requestWithDeadline(current.agent, AGENT_METHODS.session_set_config_option,
+            { sessionId, configId, type: 'id', value }, 'ACP chat configuration failed');
+          sessionConfiguration = response.configOptions;
+          assertChatConfigOption(sessionConfiguration, configId, value, { current: true });
+        }
+        for (const { configId, value } of desired) assertChatConfigOption(sessionConfiguration, configId, value, { current: true });
+        chatPolicyReady = true;
+      } catch (error) {
+        await close();
+        throw new IncompatibleAcpError('ACP chat permission/model configuration unavailable', { cause: error });
+      }
+    }
+    return { sessionId };
+  }
+
   async function runInitialPrompt(text, options) {
     if (initialPromptStarted) throw safeError('ACP initial prompt has already started');
     initialPromptStarted = true;
@@ -751,10 +788,12 @@ export function createAcpRuntime({
   }
 
   async function cancel() {
-    if (!current || !sessionId || !foreground || (phase !== 'foreground' && phase !== 'recovering')) {
-      throw safeError('ACP foreground work is not active');
+    const turn = foreground;
+    if (!current || !sessionId || !turn || (phase !== 'foreground' && phase !== 'recovering')) {
+      return { accepted: false };
     }
     await settlePendingRequests();
+    if (foreground !== turn) return { accepted: false };
     try {
       await notifyWithDeadline(current.agent, AGENT_METHODS.session_cancel, { sessionId }, 'ACP cancellation failed');
     } catch {
@@ -823,6 +862,8 @@ export function createAcpRuntime({
   }
 
   return {
+    openSession,
+    get sessionConfiguration() { return structuredClone(sessionConfiguration); },
     runInitialPrompt,
     prompt,
     cancel,

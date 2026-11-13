@@ -57,6 +57,7 @@ export interface Project {
   version: number;
   boardVersion: number;
   executionDefaults: ExecutionDefaults | null;
+  executionMode?: 'chat' | 'connector';
 }
 
 export interface MeCapabilities {
@@ -106,6 +107,7 @@ export interface Task {
   priority: Priority;
   assigneeId: string | null;
   assigneeName?: string | null;
+  claimActivity?: {claimId:number;claimType:string;status:string;needsInput?:boolean;endReason:string|null} | null;
   version: number;
   position: string;
   blockedReason: string | null;
@@ -370,11 +372,14 @@ export interface ClaimExecutionBadge {
   rootClaimId: number;
   createdAt: string;
   completedAt: string | null;
+  endReason?: 'user' | 'idle' | 'no_capacity' | 'max_duration' | 'host_lost' | null;
 }
 
 export interface ClaimExecution extends ClaimExecutionBadge {
   projectId: string;
-  repo: string;
+  pendingDeadlineAt?: string | null;
+  lastActivityAt?: string;
+  repo: string | null;
   prNumber: number | null;
   sessionId: number | null;
   payload: Record<string, unknown>;
@@ -402,9 +407,11 @@ export interface StartClaimExecutionResult {
   created: boolean;
 }
 
+export type NewChatSessionResult = StartClaimExecutionResult & { taskId: string };
+
 export interface SubmitClaimCommandResult {
   commandId: number | null;
-  kind: 'prompt' | 'cancel' | 'permission' | 'elicitation';
+  kind: 'prompt' | 'cancel' | 'end_session' | 'handoff' | 'permission' | 'elicitation';
   status: string;
   created: boolean;
 }

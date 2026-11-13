@@ -33,6 +33,14 @@ surface; `identity.ts` preserves the shared import facade.
 - `claim-executions.ts`: task-linked claim start and history projections,
   capability-checked event/request readers, and transactional idempotent ACP
   prompts, request answers and cancellation.
+- `chat-settings.ts`: versioned project chat defaults and the public runner
+  profile/model catalog. Runtime process configuration is never browser input.
+- `claim-handoffs.ts`: protected handoff preview and explicit confirmation.
+  A current principal with `internal.read`, `run.start` and `run.steer`
+  confirms a validated digest and published task-branch snapshot. One command
+  can create one work claim even under concurrent retries; optional destination
+  task creation additionally requires `task.write`. Task content and claim
+  creation commit together, with the chat left open.
 - `tokens.ts`: hashed human project tokens and session-bound agent context;
   reporting credentials never grant membership, Start or acceptance powers.
 - `evidence.ts`: workpad criteria/checks/plans/questions, artifacts, ideas,
@@ -49,8 +57,11 @@ surface; `identity.ts` preserves the shared import facade.
 - `delivery-links.ts`: existing claim/PR references require current access in
   both permission domains. Linking never launches old claims or changes merge
   controls, claim state or human delivery acceptance.
+- `claim-workspaces.ts`: owning-runner cleanup receipts and a scoped retained-work
+  list. Unreported cleanup stays unknown. Reports contain lifecycle metadata
+  only, never local paths, process IDs or file contents.
 - `tx.ts`, `errors.ts`: shared transaction lifecycle and safe typed errors.
 
-All migrations use the new `collab_` schema only and move forward. Tests reset
+Migrations move forward and preserve execution history. Tests reset
 only dedicated local `ff_*` databases; package ownership prevents parallel
 Turbo test suites from resetting each other's databases.

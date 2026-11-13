@@ -7,13 +7,17 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { LatestRequest, pollResource } from '@/lib/collab/live';
 import { collabFetch, ApiError } from '@/lib/collab/api';
-import { useSyncCurrentProject } from '@/lib/collab/current-project';
+import { capabilitiesFor, useMe } from '@/lib/collab/use-me';
+import { TaskSessions } from './task-sessions';
+import { StartTaskWork } from './start-task-work';
 import type { AttentionItem, Comment, Criterion, Priority, Run, Task, Visibility } from '@/lib/collab/types';
+import type { ClaimProgressCard } from '@/lib/collab/claim-progress';
 import { ExecutionBadge } from './execution-badge';
 import { TaskClaimExecutionTab } from './task-claim-execution-tab';
 import { WorkpadTab } from './task-workpad-tab';
 import { IdeasTab } from './task-ideas-tab';
 
+import { RetainedWorkNotice } from './retained-work-notice';
 export const PRIORITIES: Priority[] = ['low', 'normal', 'high', 'urgent'];
 
 export interface TaskDetail extends Task {
@@ -22,7 +26,7 @@ export interface TaskDetail extends Task {
   execution?: {
     latestRun: Pick<Run, 'id' | 'state' | 'stage' | 'lastObservedAt'> | null;
     hostReachability: string | null;
-    progress: { text: string; percent: number | null } | null;
+    progress: string | { text: string; percent: number | null } | null;
     attentionCount: number;
   } | null;
 }
@@ -69,116 +73,67 @@ export function can(detail: TaskDetail | null, capability: string): boolean {
   return detail?.capabilities?.includes(capability) ?? false;
 }
 
-export function TaskDetailPage({ taskId }: { taskId: string }) {
+export function TaskDetailPage({ taskId, selectedClaimId = null, onSelectClaim = () => {} }: {
+  taskId: string; selectedClaimId?: number | null; onSelectClaim?: (id: number | null) => void;
+}) {
   const { detail, setDetail, error, loading, reload } = useTaskDetail(taskId);
-  const [tab, setTab] = useState<'overview' | 'execution' | 'workpad' | 'ideas'>('overview');
-  const [attention, setAttention] = useState<AttentionItem[]>([]);
-  useSyncCurrentProject(detail?.projectId ?? null);
+  const { me } = useMe();
+  if (loading) return <p role="status" className="p-6 text-sm text-muted-foreground">Loading task…</p>;
+  if (!detail) return <p role="alert" className="p-6 text-sm">{error ?? 'This task is unavailable.'}</p>;
+  const capabilities = (detail.capabilities ?? []).filter(cap => capabilitiesFor(me, detail.projectId).includes(cap));
+  const scoped = { ...detail, capabilities };
+  const authority = `${taskId}:${me?.principal.id}:${me?.principal.sessionVersion}:${capabilities.join(',')}`;
+  const project = me?.workspaces?.flatMap(w=>w.projects).find(p=>p.id===detail.projectId);
+  return <TaskDetailContent key={authority} detail={scoped} setDetail={setDetail} error={error} reload={reload} repo={project?.linkedRepoFullName??null} attendedAvailable={project?.executionMode === 'chat'}
+    selectedClaimId={selectedClaimId} onSelectClaim={onSelectClaim} />;
+}
 
-  const loadAttention = useCallback(async () => {
-    try {
-      const result = await collabFetch<AttentionItem[]>(`/attention?taskId=${taskId}`);
-      setAttention(result.data);
-    } catch {
-      setAttention([]);
-    }
-  }, [taskId]);
+function Disclosure({ title, children }: {title: string; children: React.ReactNode}) {
+  const [open, setOpen] = useState(false);
+  return <details className="border-b border-border py-4" onToggle={event => setOpen(event.currentTarget.open)}>
+    <summary className="cursor-pointer text-sm font-medium">{title}</summary>
+    {open ? <div className="mt-4 min-w-0">{children}</div> : null}
+  </details>;
+}
 
-  useEffect(() => {
-    const stop = pollResource(() => loadAttention());
-    return stop;
-  }, [loadAttention, detail?.updatedAt]);
-
-  if (loading) {
-    return <p className="py-16 text-center text-sm text-muted-foreground">Loading…</p>;
-  }
-  if (!detail) {
-    return (
-      <div className="flex flex-col items-center gap-3 py-24 text-center">
-        <p className="text-sm text-muted-foreground">{error ?? 'Not found.'}</p>
-        <Button variant="outline" asChild>
-          <Link href="/board">Back to board</Link>
-        </Button>
-      </div>
-    );
-  }
-
-  const tabs = [
-    { id: 'overview' as const, label: 'Overview' },
-    { id: 'execution' as const, label: 'Execution' },
-    { id: 'workpad' as const, label: 'Workpad' },
-    { id: 'ideas' as const, label: 'Ideas' },
-  ];
-
-  return (
-    <div className="mx-auto flex max-w-5xl flex-col gap-4">
-      {error ? <p role="status" className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">{error}</p> : null}
-      <div className="flex items-center gap-3">
-        <Button variant="ghost" size="sm" asChild>
-          <Link href="/board">
-            <ArrowLeft className="mr-1 h-3.5 w-3.5" /> Board
-          </Link>
-        </Button>
-        <Button variant="ghost" size="sm" onClick={() => void reload()}>
-          <RefreshCw className="mr-1 h-3.5 w-3.5" /> Refresh
-        </Button>
-      </div>
-
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-xl font-semibold">{detail.title}</h1>
-          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <span className="rounded border border-border bg-secondary px-1.5 py-0.5">{detail.status}</span>
-            <span className="rounded border border-border bg-secondary px-1.5 py-0.5">{detail.priority}</span>
-            {detail.blockedReason ? (
-              <span className="rounded border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-destructive">
-                blocked: {detail.blockedReason}
-              </span>
-            ) : null}
-            <ExecutionBadge
-              state={detail.execution?.latestRun?.state ?? null}
-              reachability={(detail.execution?.hostReachability as never) ?? null}
-              attentionCount={detail.execution?.attentionCount}
-            />
-            <span>updated {new Date(detail.updatedAt).toLocaleString()}</span>
-          </div>
-        </div>
-      </header>
-
-      {attention.length > 0 ? (
-        <div className="rounded-md border border-orange-500/40 bg-orange-500/10 px-3 py-2 text-sm">
-          <p className="font-medium">Needs attention ({attention.length})</p>
-          <ul className="mt-1 list-inside list-disc text-xs text-muted-foreground">
-            {attention.slice(0, 5).map((item) => (
-              <li key={item.id}>
-                {item.title}
-                {item.createdAt ? ` · ${new Date(item.createdAt).toLocaleString()}` : ''}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-
-      <nav className="flex gap-1 border-b border-border" aria-label="Task sections">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            className={`rounded-t-md px-3 py-2 text-sm ${
-              tab === t.id ? 'border-x border-t border-border bg-card font-medium' : 'text-muted-foreground hover:bg-secondary'
-            }`}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </nav>
-
-      {tab === 'overview' ? <OverviewTab detail={detail} setDetail={setDetail} reload={reload} /> : null}
-      {tab === 'execution' ? <TaskClaimExecutionTab detail={detail} reload={reload} /> : null}
-      {tab === 'workpad' ? <WorkpadTab detail={detail} setDetail={setDetail} reload={reload} /> : null}
-      {tab === 'ideas' ? <IdeasTab detail={detail} /> : null}
+function TaskDetailContent({detail, setDetail, error, reload, selectedClaimId, onSelectClaim, repo, attendedAvailable}: {
+  repo: string | null; attendedAvailable: boolean;
+  detail: TaskDetail; setDetail: (value: TaskDetail) => void; error: string | null; reload: () => Promise<void>;
+  selectedClaimId: number | null; onSelectClaim: (id: number | null) => void;
+}) {
+  const [progress, setProgress] = useState<ClaimProgressCard[] | null>(null);
+  const attention = progress === null
+    ? detail.claimActivity?.needsInput ? [{ claimId: detail.claimActivity.claimId, claimType: detail.claimActivity.claimType }] : []
+    : progress.filter(claim => ['pending', 'claimed'].includes(claim.status) && claim.needsInput);
+  const liveWork = progress?.filter(claim => claim.claimType !== 'chat' && ['pending', 'claimed'].includes(claim.status)) ?? [];
+  const unread = progress?.filter(claim => ['pending', 'claimed'].includes(claim.status) && claim.unread).length ?? 0;
+  if (selectedClaimId !== null) return <TaskClaimExecutionTab detail={detail} reload={reload}
+    selectedClaimId={selectedClaimId} onBack={() => onSelectClaim(null)} />;
+  return <div className="space-y-6 p-5 sm:p-6">
+    {error ? <p role="status" className="text-sm text-muted-foreground">{error}</p> : null}
+    <header><h1 className="break-words text-2xl font-semibold tracking-tight">{detail.title}</h1>
+      <div className="mt-3 flex flex-wrap gap-3 text-xs text-muted-foreground"><span className="rounded bg-secondary px-2 py-1">{detail.status.replaceAll('_', ' ')}</span><span className="py-1">{detail.priority} priority</span></div>
+    </header>
+    <OverviewTab detail={detail} setDetail={setDetail} reload={reload} />
+    <section aria-label="Latest progress" className="border-t border-border pt-5">
+      <h2 className="text-sm font-medium">Latest progress</h2>
+      <p className="mt-3 text-sm text-muted-foreground">{detail.blockedReason ? `Blocked: ${detail.blockedReason}` : detail.execution?.progress ? (typeof detail.execution.progress === 'string' ? detail.execution.progress : detail.execution.progress.text) : 'No published progress yet.'}</p>
+      {detail.claimActivity ? <button className="mt-3 block text-left text-sm text-muted-foreground hover:text-foreground" onClick={()=>onSelectClaim(detail.claimActivity!.claimId)}>{detail.claimActivity.claimType === 'chat' ? 'Agent session' : detail.claimActivity.claimType} · {detail.claimActivity.status === 'claimed' && detail.claimActivity.claimType === 'chat' ? 'Open' : detail.claimActivity.status}{detail.claimActivity.endReason ? ` · ${detail.claimActivity.endReason.replaceAll('_',' ')}` : ''}</button> : null}
+      {detail.execution?.attentionCount ? <p className="mt-2 text-sm">Needs attention · {detail.execution.attentionCount}</p> : null}
+      {attention.map(claim => <Button key={claim.claimId} variant="outline" size="sm" className="mt-3 mr-2" onClick={()=>onSelectClaim(claim.claimId)}>{can(detail,'run.steer') ? attention.length === 1 ? 'Needs your input — view session' : `Needs your input — view ${claim.claimType} ${claim.claimId}` : 'Session needs attention'}</Button>)}
+      {can(detail,'internal.read') && unread > 0 ? <p className="mt-2 text-xs text-muted-foreground">{unread} active {unread === 1 ? 'session has' : 'sessions have'} unread activity.</p> : null}
+      {liveWork.length > 0 ? <ul className="mt-3 space-y-1 text-sm">{liveWork.map(claim => <li key={claim.claimId}><button className="text-muted-foreground hover:text-foreground" onClick={()=>onSelectClaim(claim.claimId)}>{claim.claimType} · attempt {claim.attempt} · {claim.status}</button></li>)}</ul> : null}
+      <StartTaskWork detail={detail} repo={repo} reload={reload} onSelectClaim={onSelectClaim}/>
+      {can(detail,'internal.read') && <RetainedWorkNotice taskId={detail.id}/>}
+    </section>
+    <TaskSessions detail={detail} reload={reload} onSelectClaim={onSelectClaim} attendedAvailable={attendedAvailable} repo={repo} onProgress={setProgress} />
+    <div>
+      <Disclosure title="Workpad & artifacts"><WorkpadTab detail={detail} setDetail={setDetail} reload={reload} /></Disclosure>
+      <Disclosure title="Ideas"><IdeasTab detail={detail} /></Disclosure>
+      <Disclosure title="Run history"><TaskSessions detail={detail} reload={reload} onSelectClaim={onSelectClaim} history /></Disclosure>
     </div>
-  );
+    <CommentsPanel detail={detail} canInternal={can(detail, 'internal.read')} reload={reload} />
+  </div>;
 }
 
 function OverviewTab({
@@ -244,9 +199,9 @@ function OverviewTab({
   }
 
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-      <div className="flex flex-col gap-4 lg:col-span-2">
-        <section aria-label="Description" className="rounded-lg border border-border bg-card p-4">
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-4">
+        <section aria-label="Description" className="py-1">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-medium">Description</h2>
             {canWrite && !editing ? (
@@ -335,39 +290,11 @@ function OverviewTab({
           )}
         </section>
 
-        <CriteriaPanel detail={detail} reload={reload} />
-        <CommentsPanel detail={detail} canInternal={canInternal} reload={reload} />
+        <Disclosure title={`Acceptance criteria (${detail.criteria?.length ?? 0})`}><CriteriaPanel detail={detail} reload={reload} /></Disclosure>
+
       </div>
 
-      <aside className="flex flex-col gap-4">
-        <section aria-label="Details" className="rounded-lg border border-border bg-card p-4 text-sm">
-          <h2 className="text-sm font-medium">Details</h2>
-          <dl className="mt-2 flex flex-col gap-1.5 text-xs text-muted-foreground">
-            <div className="flex justify-between gap-2">
-              <dt>Status</dt>
-              <dd>{detail.status}</dd>
-            </div>
-            <div className="flex justify-between gap-2">
-              <dt>Priority</dt>
-              <dd>{detail.priority}</dd>
-            </div>
-            {detail.assigneeName ? (
-              <div className="flex justify-between gap-2">
-                <dt>Assignee</dt>
-                <dd>{detail.assigneeName}</dd>
-              </div>
-            ) : null}
-            <div className="flex justify-between gap-2">
-              <dt>Version</dt>
-              <dd>{detail.version}</dd>
-            </div>
-            <div className="flex justify-between gap-2">
-              <dt>Created</dt>
-              <dd>{new Date(detail.createdAt).toLocaleString()}</dd>
-            </div>
-          </dl>
-        </section>
-      </aside>
+
     </div>
   );
 }
@@ -477,6 +404,8 @@ function CommentsPanel({
   const [busy, setBusy] = useState(false);
 
   const commentRequests=useRef(new LatestRequest());
+  const commentActive=useRef(true);
+  useEffect(()=>{commentActive.current=true;return()=>{commentActive.current=false;};},[]);
   const [commentError,setCommentError]=useState<string|null>(null);
   const loadComments=useCallback(async(parent?:AbortSignal)=>{
     const signal=commentRequests.current.begin(parent);
@@ -484,8 +413,9 @@ function CommentsPanel({
       const result=await collabFetch<Comment[]>(`/tasks/${detail.id}/comments`,{signal});
       if(commentRequests.current.current(signal)){setComments(result.data);setCommentError(null);}
     }catch(err){if(commentRequests.current.current(signal)){setComments([]);setCommentError(err instanceof ApiError?err.message:'Could not load discussion.');}}
-  },[detail.id]);
+  },[detail.id,canInternal]);
   useEffect(()=>{
+    setBody(''); setVisibility('client'); setComments(null);
     const stop=pollResource(loadComments);
     return ()=>{stop();commentRequests.current.dispose();};
   },[loadComments]);
@@ -499,22 +429,24 @@ function CommentsPanel({
         method: 'POST',
         body: { body: body.trim(), visibility },
       });
+      if(!commentActive.current)return;
       setBody('');
       await loadComments();
       await reload();
-    } catch(err){setCommentError(err instanceof ApiError?err.message:'Could not post the comment.');}
+    } catch(err){if(commentActive.current)setCommentError(err instanceof ApiError?err.message:'Could not post the comment.');}
     finally {
-      setBusy(false);
+      if(commentActive.current)setBusy(false);
     }
   }
 
   return (
-    <section aria-label="Discussion" className="rounded-lg border border-border bg-card p-4">
+    <section aria-label="Discussion" className="border-t border-border pt-5">
       <h2 className="text-sm font-medium">Discussion</h2>
+      <p className="mt-2 text-xs text-muted-foreground">For your collaborators, not agent instructions.</p>
       {commentError?<p role="alert" className="mt-2 text-xs text-destructive">{commentError}</p>:null}
       <ul className="mt-2 flex flex-col gap-3">
         {(comments ?? []).length === 0 ? <li className="text-xs text-muted-foreground">No comments yet.</li> : null}
-        {(comments ?? []).map((comment) => (
+        {(comments ?? []).filter(comment => canInternal || comment.visibility !== 'internal').map((comment) => (
           <li key={comment.id} className="rounded-md border border-border bg-background p-2.5 text-sm">
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <span className="font-medium text-foreground">{comment.authorName}</span>
@@ -537,6 +469,7 @@ function CommentsPanel({
         <form onSubmit={submit} className="mt-3 flex flex-col gap-2">
           <textarea
             className="min-h-[64px] rounded-md border border-border bg-background px-3 py-2 text-sm"
+            aria-label="Comment"
             placeholder="Write a comment…"
             value={body}
             onChange={(e) => setBody(e.target.value)}

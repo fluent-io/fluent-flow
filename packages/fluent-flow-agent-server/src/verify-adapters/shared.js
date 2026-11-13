@@ -16,14 +16,14 @@ export function findWorktreeRoot(startDir) {
   return walkUp(startDir, (dir) => existsSync(join(dir, '.git')));
 }
 
-export function detectPackageManager(startDir, { stopAt } = {}) {
+export function detectPackageManager(startDir, { stopAt = undefined } = {}) {
   const boundary = normalizeBoundary(startDir, stopAt);
   const found = walkUp(startDir, (dir) => LOCKFILES.some(([file]) => existsSync(join(dir, file))), { stopAt: boundary });
   if (!found) return 'npm';
   return LOCKFILES.find(([file]) => existsSync(join(found, file)))?.[1] ?? 'npm';
 }
 
-export function hasAncestorFile(startDir, file, { stopAt } = {}) {
+export function hasAncestorFile(startDir, file, { stopAt = undefined } = {}) {
   const boundary = normalizeBoundary(startDir, stopAt);
   return !!walkUp(startDir, (dir) => existsSync(join(dir, file)), { stopAt: boundary });
 }
@@ -55,7 +55,7 @@ function hasFile(dir, names) {
   return names.some((name) => existsSync(join(dir, name)));
 }
 
-export function findPackageRoot(startDir, matcher, { stopAt } = {}) {
+export function findPackageRoot(startDir, matcher, { stopAt = undefined } = {}) {
   const boundary = normalizeBoundary(startDir, stopAt);
   return walkUp(startDir, (dir) => {
     const pkg = readPackageJson(dir);

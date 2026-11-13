@@ -15,6 +15,7 @@ export async function expireClaimsTick() {
     // Re-dispatch: for each expired claim, create a new claim at attempt + 1
     // (shared with the transient-failure path in the claim-result route).
     for (const claim of expired) {
+      if (claim.claim_type === 'chat') continue;
       try {
         const newClaim = await redispatchClaim(claim);
         if (newClaim) {

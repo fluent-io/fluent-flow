@@ -33,6 +33,9 @@ function agent(overrides: Partial<AgentListItem> = {}): AgentListItem {
     deployment: 'local',
     capacity: 4,
     active_slots: 1,
+    busy_chat: 0,
+    busy_work: 0,
+    max_chat_slots: null,
     status: 'online',
     last_seen_at: new Date(Date.now() - 5 * 60_000),
     ...overrides,
@@ -58,22 +61,44 @@ afterEach(() => {
 });
 
 describe('AgentTable columns', () => {
-  it('renders the Agent Server, Provider, Slots, Status, Deployment and Last Seen columns in order', () => {
+  it('renders the Agent Server, Provider, Slots, Busy, Chat slots, Status, Deployment and Last Seen columns in order', () => {
     render(<AgentTable agents={[agent()]} />);
     const headers = screen.getAllByRole('columnheader').map((header) => header.textContent?.trim());
-    expect(headers).toEqual(['Agent Server', 'Provider', 'Slots', 'Status', 'Deployment', 'Last Seen']);
+    expect(headers).toEqual(['Agent Server', 'Provider', 'Slots', 'Busy', 'Chat slots', 'Status', 'Deployment', 'Last Seen']);
   });
 
-  it('shows the server name, provider badge, slots, status, deployment and last seen for a local server', () => {
+  it('shows the server name, provider badge, slots, busy split, chat capacity, status, deployment and last seen for a local server', () => {
     render(<AgentTable agents={[agent({ agent_type: 'codex', active_slots: 2, capacity: 8, status: 'busy' })]} />);
     const cells = cellTexts('laptop-1');
-    expect(cells).toHaveLength(6);
+    expect(cells).toHaveLength(8);
     expect(cells[0]).toBe('laptop-1');
     expect(cells[1]).toBe('codex');
     expect(cells[2]).toBe('2 / 8');
-    expect(cells[3]).toMatch(/busy/);
-    expect(cells[4]).toBe('Local');
-    expect(cells[5]).toBe('5m ago');
+    expect(cells[3]).toBe('0 (chat 0 / work 0)');
+    expect(cells[4]).toBe('7 effective of 8 · configured default');
+    expect(cells[5]).toMatch(/busy/);
+    expect(cells[6]).toBe('Local');
+    expect(cells[7]).toBe('5m ago');
+  });
+
+  it('reports the authoritative claimed chat and work split', () => {
+    render(<AgentTable agents={[agent({ busy_chat: 2, busy_work: 1 })]} />);
+    expect(cellTexts('laptop-1')[3]).toBe('3 (chat 2 / work 1)');
+  });
+
+  it('marks capacity-1 agents as chats disabled', () => {
+    render(<AgentTable agents={[agent({ capacity: 1 })]} />);
+    expect(cellTexts('laptop-1')[4]).toBe('chats disabled · configured default');
+  });
+
+  it.each([8, null])('keeps configured zero disabled when reported capacity is %s', (capacity) => {
+    render(<AgentTable agents={[agent({ capacity, max_chat_slots: 0 })]} />);
+    expect(cellTexts('laptop-1')[4]).toBe('chats disabled · configured 0');
+  });
+
+  it('reports unknown chat capacity honestly when the agent never advertised one', () => {
+    render(<AgentTable agents={[agent({ capacity: null, max_chat_slots: 4 })]} />);
+    expect(cellTexts('laptop-1')[4]).toBe('unknown (agent capacity not advertised) · configured 4');
   });
 });
 
@@ -107,7 +132,7 @@ describe('AgentTable deployment', () => {
     [null, '\u2014'],
   ] as const)('renders deployment %j as %j', (deployment, label) => {
     render(<AgentTable agents={[agent({ deployment })]} />);
-    expect(cellTexts('laptop-1')[4]).toBe(label);
+    expect(cellTexts('laptop-1')[6]).toBe(label);
   });
 
   it('renders each agent with its own slots and deployment', () => {
@@ -120,9 +145,9 @@ describe('AgentTable deployment', () => {
         ]}
       />,
     );
-    expect(cellTexts('laptop-1')).toEqual(['laptop-1', 'claude-code', '1 / 2', expect.stringMatching(/online/), 'Local', '5m ago']);
-    expect(cellTexts('docker-1')).toEqual(['docker-1', 'codex', '4 / 4', expect.stringMatching(/busy/), 'Self-hosted', '5m ago']);
-    expect(cellTexts('cloud-1')).toEqual(['cloud-1', 'claude-code', '0 / \u2014', expect.stringMatching(/offline/), 'Hosted', '\u2014']);
+    expect(cellTexts('laptop-1')).toEqual(['laptop-1', 'claude-code', '1 / 2', '0 (chat 0 / work 0)', '1 effective of 2 · configured default', expect.stringMatching(/online/), 'Local', '5m ago']);
+    expect(cellTexts('docker-1')).toEqual(['docker-1', 'codex', '4 / 4', '0 (chat 0 / work 0)', '3 effective of 4 · configured default', expect.stringMatching(/busy/), 'Self-hosted', '5m ago']);
+    expect(cellTexts('cloud-1')).toEqual(['cloud-1', 'claude-code', '0 / \u2014', '0 (chat 0 / work 0)', 'unknown (agent capacity not advertised) · configured default', expect.stringMatching(/offline/), 'Hosted', '\u2014']);
   });
 });
 

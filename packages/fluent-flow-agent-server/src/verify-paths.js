@@ -46,7 +46,7 @@ export function readJsonIfExists(path) {
   }
 }
 
-export function walkUp(start, predicate, { stopAt } = {}) {
+export function walkUp(start, predicate, { stopAt = undefined } = {}) {
   let current = resolve(start);
   while (true) {
     if (predicate(current)) return current;

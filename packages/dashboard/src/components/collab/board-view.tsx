@@ -14,6 +14,9 @@ import { boardScope, createTaskTarget, useCurrentProject, useSyncCurrentProject 
 import type { HostReachability, Project, RunState, Task, TaskStatus } from '@/lib/collab/types';
 import { ExecutionBadge } from './execution-badge';
 import { CreateTaskDialog } from './create-task-dialog';
+import { NewSessionDialog } from './new-session-dialog';
+import { TaskDrawer } from './task-drawer';
+import { taskHref, taskSelection } from '@/lib/collab/task-navigation';
 import { cn } from '@/lib/utils';
 
 const LANES: { status: TaskStatus; label: string }[] = [
@@ -26,7 +29,7 @@ const LANES: { status: TaskStatus; label: string }[] = [
 interface ExecutionProjection {
   latestRun: { id: string; state: RunState } | null;
   hostReachability: HostReachability | null;
-  progress: { text: string; percent: number | null } | null;
+  progress: string | { text: string; percent: number | null } | null;
   attentionCount: number;
 }
 
@@ -42,6 +45,7 @@ const PRIORITY_CLASS: Record<string, string> = {
 export function BoardView() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const selection = taskSelection(searchParams);
   const { me, error: meError, reload: reloadMe } = useMe();
 
   const workspaceId = searchParams.get('workspaceId') ?? '';
@@ -74,6 +78,7 @@ export function BoardView() {
   const [truncated, setTruncated] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [createIn, setCreateIn] = useState<{ status: TaskStatus; gen: number } | null>(null);
+  const [newSession, setNewSession] = useState(false);
   const [showCancelled, setShowCancelled] = useState(false);
   const boardVersions = useRef<Map<string, number>>(new Map());
 
@@ -250,11 +255,13 @@ export function BoardView() {
 
   const createTarget = createTaskTarget(projects, me, projectId || null);
   const canWriteAnywhere = createTarget.projectIds.length > 0;
+  const chatProjects = projects.filter(p => p.executionMode === 'chat' && ['task.write','run.start','internal.read'].every(cap => capabilitiesFor(me,p.id).includes(cap)));
+  const sessionAuthority = `${scopeKey}:${me?.principal.id}:${me?.principal.sessionVersion}:${chatProjects.map(p=>p.id).join(',')}`;
 
   return (
     <div className="flex h-full flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2">
-        <h1 className="text-lg font-semibold">Board</h1>
+        <h1 id="board-heading" tabIndex={-1} className="text-lg font-semibold">Board</h1>
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <div className="relative">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
@@ -303,6 +310,7 @@ export function BoardView() {
           <Button variant="outline" size="sm" onClick={() => void refresh()}>
             <RefreshCw className="mr-1 h-3.5 w-3.5" /> Refresh
           </Button>
+          {chatProjects.length > 0 ? <Button variant="outline" size="sm" onClick={()=>setNewSession(true)}><Plus className="mr-1 h-3.5 w-3.5"/>New session</Button> : null}
           {canWriteAnywhere ? (
             <Button size="sm" onClick={() => setCreateIn({ status: 'backlog', gen: scopeGen.current })}>
               <Plus className="mr-1 h-3.5 w-3.5" /> New task
@@ -354,6 +362,7 @@ export function BoardView() {
                 <TaskCard
                   key={task.id}
                   task={task}
+                  selectionHref={taskHref(searchParams.toString(), task.id)}
                   projectName={projects.find((p) => p.id === task.projectId)?.name ?? ''}
                   canWrite={capabilitiesFor(me, task.projectId).includes('task.write')}
                   tailExcept={(status, excludeId) => tailOf(tasks, status, task.projectId, excludeId)}
@@ -382,6 +391,7 @@ export function BoardView() {
               <TaskCard
                 key={task.id}
                 task={task}
+                  selectionHref={taskHref(searchParams.toString(), task.id)}
                 projectName={projects.find((p) => p.id === task.projectId)?.name ?? ''}
                 canWrite={capabilitiesFor(me, task.projectId).includes('task.write')}
                 tailExcept={(status, excludeId) => tailOf(tasks, status, task.projectId, excludeId)}
@@ -402,6 +412,7 @@ export function BoardView() {
               <TaskCard
                 key={task.id}
                 task={task}
+                  selectionHref={taskHref(searchParams.toString(), task.id)}
                 projectName={projects.find((p) => p.id === task.projectId)?.name ?? ''}
                 canWrite={capabilitiesFor(me, task.projectId).includes('task.write')}
                 tailExcept={(status, excludeId) => tailOf(tasks, status, task.projectId, excludeId)}
@@ -429,6 +440,12 @@ export function BoardView() {
           }}
         />
       ) : null}
+      {newSession && chatProjects.length > 0 ? <NewSessionDialog key={sessionAuthority} projects={chatProjects} onClose={()=>setNewSession(false)} onCreated={result=>{
+        setNewSession(false); void refresh(); router.push(taskHref(searchParams.toString(),result.taskId,result.claim.id),{scroll:false});
+      }}/> : null}
+      <TaskDrawer taskId={selection.taskId} claimId={selection.claimId}
+        onClose={()=>router.replace(taskHref(searchParams.toString(),null),{scroll:false})}
+        onSelectClaim={id=>router.push(taskHref(searchParams.toString(),selection.taskId,id),{scroll:false})}/>
       {loading ? <p className="text-xs text-muted-foreground">Loading…</p> : null}
     </div>
   );
@@ -447,8 +464,10 @@ function TaskCard({
   onDropCard,
   onMove,
   compact,
+  selectionHref,
 }: {
   task: BoardTask;
+  selectionHref: string;
   projectName: string;
   canWrite: boolean;
   tailExcept: (status: TaskStatus, excludeId: string) => string | null;
@@ -475,7 +494,7 @@ function TaskCard({
       )}
     >
       <div className="flex items-start justify-between gap-2">
-        <Link href={`/tasks/${task.id}`} className="text-sm font-medium hover:underline">
+        <Link href={selectionHref} scroll={false} data-task-link={task.id} className="text-sm font-medium hover:underline">
           {task.title}
         </Link>
         {canWrite ? (
@@ -488,11 +507,12 @@ function TaskCard({
           </button>
         ) : null}
       </div>
+      {task.claimActivity ? <p className="mt-2 text-[11px] text-muted-foreground">{task.claimActivity.claimType === 'chat' ? 'Agent session' : task.claimActivity.claimType} · {task.claimActivity.claimType === 'chat' && task.claimActivity.status === 'claimed' ? 'Open' : task.claimActivity.status}{task.claimActivity.needsInput ? ' · Needs input' : ''}</p> : null}
       {task.assigneeName ? (
         <div className="mt-1 text-[11px] text-muted-foreground">assignee: {task.assigneeName}</div>
       ) : null}
       {task.execution?.progress ? (
-        <div className="mt-1 text-[11px] text-muted-foreground">{task.execution.progress.text}</div>
+        <div className="mt-1 text-[11px] text-muted-foreground">{typeof task.execution.progress === 'string' ? task.execution.progress : task.execution.progress.text}</div>
       ) : null}
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
         <span className="rounded border border-border bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground">

@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { ApiError, collabFetch } from '@/lib/collab/api';
+import { ApiError, collabFetch, collabFetchAll } from '@/lib/collab/api';
 import { createClaimEventState, reduceClaimEvents, type ClaimEventEntity, type ClaimEventState } from '@/lib/collab/claim-events';
+import { markClaimRead } from '@/lib/collab/claim-progress';
 import { LatestRequest, pollResource } from '@/lib/collab/live';
 import type {
   ClaimExecution,
@@ -16,6 +17,7 @@ import type {
 } from '@/lib/collab/types';
 import { capabilitiesFor, useMe } from '@/lib/collab/use-me';
 import type { TaskDetail } from './task-detail';
+import { ChatHandoffControls } from './chat-handoff-controls';
 
 const MAX_PAGES = 20;
 const selectClass = 'h-9 w-full rounded-md border border-border bg-background px-2 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring';
@@ -80,17 +82,19 @@ function schemaProperty(value: unknown): SchemaProperty | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as SchemaProperty : null;
 }
 
-function EntityView({ entity }: { entity: ClaimEventEntity }) {
+function EntityView({ entity, compact = false }: { entity: ClaimEventEntity; compact?: boolean }) {
+  if (compact && ['tool_call','terminal','agent_thought'].includes(entity.type)) return <details className="border-b border-border py-3"><summary className="cursor-pointer text-xs text-muted-foreground">{typeof entity.title === 'string' ? entity.title : entity.type === 'agent_thought' ? 'Agent reasoning' : 'Tool activity'}</summary><div className="mt-3"><EntityView entity={entity}/></div></details>;
   if (typeof entity.type !== 'string') return <article className="rounded-md border border-border p-3 text-xs text-muted-foreground">unknown</article>;
   if (['agent_message', 'user_message', 'agent_thought', 'session_message'].includes(entity.type)) {
     return (
-      <article className="rounded-md border border-border bg-background/40 p-3">
-        <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{entity.type.replaceAll('_', ' ')}</div>
+      <article className={compact ? entity.type === 'user_message' ? 'ml-8 rounded-md bg-secondary p-4' : 'py-4' : 'rounded-md border border-border bg-background/40 p-3'}>
+        <div className="mb-2 text-xs text-muted-foreground">{compact ? entity.type === 'user_message' ? 'You' : 'Agent' : entity.type.replaceAll('_', ' ')}</div>
         <div className="space-y-1 whitespace-pre-wrap break-words text-sm">
           {textBlocks(entity.content).map((block, index) => block.type === 'text'
             ? <span key={index}>{typeof block.text === 'string' ? block.text : ''}</span>
             : <span key={index} className="block text-xs text-muted-foreground">[{block.type ?? 'unsupported'} content]</span>)}
         </div>
+        {compact && typeof entity.commandStatus === 'string' ? <p className="mt-2 text-[11px] text-muted-foreground">{{acked:'Accepted',pending:'Queued',delivered:'Delivered · awaiting acceptance',failed:'Rejected',uncertain:'Delivery uncertain',cancelled:'Cancelled'}[entity.commandStatus] ?? entity.commandStatus}</p> : null}
       </article>
     );
   }
@@ -141,10 +145,13 @@ function EntityView({ entity }: { entity: ClaimEventEntity }) {
   return <article className="rounded-md border border-border p-3 text-xs text-muted-foreground">{entity.type.replaceAll('_', ' ')}</article>;
 }
 
-function Timeline({ state }: { state: ClaimEventState }) {
+type PromptHistory = {commandId:number;text:string;status:string;createdAt:string;messageId?:string|null};
+function Timeline({ state, compact = false, prompts = [] }: { state: ClaimEventState; compact?: boolean; prompts?: PromptHistory[] }) {
+  const entries:ClaimEventEntity[] = [...state.entities, ...prompts.filter(p=>!p.messageId||!state.entities.some(e=>e.type==='user_message'&&e.id===p.messageId)).map(p=>({key:`prompt:${p.commandId}`,id:String(p.commandId),type:'user_message',firstSeenAt:p.createdAt,commandStatus:p.status,content:[{type:'text',text:p.text}]}))];
+  if(compact) entries.sort((a,b)=>String(a.firstSeenAt??'').localeCompare(String(b.firstSeenAt??'')));
   return (
-    <div role="log" tabIndex={0} aria-label="Execution transcript" className="max-h-[34rem] space-y-2 overflow-auto rounded-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
-      {state.entities.map((entity) => <EntityView key={entity.key} entity={entity} />)}
+    <div role="log" tabIndex={0} aria-label="Execution transcript" className={compact ? 'space-y-4 rounded-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring' : 'max-h-[34rem] space-y-2 overflow-auto rounded-md focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'}>
+      {entries.map((entity) => <EntityView key={entity.key} entity={entity} compact={compact} />)}
       {state.notices.map((notice) => (
         <div key={`notice:${notice.seq}`} className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm">
           <strong>{notice.title}</strong>{notice.description && <p className="mt-1 text-muted-foreground">{notice.description}</p>}
@@ -320,12 +327,26 @@ function RequestCard({ request, active, submit }: { request: ClaimExecutionReque
   );
 }
 
-export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; reload: () => Promise<void> }) {
+function QueueDeadline({deadline}:{deadline:string}) {
+  const [now,setNow]=useState(Date.now());
+  useEffect(()=>{const timer=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(timer);},[]);
+  const remaining=Math.max(0,Math.ceil((Date.parse(deadline)-now)/1000));
+  return <span> · {Number.isFinite(remaining)&&remaining>0?`${remaining} seconds remaining`:'Refreshing queue status…'}</span>;
+}
+
+type PanelProps = { detail: TaskDetail; reload: () => Promise<void>; selectedClaimId?: number; onBack?: () => void };
+export function TaskClaimExecutionTab(props: PanelProps) {
+  const { me } = useMe();
+  const caps = (props.detail.capabilities ?? []).filter(cap => capabilitiesFor(me, props.detail.projectId).includes(cap));
+  const scope = `${props.detail.id}:${props.selectedClaimId}:${me?.principal.id}:${me?.principal.sessionVersion}:${caps.join(',')}`;
+  return <ClaimExecutionPanel key={scope} {...props} />;
+}
+function ClaimExecutionPanel({ detail, reload, selectedClaimId, onBack }: PanelProps) {
   const { me } = useMe();
   const projectCapabilities = capabilitiesFor(me, detail.projectId);
   const allowed = useCallback((capability: string) => (detail.capabilities?.includes(capability) ?? false) && projectCapabilities.includes(capability), [detail, projectCapabilities]);
   const internalRead = allowed('internal.read');
-  const canStart = allowed('run.start');
+  const canStart = selectedClaimId === undefined && detail.status === 'ready' && allowed('run.start');
   const canSteer = internalRead && allowed('run.steer');
   const canCancel = internalRead && allowed('run.cancel');
 
@@ -334,6 +355,9 @@ export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; 
   const [selected, setSelected] = useState<ClaimExecution | ClaimExecutionBadge | null>(null);
   const [eventState, setEventState] = useState(createClaimEventState);
   const [requests, setRequests] = useState<ClaimExecutionRequest[]>([]);
+  const [promptHistory,setPromptHistory]=useState<PromptHistory[]>([]);
+  const historyRequest=useRef(new LatestRequest());
+  const [historyTruncated,setHistoryTruncated]=useState(false);
   const [loading, setLoading] = useState(true);
   const [denied, setDenied] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
@@ -345,6 +369,34 @@ export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; 
   const [startDraft, setStartDraft] = useState({ claimType: 'spec', repo: '', prNumber: '', branch: '', instructions: '' });
   const [startError, setStartError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const commandBusy = useRef(false);
+  const [receipt, setReceipt] = useState<string | null>(null);
+  const [receiptCommandId, setReceiptCommandId] = useState<number | null>(null);
+  useEffect(() => {
+    if (!internalRead || selectedId === null || receiptCommandId === null || !inline) return;
+    let stopped = false;
+    const stop = pollResource(async signal => {
+      try {
+        const result = await collabFetch<{status:string}>(`/claim-executions/${selectedId}/commands/${receiptCommandId}`, {signal});
+        if (stopped || signal?.aborted) return;
+        const labels:Record<string,string> = {pending:'Queued — waiting for agent acceptance.',delivered:'Delivered — waiting for agent acceptance.',acked:'Accepted by agent.',failed:'The agent rejected this command.',uncertain:'Delivery is uncertain. It will not be replayed automatically.',cancelled:'Command cancelled.'};
+        setReceipt(labels[result.data.status] ?? 'Command status unavailable.');
+        if (['acked','failed','uncertain','cancelled'].includes(result.data.status)) setReceiptCommandId(null);
+      } catch(error) {
+        if (stopped || signal?.aborted) return;
+        if (isDenied(error)) clearPrivate();
+        else setReceipt('Command status is temporarily unavailable. Do not resend an uncertain prompt.');
+      }
+    }, 1000);
+    return () => {stopped=true;stop();};
+  }, [internalRead, selectedId, receiptCommandId]);
+  const [following, setFollowing] = useState(true);
+  const postedReadSeq = useRef(0);
+  const output = useRef<HTMLDivElement>(null);
+  const endIntent = useRef(newKey());
+  const inline = selectedClaimId !== undefined;
+  useEffect(() => { if (following && output.current) output.current.scrollTop = output.current.scrollHeight; }, [following, eventState.lastSeq, promptHistory.length]);
+  useEffect(() => () => { selectedIdRef.current = null; }, []);
   const [, setAnsweringVersion] = useState(0);
 
   const listRequest = useRef(new LatestRequest());
@@ -369,6 +421,8 @@ export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; 
     setSelected(null);
     setEventState(createClaimEventState());
     setRequests([]);
+    setPromptHistory([]);
+    historyRequest.current.dispose();
     setPrompt('');
     setCommandError(null);
     setSubmitting(false);
@@ -380,6 +434,7 @@ export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; 
     answerInFlight.current.clear();
     setAnsweringVersion((current) => current + 1);
     eventCursor.current = '';
+    postedReadSeq.current = 0;
     setSelectedId(claimId);
   }, []);
 
@@ -391,6 +446,8 @@ export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; 
     setSelected(null);
     setEventState(createClaimEventState());
     setRequests([]);
+    setPromptHistory([]);
+    historyRequest.current.dispose();
     setPrompt('');
     setStartDraft({ claimType: 'spec', repo: '', prNumber: '', branch: '', instructions: '' });
     setStartOpen(false);
@@ -403,6 +460,7 @@ export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; 
     answerInFlight.current.clear();
     setAnsweringVersion((current) => current + 1);
     eventCursor.current = '';
+    postedReadSeq.current = 0;
     deniedRef.current = true;
     setDenied(true);
   }, []);
@@ -414,6 +472,32 @@ export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; 
     }
     return false;
   }, [clearPrivate]);
+
+  const [readTick, setReadTick] = useState(0);
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') setReadTick((tick) => tick + 1);
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
+  useEffect(() => {
+    if (!internalRead || selectedId === null || !following || eventState.renderedSeq <= 0) return;
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    const seq = eventState.renderedSeq;
+    const claimId = selectedId;
+    if (postedReadSeq.current >= seq) return;
+    void (async () => {
+      try {
+        const result = await markClaimRead(claimId, seq);
+        if (selectedIdRef.current === claimId) postedReadSeq.current = Math.max(postedReadSeq.current, result.lastSeq);
+      } catch (error) {
+        if (selectedIdRef.current !== claimId) return;
+        if (isDenied(error)) { clearPrivate(); return; }
+        postedReadSeq.current = 0;
+      }
+    })();
+  }, [internalRead, selectedId, following, eventState.renderedSeq, readTick, clearPrivate]);
 
   const loadClaims = useCallback(async (parent?: AbortSignal) => {
     const signal = listRequest.current.begin(parent);
@@ -431,7 +515,8 @@ export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; 
       if (!listRequest.current.current(signal) || deniedRef.current) return;
       setClaims(collected);
       const currentId = selectedIdRef.current;
-      const nextId = currentId !== null && collected.some((claim) => claim.id === currentId) ? currentId : collected.at(-1)?.id ?? null;
+      const requested = selectedClaimId ?? currentId;
+      const nextId = requested !== null && collected.some(claim => claim.id === requested) ? requested : selectedClaimId === undefined ? collected.at(-1)?.id ?? null : null;
       if (nextId !== currentId) changeSelection(nextId);
       setListError(null);
       setDenied(false);
@@ -441,10 +526,10 @@ export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; 
     } finally {
       if (listRequest.current.current(signal)) setLoading(false);
     }
-  }, [detail.id, handleReadError, changeSelection]);
+  }, [detail.id, handleReadError, changeSelection, selectedClaimId]);
 
   const loadDetail = useCallback(async (parent?: AbortSignal) => {
-    if (selectedId === null) return;
+    if (selectedId === null || !internalRead || deniedRef.current) return;
     const signal = detailRequest.current.begin(parent);
     try {
       const result = await collabFetch<ClaimExecution | ClaimExecutionBadge>(`/claim-executions/${selectedId}`, { signal });
@@ -452,10 +537,10 @@ export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; 
     } catch (error) {
       if (detailRequest.current.current(signal)) handleReadError(error);
     }
-  }, [selectedId, handleReadError]);
+  }, [selectedId, internalRead, handleReadError]);
 
   const loadEvents = useCallback(async (parent?: AbortSignal) => {
-    if (selectedId === null || !internalRead) return;
+    if (selectedId === null || !internalRead || deniedRef.current) return;
     const signal = eventRequest.current.begin(parent);
     try {
       const collected: ClaimExecutionEvent[] = [];
@@ -481,8 +566,16 @@ export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; 
     }
   }, [selectedId, internalRead, handleReadError]);
 
+  const loadPrompts = useCallback(async(parent?:AbortSignal)=>{
+    if(selectedId===null||!internalRead||deniedRef.current||!inline)return;
+    const signal=historyRequest.current.begin(parent);
+    try{const result=await collabFetchAll<PromptHistory>(`/claim-executions/${selectedId}/prompts?limit=100`,{signal});
+      if(historyRequest.current.current(signal)){setPromptHistory(result.data);setHistoryTruncated(result.truncated);}
+    }catch(error){if(!historyRequest.current.current(signal))return;if(!handleReadError(error))setLiveError(true);}
+  },[selectedId,internalRead,handleReadError,inline]);
+
   const loadRequests = useCallback(async (parent?: AbortSignal) => {
-    if (selectedId === null || !internalRead) return;
+    if (selectedId === null || !internalRead || deniedRef.current) return;
     const signal = requestRequest.current.begin(parent);
     try {
       const collected: ClaimExecutionRequest[] = [];
@@ -516,6 +609,8 @@ export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; 
     setSelected(null);
     setEventState(createClaimEventState());
     setRequests([]);
+    setPromptHistory([]);
+    historyRequest.current.dispose();
     setLoading(true);
     setDenied(false);
     setListError(null);
@@ -537,6 +632,8 @@ export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; 
     setSelected(null);
     setEventState(createClaimEventState());
     setRequests([]);
+    setPromptHistory([]);
+    historyRequest.current.dispose();
     setPrompt('');
     setCommandError(null);
     setSubmitting(false);
@@ -548,19 +645,23 @@ export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; 
     answerInFlight.current.clear();
     setAnsweringVersion((current) => current + 1);
     eventCursor.current = '';
+    postedReadSeq.current = 0;
     if (selectedId === null) return;
-    const stopDetail = pollResource(loadDetail);
-    const stopEvents = pollResource(loadEvents);
-    const stopRequests = pollResource(loadRequests);
+    const stopDetail = pollResource(loadDetail, inline ? 1000 : 3000);
+    const stopEvents = pollResource(loadEvents, inline ? 1000 : 3000);
+    const stopRequests = pollResource(loadRequests, inline ? 1000 : 3000);
+    const stopPrompts = pollResource(loadPrompts, 1000);
     return () => {
       stopDetail();
       stopEvents();
       stopRequests();
+      stopPrompts();
+      historyRequest.current.dispose();
       detailRequest.current.dispose();
       eventRequest.current.dispose();
       requestRequest.current.dispose();
     };
-  }, [selectedId, loadDetail, loadEvents, loadRequests]);
+  }, [selectedId, loadDetail, loadEvents, loadRequests, loadPrompts]);
 
   useEffect(() => {
     if (canSteer) return;
@@ -578,13 +679,16 @@ export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; 
     const text = draft.trim();
     const claimId = selectedId;
     const key = promptKey.current;
-    if (!text || !active || claimId === null) return;
+    if (!text || !active || claimId === null || !canSteer || commandBusy.current) return;
+    commandBusy.current = true;
     setSubmitting(true);
     setCommandError(null);
     try {
-      await collabFetch<SubmitClaimCommandResult>(commandPath, { method: 'POST', idempotencyKey: key, body: { kind: 'prompt', payload: { text } } });
+      const result = await collabFetch<SubmitClaimCommandResult>(commandPath, { method: 'POST', idempotencyKey: key, body: { kind: 'prompt', payload: { text } } });
       if (selectedIdRef.current === claimId && promptKey.current === key) {
+        setReceiptCommandId(result.data.commandId);
         setPrompt('');
+        setReceipt('Queued — waiting for agent acceptance.');
         promptKey.current = newKey();
       }
     } catch (error) {
@@ -592,27 +696,33 @@ export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; 
       if (error instanceof ApiError && error.code === 'idempotency_conflict' && promptKey.current === key) promptKey.current = newKey();
       setCommandError(error instanceof ApiError && error.code === 'claim_not_active' ? 'This execution is no longer active.' : 'Prompt could not be sent. Try again.');
     } finally {
+      commandBusy.current = false;
       if (selectedIdRef.current === claimId) setSubmitting(false);
     }
   };
 
-  const cancel = async () => {
+  const cancel = async (kind: 'cancel' | 'end_session' = 'cancel') => {
+    setReceiptCommandId(null);
     const claimId = selectedId;
-    if (claimId === null || !selectedBadge || !['pending', 'claimed'].includes(selectedBadge.status)) return;
+    if (claimId === null || !canCancel || commandBusy.current || !selectedBadge || !['pending', 'claimed'].includes(selectedBadge.status)) return;
+    commandBusy.current = true;
     if (cancelIntent.current.claimId !== claimId) cancelIntent.current = { claimId, key: newKey() };
-    const key = cancelIntent.current.key;
+    const key = kind === 'end_session' ? endIntent.current : cancelIntent.current.key;
     setSubmitting(true);
     setCommandError(null);
     try {
-      await collabFetch<SubmitClaimCommandResult>(commandPath, { method: 'POST', idempotencyKey: key, body: { kind: 'cancel', payload: {} } });
+      await collabFetch<SubmitClaimCommandResult>(commandPath, { method: 'POST', idempotencyKey: key, body: { kind, payload: {} } });
       if (selectedIdRef.current !== claimId) return;
       cancelIntent.current = { claimId, key: newKey() };
+      if (kind === 'end_session') endIntent.current = newKey();
+      setReceipt(kind === 'end_session' ? 'End requested — waiting for session closure.' : 'Stop requested — the session remains open.');
       await loadClaims();
     } catch (error) {
       if (selectedIdRef.current !== claimId) return;
       if (error instanceof ApiError && error.code === 'idempotency_conflict') cancelIntent.current = { claimId, key: newKey() };
       setCommandError(error instanceof ApiError && error.code === 'claim_not_active' ? 'This execution is no longer active.' : 'Cancellation could not be sent. Try again.');
     } finally {
+      commandBusy.current = false;
       if (selectedIdRef.current === claimId) setSubmitting(false);
     }
   };
@@ -720,7 +830,9 @@ export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; 
   if (denied) return <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-4 text-sm">Execution access is no longer available.</div>;
 
   return (
-    <div className="space-y-4">
+    <div className={inline ? 'flex h-full min-h-0 flex-col' : 'space-y-4'}>
+      {inline && <div className="border-b border-border p-5"><Button variant="ghost" size="sm" onClick={onBack}>Back to task</Button><h2 className="mt-3 text-sm font-medium">{detail.title} · {selectedBadge?.claimType === 'chat' ? 'Agent session' : 'Execution'} {selectedId}</h2></div>}
+      {inline && !loading && !selectedBadge && <p role="alert" className="p-5">This session is not available on this task.</p>}
       {canStart && <div className="flex justify-end"><Button size="sm" onClick={() => setStartOpen((open) => !open)}>{startOpen ? 'Close start form' : 'Start execution'}</Button></div>}
       {startOpen && <section aria-label="Start execution" className="rounded-lg border border-border bg-card p-4">
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -735,33 +847,39 @@ export function TaskClaimExecutionTab({ detail, reload }: { detail: TaskDetail; 
       </section>}
 
       {listError && <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm">{listError}</div>}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <section aria-label="Claims" className="rounded-lg border border-border bg-card p-4">
+      <div className={inline ? "flex min-h-0 flex-1 flex-col" : "grid grid-cols-1 gap-4 lg:grid-cols-3"}>
+        {!inline && <section aria-label="Claims" className="rounded-lg border border-border bg-card p-4">
           <h3 className="mb-3 text-sm font-semibold">Claim executions</h3>
           {loading && <div role="status" className="space-y-2"><span className="sr-only">Loading executions</span><div className="h-14 animate-pulse rounded-md bg-secondary" /><div className="h-14 animate-pulse rounded-md bg-secondary" /></div>}
           {!loading && claims.length === 0 && !listError && <div className="rounded-md border border-dashed border-border p-4 text-sm text-muted-foreground">No claim executions yet. Start an execution when the task is ready.</div>}
           <div className="space-y-2">{claims.map((claim) => <button key={claim.id} type="button" aria-pressed={selectedId === claim.id} onClick={() => selectClaim(claim.id)} className={`w-full rounded-md border p-3 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${selectedId === claim.id ? 'border-primary/50 bg-primary/5' : 'border-border hover:bg-accent/40'}`}><div className="flex items-center justify-between gap-2"><span className="font-medium">{claim.claimType} · attempt {claim.attempt}</span><span className="rounded border border-border px-1.5 py-0.5 text-[11px] font-medium">{statusLabel(claim.status)}</span></div><div className="mt-1 text-xs text-muted-foreground">{new Date(claim.createdAt).toLocaleString()}</div></button>)}</div>
-        </section>
+        </section>}
 
-        <section aria-label="Execution detail" className="space-y-4 lg:col-span-2">
-          {selectedBadge && <div className="rounded-lg border border-border bg-card p-4">
-            <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-semibold">{selectedBadge.claimType} · attempt {selectedBadge.attempt}</h3><div className="flex gap-2"><span data-claim-status className="rounded border border-border px-1.5 py-0.5 text-[11px] font-medium">{statusLabel(selectedBadge.status)}</span>{eventState.runnerState && <span data-runner-state className="rounded border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium">{runnerLabel(eventState.runnerState.state)}</span>}</div></div>
-            {selected && 'repo' in selected && <div className="mt-3 grid grid-cols-1 gap-2 text-sm sm:grid-cols-2"><div className="min-w-0 break-words"><span className="text-muted-foreground">Repository </span>{selected.repo}</div>{selected.prNumber !== null && <div><span className="text-muted-foreground">Pull request </span>{selected.prNumber}</div>}{detailPayload && typeof detailPayload.branch === 'string' && <div className="min-w-0 break-words"><span className="text-muted-foreground">Branch </span>{detailPayload.branch}</div>}{detailPayload && typeof detailPayload.instructions === 'string' && <div className="min-w-0 whitespace-pre-wrap break-words sm:col-span-2"><span className="text-muted-foreground">Instructions </span>{detailPayload.instructions}</div>}</div>}
-            {canCancel && ['pending', 'claimed'].includes(selectedBadge.status) && <div className="mt-3"><Button variant="destructive" size="sm" disabled={submitting} onClick={() => void cancel()}>Cancel execution</Button></div>}
+        <section aria-label="Execution detail" className={inline ? "flex min-h-0 flex-1 flex-col" : "space-y-4 lg:col-span-2"}>
+          {selectedBadge && <div className={inline ? "shrink-0 border-b border-border px-5 py-3" : "rounded-lg border border-border bg-card p-4"}>
+            <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="text-sm font-medium">{inline && selectedBadge.claimType === 'chat' ? `Agent session ${selectedBadge.id}` : `${selectedBadge.claimType} · attempt ${selectedBadge.attempt}`}</h3><div className="flex gap-2"><span data-claim-status className="rounded border border-border px-1.5 py-0.5 text-[11px] font-medium">{inline && selectedBadge.claimType === 'chat' && selectedBadge.status === 'claimed' ? 'Open' : statusLabel(selectedBadge.status)}</span>{eventState.runnerState && <span data-runner-state className="rounded border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium">{runnerLabel(eventState.runnerState.state)}</span>}</div></div>
+            {!inline && selected && 'repo' in selected && <div className="mt-3 grid grid-cols-1 gap-2 text-sm sm:grid-cols-2"><div className="min-w-0 break-words"><span className="text-muted-foreground">Repository </span>{selected.repo}</div>{selected.prNumber !== null && <div><span className="text-muted-foreground">Pull request </span>{selected.prNumber}</div>}{detailPayload && typeof detailPayload.branch === 'string' && <div className="min-w-0 break-words"><span className="text-muted-foreground">Branch </span>{detailPayload.branch}</div>}{detailPayload && typeof detailPayload.instructions === 'string' && <div className="min-w-0 whitespace-pre-wrap break-words sm:col-span-2"><span className="text-muted-foreground">Instructions </span>{detailPayload.instructions}</div>}</div>}
+            {selectedBadge.status === 'pending' && <p role="status" className="mt-3 text-sm text-muted-foreground">Waiting for a free slot{selected && 'pendingDeadlineAt' in selected && selected.pendingDeadlineAt ? <QueueDeadline deadline={selected.pendingDeadlineAt}/> : ''}.</p>}
+            {selectedBadge.endReason && <p className="mt-3 text-sm text-muted-foreground">Session ended · {selectedBadge.endReason.replaceAll('_', ' ')}. New sessions start with fresh context.</p>}
+            {canCancel && ['pending', 'claimed'].includes(selectedBadge.status) && <div className="mt-3 flex gap-2">{(selectedBadge.claimType !== 'chat' || selectedBadge.status === 'claimed') && <Button variant="outline" size="sm" disabled={submitting} onClick={() => void cancel()}>{selectedBadge.claimType === 'chat' ? 'Stop response' : 'Cancel execution'}</Button>}{selectedBadge.claimType === 'chat' && <Button variant="outline" size="sm" disabled={submitting} onClick={() => void cancel('end_session')}>End session</Button>}</div>}
+            {internalRead && canSteer && allowed('run.start') && selectedBadge.claimType === 'chat' && selectedBadge.status === 'claimed' && selected && 'repo' in selected && <ChatHandoffControls key={selectedBadge.id} detail={detail} claimId={selectedBadge.id} repo={selected.repo} canCreateTask={allowed('task.write')} reload={reload}/>}
           </div>}
 
           {!internalRead && selectedBadge && <div className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">Internal transcript and controls require operator permissions.</div>}
           {internalRead && selectedBadge && <>
             {liveError && <div role="status" aria-label="Live output" className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm">Live output is temporarily unavailable. Showing last observed output.</div>}
             {catchingUp && <div aria-live="polite" className="text-xs text-muted-foreground">Catching up with execution output…</div>}
-            <div className="rounded-lg border border-border bg-card p-4"><h3 className="mb-3 text-sm font-semibold">Live output</h3><Timeline state={eventState} /></div>
-            {visibleRequests.length > 0 && <div className="rounded-lg border border-border bg-card p-4"><h3 className="mb-3 text-sm font-semibold">Requests</h3><div className="space-y-2">{visibleRequests.map((request) => <RequestCard key={request.requestKey} request={request} active={Boolean(active && canSteer && !answerInFlight.current.has(request.requestKey))} submit={submitAnswer} />)}</div></div>}
-            {canSteer && active && <div className="rounded-lg border border-border bg-card p-4"><label className="text-sm"><span className="mb-1 block text-muted-foreground">Prompt</span><textarea aria-label="Prompt" maxLength={20000} className={textareaClass} value={prompt} onChange={(event) => {
+            <div ref={output} onScroll={event => {const node=event.currentTarget;setFollowing(node.scrollHeight-node.scrollTop-node.clientHeight<64);}} className={inline ? 'min-h-0 flex-1 overflow-y-auto p-5 [overflow-wrap:anywhere]' : 'rounded-lg border border-border bg-card p-4'}><h3 className={inline ? "sr-only" : "mb-3 text-sm font-semibold"}>Live output</h3><Timeline state={eventState} compact={inline} prompts={promptHistory}/>{historyTruncated?<p role="status" className="mt-3 text-xs text-muted-foreground">Earlier prompt history exceeds the display limit.</p>:null}
+            {visibleRequests.length > 0 && <div className="mt-5 border-t border-border pt-4"><h3 className="mb-3 text-sm font-medium">Requests</h3><div className="space-y-2">{visibleRequests.map((request) => <RequestCard key={request.requestKey} request={request} active={Boolean(active && canSteer && !answerInFlight.current.has(request.requestKey))} submit={submitAnswer} />)}</div></div>}</div>
+            {inline && !following && <Button variant="outline" size="sm" className="mx-auto my-2" onClick={()=>{setFollowing(true);if(output.current)output.current.scrollTop=output.current.scrollHeight;}}>Jump to latest</Button>}
+
+            {canSteer && active && <div className={inline ? "flow-root shrink-0 border-t border-border bg-background p-5" : "rounded-lg border border-border bg-card p-4"}><label className="text-sm"><span className="mb-1 block text-muted-foreground">{inline ? `Send to agent · session ${selectedId}` : 'Prompt'}</span><textarea aria-label="Prompt" maxLength={20000} className={textareaClass} value={prompt} onChange={(event) => {
               const next = event.target.value;
               if (next !== prompt) promptKey.current = newKey();
               setPrompt(next);
               setCommandError(null);
-            }} /></label><Button className="mt-3" size="sm" disabled={submitting || prompt.trim().length === 0} onClick={() => void sendPrompt()}>Send prompt</Button></div>}
+            }} /></label><Button className={inline ? "mt-3 float-right" : "mt-3"} size="sm" disabled={submitting || prompt.trim().length === 0} onClick={() => void sendPrompt()}>{inline ? 'Send to agent' : 'Send prompt'}</Button></div>}
+            {receipt && <p role="status" className="px-5 pb-3 text-xs text-muted-foreground">{receipt}</p>}
             {commandError && <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">{commandError}</div>}
           </>}
         </section>

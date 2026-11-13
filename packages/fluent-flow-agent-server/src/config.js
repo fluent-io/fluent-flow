@@ -16,6 +16,7 @@ const valueFlags = new Map([
   ['--health-host', 'healthHost'],
   ['--health-port', 'healthPort'],
   ['--acp-command', 'acpCommand'],
+  ['--chat-profiles-file', 'chatProfilesFile'],
   ['--execution-timeout-minutes', 'executionTimeoutMs'],
 ]);
 
@@ -56,6 +57,7 @@ const configSchema = z.object({
   healthPort: z.number().int().min(1).max(65535),
   acpCommand: noNulString.refine((value) => !/\s/u.test(value)).nullable(),
   acpArgs: z.array(z.string().refine((value) => !value.includes('\0'))),
+  chatProfilesFile: noNulString.optional(),
   executionTimeoutMs: z.number().int().min(MS_PER_MINUTE).max(1440 * MS_PER_MINUTE),
   logLevel: z.enum(LOG_LEVELS, { error: 'LOG_LEVEL must be one of trace, debug, info, warn, error, fatal.' }),
 }).strict().superRefine((config, context) => {

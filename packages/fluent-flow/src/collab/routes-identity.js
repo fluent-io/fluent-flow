@@ -1,4 +1,6 @@
 import {
+  getProjectChatSettings,
+  updateProjectChatSettings,
   addCollabMember,
   bootstrapCollaborationWorkspace,
   createCollabInvitation,
@@ -24,6 +26,12 @@ import {
 } from '@fluent-flow/db';
 
 export function registerIdentityRoutes(router) {
+  router.get('/projects/:id/execution-settings', async(req,res,next)=>{
+    try {res.json({data:await getProjectChatSettings({actor:req.collabActor,projectId:req.params.id})});}catch(err){next(err);}
+  });
+  router.patch('/projects/:id/execution-settings', async(req,res,next)=>{
+    try {res.json({data:await updateProjectChatSettings({...req.body,actor:req.collabActor,projectId:req.params.id})});}catch(err){next(err);}
+  });
   router.get('/projects/:id/assignees',async(req,res,next)=>{
     try {res.json({data:await listCollabAssignees({actor:req.collabActor,projectId:req.params.id})});}catch(err){next(err);}
   });
