@@ -689,3 +689,19 @@ All log names here are relative to `/home/victor/.hermes/cache/scratch/`:
   settings, permission and revoked-session captures were visually inspected.
   No temporary screenshots or private production backup files were created.
 
+
+### Stacked PR publication
+
+- Committed the reviewed parity implementation and permanent evidence as
+  `74c6de9`; opened [PR 154](https://github.com/fluent-io/fluent-flow/pull/154)
+  against the still-open additive PR 153 branch, not main. Neither was merged
+  or deployed.
+- The initial check watch reported no checks. CI filtered pull requests to main,
+  excluding the stacked base. The follow-up removes only that PR-base filter;
+  main-only push behavior and read-only permissions remain unchanged.
+  Release-policy/workflow-pin tests still pass 24 cases. Hosted checks must be
+  observed on the follow-up head before publication is called verified.
+- Actual production activation, host/configuration inspection, private backups,
+  decisive post-fence recount, credential revocation and destructive connector
+  removal remain blocked. The empty read-only snapshots do not waive them.
+
