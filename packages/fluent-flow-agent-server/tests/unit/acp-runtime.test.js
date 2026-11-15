@@ -469,11 +469,15 @@ describe('createAcpRuntime', () => {
     expect(entriesOf(tracePath, 'session_resume')).toHaveLength(1);
   });
 
-  it('probes session/list after update silence before deciding recovery is needed', async () => {
-    const { runtime, tracePath } = makeHarness('silence', { limits: { silenceMs: 25 } });
+  it.each([10, 100])('completes after a liveness probe when running starts after %i ms', async (delayMs) => {
+    const { runtime, tracePath, events } = makeHarness('silence', {
+      limits: { silenceMs: 25 }, extraArgs: ['--turn-start-delay-ms', String(delayMs)],
+    });
     await expect(runtime.runInitialPrompt('Become temporarily silent.')).resolves.toMatchObject({ stopReason: 'end_turn' });
 
-    expect(entriesOf(tracePath, 'session_list')).toHaveLength(2);
+    expect(events.find(event => event.update.messageId === 'after-liveness')).toMatchObject({
+      sessionId: 'fake-session-1', update: { sessionUpdate: 'agent_message_chunk' },
+    });
     expect(entriesOf(tracePath, 'process_start')).toHaveLength(1);
   });
 

@@ -21,6 +21,7 @@ const smokeBarrierDirectory = argument('--barrier', process.env.FAKE_ACP_SMOKE_B
 const sessionId = scenario === 'smoke' ? `smoke-session-${process.pid}` : 'fake-session-1';
 let promptCalls = 0;
 let listCalls = 0;
+let silenceTurnRunning = false;
 let blockedSetupTimer = null;
 const chatConfig = [
   { configId: 'approval', name: 'Approval', type: 'select', currentValue: 'bypass', options: [{ value: 'ask', name: 'Ask' }, { value: 'bypass', name: 'Bypass' }] },
@@ -349,6 +350,7 @@ const app = agent()
         await update(client, { sessionUpdate: 'config_option_update', configOptions: chatConfig });
       }
       await update(client, { sessionUpdate: 'state_update', state: 'running' });
+      if (scenario === 'silence') silenceTurnRunning = true;
       if (scenario === 'claim-browser-uat') {
         if (promptOrdinal === 1) {
           await update(client, {
@@ -463,7 +465,7 @@ const app = agent()
         }) : 'Deterministic ACP response.' },
       });
       await update(client, { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' });
-    }, 10);
+    }, Number(argument('--turn-start-delay-ms', '10')));
     return { messageId };
   })
   .onRequest(AGENT_METHODS.session_resume, async ({ params, client }) => {
@@ -536,18 +538,17 @@ const app = agent()
   });
 
 if (scenario !== 'missing-list') {
-  app.onRequest(AGENT_METHODS.session_list, ({ params, client }) => {
+  app.onRequest(AGENT_METHODS.session_list, async ({ params, client }) => {
     listCalls += 1;
     trace('session_list', { params, listCalls });
-    if (scenario === 'silence' && listCalls === 2) {
-      setTimeout(async () => {
-        await update(client, {
-          sessionUpdate: 'agent_message_chunk',
-          messageId: 'after-liveness',
-          content: { type: 'text', text: 'Still responsive.' },
-        });
-        await update(client, { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' });
-      }, 5);
+    if (scenario === 'silence' && silenceTurnRunning) {
+      silenceTurnRunning = false;
+      await update(client, {
+        sessionUpdate: 'agent_message_chunk',
+        messageId: 'after-liveness',
+        content: { type: 'text', text: 'Still responsive.' },
+      });
+      await update(client, { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' });
     }
     return { sessions: [{ sessionId, cwd: params.cwd ?? process.cwd() }] };
   });

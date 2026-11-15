@@ -721,3 +721,21 @@ All log names here are relative to `/home/victor/.hermes/cache/scratch/`:
   before production browser execution. Workflow policy checks pass 24 cases.
   Fresh hosted verification remains required on this fix.
 
+### Windows ACP liveness fixture ordering
+
+- Hosted run `43660241802` passes the main integration job, including the
+  production browser and separate legacy-database checks, plus Linux/macOS ACP,
+  Node 20 and container checks. Windows exposes a silence-scenario fixture race:
+  its second liveness reply could send idle before the delayed running update.
+  The runtime correctly requires running before idle can complete the turn.
+- A 100 ms delayed-start regression reproduces the same 5-second timeout locally.
+  The fixture now arms its response after running and sends message/idle on the
+  next liveness probe, independent of probe count. No production runtime changes,
+  retry additions, skips or timeout increases were made.
+- Both 10 ms and 100 ms paths pass within the full 26-case ACP suite. Runtime
+  typecheck and the packaged portable-server smoke pass. Independent read-only
+  review approves the fixture ordering and retained behavior assertions.
+- The complete agent-server suite passes 971 tests across 57 files, including
+  real PostgreSQL, Git, ACP, reporting MCP and signed-webhook pipeline coverage.
+- Fresh hosted Windows verification remains required after this follow-up.
+
