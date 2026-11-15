@@ -97,7 +97,13 @@ export async function listAgents(orgIds: string[], isSuperadmin = false): Promis
       s.last_seen_at,
       s.active_slots,
       s.capacity,
-      s.deployment
+      s.deployment,
+      (SELECT count(*)::int FROM agent_claims c
+        JOIN agent_sessions cs ON cs.id = c.session_id AND cs.org_id = c.org_id
+        WHERE cs.agent_id = a.id AND c.org_id = a.org_id AND c.status = 'claimed' AND c.claim_type = 'chat') AS busy_chat,
+      (SELECT count(*)::int FROM agent_claims c
+        JOIN agent_sessions cs ON cs.id = c.session_id AND cs.org_id = c.org_id
+        WHERE cs.agent_id = a.id AND c.org_id = a.org_id AND c.status = 'claimed' AND c.claim_type <> 'chat') AS busy_work
     FROM agents a
     ${SLOT_AGGREGATE_LATERAL}
     ${isSuper ? '' : 'WHERE a.org_id = ANY($1)'}
@@ -118,7 +124,13 @@ export async function getAgentDetail(orgIds: string[], agentId: string, isSupera
       s.last_seen_at,
       s.active_slots,
       s.capacity,
-      s.deployment
+      s.deployment,
+      (SELECT count(*)::int FROM agent_claims c
+        JOIN agent_sessions cs ON cs.id = c.session_id AND cs.org_id = c.org_id
+        WHERE cs.agent_id = a.id AND c.org_id = a.org_id AND c.status = 'claimed' AND c.claim_type = 'chat') AS busy_chat,
+      (SELECT count(*)::int FROM agent_claims c
+        JOIN agent_sessions cs ON cs.id = c.session_id AND cs.org_id = c.org_id
+        WHERE cs.agent_id = a.id AND c.org_id = a.org_id AND c.status = 'claimed' AND c.claim_type <> 'chat') AS busy_work
     FROM agents a
     ${SLOT_AGGREGATE_LATERAL}
     WHERE a.id = $1${isSuper ? '' : ' AND a.org_id = ANY($2)'}
@@ -129,6 +141,32 @@ export async function getAgentDetail(orgIds: string[], agentId: string, isSupera
 
   if (result.rows.length === 0) return null;
   return agentDetailSchema.parse(result.rows[0]);
+}
+
+export const MIN_CHAT_SLOTS = 0;
+export const MAX_CHAT_SLOTS = 15;
+
+export function isValidChatSlotValue(value: unknown): value is number | null {
+  if (value === null) return true;
+  return typeof value === 'number' && Number.isInteger(value) && value >= MIN_CHAT_SLOTS && value <= MAX_CHAT_SLOTS;
+}
+
+export async function updateAgentChatSlots(
+  orgId: string,
+  agentId: string,
+  maxChatSlots: number | null,
+): Promise<AgentDetail | null> {
+  if (!isValidChatSlotValue(maxChatSlots)) {
+    throw new Error(`max_chat_slots must be an integer between ${MIN_CHAT_SLOTS} and ${MAX_CHAT_SLOTS} or null`);
+  }
+  const updated = await getPool().query<{ org_id: string; id: string }>(
+    `UPDATE agents SET max_chat_slots = $3, updated_at = now()
+     WHERE org_id = $1 AND id = $2
+     RETURNING org_id, id`,
+    [orgId, agentId, maxChatSlots],
+  );
+  if (updated.rows.length === 0) return null;
+  return getAgentDetail([orgId], agentId, false);
 }
 
 export interface CreateAgentInput {
@@ -214,6 +252,16 @@ export async function deleteAgentIfNoCollaborationClaims(
     if (agent.rows.length === 0) {
       await client.query('COMMIT');
       return 'not_found';
+    }
+    const targeted = await client.query<{ linked: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM agent_claims WHERE org_id = $1 AND target_agent_id = $2
+       ) AS linked`,
+      [orgId, agentId],
+    );
+    if (targeted.rows[0].linked) {
+      await client.query('COMMIT');
+      return 'protected';
     }
     const claims = await client.query<{ id: number }>(
       `SELECT claim.id

@@ -120,7 +120,7 @@ function installCommandFor(adapter, detected, verification) {
   return configuredInstallCommand(verification) ?? adapter.installCommand(detected.root, detected.packageManager);
 }
 
-function resolveFramework(worktreePath, { verification, requestedFramework, detectFramework, adapters }) {
+function resolveFramework(worktreePath, { verification, requestedFramework = undefined, detectFramework, adapters }) {
   const framework = requestedFramework ?? verification?.framework ?? 'auto';
   if (framework === 'custom') {
     if (!customVerificationCommand(verification)) return null;
@@ -190,7 +190,7 @@ function collectPriorRedFiles(records, validation) {
   return uniquePaths(priorFiles);
 }
 
-function buildSkippedVerification({ phase, redBaseSha, greenSha, reason }) {
+function buildSkippedVerification({ phase, redBaseSha = undefined, greenSha = undefined, reason = undefined }) {
   return {
     phase,
     framework: 'none',

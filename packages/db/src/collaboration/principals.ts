@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { PoolClient } from 'pg';
 import { getPool } from '../pool.js';
 import { CollabServiceError } from './errors.js';
 
@@ -60,9 +61,9 @@ export async function ensureGithubPrincipal(input: {
   return rowToPrincipal(rows[0]);
 }
 
-export async function getCollabPrincipal(id: string): Promise<CollabPrincipal | null> {
+export async function getCollabPrincipal(id: string, executor?: Pick<PoolClient, 'query'>): Promise<CollabPrincipal | null> {
   if (!z.string().uuid().safeParse(id).success) return null;
-  const { rows } = await getPool().query(
+  const { rows } = await (executor ?? getPool()).query(
     `SELECT id, display_name, email, user_id, disabled_at, session_version
      FROM collab_principals WHERE id = $1`,
     [id],
@@ -72,9 +73,10 @@ export async function getCollabPrincipal(id: string): Promise<CollabPrincipal | 
 
 export async function requireCurrentPrincipal(
   actor: CollabActorInput,
+  executor?: Pick<PoolClient, 'query'>,
 ): Promise<CollabPrincipal> {
   const { principalId, sessionVersion } = collabActorSchema.parse(actor);
-  const principal = await getCollabPrincipal(principalId);
+  const principal = await getCollabPrincipal(principalId, executor);
   if (!principal || principal.disabledAt !== null || principal.sessionVersion !== sessionVersion) {
     throw new CollabServiceError(401, 'unauthenticated', 'Authentication required.');
   }

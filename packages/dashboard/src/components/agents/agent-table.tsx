@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import type { AgentListItem } from '@fluent-flow/db';
 import { StatusBadge } from './status-badge';
 import { TypeBadge } from './type-badge';
-import { formatDeployment, formatSlots } from './agent-format';
+import { formatBusy, formatChatCapacity, formatDeployment, formatSlots } from './agent-format';
 import {
   Table,
   TableBody,
@@ -42,6 +42,8 @@ export function AgentTable({ agents }: { agents: AgentListItem[] }) {
             <TableHead>Agent Server</TableHead>
             <TableHead>Provider</TableHead>
             <TableHead>Slots</TableHead>
+            <TableHead>Busy</TableHead>
+            <TableHead>Chat slots</TableHead>
             <TableHead>Status</TableHead>
             <TableHead>Deployment</TableHead>
             <TableHead>Last Seen</TableHead>
@@ -57,6 +59,8 @@ export function AgentTable({ agents }: { agents: AgentListItem[] }) {
               <TableCell className="font-medium">{agent.id}</TableCell>
               <TableCell><TypeBadge type={agent.agent_type} /></TableCell>
               <TableCell>{formatSlots(agent)}</TableCell>
+              <TableCell>{agent.busy_chat + agent.busy_work} ({formatBusy(agent)})</TableCell>
+              <TableCell><span data-chat-capacity>{formatChatCapacity(agent)}</span></TableCell>
               <TableCell><StatusBadge status={agent.status} /></TableCell>
               <TableCell>{formatDeployment(agent.deployment)}</TableCell>
               <TableCell className="text-muted-foreground">{timeAgo(agent.last_seen_at)}</TableCell>

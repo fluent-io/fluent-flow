@@ -27,6 +27,11 @@ function toSnakeClaim(row) {
   return {
     id: row.id,
     org_id: row.orgId,
+    task_id: row.taskId,
+    target_agent_id: row.targetAgentId,
+    last_activity_at: row.lastActivityAt,
+    pending_deadline_at: row.pendingDeadlineAt,
+    end_reason: row.endReason,
     repo: row.repo,
     pr_number: row.prNumber,
     attempt: row.attempt,
@@ -153,6 +158,7 @@ async function finalizeClaim(orgId, repo, prNumber, attempt, finalStatus, claimT
        SET status = $5, completed_at = NOW()
        WHERE claim.org_id = $1
          AND claim.repo = $2
+         AND claim.claim_type IS DISTINCT FROM 'chat'
          AND claim.pr_number IS NOT DISTINCT FROM $3
          AND claim.attempt = $4
          AND claim.status IN ('claimed', 'pending')
@@ -238,7 +244,7 @@ export async function assertClaimOwner(
   const client = executor ?? await getPool().connect();
   const ownsClient = executor == null;
   try {
-    const lockClause = lockMode === 'share' ? ' FOR SHARE' : '';
+    const lockClause = lockMode === 'share' ? ' FOR SHARE' : lockMode === 'update' ? ' FOR UPDATE' : '';
     const owned = await client.query(
       `SELECT claim.*
        FROM agent_claims claim
@@ -290,7 +296,7 @@ export async function withClaimOwner(input, operation) {
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
-    await assertClaimOwner(input, client, 'share');
+    await assertClaimOwner(input, client, 'update');
     const result = await operation(client);
     await client.query('COMMIT');
     return result;
@@ -302,24 +308,25 @@ export async function withClaimOwner(input, operation) {
   }
 }
 
-async function finalizeClaimById(orgId, claimId, sessionId, finalStatus, onFinalize = null) {
+async function finalizeClaimById(orgId, claimId, sessionId, finalStatus, onFinalize = null, endReason = null) {
   const client = await getPool().connect();
   let row;
   try {
     await client.query('BEGIN');
     const result = await client.query(
       `UPDATE agent_claims claim
-       SET status = $4, completed_at = NOW()
+       SET status = $4, completed_at = NOW(), end_reason = $5
        WHERE claim.id = $2
          AND claim.org_id = $1
          AND claim.session_id = $3
          AND claim.status = 'claimed'
+         AND ($4 <> 'completed' OR claim.claim_type IS DISTINCT FROM 'chat')
        RETURNING claim.*,
          (SELECT session.agent_id
             FROM agent_sessions session
            WHERE session.id = claim.session_id
              AND session.org_id = claim.org_id) AS session_agent_id`,
-      [orgId, claimId, sessionId, finalStatus],
+      [orgId, claimId, sessionId, finalStatus, endReason],
     );
     row = result.rows[0] ?? null;
     if (row) {
@@ -342,12 +349,12 @@ export async function completeClaimById(orgId, claimId, sessionId, onFinalize = 
   return finalizeClaimById(orgId, claimId, sessionId, 'completed', onFinalize);
 }
 
-export async function failClaimById(orgId, claimId, sessionId) {
-  return finalizeClaimById(orgId, claimId, sessionId, 'failed');
+export async function failClaimById(orgId, claimId, sessionId, endReason = null) {
+  return finalizeClaimById(orgId, claimId, sessionId, 'failed', null, endReason);
 }
 
-export async function cancelClaimById(orgId, claimId, sessionId) {
-  return finalizeClaimById(orgId, claimId, sessionId, 'cancelled');
+export async function cancelClaimById(orgId, claimId, sessionId, endReason = null) {
+  return finalizeClaimById(orgId, claimId, sessionId, 'cancelled', null, endReason);
 }
 
 /**
@@ -357,6 +364,7 @@ export async function cancelClaimById(orgId, claimId, sessionId) {
  * cap/conflict.
  */
 export async function redispatchClaim(claim) {
+  if (claim.claim_type === 'chat') return null;
   const newAttempt = claim.attempt + 1;
   if (newAttempt > MAX_RETRY_ATTEMPTS) {
     logger.warn({
@@ -390,9 +398,17 @@ export async function expireClaims() {
     await client.query('BEGIN');
     const result = await client.query(
       `UPDATE agent_claims claim
-       SET status = 'expired', completed_at = NOW()
-       WHERE claim.status = 'claimed'
-         AND claim.expires_at < NOW()
+       SET status = CASE WHEN claim.claim_type='chat' THEN 'cancelled' ELSE 'expired' END,
+           end_reason = CASE WHEN claim.claim_type='chat' THEN
+             CASE WHEN claim.status='pending' THEN 'no_capacity'
+                  WHEN claim.expires_at < NOW() THEN 'host_lost' ELSE 'idle' END
+             ELSE claim.end_reason END,
+           completed_at = NOW()
+       WHERE (claim.status = 'claimed' AND claim.expires_at < NOW())
+          OR (claim.claim_type='chat' AND (
+            (claim.status='pending' AND claim.pending_deadline_at < NOW())
+            OR (claim.status='claimed' AND claim.last_activity_at < NOW() - make_interval(secs => claim.idle_timeout_seconds))
+          ))
        RETURNING claim.*,
          (SELECT session.agent_id
             FROM agent_sessions session
@@ -412,7 +428,7 @@ export async function expireClaims() {
   }
   for (const claim of claims) {
     try {
-      await freeSession(claim.org_id, claim.session_id, claim.session_agent_id, 'offline');
+      await freeSession(claim.org_id, claim.session_id, claim.session_agent_id, claim.end_reason === 'idle' ? 'online' : 'offline');
     } catch (err) {
       logger.warn({
         msg: 'Failed to free session on claim expiration',
@@ -433,6 +449,7 @@ export async function getActiveClaim(orgId, repo, prNumber) {
   const conditions = [
     eq(agentClaims.orgId, orgId),
     eq(agentClaims.repo, repo),
+    sql`${agentClaims.claimType} IS DISTINCT FROM 'chat'`,
     prNumber != null ? eq(agentClaims.prNumber, prNumber) : sql`${agentClaims.prNumber} IS NULL`,
     inArray(agentClaims.status, ['pending', 'claimed']),
   ];
@@ -453,6 +470,7 @@ export async function getClaimByAttempt(orgId, repo, prNumber, attempt, claimTyp
   const conditions = [
     eq(agentClaims.orgId, orgId),
     eq(agentClaims.repo, repo),
+    sql`${agentClaims.claimType} IS DISTINCT FROM 'chat'`,
     prNumber != null ? eq(agentClaims.prNumber, prNumber) : sql`${agentClaims.prNumber} IS NULL`,
     eq(agentClaims.attempt, attempt),
   ];
@@ -471,6 +489,7 @@ export async function nextChainAttempt(orgId, repo, prNumber) {
   const conditions = [
     eq(agentClaims.orgId, orgId),
     eq(agentClaims.repo, repo),
+    sql`${agentClaims.claimType} IS DISTINCT FROM 'chat'`,
     prNumber != null ? eq(agentClaims.prNumber, prNumber) : sql`${agentClaims.prNumber} IS NULL`,
   ];
   const [row] = await db

@@ -17,7 +17,7 @@ export function promptSizeViolation(prompt) {
  * Each receives the work object and returns the prompt string.
  */
 const TEMPLATES = {
-  spec({ repo, prNumber, message }) {
+  spec({ repo, prNumber, message, instructions, source, branch }) {
     const prLabel = prNumber != null ? `PR #${prNumber}` : 'standalone';
     return [
       `You are a spec agent for ${repo} (${prLabel}).`,
@@ -32,11 +32,12 @@ const TEMPLATES = {
       '- Only modify or create files under docs/specs/ and docs/plans/',
       '- Follow existing document patterns in the project',
       '- Be specific and actionable — no placeholders',
-      ...(message ? ['', 'Additional context:', message] : []),
+      ...(message || instructions ? ['', 'Additional context:', message || instructions] : []),
+      ...(source === 'collab' && branch ? ['', `Commit the design documents and push them to origin HEAD:${branch} before reporting completion. The next claim runs in a fresh checkout.`] : []),
     ].join('\n');
   },
 
-  build({ repo, prNumber, message }) {
+  build({ repo, prNumber, message, instructions, source, branch }) {
     const prLabel = prNumber != null ? `PR #${prNumber}` : 'standalone';
     return [
       `You are a build agent for ${repo} (${prLabel}).`,
@@ -52,7 +53,8 @@ const TEMPLATES = {
       '- Follow existing code patterns and conventions in the project',
       '- Follow the plan steps in order',
       '- Commit frequently with clear messages',
-      ...(message ? ['', 'Additional context:', message] : []),
+      ...(message || instructions ? ['', 'Additional context:', message || instructions] : []),
+      ...(source === 'collab' && branch ? ['', `Push the completed implementation to origin HEAD:${branch}, then open or update its pull request so the normal review and verification pipeline can run. Never merge the pull request yourself.`] : []),
     ].join('\n');
   },
 

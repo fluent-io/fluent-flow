@@ -1,6 +1,6 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type {
   Capability,
@@ -71,8 +71,8 @@ const me: MeResponse = {
   workspaceCapabilities: {},
 };
 
-type ClaimFixture = Omit<ClaimExecutionBadge, 'claimType'> & { claimType: 'spec' | 'build' };
-type FullClaimFixture = Omit<ClaimExecution, 'claimType'> & { claimType: 'spec' | 'build' };
+type ClaimFixture = Omit<ClaimExecutionBadge, 'claimType'> & { claimType: 'spec' | 'build' | 'chat' };
+type FullClaimFixture = Omit<ClaimExecution, 'claimType'> & { claimType: 'spec' | 'build' | 'chat' };
 
 
 function claim(status = 'claimed', overrides: Partial<ClaimFixture> = {}): ClaimFixture {
@@ -174,6 +174,7 @@ async function fetchStub(input: RequestInfo | URL, init: RequestInit = {}): Prom
     const response = api.startResponses.shift();
     return response ? json(response.payload, response.status) : json({ data: { claim: fullClaim(claim('pending')), created: true } }, 202);
   }
+  if (url.includes('/prompts?') && method === 'GET') return json({data:[{commandId:1,text:'Earlier operator prompt',status:'acked',createdAt}],nextCursor:null});
   const detailMatch = url.match(/\/claim-executions\/(\d+)$/);
   if (detailMatch && method === 'GET') {
     const id = Number(detailMatch[1]);
@@ -187,6 +188,8 @@ async function fetchStub(input: RequestInfo | URL, init: RequestInit = {}): Prom
   if (url.includes('/requests?') && method === 'GET') {
     return json({ data: api.requests, nextCursor: null });
   }
+  if (/\/commands\/\d+$/.test(url) && method === 'GET') return json({data:{commandId:1,kind:'prompt',status:'acked'}});
+  if (/\/claim-executions\/\d+\/read-cursor$/.test(url) && method === 'POST') return json({ data: { claimId: Number(url.match(/\/claim-executions\/(\d+)\//)?.[1] ?? 0), lastSeq: Number(body?.seq ?? 0) } });
   if (url.endsWith('/commands') && method === 'POST') {
     const response = api.commandResponses.shift();
     let kind = 'unknown';
@@ -257,6 +260,7 @@ describe('claim event reduction', () => {
 
     expect(state.entities.map((entity) => entity.key)).toEqual(['agent_message:m1', 'tool_call:t1']);
     expect(state.entities[0]).toMatchObject({
+      firstSeenAt: createdAt,
       key: 'agent_message:m1',
       content: [{ type: 'text', text: 'complete' }, { type: 'text', text: ' tail' }],
     });
@@ -515,7 +519,7 @@ describe('claim controls', () => {
       { status: 200, payload: { data: { claim: fullClaim(claim('pending')), created: false } } },
     ];
     const user = userEvent.setup();
-    renderPanel();
+    renderPanel({ ...detail, status: 'ready' });
     await waitForClaim();
     await user.click(screen.getByRole('button', { name: /start execution/i }));
     await user.selectOptions(screen.getByLabelText(/phase/i), 'build');
@@ -1121,4 +1125,161 @@ describe('safe and accessible rendering', () => {
     log.focus();
     expect(document.activeElement).toBe(log);
   });
+});
+
+
+describe('inline attended session', () => {
+ it('shows authoritative pending countdown with End but no prompt or Stop',async()=>{
+  api.claims=[{...claim('pending'),claimType:'chat'} as ClaimFixture];
+  api.details.set(41,{...fullClaim(claim('pending')),claimType:'chat',pendingDeadlineAt:new Date(Date.now()+120000).toISOString()} as unknown as FullClaimFixture);
+  render(<TaskClaimExecutionTab detail={detail} reload={vi.fn(async()=>{})} selectedClaimId={41} onBack={vi.fn()}/>);
+  await screen.findByText(/seconds remaining/);expect(screen.getByRole('button',{name:'End session'})).toBeTruthy();expect(screen.queryByRole('button',{name:'Stop response'})).toBeNull();expect(screen.queryByRole('textbox',{name:'Prompt'})).toBeNull();
+ });
+
+ it('shows accepted only after reading an authoritative command acknowledgement',async()=>{
+  render(<TaskClaimExecutionTab detail={detail} reload={vi.fn(async()=>{})} selectedClaimId={41} onBack={vi.fn()}/>);
+  await userEvent.type(await screen.findByRole('textbox',{name:'Prompt'}),'Continue');
+  await userEvent.click(screen.getByRole('button',{name:'Send to agent'}));
+  await screen.findByText('Accepted by agent.');
+  await screen.findByText('Earlier operator prompt');
+  expect(api.records.some(r=>r.method==='GET'&&r.url.endsWith('/commands/1'))).toBe(true);
+ });
+
+ it('makes Stop response and End session distinct commands, with Back to task', async () => {
+  const chat = {...claim(),claimType:'chat'};
+  api.claims = [chat as ClaimFixture]; api.details.set(41,{...fullClaim(claim()),claimType:'chat'} as FullClaimFixture);
+  const back=vi.fn();
+  render(<TaskClaimExecutionTab detail={detail} reload={vi.fn(async()=>{})} selectedClaimId={41} onBack={back}/>);
+  await userEvent.click(await screen.findByRole('button',{name:'Stop response'}));
+  await waitFor(()=>expect(commandRecords('cancel')).toHaveLength(1));
+  await userEvent.click(screen.getByRole('button',{name:'End session'}));
+  await waitFor(()=>expect(commandRecords('end_session')).toHaveLength(1));
+  expect((commandRecords('end_session')[0].body as any).payload).toEqual({});
+  await userEvent.click(screen.getByRole('button',{name:'Back to task'}));expect(back).toHaveBeenCalledOnce();
+ });
+ it('does not load private output for an unlisted selected claim',async()=>{
+  render(<TaskClaimExecutionTab detail={detail} reload={vi.fn(async()=>{})} selectedClaimId={999} onBack={vi.fn()}/>);
+  await screen.findByText('This session is not available on this task.');
+  expect(api.records.some(r=>r.url.includes('/claim-executions/999'))).toBe(false);
+ });
+ it('clears output and drafts immediately on internal permission revocation and stops private requests',async()=>{
+  api.events=[event(1,'agent_message',{sessionUpdate:'agent_message',messageId:'private',content:[{type:'text',text:'Private transcript'}]},{type:'agent_message',id:'private'})];
+  const view=render(<TaskClaimExecutionTab detail={detail} reload={vi.fn(async()=>{})} selectedClaimId={41} onBack={vi.fn()}/>);
+  await screen.findByText('Private transcript');
+  await userEvent.type(screen.getByRole('textbox',{name:'Prompt'}),'Private draft');
+  meMock.value={...me,capabilities:{[PROJECT_ID]:['task.read']}};
+  view.rerender(<TaskClaimExecutionTab detail={detail} reload={vi.fn(async()=>{})} selectedClaimId={41} onBack={vi.fn()}/>);
+  expect(screen.queryByText('Private transcript')).toBeNull();expect(screen.queryByDisplayValue('Private draft')).toBeNull();
+  const count=api.records.filter(r=>/\/(events|requests)\?/.test(r.url)).length;
+  await new Promise(resolve=>setTimeout(resolve,40));
+  expect(api.records.filter(r=>/\/(events|requests)\?/.test(r.url))).toHaveLength(count);
+  expect(api.records.filter(r=>r.url.endsWith('/read-cursor')).length).toBeLessThanOrEqual(1);
+ });
+ it('advances the per-principal read cursor only while following the latest rendered events',async()=>{
+  api.events=[
+   event(1,'agent_message',{sessionUpdate:'agent_message',messageId:'m1',content:[{type:'text',text:'first'}]},{type:'agent_message',id:'m1'}),
+   event(2,'agent_message',{sessionUpdate:'agent_message',messageId:'m2',content:[{type:'text',text:'second'}]},{type:'agent_message',id:'m2'}),
+   event(3,'agent_message',{sessionUpdate:'agent_message',messageId:'m3',content:[{type:'text',text:'third'}]},{type:'agent_message',id:'m3'}),
+  ];
+  render(<TaskClaimExecutionTab detail={detail} reload={vi.fn(async()=>{})} selectedClaimId={41} onBack={vi.fn()}/>);
+  await screen.findByText('third');
+  await waitFor(()=>{
+   const cursorRecords=api.records.filter(r=>r.method==='POST'&&r.url.endsWith('/read-cursor'));
+   expect(cursorRecords.length).toBeGreaterThan(0);
+   expect(cursorRecords[cursorRecords.length-1].body).toEqual({seq:3});
+  });
+  const cursorRecords=api.records.filter(r=>r.method==='POST'&&r.url.endsWith('/read-cursor'));
+  expect(cursorRecords[0].url).toBe('/api/collab/v1/claim-executions/41/read-cursor');
+  for(const record of cursorRecords){
+   const body=record.body&&typeof record.body==='object'&&'seq' in record.body?record.body.seq:undefined;
+   expect([1,2,3]).toContain(body);
+  }
+ });
+ it('never advances the read cursor while the panel is hidden',async()=>{
+  api.events=[event(1,'agent_message',{sessionUpdate:'agent_message',messageId:'m1',content:[{type:'text',text:'visible only'}]},{type:'agent_message',id:'m1'})];
+  Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>'hidden'});
+  try{
+   render(<TaskClaimExecutionTab detail={detail} reload={vi.fn(async()=>{})} selectedClaimId={41} onBack={vi.fn()}/>);
+   await screen.findByText('visible only');
+   await new Promise(resolve=>setTimeout(resolve,60));
+   expect(api.records.some(r=>r.method==='POST'&&r.url.endsWith('/read-cursor'))).toBe(false);
+  }finally{
+   Reflect.deleteProperty(document,'visibilityState');
+  }
+ });
+ it('marks the highest rendered sequence when the panel becomes visible again without new events',async()=>{
+  api.events=[event(1,'agent_message',{sessionUpdate:'agent_message',messageId:'m1',content:[{type:'text',text:'waited output'}]},{type:'agent_message',id:'m1'})];
+  const setHidden=()=>Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>'hidden'});
+  const setVisible=()=>Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>'visible'});
+  setHidden();
+  try{
+   render(<TaskClaimExecutionTab detail={detail} reload={vi.fn(async()=>{})} selectedClaimId={41} onBack={vi.fn()}/>);
+   await screen.findByText('waited output');
+   await new Promise(resolve=>setTimeout(resolve,60));
+   expect(api.records.some(r=>r.method==='POST'&&r.url.endsWith('/read-cursor'))).toBe(false);
+   setVisible();
+   document.dispatchEvent(new Event('visibilitychange'));
+   await waitFor(()=>expect(api.records.some(r=>r.method==='POST'&&r.url.endsWith('/read-cursor'))).toBe(true));
+   const cursorRecords=api.records.filter(r=>r.method==='POST'&&r.url.endsWith('/read-cursor'));
+   expect(cursorRecords[0].body&&typeof cursorRecords[0].body==='object'&&'seq' in cursorRecords[0].body?cursorRecords[0].body.seq:undefined).toBe(1);
+   expect(api.events).toHaveLength(1);
+  }finally{
+   Reflect.deleteProperty(document,'visibilityState');
+  }
+ });
+ it('marks only rendered events and never stalls the fetch cursor on a malformed trailing event',async()=>{
+  api.events=[
+   event(1,'agent_message',{sessionUpdate:'agent_message',messageId:'m1',content:[{type:'text',text:'good output'}]},{type:'agent_message',id:'m1'}),
+   {seq:2,kind:'agent_message',createdAt:new Date().toISOString(),payload:{claimId:41,sessionId:'session-1'}},
+   event(3,'config',{selectedModel:'unrendered model metadata'}),
+   event(4,'agent_message',{sessionUpdate:'agent_message',content:[{type:'text',text:'unaddressed output'}]}),
+  ];
+  render(<TaskClaimExecutionTab detail={detail} reload={vi.fn(async()=>{})} selectedClaimId={41} onBack={vi.fn()}/>);
+  await screen.findByText('good output');
+  await waitFor(()=>expect(api.records.some(r=>r.method==='POST'&&r.url.endsWith('/read-cursor'))).toBe(true));
+  const cursorRecords=api.records.filter(r=>r.method==='POST'&&r.url.endsWith('/read-cursor'));
+  for(const record of cursorRecords){
+   const seq=record.body&&typeof record.body==='object'&&'seq' in record.body?record.body.seq:undefined;
+   expect(seq).toBe(1);
+  }
+  await waitFor(()=>{
+   const lastEventsUrl=api.records.filter(r=>r.method==='GET'&&r.url.includes('/claim-executions/41/events')).at(-1)?.url??'';
+   expect(lastEventsUrl).toContain('cursor=');
+  },{timeout:3000});
+  const eventsUrl=api.records.filter(r=>r.method==='GET'&&r.url.includes('/claim-executions/41/events')).at(-1)?.url ?? '';
+  const cursorParam=new URL(eventsUrl,'http://dashboard.test').searchParams.get('cursor')??'';
+  const decoded=JSON.parse(Buffer.from(cursorParam.replace(/-/g,'+').replace(/_/g,'/'),'base64').toString('utf8')) as {s:number};
+  expect(decoded.s).toBe(4);
+ });
+ it('does not advance the read cursor while the user scrolled away from latest',async()=>{
+  api.events=[event(1,'agent_message',{sessionUpdate:'agent_message',messageId:'m1',content:[{type:'text',text:'first output'}]},{type:'agent_message',id:'m1'})];
+  render(<TaskClaimExecutionTab detail={detail} reload={vi.fn(async()=>{})} selectedClaimId={41} onBack={vi.fn()}/>);
+  await screen.findByText('first output');
+  await waitFor(()=>expect(api.records.some(r=>r.method==='POST'&&r.url.endsWith('/read-cursor'))).toBe(true));
+  const outputNode=document.querySelector('[class*="overflow-y-auto"]');
+  expect(outputNode).toBeTruthy();
+  Object.defineProperty(outputNode,'scrollHeight',{configurable:true,value:400});
+  Object.defineProperty(outputNode,'clientHeight',{configurable:true,value:100});
+  Object.defineProperty(outputNode,'scrollTop',{configurable:true,value:0});
+  fireEvent.scroll(outputNode!);
+  expect(screen.getByRole('button',{name:'Jump to latest'})).toBeTruthy();
+  api.events=[...api.events,event(2,'agent_message',{sessionUpdate:'agent_message',messageId:'m2',content:[{type:'text',text:'second output'}]},{type:'agent_message',id:'m2'})];
+  await screen.findByText('second output',{},{timeout:4000});
+  await new Promise(resolve=>setTimeout(resolve,400));
+  const cursorRecords=api.records.filter(r=>r.method==='POST'&&r.url.endsWith('/read-cursor'));
+  expect(cursorRecords.length).toBeGreaterThanOrEqual(1);
+  for(const record of cursorRecords){
+   const seq=record.body&&typeof record.body==='object'&&'seq' in record.body?record.body.seq:undefined;
+   expect(seq).toBe(1);
+  }
+ });
+ it('stops polling a prompt receipt once the command reaches a terminal state',async()=>{
+  api.commandResponses.push({status:200,payload:{data:{commandId:1,kind:'prompt',status:'acked',created:false}}});
+  render(<TaskClaimExecutionTab detail={detail} reload={vi.fn(async()=>{})} selectedClaimId={41} onBack={vi.fn()}/>);
+  await userEvent.type(await screen.findByRole('textbox',{name:'Prompt'}),'Continue');
+  await userEvent.click(screen.getByRole('button',{name:'Send to agent'}));
+  await screen.findByText('Accepted by agent.');
+  await new Promise(resolve=>setTimeout(resolve,1200));
+  expect(api.records.filter(r=>r.url.endsWith('/commands/1'))).toHaveLength(1);
+ });
 });

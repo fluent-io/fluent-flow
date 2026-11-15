@@ -269,6 +269,7 @@ export type MeProject = {
   boardVersion: number;
   linkedRepoFullName: string | null;
   executionDefaults: unknown | null;
+  executionMode?: 'chat' | 'connector';
 };
 
 export type MeWorkspace = {
@@ -301,9 +302,10 @@ export async function getPrincipalMeProfile(principalId: string): Promise<MeProf
     board_version: number;
     linked_repo_full_name: string | null;
     execution_defaults: unknown;
+    execution_mode: 'chat' | 'connector';
     capability: CollabCapability;
   }>(
-    `SELECT p.id, p.workspace_id, p.name, p.version, p.board_version, p.linked_repo_full_name, p.execution_defaults,
+    `SELECT p.id, p.workspace_id, p.name, p.version, p.board_version, p.linked_repo_full_name, p.execution_defaults, p.execution_mode,
             cap.capability
      FROM collab_projects p
      JOIN collab_memberships m
@@ -328,6 +330,7 @@ export async function getPrincipalMeProfile(principalId: string): Promise<MeProf
         boardVersion: row.board_version,
         linkedRepoFullName: row.linked_repo_full_name,
         executionDefaults: row.execution_defaults ?? null,
+        executionMode: row.execution_mode,
       };
       projectsById.set(row.id, project);
     }
@@ -344,7 +347,10 @@ export async function getPrincipalMeProfile(principalId: string): Promise<MeProf
     workspacesById.set(w.id, { id: w.id, name: w.name, orgId: w.org_id, projects: [] });
   }
   for (const project of projectsById.values()) {
-    if (!capabilitiesByProject.get(project.id)?.has('internal.read')) project.executionDefaults = null;
+    if (!capabilitiesByProject.get(project.id)?.has('internal.read')) {
+      project.executionDefaults = null;
+      delete project.executionMode;
+    }
     workspacesById
       .get(project.workspaceId)!
       .projects.push(project);

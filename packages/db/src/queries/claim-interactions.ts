@@ -1,5 +1,8 @@
 import pg from 'pg';
 import { getPool } from '../pool.js';
+import { authorize } from '../collaboration/authorize.js';
+import { CollabServiceError } from '../collaboration/errors.js';
+import type { CollabActor } from '../collaboration/auth.js';
 
 export type QueryExecutor = Pick<pg.Pool, 'query'> | Pick<pg.PoolClient, 'query'>;
 export const MAX_CLAIM_EVENT_BYTES = 16 * 1024 * 1024;
@@ -22,7 +25,7 @@ export interface ClaimCommand {
   claimId: number;
   idempotencyKey: string;
   requestKey: string | null;
-  kind: 'prompt' | 'cancel' | 'permission' | 'elicitation';
+  kind: 'prompt' | 'cancel' | 'end_session' | 'handoff' | 'permission' | 'elicitation';
   payload: unknown;
   status: 'pending' | 'delivered' | 'acked' | 'failed' | 'uncertain' | 'cancelled';
   result: unknown | null;
@@ -167,20 +170,21 @@ export async function enqueueClaimCommand(input: {
   orgId: string;
   claimId: number;
   idempotencyKey: string;
-  kind: 'prompt' | 'cancel' | 'permission' | 'elicitation';
+  kind: 'prompt' | 'cancel' | 'end_session' | 'handoff' | 'permission' | 'elicitation';
   payload: unknown;
+  originator?: CollabActor;
   requestKey?: string | null;
 }, executor?: QueryExecutor): Promise<{ command: ClaimCommand; created: boolean }> {
   const result = await (executor ?? getPool()).query(
-    `INSERT INTO agent_claim_commands (org_id, claim_id, idempotency_key, kind, payload, request_key)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO agent_claim_commands (org_id, claim_id, idempotency_key, kind, payload, request_key, originator_principal_id, originator_session_version)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      ON CONFLICT (org_id, claim_id, idempotency_key) DO UPDATE
        SET kind = agent_claim_commands.kind
      WHERE agent_claim_commands.kind = EXCLUDED.kind
        AND agent_claim_commands.payload = EXCLUDED.payload
        AND agent_claim_commands.request_key IS NOT DISTINCT FROM EXCLUDED.request_key
      RETURNING *, xmax = 0 AS inserted`,
-    [input.orgId, input.claimId, input.idempotencyKey, input.kind, JSON.stringify(input.payload), input.requestKey ?? null],
+    [input.orgId, input.claimId, input.idempotencyKey, input.kind, JSON.stringify(input.payload), input.requestKey ?? null, input.originator?.principalId ?? null, input.originator?.sessionVersion ?? null],
   );
   if (result.rows.length === 0) throw new Error('Interaction conflict.');
   return { command: commandFromRow(result.rows[0]), created: Boolean(result.rows[0].inserted) };
@@ -193,6 +197,7 @@ export async function reserveClaimRequestAnswer(input: {
   idempotencyKey: string;
   kind: 'permission' | 'elicitation';
   payload: unknown;
+  originator?: CollabActor;
 }, executor?: QueryExecutor): Promise<{ command: ClaimCommand; created: boolean } | null> {
   return atomic(executor, async (client) => {
     const locked = await client.query(
@@ -254,6 +259,31 @@ async function expireDeliveredCommands(
   );
 }
 
+async function authorizedChatCommands(client: QueryExecutor, input: { orgId: string; claimId: number; limit: number }): Promise<number[] | null> {
+  const scope = await client.query<{ project_id: string }>(
+    `SELECT e.project_id FROM collab_claim_executions e JOIN agent_claims c ON c.id=e.claim_id
+     WHERE c.id=$1 AND c.org_id=$2 AND c.claim_type='chat'`, [input.claimId, input.orgId]);
+  if (!scope.rows.length) return null;
+  const queued = await client.query(`SELECT id,kind,request_key,originator_principal_id,originator_session_version FROM agent_claim_commands
+    WHERE org_id=$1 AND claim_id=$2 AND status='pending' ORDER BY created_at,id LIMIT $3 FOR UPDATE`, [input.orgId,input.claimId,Math.max(0,input.limit)]);
+  const allowed: number[] = [];
+  for (const command of queued.rows) {
+    try {
+      if (!command.originator_principal_id || !command.originator_session_version) throw new CollabServiceError(403, 'forbidden', 'Not authorized.');
+      await authorize({ principalId: command.originator_principal_id, sessionVersion: command.originator_session_version },
+        { projectId: scope.rows[0].project_id }, command.kind === 'handoff'
+          ? ['internal.read', 'run.start', 'run.steer']
+          : ['internal.read', command.kind === 'cancel' || command.kind === 'end_session' ? 'run.cancel' : 'run.steer'], client);
+      allowed.push(command.id);
+    } catch (error) {
+      if (!(error instanceof CollabServiceError) || ![401,403,404].includes(error.status)) throw error;
+      await client.query(`UPDATE agent_claim_commands SET status='failed',acked_at=now(),result='{"reason":"authorization_changed"}'::jsonb WHERE id=$1`, [command.id]);
+      if (command.request_key !== null) await client.query(`UPDATE agent_claim_requests SET status='open' WHERE org_id=$1 AND claim_id=$2 AND request_key=$3 AND status='answer_queued'`, [input.orgId,input.claimId,command.request_key]);
+    }
+  }
+  return allowed;
+}
+
 export async function leaseClaimCommands(input: {
   orgId: string;
   claimId: number;
@@ -261,10 +291,12 @@ export async function leaseClaimCommands(input: {
 }, executor?: QueryExecutor): Promise<ClaimCommand[]> {
   return atomic(executor, async (client) => {
     await expireDeliveredCommands(client, input);
+    const allowedIds = await authorizedChatCommands(client, input);
     const result = await client.query(
       `WITH selected AS (
          SELECT id FROM agent_claim_commands
          WHERE org_id = $1 AND claim_id = $2 AND status = 'pending'
+           AND ($4::integer[] IS NULL OR id = ANY($4))
          ORDER BY created_at, id
          FOR UPDATE SKIP LOCKED
          LIMIT $3
@@ -274,7 +306,7 @@ export async function leaseClaimCommands(input: {
        FROM selected
        WHERE command.id = selected.id
        RETURNING command.*`,
-      [input.orgId, input.claimId, Math.max(0, input.limit)],
+      [input.orgId, input.claimId, Math.max(0, input.limit), allowedIds],
     );
     return result.rows.map(commandFromRow);
   });

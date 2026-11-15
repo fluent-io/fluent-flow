@@ -28,6 +28,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p jsconfig.json",
+    "typecheck:runtime": "tsc -p jsconfig.runtime.json",
     "smoke": "node scripts/smoke.mjs",
     "smoke:image": "node scripts/smoke.mjs --image"
   },

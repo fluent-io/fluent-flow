@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import type { PoolClient } from 'pg';
+import { chatDefaultsSchema, readChatAgents, validateChatSelection } from './chat-settings.js';
+import { createCollabTask } from './tasks.js';
 import { z } from 'zod';
 import { getPool } from '../pool.js';
 import {
@@ -23,15 +26,18 @@ export type ClaimExecutionBadge = {
   rootClaimId: number;
   createdAt: string;
   completedAt: string | null;
+  endReason?: string | null;
 };
 
 export type ClaimExecution = ClaimExecutionBadge & {
   projectId: string;
-  repo: string;
+  repo: string | null;
   prNumber: number | null;
   sessionId: number | null;
   payload: Record<string, unknown>;
   headSha: string | null;
+  pendingDeadlineAt?: string | null;
+  lastActivityAt?: string;
 };
 
 export type StartClaimExecutionResult = {
@@ -57,7 +63,7 @@ export type ClaimExecutionRequest = {
 
 export type SubmitClaimCommandResult = {
   commandId: number | null;
-  kind: 'prompt' | 'cancel' | 'permission' | 'elicitation';
+  kind: 'prompt' | 'cancel' | 'end_session' | 'handoff' | 'permission' | 'elicitation';
   status: string;
   created: boolean;
 };
@@ -67,7 +73,7 @@ type ClaimExecutionRow = {
   task_id: string;
   project_id: string;
   root_claim_id: number;
-  repo: string;
+  repo: string | null;
   pr_number: number | null;
   attempt: number;
   session_id: number | null;
@@ -77,6 +83,9 @@ type ClaimExecutionRow = {
   head_sha: string | null;
   execution_created_at: Date;
   completed_at: Date | null;
+  end_reason: string | null;
+  pending_deadline_at: Date | null;
+  last_activity_at: Date;
   cursor_created_at: string;
 };
 
@@ -85,10 +94,11 @@ const startSchema = z.object({
   taskId: z.string().uuid(),
   expectedVersion: z.number().int().min(1),
   idempotencyKey: z.string().min(8).max(256),
-  repo: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/).max(200),
+  repo: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/).max(200).nullable(),
+  targetAgentId: z.string().min(1).max(200).optional(),
   prNumber: z.number().int().positive().nullable().optional(),
   branch: z.string().min(1).max(500).nullable().optional(),
-  claimType: z.enum(['spec', 'build']),
+  claimType: z.enum(['spec', 'build', 'chat']),
   instructions: z.string().max(20000).optional(),
 });
 
@@ -166,8 +176,20 @@ const commandBase = {
 const commandSchema = z.discriminatedUnion('kind', [
   z.object({
     ...commandBase,
+    kind: z.literal('handoff'),
+    payload: z.object({}).strict(),
+    requestKey: z.never().optional(),
+  }).strict(),
+  z.object({
+    ...commandBase,
     kind: z.literal('prompt'),
     payload: z.object({ text: z.string().min(1).max(20000) }).strict(),
+    requestKey: z.never().optional(),
+  }).strict(),
+  z.object({
+    ...commandBase,
+    kind: z.literal('end_session'),
+    payload: z.object({}).strict(),
     requestKey: z.never().optional(),
   }).strict(),
   z.object({
@@ -227,6 +249,7 @@ const CLAIM_SELECT = `SELECT
   claim.head_sha,
   execution.created_at AS execution_created_at,
   claim.completed_at,
+  claim.end_reason, claim.pending_deadline_at, claim.last_activity_at,
   to_char(execution.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_created_at
 FROM collab_claim_executions execution
 JOIN agent_claims claim ON claim.id = execution.claim_id`;
@@ -245,6 +268,7 @@ function rowToBadge(row: ClaimExecutionRow): ClaimExecutionBadge {
     rootClaimId: row.root_claim_id,
     createdAt: row.execution_created_at.toISOString(),
     completedAt: row.completed_at?.toISOString() ?? null,
+    ...(row.claim_type === 'chat' ? { endReason: row.end_reason } : {}),
   };
 }
 
@@ -262,13 +286,15 @@ function rowToClaim(row: ClaimExecutionRow): ClaimExecution {
     sessionId: row.session_id,
     payload: row.payload,
     headSha: row.head_sha,
+    ...(row.claim_type === 'chat' ? { pendingDeadlineAt: row.pending_deadline_at?.toISOString() ?? null, lastActivityAt: row.last_activity_at.toISOString() } : {}),
     createdAt: row.execution_created_at.toISOString(),
     completedAt: row.completed_at?.toISOString() ?? null,
+    ...(row.claim_type === 'chat' ? { endReason: row.end_reason } : {}),
   };
 }
 
-async function taskScope(taskId: string): Promise<{ projectId: string; orgId: string | null }> {
-  const result = await getPool().query<{ project_id: string; org_id: string | null }>(
+async function taskScope(taskId: string, executor?: PoolClient): Promise<{ projectId: string; orgId: string | null }> {
+  const result = await (executor ?? getPool()).query<{ project_id: string; org_id: string | null }>(
     `SELECT task.project_id, workspace.org_id
      FROM collab_tasks task
      JOIN collab_projects project ON project.id = task.project_id
@@ -283,8 +309,8 @@ async function taskScope(taskId: string): Promise<{ projectId: string; orgId: st
   };
 }
 
-async function requireRepo(repo: string, orgId: string): Promise<void> {
-  const result = await getPool().query(
+async function requireRepo(repo: string, orgId: string, executor?: PoolClient): Promise<void> {
+  const result = await (executor ?? getPool()).query(
     `SELECT id
      FROM repos
      WHERE repo_full_name = $1 AND org_id = $2`,
@@ -297,8 +323,9 @@ async function projectClaim(
   principalId: string,
   projectId: string,
   row: ClaimExecutionRow,
+  executor?: PoolClient,
 ): Promise<ClaimExecution | ClaimExecutionBadge> {
-  const capabilities = await getProjectCapabilities(principalId, projectId);
+  const capabilities = await getProjectCapabilities(principalId, projectId, executor);
   return capabilities.has('internal.read') ? rowToClaim(row) : rowToBadge(row);
 }
 
@@ -320,21 +347,24 @@ export async function startCollabClaimExecution(input: {
   taskId: string;
   expectedVersion: number;
   idempotencyKey: string;
-  repo: string;
+  repo: string | null;
   prNumber?: number | null;
   branch?: string | null;
-  claimType: 'spec' | 'build';
+  claimType: 'spec' | 'build' | 'chat';
+  targetAgentId?: string;
   instructions?: string;
-}): Promise<StartClaimExecutionResult> {
+}, executor?: PoolClient): Promise<StartClaimExecutionResult> {
   const parsed = startSchema.parse(input);
-  const principal = await requireCurrentPrincipal(parsed.actor);
-  const scope = await taskScope(parsed.taskId);
-  await authorize(parsed.actor, { projectId: scope.projectId }, ['run.start']);
+  const principal = await requireCurrentPrincipal(parsed.actor, executor);
+  const scope = await taskScope(parsed.taskId, executor);
+  await authorize(parsed.actor, { projectId: scope.projectId }, parsed.claimType === 'chat' ? ['run.start', 'internal.read'] : ['run.start'], executor);
   if (scope.orgId === null) {
     throw new CollabServiceError(404, 'not_found', 'Not found.');
   }
   const orgId = scope.orgId;
-  await requireRepo(parsed.repo, orgId);
+  if (parsed.claimType !== 'chat' && parsed.repo === null) throw new CollabServiceError(400, 'malformed', 'Invalid request.');
+  if (parsed.claimType === 'chat' && (parsed.prNumber != null || parsed.branch != null)) throw new CollabServiceError(400, 'malformed', 'Invalid request.');
+  if (parsed.repo !== null) await requireRepo(parsed.repo, orgId, executor);
   const canonical = {
     expectedVersion: parsed.expectedVersion,
     repo: parsed.repo,
@@ -342,6 +372,7 @@ export async function startCollabClaimExecution(input: {
     branch: parsed.branch ?? null,
     claimType: parsed.claimType,
     instructions: parsed.instructions ?? '',
+    ...(parsed.claimType === 'chat' ? { targetAgentId: parsed.targetAgentId ?? null } : {}),
   };
   const hash = requestHash(canonical);
   const result = await withClientTransaction(async (tx) => {
@@ -379,15 +410,36 @@ export async function startCollabClaimExecution(input: {
         { currentVersion: task.rows[0]?.version },
       );
     }
+    let chatOptions = {};
+    let chatPayload: Record<string, unknown> = {};
+    if (parsed.claimType === 'chat') {
+      const open = await tx.query(`SELECT id FROM agent_claims WHERE org_id=$1 AND task_id=$2 AND claim_type='chat' AND status IN ('pending','claimed')`, [orgId, parsed.taskId]);
+      if (open.rows.length) throw new CollabServiceError(409, 'chat_already_open', 'This task already has an open session.');
+      const settings = await tx.query(`SELECT execution_mode, default_agent_id, chat_execution_defaults, chat_pending_ttl_seconds, chat_idle_timeout_seconds FROM collab_projects WHERE id=$1`, [scope.projectId]);
+      if (settings.rows[0].execution_mode !== 'chat') throw new CollabServiceError(409, 'chat_unavailable', 'Sessions are not available for this project.');
+      const targetAgentId = parsed.targetAgentId ?? settings.rows[0].default_agent_id;
+      if (targetAgentId !== null) {
+        const target = await tx.query(`SELECT id FROM agents WHERE org_id=$1 AND id=$2 AND transport='long_poll'`, [orgId, targetAgentId]);
+        if (!target.rows.length) throw new CollabServiceError(404, 'not_found', 'Not found.');
+      }
+      const defaults = chatDefaultsSchema.parse(settings.rows[0].chat_execution_defaults);
+      validateChatSelection(await readChatAgents(orgId, tx), targetAgentId, defaults);
+      chatPayload = { ...(defaults.profileId ? { profile: defaults.profileId } : {}), ...(defaults.model ? { model: defaults.model } : {}), instructions: parsed.instructions ?? defaults.instructions };
+      chatOptions = { taskId: parsed.taskId, targetAgentId, pendingTtlSeconds: settings.rows[0].chat_pending_ttl_seconds, idleTimeoutSeconds: settings.rows[0].chat_idle_timeout_seconds };
+    }
+    const createTaskBranch = parsed.claimType !== 'chat' && parsed.prNumber == null && parsed.branch == null;
     const claim = await insertPendingClaim({
+      ...chatOptions,
       orgId,
       repo: parsed.repo,
       prNumber: parsed.prNumber ?? null,
       claimType: parsed.claimType,
       payload: {
         source: 'collab',
-        branch: parsed.branch ?? null,
+        branch: createTaskBranch ? `ff/task-${parsed.taskId}` : parsed.branch ?? null,
+        ...(createTaskBranch ? { create_branch: true } : {}),
         instructions: parsed.instructions ?? '',
+        ...chatPayload,
       },
     }, tx);
     if (claim === null) {
@@ -410,11 +462,52 @@ export async function startCollabClaimExecution(input: {
       [claim.id],
     );
     return { row: created.rows[0], created: true };
-  });
+  }, executor);
   return {
-    claim: await projectClaim(principal.id, scope.projectId, result.row),
+    claim: await projectClaim(principal.id, scope.projectId, result.row, executor),
     created: result.created,
   };
+}
+
+export async function startCollabChatSession(input: {
+  actor: CollabActor;
+  projectId: string;
+  title: string;
+  idempotencyKey: string;
+  repo?: string | null;
+  targetAgentId?: string;
+}): Promise<StartClaimExecutionResult & { taskId: string }> {
+  const parsed = z.object({
+    actor: commandActorSchema,
+    projectId: z.string().uuid(),
+    title: z.string().min(1).max(300),
+    idempotencyKey: z.string().min(8).max(256),
+    repo: startSchema.shape.repo.optional().default(null),
+    targetAgentId: startSchema.shape.targetAgentId,
+  }).strict().parse(input);
+  await requireCurrentPrincipal(parsed.actor);
+  await authorize(parsed.actor, { projectId: parsed.projectId }, ['task.write', 'run.start', 'internal.read']);
+  const scopeKey = `chat-new:${parsed.projectId}`;
+  const hash = requestHash({ title: parsed.title, repo: parsed.repo, targetAgentId: parsed.targetAgentId ?? null });
+  return withClientTransaction(async (tx) => {
+    await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`${scopeKey}:${parsed.actor.principalId}:${parsed.idempotencyKey}`]);
+    const existing = await tx.query<{ request_hash: string; claim_id: number }>(
+      `SELECT request_hash, claim_id FROM collab_idempotency_records WHERE principal_id=$1 AND scope_key=$2 AND idempotency_key=$3`,
+      [parsed.actor.principalId, scopeKey, parsed.idempotencyKey],
+    );
+    if (existing.rows.length) {
+      if (existing.rows[0].request_hash !== hash) throw new CollabServiceError(409, 'idempotency_conflict', 'This request identity was already used with a different payload.');
+      const replay = await tx.query<ClaimExecutionRow>(`${CLAIM_SELECT} WHERE execution.claim_id=$1 AND execution.project_id=$2`, [existing.rows[0].claim_id, parsed.projectId]);
+      if (!replay.rows.length) throw new CollabServiceError(404, 'not_found', 'Not found.');
+      return { taskId: replay.rows[0].task_id, claim: rowToClaim(replay.rows[0]), created: false };
+    }
+    const task = await createCollabTask({ actor: parsed.actor, projectId: parsed.projectId, title: parsed.title }, tx);
+    const started = await startCollabClaimExecution({ actor: parsed.actor, taskId: task.id, expectedVersion: task.version,
+      idempotencyKey: parsed.idempotencyKey, repo: parsed.repo, targetAgentId: parsed.targetAgentId, claimType: 'chat' }, tx);
+    await tx.query(`INSERT INTO collab_idempotency_records(principal_id,scope_key,idempotency_key,request_hash,claim_id) VALUES ($1,$2,$3,$4,$5)`,
+      [parsed.actor.principalId, scopeKey, parsed.idempotencyKey, hash, started.claim.id]);
+    return { ...started, taskId: task.id };
+  });
 }
 
 export async function listCollabClaimExecutions(input: {
@@ -610,7 +703,7 @@ export async function submitCollabClaimCommand(input: {
   actor: CollabActor;
   claimId: number;
   idempotencyKey: string;
-  kind: 'prompt' | 'cancel' | 'permission' | 'elicitation';
+  kind: 'prompt' | 'cancel' | 'end_session' | 'handoff' | 'permission' | 'elicitation';
   payload: Record<string, unknown>;
   requestKey?: string;
 }): Promise<SubmitClaimCommandResult> {
@@ -620,8 +713,9 @@ export async function submitCollabClaimCommand(input: {
   }
   const principal = await requireCurrentPrincipal(parsed.actor);
   const scope = await claimExecutionScope(parsed.claimId);
-  const required = parsed.kind === 'cancel'
+  const required = parsed.kind === 'cancel' || parsed.kind === 'end_session'
     ? ['internal.read', 'run.cancel'] as const
+    : parsed.kind === 'handoff' ? ['internal.read', 'run.start', 'run.steer'] as const
     : ['internal.read', 'run.steer'] as const;
   await authorize(parsed.actor, { projectId: scope.project_id }, required);
   const canonical = {
@@ -633,8 +727,8 @@ export async function submitCollabClaimCommand(input: {
   };
   const hash = requestHash(canonical);
   return withClientTransaction<SubmitClaimCommandResult>(async (tx) => {
-    const locked = await tx.query<{ org_id: string; status: string }>(
-      `SELECT claim.org_id, claim.status
+    const locked = await tx.query<{ org_id: string; status: string; claim_type: string; repo: string | null }>(
+      `SELECT claim.org_id, claim.status, claim.claim_type, claim.repo
        FROM collab_claim_executions execution
        JOIN agent_claims claim ON claim.id = execution.claim_id
        WHERE execution.claim_id = $1
@@ -645,6 +739,11 @@ export async function submitCollabClaimCommand(input: {
     );
     if (locked.rows.length === 0) throw new CollabServiceError(404, 'not_found', 'Not found.');
     const claim = locked.rows[0];
+    const endsClaim = parsed.kind === 'end_session' || (parsed.kind === 'cancel' && claim.claim_type !== 'chat');
+    if (parsed.kind === 'end_session' && claim.claim_type !== 'chat') throw new CollabServiceError(400, 'malformed', 'Invalid request.');
+    if (parsed.kind === 'handoff' && (claim.claim_type !== 'chat' || claim.repo === null)) {
+      throw new CollabServiceError(409, 'handoff_unavailable', 'Build handoff requires a repository session.');
+    }
     const requestKey = parsed.kind === 'permission' || parsed.kind === 'elicitation'
       ? parsed.requestKey
       : null;
@@ -685,7 +784,7 @@ export async function submitCollabClaimCommand(input: {
         created: false,
       };
     }
-    if (parsed.kind === 'cancel') {
+    if (endsClaim) {
       const existingCancellation = await tx.query<{ request_hash: string }>(
         `SELECT request_hash
          FROM collab_idempotency_records
@@ -700,16 +799,19 @@ export async function submitCollabClaimCommand(input: {
             'This request identity was already used with a different payload.',
           );
         }
-        return { commandId: null, kind: 'cancel', status: 'cancelled', created: false };
+        return { commandId: null, kind: parsed.kind, status: 'cancelled', created: false };
       }
     }
+    if (parsed.kind === 'end_session' && claim.status === 'cancelled') {
+      return { commandId: null, kind: parsed.kind, status: 'cancelled', created: false };
+    }
     if (claim.status === 'pending') {
-      if (parsed.kind !== 'cancel') {
+      if (!endsClaim) {
         throw new CollabServiceError(409, 'claim_not_active', 'The execution is not active.');
       }
       const cancelled = await tx.query(
         `UPDATE agent_claims
-         SET status = 'cancelled', completed_at = now()
+         SET status = 'cancelled', completed_at = now(), end_reason = CASE WHEN claim_type='chat' THEN 'user' ELSE NULL END
          WHERE id = $1 AND org_id = $2 AND status = 'pending'
          RETURNING id`,
         [parsed.claimId, claim.org_id],
@@ -733,7 +835,7 @@ export async function submitCollabClaimCommand(input: {
           parsed.claimId,
         ],
       );
-      return { commandId: null, kind: 'cancel', status: 'cancelled', created: true };
+      return { commandId: null, kind: parsed.kind, status: 'cancelled', created: true };
     }
     if (claim.status !== 'claimed') {
       throw new CollabServiceError(409, 'claim_not_active', 'The execution is not active.');
@@ -748,6 +850,7 @@ export async function submitCollabClaimCommand(input: {
           idempotencyKey: parsed.idempotencyKey,
           kind: parsed.kind,
           payload: parsed.payload,
+          originator: parsed.actor,
         }, tx);
       } catch (error) {
         interactionConflict(error, 'request_conflict');
@@ -769,6 +872,7 @@ export async function submitCollabClaimCommand(input: {
         idempotencyKey: parsed.idempotencyKey,
         kind: parsed.kind,
         payload: parsed.payload,
+        originator: parsed.actor,
       }, tx);
       return {
         commandId: queued.command.id,
@@ -780,4 +884,25 @@ export async function submitCollabClaimCommand(input: {
       interactionConflict(error, 'idempotency_conflict');
     }
   });
+}
+
+export async function getCollabClaimCommand(input:{actor:CollabActor;claimId:number;commandId:number}):Promise<{commandId:number;kind:string;status:string}> {
+ const parsed=detailSchema.extend({commandId:z.number().int().positive().max(POSTGRES_INTEGER_MAX)}).strict().parse(input);
+ const scope=await claimExecutionScope(parsed.claimId);
+ await authorize(parsed.actor,{projectId:scope.project_id},['task.read','internal.read']);
+ const {rows}=await getPool().query(`SELECT id,kind,status FROM agent_claim_commands WHERE id=$1 AND claim_id=$2 AND org_id=$3`,[parsed.commandId,parsed.claimId,scope.org_id]);
+ if(!rows[0])throw new CollabServiceError(404,'not_found','Not found.');
+ return {commandId:rows[0].id,kind:rows[0].kind,status:rows[0].status};
+}
+
+export async function listCollabClaimPrompts(input:{actor:CollabActor;claimId:number;cursor?:string;limit?:number}):Promise<{prompts:{commandId:number;text:string;status:string;createdAt:string;messageId:string|null}[];nextCursor:string|null}> {
+ const parsed=eventListSchema.extend({cursor:z.string().regex(/^[1-9]\d*$/).optional()}).strict().parse(input);
+ const after=parsed.cursor?Number(parsed.cursor):0;
+ if(!Number.isSafeInteger(after)||after>POSTGRES_INTEGER_MAX)throw new CollabServiceError(400,'invalid_cursor','The cursor is invalid.');
+ const scope=await claimExecutionScope(parsed.claimId);
+ await authorize(parsed.actor,{projectId:scope.project_id},['task.read','internal.read']);
+ const {rows}=await getPool().query(`SELECT id,payload->>'text' AS text,result->>'messageId' AS message_id,status,created_at FROM agent_claim_commands WHERE claim_id=$1 AND org_id=$2 AND kind='prompt' AND id>$3 ORDER BY id LIMIT $4`,[parsed.claimId,scope.org_id,after,parsed.limit+1]);
+ let bytes=0;const page:typeof rows=[];
+ for(const row of rows.slice(0,parsed.limit)){const cost=Buffer.byteLength(JSON.stringify(row));if(bytes+cost>CLAIM_INTERACTION_PAGE_BYTES)break;page.push(row);bytes+=cost;}
+ return {prompts:page.map(row=>({commandId:row.id,text:row.text??'',status:row.status,messageId:row.message_id??null,createdAt:row.created_at.toISOString()})),nextCursor:rows.length>page.length&&page.length?String(page[page.length-1].id):null};
 }

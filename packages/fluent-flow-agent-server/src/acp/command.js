@@ -87,7 +87,7 @@ export function canonicalAdapter(agentType) {
   return ADAPTERS.get(agentType)?.bin ?? null;
 }
 
-export function resolveAcpCommand({ agentType, command, args = [] } = {}) {
+export function resolveAcpCommand({ agentType = undefined, command = undefined, args = [] } = {}) {
   assertArguments(args);
 
   if (command !== undefined && command !== null) {

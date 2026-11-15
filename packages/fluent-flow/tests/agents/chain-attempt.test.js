@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PgDialect } from 'drizzle-orm/pg-core';
 
 vi.mock('../../src/logger.js', async () => {
   const { createMockLogger } = await import('../helpers/mock-logger.js');
@@ -135,7 +136,7 @@ describe('nextChainAttempt', () => {
     expect(result).toBe(1);
   });
 
-  it('does NOT include claimType in where-clause (chain-wide allocation)', async () => {
+  it('allocates across every work type but excludes task-local chat attempts', async () => {
     const mockLimit = vi.fn().mockResolvedValue([{ max: 5 }]);
     const whereArgs = [];
     db.select.mockReturnValueOnce({
@@ -147,8 +148,8 @@ describe('nextChainAttempt', () => {
     await nextChainAttempt('org1', 'owner/repo', 123);
 
     const names = collectQueryColumns(whereArgs);
-    expect(names.has('claim_type')).toBe(false);
-    expect([...names].sort()).toEqual(['org_id', 'pr_number', 'repo']);
+    expect([...names].sort()).toEqual(['claim_type', 'org_id', 'pr_number', 'repo']);
+    expect(new PgDialect().sqlToQuery(whereArgs[0]).sql).toMatch(/claim_type.*IS DISTINCT FROM 'chat'/);
   });
 });
 

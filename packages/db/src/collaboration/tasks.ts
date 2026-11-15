@@ -56,6 +56,8 @@ const listTasksSchema = z.object({
 });
 
 const TASK_SELECT = `SELECT t.*, p.display_name AS assignee_name,
+    claim_activity.id AS activity_claim_id, claim_activity.claim_type AS activity_claim_type,
+    claim_activity.status AS activity_status, claim_activity.end_reason AS activity_end_reason, claim_activity.needs_input AS activity_needs_input,
     execution.id AS execution_id, execution.state AS execution_state,
     execution.stage AS execution_stage, execution.last_observed_at AS execution_observed_at,
     CASE WHEN EXISTS(SELECT 1 FROM collab_connector_commands c WHERE c.run_id=execution.id AND c.state IN ('failed','ambiguous')) THEN 1 ELSE 0 END AS command_attention,
@@ -64,6 +66,9 @@ const TASK_SELECT = `SELECT t.*, p.display_name AS assignee_name,
       WHEN host.last_heartbeat_at >= now()-interval '120 seconds' THEN 'stale' ELSE 'offline' END AS execution_reachability
   FROM collab_tasks t
   LEFT JOIN collab_principals p ON p.id = t.assignee_id
+  LEFT JOIN LATERAL (SELECT c.id,c.claim_type,c.status,c.end_reason, EXISTS(SELECT 1 FROM agent_claim_requests r WHERE r.claim_id=c.id AND r.org_id=c.org_id AND r.status='open' AND c.status='claimed') AS needs_input FROM collab_claim_executions ce
+    JOIN agent_claims c ON c.id=ce.claim_id WHERE ce.task_id=t.id AND ce.project_id=t.project_id
+    ORDER BY ce.created_at DESC,c.id DESC LIMIT 1) claim_activity ON true
   LEFT JOIN LATERAL (SELECT id,state,stage,last_observed_at,host_id FROM collab_runs
     WHERE task_id=t.id ORDER BY created_at DESC,id DESC LIMIT 1) execution ON true
   LEFT JOIN collab_hosts host ON host.id=execution.host_id`;
@@ -83,6 +88,7 @@ function rowToTask(row: Record<string, unknown>): CollabTask {
     blockedReason: (row.blocked_reason as string | null) ?? null,
     createdAt: (row.created_at as Date).toISOString(),
     updatedAt: (row.updated_at as Date).toISOString(),
+    claimActivity: row.activity_claim_id ? {claimId:row.activity_claim_id as number,claimType:row.activity_claim_type as string,status:row.activity_status as string,needsInput:row.activity_needs_input===true,endReason:(row.activity_end_reason as string|null)??null} : null,
     execution: {
       latestRun: row.execution_id ? {
         id: row.execution_id as string, state: row.execution_state as any, stage: row.execution_stage as any,
@@ -136,12 +142,12 @@ export async function createCollabTask(input: {
   description?: string;
   priority?: 'low' | 'normal' | 'high' | 'urgent';
   assigneeId?: string | null;
-}): Promise<CollabTask> {
+}, executor?: PoolClient): Promise<CollabTask> {
   const input2 = createTaskSchema.parse(input);
-  await authorize(input2.actor, { projectId: input2.projectId }, ['task.write']);
+  await authorize(input2.actor, { projectId: input2.projectId }, ['task.write'], executor);
 
   if (input2.assigneeId !== null) {
-    const assigneeCaps = await getProjectCapabilities(input2.assigneeId, input2.projectId);
+    const assigneeCaps = await getProjectCapabilities(input2.assigneeId, input2.projectId, executor);
     if (!assigneeCaps.has('task.read')) {
       throw new CollabServiceError(
         422,
@@ -205,7 +211,7 @@ export async function createCollabTask(input: {
       input2.projectId,
     ]);
     return rowToTask(created.rows[0]);
-  });
+  }, executor);
 }
 
 export async function authorizedProjectIds(principalId: string): Promise<string[]> {

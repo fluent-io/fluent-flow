@@ -29,6 +29,13 @@ Vitest suites run with `npm test --workspace packages/fluent-flow-agent-server`.
 - `unit/verify-red.test.js`, `unit/verify-green.test.js`, `unit/adapters.test.js` and `fixtures/reporter/`: deterministic verification and the Jest, Vitest and `node:test` reporter adapters.
 - `unit/acp-command.test.js`, `unit/acp-process.test.js`, `unit/acp-normalize.test.js` and `unit/acp-runtime.test.js`: the ACP layer described in [src/acp/README.md](../src/acp/README.md).
 - `unit/fake-acp-agent.js`: a scripted ACP v2 agent. Scenarios are chosen with `--scenario`, and `--trace` writes a trace file. The ACP tests, both smoke launchers and the browser harnesses use it.
+- `unit/chat-loop.test.js`: sticky turns, leased steering, turn cancellation, explicit end, deadlines and cleanup failures.
+- `unit/chat-workspace.test.js`: real Git recovery, dirty/ignored/unpublished work retention, safe local discard and filesystem replacement refusal.
+- `unit/chat-handoff.test.js`: published branch snapshots, same-context ACP summaries, live chat after handoff and new-task spec/build artifact transfer.
+- `unit/runner-chat.test.js`: production runner/bridge integration, catalog policy, resource release and asynchronous cleanup reports.
+- `unit/chat-profiles.test.js` and `unit/chat-event-budget.test.js`: operator profile allowlists and bounded transcripts that preserve critical events.
+
+CI exercises the Linux chat paths on Node 20 as well as the full Node 22 package suite. The separate runtime typecheck is `npm run typecheck:runtime --workspace packages/fluent-flow-agent-server`. Chat workspace support remains Linux/procfs-only; the existing cross-platform work runner is not widened by these checks.
 
 ## Connector
 

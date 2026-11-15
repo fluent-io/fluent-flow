@@ -93,7 +93,7 @@ export async function createClaim({
     return {
       id: claim.id,
       org_id: claim.org_id,
-      repo: claim.repo,
+      repo: repo.repo_full_name,
       claim_type: claim.claim_type,
       status: claim.status,
     };

@@ -462,10 +462,10 @@ function payloadByteLength(payload) {
 }
 
 export function normalizeAcpUpdate({
-  claimId,
-  sessionId,
-  seq,
-  update,
+  claimId = undefined,
+  sessionId = undefined,
+  seq = undefined,
+  update = undefined,
   secretValues = [],
   maxPayloadBytes = DEFAULT_MAX_PAYLOAD_BYTES,
 } = {}) {

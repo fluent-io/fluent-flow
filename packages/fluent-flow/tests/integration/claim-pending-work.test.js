@@ -2,7 +2,8 @@ import { beforeAll, beforeEach, expect, it } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { db, enqueueClaimCommand, schema, upsertClaimRequest } from '@fluent-flow/db';
 import { sql } from 'drizzle-orm';
-import { integrationDescribe, resetDb } from '../helpers/integration-db.js';
+import { integrationDescribe, resetDb, resolveTestDatabaseUrl } from '../helpers/integration-db.js';
+import { assertDedicatedCollabTestDatabaseUrl } from '../helpers/collab-db.js';
 import { claimPendingWork, handlePoll, releaseUndeliveredClaim } from '../../src/routes/agent-server.js';
 import { completeClaim } from '../../src/agents/claim-manager.js';
 
@@ -13,6 +14,8 @@ import { completeClaim } from '../../src/agents/claim-manager.js';
  * both win the same pending claim, and repo-scoped agents must skip claims
  * outside their scope.
  */
+const testDatabaseUrl = resolveTestDatabaseUrl();
+if (testDatabaseUrl) process.env.DATABASE_URL = assertDedicatedCollabTestDatabaseUrl(testDatabaseUrl);
 const describeDb = await integrationDescribe();
 
 describeDb('claimPendingWork (integration)', () => {

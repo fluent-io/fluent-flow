@@ -21,6 +21,10 @@ const sessionId = scenario === 'smoke' ? `smoke-session-${process.pid}` : 'fake-
 let promptCalls = 0;
 let listCalls = 0;
 let blockedSetupTimer = null;
+const chatConfig = [
+  { configId: 'approval', name: 'Approval', type: 'select', currentValue: 'bypass', options: [{ value: 'ask', name: 'Ask' }, { value: 'bypass', name: 'Bypass' }] },
+  { configId: 'model', name: 'Model', type: 'select', currentValue: 'small', options: [{ value: 'small', name: 'Small' }, { value: 'large', name: 'Large' }] },
+];
 
 if (scenario === 'blocked-setup') {
   process.stdin.once('end', () => {
@@ -108,7 +112,13 @@ const app = agent()
       blockedSetupTimer = setTimeout(() => process.exit(35), 200);
       return new Promise(() => {});
     }
-    return { sessionId };
+    return { sessionId, ...(['chat-policy', 'handoff-summary'].includes(scenario) && { configOptions: chatConfig }) };
+  })
+  .onRequest(AGENT_METHODS.session_set_config_option, ({ params }) => {
+    trace('set_config_option', { params });
+    const option = chatConfig.find((item) => item.configId === params.configId);
+    option.currentValue = params.value;
+    return { configOptions: chatConfig };
   })
   .onRequest(AGENT_METHODS.session_prompt, ({ params, client }) => {
     promptCalls += 1;
@@ -158,6 +168,10 @@ const app = agent()
     }
 
     setTimeout(async () => {
+      if (scenario === 'chat-policy' && argument('--drift') === 'yes') {
+        chatConfig[0].currentValue = 'bypass';
+        await update(client, { sessionUpdate: 'config_option_update', configOptions: chatConfig });
+      }
       await update(client, { sessionUpdate: 'state_update', state: 'running' });
       if (scenario === 'claim-browser-uat') {
         if (promptOrdinal === 1) {
@@ -232,7 +246,7 @@ const app = agent()
         });
         return;
       }
-      if (scenario === 'permission') {
+      if (scenario === 'permission' || (scenario === 'chat-policy' && argument('--permission') === 'yes')) {
         await update(client, { sessionUpdate: 'state_update', state: 'requires_action' });
         const answer = await client.request(CLIENT_METHODS.session_request_permission, {
           sessionId,
@@ -247,7 +261,7 @@ const app = agent()
         trace('permission_answer', { answer });
         await update(client, { sessionUpdate: 'state_update', state: 'running' });
       }
-      if (scenario === 'elicitation') {
+      if (scenario === 'elicitation' || (scenario === 'chat-policy' && argument('--elicitation') === 'yes')) {
         await update(client, { sessionUpdate: 'state_update', state: 'requires_action' });
         const answer = await client.request(CLIENT_METHODS.elicitation_create, {
           sessionId,
@@ -262,11 +276,15 @@ const app = agent()
         trace('elicitation_answer', { answer });
         await update(client, { sessionUpdate: 'state_update', state: 'running' });
       }
-      if (scenario === 'long-running' || scenario === 'close-hung' || scenario === 'silence') return;
+      if (scenario === 'long-running' || scenario === 'close-hung' || scenario === 'silence'
+        || (scenario === 'chat-policy' && JSON.stringify(params).includes('HOLD_CHAT_RESPONSE'))) return;
       await update(client, {
         sessionUpdate: 'agent_message_chunk',
-        messageId: 'fake-agent-message-1',
-        content: { type: 'text', text: 'Deterministic ACP response.' },
+        messageId: argument('--distinct-turns') === 'yes' ? `fake-agent-message-${promptOrdinal}` : 'fake-agent-message-1',
+        content: { type: 'text', text: scenario === 'handoff-summary' ? JSON.stringify({
+          goal: 'Build the agreed feature', decisions: ['Reuse existing code'], acceptanceCriteria: ['Feature works'],
+          openQuestions: [], filesTouched: ['design.md'],
+        }) : 'Deterministic ACP response.' },
       });
       await update(client, { sessionUpdate: 'state_update', state: 'idle', stopReason: 'end_turn' });
     }, 10);
@@ -342,7 +360,7 @@ if (scenario !== 'missing-list') {
   });
 }
 
-trace('process_start', { scenario });
+trace('process_start', { scenario, githubCredentialPresent: Boolean(process.env.GH_TOKEN || process.env.GITHUB_TOKEN || process.env.GIT_CONFIG_VALUE_0?.includes('Authorization')) });
 const stream = ndJsonStream(Writable.toWeb(process.stdout), Readable.toWeb(process.stdin));
 const connection = app.connect(stream);
 await connection.closed;

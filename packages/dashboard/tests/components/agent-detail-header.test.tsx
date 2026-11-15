@@ -1,6 +1,7 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import type { AgentDetail } from '@fluent-flow/db';
 import { AgentDetailHeader } from '@/components/agents/agent-detail-header';
 
@@ -34,6 +35,9 @@ function agent(overrides: Partial<AgentDetail> = {}): AgentDetail {
     deployment: 'self_hosted',
     capacity: 4,
     active_slots: 2,
+    busy_chat: 0,
+    busy_work: 0,
+    max_chat_slots: null,
     ...overrides,
   };
 }
@@ -89,6 +93,89 @@ describe('AgentDetailHeader slots and deployment', () => {
   ] as const)('shows deployment %j as %j', (deployment, label) => {
     renderHeader({ deployment });
     expect(field('Deployment', label)).toBeTruthy();
+  });
+});
+
+describe('AgentDetailHeader chat capacity', () => {
+  it('reports the effective chat limit conservatively from advertised capacity', () => {
+    renderHeader({ capacity: 4, max_chat_slots: null });
+    expect(field('Chat slots', '3 effective of 4 · configured default')).toBeTruthy();
+  });
+
+  it('caps the configured value at capacity minus one', () => {
+    renderHeader({ capacity: 4, max_chat_slots: 15 });
+    expect(field('Chat slots', '3 effective of 4 · configured 15')).toBeTruthy();
+  });
+
+  it('reports chats disabled for capacity 1 even when configured higher', () => {
+    renderHeader({ capacity: 1, max_chat_slots: 5 });
+    expect(field('Chat slots', 'chats disabled · configured 5')).toBeTruthy();
+  });
+
+  it('reports configured zero as disabled', () => {
+    renderHeader({ capacity: 8, max_chat_slots: 0 });
+    expect(field('Chat slots', 'chats disabled · configured 0')).toBeTruthy();
+  });
+
+  it('reports honestly when the agent never advertised a capacity', () => {
+    renderHeader({ capacity: null, max_chat_slots: 4 });
+    expect(field('Chat slots', 'unknown \\(agent capacity not advertised\\) · configured 4')).toBeTruthy();
+  });
+
+  it('reports the busy chat and work split', () => {
+    renderHeader({ busy_chat: 2, busy_work: 1 });
+    expect(field('Busy', '3 \\(chat 2 \\/ work 1\\)')).toBeTruthy();
+  });
+
+  it('shows the admin editor only for admins', () => {
+    render(
+      <AgentDetailHeader agent={agent()} keyInfo={{ id: 1, created_at: '2026-11-02T10:00:00Z' }} status="online" isAdmin={false} />,
+    );
+    expect(screen.queryByLabelText('Max chat slots')).toBeNull();
+    renderHeader();
+    expect(screen.getByLabelText('Max chat slots')).toBeTruthy();
+  });
+
+  it('saves a configured chat slot value through the org-scoped API', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => new Response(
+      JSON.stringify({ agent: { ...agent(), max_chat_slots: 6 } }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    renderHeader();
+    await user.type(screen.getByLabelText('Max chat slots'), '6');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByText('Saved.');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/agents/laptop-1',
+      expect.objectContaining({ method: 'PATCH', body: JSON.stringify({ maxChatSlots: 6 }) }),
+    );
+    expect(field('Chat slots', '3 effective of 4 · configured 6')).toBeTruthy();
+  });
+
+  it('rejects out-of-range values without calling the API', async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    renderHeader();
+    await user.type(screen.getByLabelText('Max chat slots'), '16');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(screen.getByRole('alert').textContent).toMatch(/0 to 15/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('shows a permission error without internals when the save is denied', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ error: 'Forbidden' }),
+      { status: 403, headers: { 'content-type': 'application/json' } },
+    )));
+    renderHeader();
+    await user.type(screen.getByLabelText('Max chat slots'), '2');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(screen.getByRole('alert').textContent).toMatch(/permission/i);
+    expect(screen.getByRole('alert').textContent).not.toMatch(/org|agent_id|max_chat_slots/);
   });
 });
 

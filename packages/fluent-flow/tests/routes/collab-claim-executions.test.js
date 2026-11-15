@@ -325,6 +325,235 @@ describe('collaboration claim execution routes', () => {
     await db.closePool();
   });
 
+  it('expires pending chats by queue TTL without redispatching', async () => {
+    const task = await createTask();
+    const opened = await request('POST', `/tasks/${task.id}/claim-executions`, { actor: controller,
+      headers: { 'idempotency-key': crypto.randomUUID() }, body: { expectedVersion: 1, claimType: 'chat' } });
+    expect(opened.status).toBe(202);
+    const claimId = opened.body.data.claim.id;
+    await db.getPool().query("UPDATE agent_claims SET pending_deadline_at=now()-interval '1 second' WHERE id=$1", [claimId]);
+    const { expireClaims } = await import('../../src/agents/claim-manager.js');
+    await expireClaims();
+    expect((await db.getPool().query('SELECT status,end_reason FROM agent_claims WHERE id=$1', [claimId])).rows)
+      .toEqual([{ status: 'cancelled', end_reason: 'no_capacity' }]);
+    const { redispatchClaim } = await import('../../src/agents/claim-manager.js');
+    expect(await redispatchClaim((await db.getPool().query('SELECT * FROM agent_claims WHERE id=$1', [claimId])).rows[0])).toBeNull();
+  });
+
+  it('routes repo-less chats only to their target, reserves a work slot, and excludes expired pending rows', async () => {
+    const { claimPendingWork } = await import('../../src/routes/agent-server.js');
+    const agentId = 'chat-route-target';
+    await db.createAgent({ id: agentId, orgId, agentType: 'test', transport: 'long_poll', repos: ['different/repo'] });
+    const sessions = (await db.getPool().query(`INSERT INTO agent_sessions(org_id,agent_id,status,expires_at,session_meta)
+      SELECT $1,$2,'online',now()+interval '1 hour','{"supported_claim_types":["chat"],"capacity":2}'::jsonb FROM generate_series(1,2) RETURNING id`, [orgId, agentId])).rows;
+    const ids = [];
+    for (let i=0; i<2; i++) {
+      const task = await createTask();
+      const opened = await request('POST', `/tasks/${task.id}/claim-executions`, { actor: controller,
+        headers: { 'idempotency-key': crypto.randomUUID() }, body: { expectedVersion: 1, claimType: 'chat', targetAgentId: agentId } });
+      expect(opened.status).toBe(202);
+      ids.push(opened.body.data.claim.id);
+    }
+    expect(await claimPendingWork(orgId, 'claim-route-runner', runnerSessionId)).toBeNull();
+    const legacy = (await db.getPool().query(`INSERT INTO agent_sessions(org_id,agent_id,status,expires_at,session_meta)
+      VALUES ($1,$2,'online',now()+interval '1 hour','{"capacity":2}'::jsonb) RETURNING id`, [orgId,agentId])).rows[0];
+    expect(await claimPendingWork(orgId,agentId,legacy.id)).toBeNull();
+    await db.getPool().query('UPDATE agents SET max_chat_slots=0 WHERE org_id=$1 AND id=$2', [orgId,agentId]);
+    expect(await claimPendingWork(orgId,agentId,sessions[0].id)).toBeNull();
+    await db.getPool().query('UPDATE agents SET max_chat_slots=NULL WHERE org_id=$1 AND id=$2', [orgId,agentId]);
+    const winners = await Promise.all(sessions.map(s => claimPendingWork(orgId, agentId, s.id)));
+    expect(winners.filter(Boolean)).toHaveLength(1);
+    expect(ids).toContain(winners.find(Boolean).id);
+    expect(winners.find(Boolean).repo).toBeNull();
+    const work = await createExecution({ claimType: 'spec', prNumber: 8911 });
+    await db.getPool().query('UPDATE agents SET repos=$1::text[] WHERE org_id=$2 AND id=$3', [[repo], orgId, agentId]);
+    const freeSession = sessions[winners.findIndex((winner) => !winner)];
+    await db.getPool().query(`UPDATE agent_sessions SET session_meta=jsonb_set(session_meta,'{supported_claim_types}','["chat","spec"]'::jsonb) WHERE id=$1`, [freeSession.id]);
+    expect((await claimPendingWork(orgId, agentId, freeSession.id))?.id).toBe(work.claimId);
+    await db.getPool().query("UPDATE agent_claims SET status='cancelled' WHERE id=$1", [work.claimId]);
+    await db.getPool().query("UPDATE agent_claims SET status='cancelled' WHERE id=ANY($1::integer[])", [ids]);
+    await db.getPool().query("UPDATE agent_sessions SET status='online' WHERE agent_id=$1 AND org_id=$2", [agentId, orgId]);
+  });
+
+  it('separates chat activity from heartbeat, keeps turn cancellation nonterminal, and never retries shutdown failure', async () => {
+    const task = await createTask();
+    const opened = await request('POST', `/tasks/${task.id}/claim-executions`, { actor: controller,
+      headers: { 'idempotency-key': crypto.randomUUID() }, body: { expectedVersion: 1, claimType: 'chat' } });
+    const id = opened.body.data.claim.id;
+    await assignClaim(id);
+    const old = new Date(Date.now()-20*60*1000);
+    await db.getPool().query('UPDATE agent_claims SET last_activity_at=$2 WHERE id=$1', [id, old]);
+    const heartbeat = await runnerRequest('/heartbeat', { session_id: runnerSessionId, claim_id: id });
+    expect(heartbeat.status).toBe(200);
+    expect((await db.getPool().query('SELECT last_activity_at FROM agent_claims WHERE id=$1', [id])).rows[0].last_activity_at).toEqual(old);
+    const cancel = await command(id, canceller, crypto.randomUUID(), { kind: 'cancel', payload: {} });
+    expect(cancel.status).toBe(202);
+    const active = (await db.getPool().query('SELECT status,last_activity_at FROM agent_claims WHERE id=$1', [id])).rows[0];
+    expect(active.status).toBe('claimed');
+    expect(active.last_activity_at.getTime()).toBeGreaterThan(old.getTime());
+    const complete = await runnerRequest('/claim', { status: 'completed', repo: null, pr_number: null, attempt: 1, claim_id: id, session_id: runnerSessionId });
+    expect(complete.status).toBe(400);
+    const failed = await runnerRequest('/claim', { status: 'failed', repo: null, pr_number: null, attempt: 1, claim_id: id, session_id: runnerSessionId, failure_kind: 'transient', end_reason: 'host_lost' });
+    expect(failed.status).toBe(200);
+    expect((await db.getPool().query('SELECT status,end_reason FROM agent_claims WHERE task_id=$1', [task.id])).rows)
+      .toEqual([{ status: 'failed', end_reason: 'host_lost' }]);
+  });
+
+  it('queues active End session, accepts terminal repeats after expiry, and keeps heartbeat-only chats idle', async () => {
+    const task = await createTask();
+    const opened = await request('POST', `/tasks/${task.id}/claim-executions`, { actor: controller,
+      headers: { 'idempotency-key': crypto.randomUUID() }, body: { expectedVersion: 1, claimType: 'chat' } });
+    const id = opened.body.data.claim.id;
+    await assignClaim(id);
+    const promptKey = crypto.randomUUID();
+    expect((await command(id,steerer,promptKey,{kind:'prompt',payload:{text:'Prior intent'}})).status).toBe(202);
+    const ended = await command(id, canceller, crypto.randomUUID(), { kind: 'end_session', payload: {} });
+    expect(ended.status).toBe(202);
+    expect((await commandRows(id)).find(c=>c.kind==='end_session')).toMatchObject({ status: 'pending' });
+    await db.getPool().query("UPDATE agent_claims SET last_activity_at=now()-interval '16 minutes' WHERE id=$1", [id]);
+    await runnerRequest('/heartbeat', { session_id: runnerSessionId, claim_id: id });
+    const { expireClaims } = await import('../../src/agents/claim-manager.js');
+    await expireClaims();
+    expect((await db.getPool().query('SELECT status,end_reason FROM agent_claims WHERE id=$1', [id])).rows)
+      .toEqual([{ status: 'cancelled', end_reason: 'idle' }]);
+    expectGenericError(await command(id,canceller,promptKey,{kind:'end_session',payload:{}}),409,'idempotency_conflict');
+    const report = { status: 'cancelled', repo: null, pr_number: null, attempt: 1, claim_id: id, session_id: runnerSessionId, end_reason: 'user' };
+    expect((await runnerRequest('/claim', report)).status).toBe(200);
+    expect((await runnerRequest('/claim', report)).status).toBe(200);
+  });
+
+  it('creates New session through HTTP atomically and requires task creation authority', async () => {
+    const body = { title: 'New session HTTP' };
+    const key = crypto.randomUUID();
+    const path = `/projects/${projectId}/chat-sessions`;
+    const denied = await request('POST', path, { actor: controller, body, headers: { 'idempotency-key': key } });
+    expectGenericError(denied, 403, 'forbidden');
+    const first = await request('POST', path, { body, headers: { 'idempotency-key': key } });
+    expect(first.status).toBe(202);
+    const replay = await request('POST', path, { body, headers: { 'idempotency-key': key } });
+    expect(replay.status).toBe(200);
+    expect(replay.body.data.taskId).toBe(first.body.data.taskId);
+    expect(replay.body.data.claim.id).toBe(first.body.data.claim.id);
+  });
+
+  it('revalidates chat command originator authority at delivery', async () => {
+    const task = await createTask();
+    const opened = await request('POST', `/tasks/${task.id}/claim-executions`, { actor: controller,
+      headers: { 'idempotency-key': crypto.randomUUID() }, body: { expectedVersion: 1, claimType: 'chat' } });
+    const id = opened.body.data.claim.id;
+    await assignClaim(id);
+    const enrollment = await enrollActor('chat-revoke-delivery', 'chat-revoke-delivery@example.test', ['task.read','internal.read','run.steer']);
+    const queued = await command(id, enrollment.actor, crypto.randomUUID(), { kind: 'prompt', payload: { text: 'Do not run after revocation' } });
+    expect(queued.status).toBe(202);
+    await db.upsertClaimRequest({orgId,claimId:id,requestKey:'revoked-answer',kind:'permission',payload:{question:'Run?'}});
+    expect((await command(id,enrollment.actor,crypto.randomUUID(),{kind:'permission',requestKey:'revoked-answer',payload:{answer:{allow:true}}})).status).toBe(202);
+    await db.getPool().query("UPDATE collab_roles SET capabilities=ARRAY['task.read'] WHERE id=$1", [enrollment.roleId]);
+    const leased = await runnerRequest(`/claims/${id}/commands/poll`, { session_id: runnerSessionId });
+    expect(leased.status).toBe(200);
+    expect(leased.body.commands).toEqual([]);
+    expect((await commandRows(id)).map(c=>c.status)).toEqual(['failed','failed']);
+    expect((await db.getPool().query('SELECT status FROM agent_claim_requests WHERE claim_id=$1',[id])).rows[0].status).toBe('open');
+    await setClaimStatus(id, 'cancelled');
+  });
+
+  it('delivers repo-less chat identity without a GitHub credential and exposes lifecycle detail', async () => {
+    const task = await createTask();
+    const opened = await request('POST', `/tasks/${task.id}/claim-executions`, { actor: controller,
+      headers: { 'idempotency-key': crypto.randomUUID() }, body: { expectedVersion: 1, claimType: 'chat', targetAgentId: 'claim-route-runner' } });
+    const id=opened.body.data.claim.id;
+    await db.getPool().query("UPDATE agent_claims SET created_at=now()-interval '1 day' WHERE id=$1", [id]);
+    await db.getPool().query(`UPDATE agent_sessions SET status='online',session_meta='{"supported_claim_types":["chat"],"capacity":2}' WHERE id=$1`, [runnerSessionId]);
+    const polled = await runnerRequest('/poll', { session_id: runnerSessionId });
+    expect(polled.status).toBe(200);
+    expect(polled.body.work).toMatchObject({ claim_id: id, task_id: task.id, repo: null, claim_type: 'chat' });
+    expect(polled.body.work).not.toHaveProperty('githubToken');
+    await runnerRequest('/claim', { status: 'cancelled', repo: null, pr_number: null, attempt: 1, claim_id: id, session_id: runnerSessionId, end_reason: 'user' });
+    const detail = await request('GET', `/claim-executions/${id}`);
+    expect(detail.body.data).toMatchObject({ endReason: 'user', pendingDeadlineAt: expect.any(String), lastActivityAt: expect.any(String) });
+    await db.getPool().query("UPDATE agent_sessions SET session_meta='{}' WHERE id=$1", [runnerSessionId]);
+  });
+
+  it('isolates task-local chat attempts from unattended natural-key lookups', async () => {
+    const task = await createTask();
+    const repoKey = 'acme/chat-attempt-isolation';
+    await db.insertPendingClaim({ orgId, repo: repoKey, prNumber: null, attempt: 99, claimType: 'chat', taskId: task.id, payload: {} });
+    const manager = await import('../../src/agents/claim-manager.js');
+    expect(await manager.nextChainAttempt(orgId,repoKey,null)).toBe(1);
+    expect(await manager.getActiveClaim(orgId,repoKey,null)).toBeNull();
+    expect(await manager.getClaimByAttempt(orgId,repoKey,null,99)).toBeNull();
+    expect(await manager.completeClaim(orgId,repoKey,null,99)).toBeNull();
+  });
+
+  it('refreshes activity on streamed writes and answers but not polling or event replays', async () => {
+    const task=await createTask();
+    const opened=await request('POST', `/tasks/${task.id}/claim-executions`, { actor: controller,
+      headers: { 'idempotency-key': crypto.randomUUID() }, body: { expectedVersion: 1, claimType: 'chat' } });
+    const id=opened.body.data.claim.id;
+    await assignClaim(id);
+    const old=new Date(Date.now()-60000);
+    const age=()=>db.getPool().query('UPDATE agent_claims SET last_activity_at=$2 WHERE id=$1',[id,old]);
+    const activity=async()=> (await db.getPool().query('SELECT last_activity_at FROM agent_claims WHERE id=$1',[id])).rows[0].last_activity_at;
+    await age();
+    const event={session_id:runnerSessionId,events:[{seq:1,kind:'agent_message',payload:{text:'Thinking'}}]};
+    expect((await runnerRequest(`/claims/${id}/events`,event)).status).toBe(200);
+    expect((await activity()).getTime()).toBeGreaterThan(old.getTime());
+    await age();
+    expect((await runnerRequest(`/claims/${id}/events`,event)).status).toBe(200);
+    expect(await activity()).toEqual(old);
+    await runnerRequest(`/claims/${id}/commands/poll`,{session_id:runnerSessionId});
+    expect(await activity()).toEqual(old);
+    await db.upsertClaimRequest({orgId,claimId:id,requestKey:'chat-permission',kind:'permission',payload:{question:'Allow?'}});
+    const queued=await command(id,steerer,crypto.randomUUID(),{kind:'permission',requestKey:'chat-permission',payload:{answer:{allow:true}}});
+    expect(queued.status).toBe(202);
+    const leased=await runnerRequest(`/claims/${id}/commands/poll`,{session_id:runnerSessionId});
+    expect(leased.body.commands).toHaveLength(1);
+    await age();
+    const results=await Promise.all([
+      runnerRequest(`/claims/${id}/commands/${queued.body.data.commandId}/ack`,{session_id:runnerSessionId,status:'acked',result:{}}),
+      runnerRequest(`/claims/${id}/events`,{session_id:runnerSessionId,events:[{seq:2,kind:'agent_message',payload:{text:'Done'}}]}),
+    ]);
+    expect(results.map(r=>r.status)).toEqual([200,200]);
+    expect((await activity()).getTime()).toBeGreaterThan(old.getTime());
+    await setClaimStatus(id,'cancelled');
+  });
+
+  it('accepts an end report when expiry commits between owner validation and finalization', async () => {
+    const task=await createTask();
+    const opened=await request('POST', `/tasks/${task.id}/claim-executions`, { actor: controller,
+      headers: { 'idempotency-key': crypto.randomUUID() }, body: { expectedVersion: 1, claimType: 'chat' } });
+    const id=opened.body.data.claim.id;
+    await assignClaim(id);
+    const tx=await db.getPool().connect();
+    let pending;
+    try {
+      await tx.query('BEGIN');
+      await tx.query("UPDATE agent_claims SET status='cancelled',end_reason='idle' WHERE id=$1",[id]);
+      pending=runnerRequest('/claim',{status:'cancelled',repo:null,pr_number:null,attempt:1,claim_id:id,session_id:runnerSessionId,end_reason:'user'});
+      let blocked=false;
+      for(let retry=0;retry<100;retry++) {
+        const waiters=await db.getPool().query(`SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE 'UPDATE agent_claims claim%'`);
+        if(waiters.rows.length) {blocked=true;break;}
+        await new Promise(resolve=>setTimeout(resolve,10));
+      }
+      expect(blocked).toBe(true);
+      await tx.query('COMMIT');
+      expect((await pending).status).toBe(200);
+      expect((await db.getPool().query('SELECT end_reason FROM agent_claims WHERE id=$1',[id])).rows[0].end_reason).toBe('idle');
+    } finally {
+      await tx.query('ROLLBACK');
+      tx.release();
+      if(pending) await pending;
+    }
+  });
+
+  it('requires transcript visibility as well as start authority for chat creation', async () => {
+    const task=await createTask();
+    const response=await request('POST',`/tasks/${task.id}/claim-executions`,{actor:revocableStarter,
+      headers:{'idempotency-key':crypto.randomUUID()},body:{expectedVersion:1,claimType:'chat'}});
+    expectGenericError(response,403,'forbidden');
+    expect((await db.getPool().query('SELECT id FROM agent_claims WHERE task_id=$1',[task.id])).rows).toEqual([]);
+  });
+
   it('starts, exactly replays, and rejects a changed payload for one start key', async () => {
     const body = {
       expectedVersion: 1,
@@ -1342,5 +1571,44 @@ describe('collaboration claim execution routes', () => {
       404,
       'not_found',
     );
+  });
+  it('hands an explicitly reviewed chat design to ordinary spec and build claims without losing artifacts or ending chat', async () => {
+    const task = await createTask('Chat design handoff');
+    const actor = { principalId: owner.id, sessionVersion: owner.sessionVersion };
+    const started = await db.startCollabClaimExecution({ actor, taskId: task.id, expectedVersion: task.version,
+      idempotencyKey: crypto.randomUUID(), repo, claimType: 'chat' });
+    await assignClaim(started.claim.id);
+    const prepare = await command(started.claim.id, owner, crypto.randomUUID(), { kind: 'handoff', payload: {} });
+    expect(prepare.status).toBe(202);
+    const commandId = prepare.body.data.commandId;
+    const path = `/claim-executions/${started.claim.id}/handoffs/${commandId}`;
+    expectGenericError(await request('GET', path, { actor: reader }), 403, 'forbidden');
+    const leased = await runnerRequest(`/claims/${started.claim.id}/commands/poll`, { session_id: runnerSessionId });
+    expect(leased.body.commands.map(row => row.kind)).toEqual(['handoff']);
+    const snapshot = { branch: `ff/task-${task.id}`, headSha: 'b'.repeat(40), digest: {
+      goal: 'Implement the design agreed in chat', decisions: ['Keep the existing route'],
+      acceptanceCriteria: ['The feature works for the authorized user'], openQuestions: [], filesTouched: ['docs/design.md'],
+    } };
+    expect((await runnerRequest(`/claims/${started.claim.id}/commands/${commandId}/ack`, {
+      session_id: runnerSessionId, status: 'acked', result: snapshot,
+    })).status).toBe(200);
+    expect((await request('GET', path)).body.data.prepared).toEqual(snapshot);
+    const options = { headers: { 'idempotency-key': crypto.randomUUID() }, body: { expectedVersion: task.version } };
+    const confirmation = await request('POST', path, options);
+    expect(confirmation.status).toBe(202);
+    expect((await request('POST', path, options)).body.data).toMatchObject({ claimId: confirmation.body.data.claimId, created: false });
+    const specId = confirmation.body.data.claimId;
+    const spec = (await db.getPool().query('SELECT * FROM agent_claims WHERE id=$1', [specId])).rows[0];
+    const secondSlot = await runnerRequest('/register', { meta: {} });
+    await db.getPool().query(`UPDATE agent_claims SET status='claimed',session_id=$2,expires_at=now()+interval '1 hour' WHERE id=$1`, [specId,secondSlot.body.session_id]);
+    const result = await runnerRequest('/claim', { status: 'completed', repo, pr_number: null,
+      claim_id: specId, session_id: secondSlot.body.session_id, attempt: spec.attempt });
+    expect(result.status).toBe(200);
+    const build = (await db.getPool().query(`SELECT c.*,e.root_claim_id FROM agent_claims c JOIN collab_claim_executions e ON e.claim_id=c.id
+      WHERE e.task_id=$1 AND c.claim_type='build'`, [task.id])).rows[0];
+    expect(build).toMatchObject({ status: 'pending', session_id: null, root_claim_id: started.claim.id,
+      payload: { branch: snapshot.branch, handed_off_from: started.claim.id, handoff_digest: snapshot.digest } });
+    expect(build.payload.message).toContain('The feature works for the authorized user');
+    expect((await db.getPool().query('SELECT status FROM agent_claims WHERE id=$1', [started.claim.id])).rows[0].status).toBe('claimed');
   });
 });

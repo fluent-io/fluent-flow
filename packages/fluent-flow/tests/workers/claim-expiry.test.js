@@ -50,6 +50,13 @@ beforeEach(() => {
 });
 
 describe('expireClaimsTick', () => {
+  it.each(['idle','host_lost','no_capacity'])('does not redispatch a chat ended for %s', async (end_reason) => {
+    expireClaims.mockResolvedValueOnce([{id:7,claim_type:'chat',status:'cancelled',end_reason,repo:null}]);
+    await expireClaimsTick();
+    expect(redispatchClaim).not.toHaveBeenCalled();
+    expect(installationCtxForRepo).not.toHaveBeenCalled();
+  });
+
   it('calls expireClaims() once', async () => {
     await expireClaimsTick();
     expect(expireClaims).toHaveBeenCalledTimes(1);

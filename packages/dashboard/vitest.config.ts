@@ -1,6 +1,15 @@
 import { defineConfig } from 'vitest/config';
 import path from 'path';
 
+const collabDomTests = [
+  'tests/collab/claim-execution.test.tsx',
+  'tests/collab/chat-session.test.tsx',
+  'tests/collab/chat-settings.test.tsx',
+  'tests/collab/new-session.test.tsx',
+  'tests/collab/start-work.test.tsx',
+  'tests/collab/task-drawer.test.tsx',
+];
+
 export default defineConfig({
   oxc: { jsx: { runtime: 'automatic' } },
   test: {
@@ -11,7 +20,7 @@ export default defineConfig({
         test: {
           name: 'node',
           environment: 'node',
-          exclude: ['tests/collab/claim-execution.test.tsx', 'tests/components/**/*.test.tsx'],
+          exclude: [...collabDomTests, 'tests/components/**/*.test.tsx'],
         },
       },
       {
@@ -19,7 +28,7 @@ export default defineConfig({
         test: {
           name: 'claim-execution',
           environment: 'jsdom',
-          include: ['tests/collab/claim-execution.test.tsx'],
+          include: collabDomTests,
         },
       },
       {

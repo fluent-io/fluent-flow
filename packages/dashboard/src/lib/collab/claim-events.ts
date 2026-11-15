@@ -38,6 +38,7 @@ export interface ClaimEventState {
   config: RecordValue | null;
   sessionInfo: RecordValue | null;
   lastSeq: number;
+  renderedSeq: number;
 }
 
 function record(value: unknown): RecordValue | null {
@@ -275,46 +276,53 @@ export function createClaimEventState(): ClaimEventState {
     config: null,
     sessionInfo: null,
     lastSeq: 0,
+    renderedSeq: 0,
   };
 }
 
 export function reduceClaimEvents(previous: ClaimEventState, events: ClaimExecutionEvent[]): ClaimEventState {
   let state = previous;
+  let rendered = previous.renderedSeq;
   for (const event of events) {
     if (!Number.isInteger(event?.seq) || event.seq <= state.lastSeq) continue;
     state = { ...state, lastSeq: event.seq };
-    try {
-      const payload = record(event.payload);
-      const raw = record(payload?.raw);
-      if (!payload || !raw || typeof event.kind !== 'string') continue;
-      if (event.kind === 'state') {
-        const current = string(raw.state);
-        if (current) state = { ...state, runnerState: { state: current, ...(string(raw.stopReason) ? { stopReason: string(raw.stopReason) } : {}) } };
-        continue;
+    const payload = record(event.payload);
+    const raw = record(payload?.raw);
+    if (!payload || !raw || typeof event.kind !== 'string') continue;
+    if (event.kind === 'state') {
+      const current = string(raw.state);
+      if (current) {
+        state = { ...state, runnerState: { state: current, ...(string(raw.stopReason) ? { stopReason: string(raw.stopReason) } : {}) } };
+        rendered = event.seq;
       }
-      if (event.kind === 'notice') {
-        const severity = string(raw.severity) ?? string(raw.level) ?? 'info';
-        const title = string(raw.title) ?? string(raw.message) ?? 'Notice';
-        const description = string(raw.description);
-        state = { ...state, notices: [...state.notices, { seq: event.seq, severity, title, ...(description ? { description } : {}) }] };
-        continue;
-      }
-      if (event.kind === 'usage') {
-        state = { ...state, usage: { ...(state.usage ?? {}), ...raw } };
-        continue;
-      }
-      if (event.kind === 'commands' || event.kind === 'config' || event.kind === 'session_info') {
-        state = { ...state, [event.kind === 'session_info' ? 'sessionInfo' : event.kind]: raw };
-        continue;
-      }
-      if (event.kind === 'unknown') {
-        state = { ...state, unknown: [...state.unknown, { seq: event.seq, name: string(raw.sessionUpdate) ?? 'unknown', text: safeText(raw) }] };
-        continue;
-      }
-      state = { ...state, entities: applyEntity(state.entities, event.kind, raw, payload) };
-    } catch {
       continue;
     }
+    if (event.kind === 'notice') {
+      const severity = string(raw.severity) ?? string(raw.level) ?? 'info';
+      const title = string(raw.title) ?? string(raw.message) ?? 'Notice';
+      const description = string(raw.description);
+      state = { ...state, notices: [...state.notices, { seq: event.seq, severity, title, ...(description ? { description } : {}) }] };
+      rendered = event.seq;
+      continue;
+    }
+    if (event.kind === 'usage') {
+      state = { ...state, usage: { ...(state.usage ?? {}), ...raw } };
+      rendered = event.seq;
+      continue;
+    }
+    if (event.kind === 'commands' || event.kind === 'config' || event.kind === 'session_info') {
+      state = { ...state, [event.kind === 'session_info' ? 'sessionInfo' : event.kind]: raw };
+      continue;
+    }
+    if (event.kind === 'unknown') {
+      state = { ...state, unknown: [...state.unknown, { seq: event.seq, name: string(raw.sessionUpdate) ?? 'unknown', text: safeText(raw) }] };
+      rendered = event.seq;
+      continue;
+    }
+    const entities = applyEntity(state.entities, event.kind, raw, payload);
+    if (entities === state.entities) continue;
+    state = { ...state, entities: entities.map(entity => typeof entity.firstSeenAt === 'string' ? entity : {...entity,firstSeenAt:event.createdAt}) };
+    rendered = event.seq;
   }
-  return state;
+  return { ...state, renderedSeq: Math.max(state.renderedSeq, rendered) };
 }

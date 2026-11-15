@@ -7,10 +7,14 @@ import { cancelOpenClaimInteractionsForClaims, type QueryExecutor } from './clai
 
 export type PendingClaimInput = {
   orgId: string;
-  repo: string;
+  repo: string | null;
   prNumber: number | null;
   claimType: string;
   payload: Record<string, unknown>;
+  taskId?: string;
+  targetAgentId?: string | null;
+  pendingTtlSeconds?: number;
+  idleTimeoutSeconds?: number;
   headSha?: string | null;
   attempt?: number;
 };
@@ -18,7 +22,7 @@ export type PendingClaimInput = {
 export type PendingClaimRow = {
   id: number;
   org_id: string;
-  repo: string;
+  repo: string | null;
   pr_number: number | null;
   attempt: number;
   session_id: number | null;
@@ -42,8 +46,9 @@ async function insertAtAttempt(
   const result = await executor.query<PendingClaimRow>(
     `INSERT INTO agent_claims
        (org_id, repo, pr_number, attempt, session_id, claim_type, status, payload,
-        claimed_at, expires_at, head_sha)
-     VALUES ($1, $2, $3, $4, NULL, $5, 'pending', $6, NULL, NULL, $7)
+        claimed_at, expires_at, head_sha, task_id, target_agent_id, pending_deadline_at, idle_timeout_seconds)
+     VALUES ($1, $2, $3, $4, NULL, $5, 'pending', $6, NULL, NULL, $7, $8, $9,
+       CASE WHEN $5 = 'chat' THEN now() + make_interval(secs => $10) ELSE NULL END, $11)
      ON CONFLICT DO NOTHING
      RETURNING *`,
     [
@@ -54,6 +59,10 @@ async function insertAtAttempt(
       input.claimType,
       input.payload,
       input.headSha ?? null,
+      input.taskId ?? null,
+      input.targetAgentId ?? null,
+      input.pendingTtlSeconds ?? 120,
+      input.idleTimeoutSeconds ?? 900,
     ],
   );
   return result.rows[0] ?? null;
@@ -68,7 +77,7 @@ async function insertPendingClaimWithExecutor(
   }
   const lockKey = `claim-attempt:${JSON.stringify([
     input.orgId,
-    input.repo,
+    input.claimType === 'chat' ? input.taskId : input.repo,
     input.prNumber,
     input.claimType,
   ])}`;
@@ -78,10 +87,10 @@ async function insertPendingClaimWithExecutor(
       `SELECT COALESCE(MAX(attempt), 0) + 1 AS attempt
        FROM agent_claims
        WHERE org_id = $1
-         AND repo = $2
+         AND (CASE WHEN $4 = 'chat' THEN task_id::text = $2 ELSE repo = $2 END)
          AND pr_number IS NOT DISTINCT FROM $3
          AND claim_type = $4`,
-      [input.orgId, input.repo, input.prNumber, input.claimType],
+      [input.orgId, input.claimType === 'chat' ? input.taskId : input.repo, input.prNumber, input.claimType],
     );
     const inserted = await insertAtAttempt(input, allocated.rows[0].attempt, executor);
     if (inserted !== null) return inserted;

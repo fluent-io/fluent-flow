@@ -110,6 +110,7 @@ export {
 } from './runs.js';
 export {
   startCollabClaimExecution,
+  startCollabChatSession,
   listCollabClaimExecutions,
   getCollabClaimExecution,
   listCollabClaimEvents,
@@ -164,3 +165,11 @@ export {
   authorizedProjectIds,
 } from './tasks.js';
 export { enforceRateLimitBucket, rateLimitBucket } from './rate-limit.js';
+
+export { getProjectChatSettings, updateProjectChatSettings } from './chat-settings.js';
+export {getCollabClaimCommand} from './claim-executions.js';
+export {listCollabClaimPrompts} from './claim-executions.js';
+export { getCollabClaimHandoff, startCollabClaimHandoff } from './claim-handoffs.js';
+export { recordClaimWorkspace, listCollabRetainedWork } from './claim-workspaces.js';
+export { listTaskClaimProgress, markClaimReadCursor } from './claim-progress.js';
+export type { ClaimProgressCard, TaskClaimProgress } from './claim-progress.js';

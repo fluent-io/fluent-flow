@@ -9,6 +9,8 @@ import { createRunner as createDefaultRunner } from './runner.js';
 import { safeError } from './safe-error.js';
 import { loadOrCreateState as loadDefaultState, storeRuntimeToken as storeDefaultToken } from './state.js';
 import { cleanStaleWorktrees as cleanStaleWorktreesDefault } from './worktree.js';
+import { validateChatProfiles } from './chat-profiles.js';
+import { createChatWorkspaceManager } from './chat-workspace.js';
 
 const DEFAULT_RESTART_BASE_MS = 2000;
 const DEFAULT_RESTART_MAX_MS = 60000;
@@ -40,6 +42,7 @@ export function createAgentServer(options) {
     providerEnvironment = {},
     acpCommand = null,
     acpArgs = [],
+    chatProfilesFile,
     restartBaseMs = DEFAULT_RESTART_BASE_MS,
     restartMaxMs = DEFAULT_RESTART_MAX_MS,
     executionTimeoutMs,
@@ -180,6 +183,15 @@ export function createAgentServer(options) {
   }
 
   async function setup() {
+    let chat;
+    let chatWorkspaceManager;
+    if (chatProfilesFile !== undefined) {
+      const contents = await readFile(chatProfilesFile);
+      if (contents.byteLength > 64 * 1024) throw new Error('Local chat catalog is too large');
+      chat = { enabled: true, profiles: validateChatProfiles(JSON.parse(contents.toString('utf8'))) };
+      chatWorkspaceManager = createChatWorkspaceManager({ workDir, storageDir: stateDir, environment: providerEnvironment });
+      await chatWorkspaceManager.reconcileStartup();
+    }
     const adapter = resolveAcpCommand({ agentType: provider, command: acpCommand, args: acpArgs });
     await probeTools({ names: ['git', 'gh', adapter.bin], environment: providerEnvironment });
     await cleanStaleWorktrees({ workDir, environment: providerEnvironment, log });
@@ -212,6 +224,7 @@ export function createAgentServer(options) {
         provider,
         acpArgs,
         runnerToken: durableToken,
+        ...(chat && { chat, chatWorkspaceManager }),
         ...(executionTimeoutMs !== undefined && { executionTimeoutMs }),
       });
       slots.push({ runner, failed: false, drainPromise: null });
