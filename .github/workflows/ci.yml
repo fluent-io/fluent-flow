@@ -73,7 +73,7 @@ jobs:
       - name: Check migration journal consistency
         run: bash scripts/check-migrations.sh
 
-      - name: Run all tests (turbo fans out to every workspace; `test` depends on `^build`)
+      - name: Build workspaces and run all tests
         run: npm test
 
       - name: Typecheck agent server connector
@@ -81,14 +81,6 @@ jobs:
 
       - name: Typecheck agent server runtime
         run: npm run typecheck:runtime -w @fluent-flow/agent-server
-
-      # `next build` imports every dashboard route module while collecting page
-      # data, so anything @fluent-flow/db evaluates at import time runs here.
-      # Build with no DATABASE_URL in the environment to catch import-time
-      # connection attempts before they reach a deploy (packages/db is built by
-      # the turbo ^build dependency of the `npm test` step above).
-      - name: Build dashboard without DATABASE_URL
-        run: npm run build -w @fluent-flow/dashboard
 
       - name: Install browser runtime
         run: npx playwright install --with-deps chromium

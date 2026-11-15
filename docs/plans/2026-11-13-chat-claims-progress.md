@@ -705,3 +705,19 @@ All log names here are relative to `/home/victor/.hermes/cache/scratch/`:
   decisive post-fence recount, credential revocation and destructive connector
   removal remain blocked. The empty read-only snapshots do not waive them.
 
+
+- Hosted run `43659046845` passed the cross-platform ACP, Node 20 and container
+  checks. The root integration task failed nine positive mapper CLI cases:
+  `test` depended only on `^build`, so DB tests started before their own
+  compiled CLI services existed. Direct service cases passed.
+- Tests now depend on their own `build`, which already depends on dependency
+  builds. The dry graph confirms the DB test-to-build edge. The assembled
+  local root run passes all six tasks without cache: DB 508, dashboard 515,
+  agent server 970, server 842 with the 10 legacy-database cases reserved for
+  their separate CI step. No assertions or timeouts were weakened.
+- The root run also exposed undeclared Next build output. Build outputs now
+  include `.next` without its cache; the duplicate standalone CI build and its
+  stale comment were removed. The graph still builds without `DATABASE_URL`
+  before production browser execution. Workflow policy checks pass 24 cases.
+  Fresh hosted verification remains required on this fix.
+
