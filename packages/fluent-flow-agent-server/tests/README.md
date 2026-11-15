@@ -45,6 +45,9 @@ the full CI job exercises it separately.
 - `unit/runner-chat.test.js`: production runner/bridge integration, catalog policy, resource release and asynchronous cleanup reports.
 - `unit/chat-profiles.test.js` and `unit/chat-event-budget.test.js`: operator profile allowlists and bounded transcripts that preserve critical events.
 - `unit/reporting-mcp.test.js`: real control-plane/MCP forwarding, durable file capture, redaction, helper shutdown and ACP new/resume paths.
+  The real-chat durability case waits for the canonical retained-work receipt
+  before deleting fixture storage. End and runner shutdown do not drain the
+  asynchronous filesystem release.
 - `unit/runner-summary.test.js`: frozen summary policy, one bounded ACP turn, canonical publication, role containment and cleanup.
 - `unit/runner-native-pr.test.js`: owner-observed final workspace and automatic PR association before worktree cleanup.
 - `unit/runner-native-pipeline.test.js`: real Git chat/handoff/spec/build, signed webhook review lineage, deterministic failing-before/passing-after verification and rereview. GitHub/provider boundaries are fixtures.

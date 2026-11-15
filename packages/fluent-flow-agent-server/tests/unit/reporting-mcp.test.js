@@ -606,6 +606,11 @@ describe('claim-runner native reporting', () => {
       await until(async () => (await db.getPool().query('SELECT status FROM agent_claims WHERE id=$1', [started.claim.id])).rows[0].status === 'cancelled');
       await runner.shutdown();
       await running;
+      await until(async () => {
+        expect(errors).toEqual([]);
+        const retained = await db.listCollabRetainedWork({ actor: asActor(owner), taskId: task.id });
+        return retained.items.some((item) => item.claimId === started.claim.id && item.retained === true && item.reason === 'scratch');
+      });
       const state = (await db.getPool().query('SELECT workspace.state,workspace.final FROM collab_claim_workspace_state workspace JOIN collab_scoped_tokens token ON token.id=workspace.reporting_binding_id WHERE token.claim_id=$1', [started.claim.id])).rows[0];
       expect(state).toMatchObject({ state: 'not_repository', final: true });
       const connections = readFileSync(tracePath, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line)).filter((entry) => entry.kind === 'reporting_connected');
