@@ -370,9 +370,6 @@ try {
   });
 
   const launched=await launchRunner('chat-policy');
-  const obsoleteChatDefaults={profileId:'removed-project-profile',model:'removed-project-model',instructions:'Obsolete project instructions'};
-  await pool.query(`UPDATE collab_projects SET execution_mode='connector',default_agent_id='unavailable-project-agent',
-    chat_execution_defaults=$2,chat_pending_ttl_seconds=45,chat_idle_timeout_seconds=60 WHERE id=$1`,[project.id,JSON.stringify(obsoleteChatDefaults)]);
   const boardPath=`/board?projectId=${project.id}&q=Deterministic`;
   const taskPath=`${boardPath}&taskId=${task.id}`;
   const mutations=[];
@@ -492,7 +489,6 @@ try {
   const actualPrompts=trace.filter(e=>e.kind==='session_prompt');
   assert.equal(actualPrompts.length,5);
   assert.ok(JSON.stringify(actualPrompts[0].params).includes('Design turn 1'));
-  assert.equal(JSON.stringify(actualPrompts).includes('Obsolete project instructions'),false);
   assert.ok(trace.some(e=>e.kind==='set_config_option'&&e.params.configId==='model'&&e.params.value==='large'));
   await expect(drawer.getByText('Design turn 5',{exact:true})).toBeVisible();
   await shot('02-session-desktop');
@@ -668,7 +664,6 @@ try {
   await expect(page.getByRole('alert').filter({ hasText: /draft/i })).toBeVisible();
   await page.getByRole('button', { name: 'Reload summary defaults', exact: true }).click();
   await expect(page.getByRole('combobox', { name: 'Summary model', exact: true })).toHaveValue('small');
-  assert.deepEqual((await pool.query('SELECT chat_execution_defaults FROM collab_projects WHERE id=$1',[project.id])).rows[0].chat_execution_defaults,obsoleteChatDefaults);
   const summarySourceSeq = (await pool.query('SELECT MAX(seq)::text AS seq FROM agent_claim_events WHERE claim_id=$1', [claimId])).rows[0].seq;
   await page.goto(`${origin}${taskPath}&claimId=${claimId}`);
   await drawer.getByText('Summaries', { exact: true }).click();
@@ -887,7 +882,7 @@ try {
   assert.deepEqual(pageErrors,[]);
   assert.ok(badCollab.every(entry=>entry.endsWith(' 409')||entry.endsWith(' 403')));
 
-  results.flow=['board task drawer','human comment isolated','explicit existing-task chat','five sticky turns','authoritative acceptance','Stop keeps session','Back and Forward','Escape preserves scope','pasted session deep link','mobile composer and no overflow','End closes session','legacy task redirect','atomic New session','no attended project configuration','summary settings save and conflict preserve independent policy','structured permission and elicitation answers','overview needs-input action','real delayed transcript cannot restore prior task','expanded transcript revocation','zero private reads after authority settles','Ready movement is non-executing','Start queues unattended spec only','agent-owned model observed by ACP child despite stale project settings'];
+  results.flow=['board task drawer','human comment isolated','explicit existing-task chat','five sticky turns','authoritative acceptance','Stop keeps session','Back and Forward','Escape preserves scope','pasted session deep link','mobile composer and no overflow','End closes session','legacy task redirect','atomic New session','no attended project configuration','summary settings save and conflict preserve independent policy','structured permission and elicitation answers','overview needs-input action','real delayed transcript cannot restore prior task','expanded transcript revocation','zero private reads after authority settles','Ready movement is non-executing','Start queues unattended spec only','agent-owned model observed by ACP child'];
   results.flow.push('rendered per-reader cursor persisted','actual agent busy split','admin capacity save and default restore','capacity shrink preserves live chat','retained scratch work surfaced','reviewed handoff survives lost confirmation response');
   results.fixtureSendToVisibleMs=timings;results.latencyScope='Five deterministic local ACP turns; not a statistically supported p95 or provider measurement.';
   results.pageErrors=pageErrors;results.badCollabResponses=badCollab;

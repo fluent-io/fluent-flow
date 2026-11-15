@@ -347,11 +347,16 @@ not affect new chat claims. Old delivered profile/model values do not override
 local runner policy.
 
 Remove the obsolete project-default mapper and its launcher rather than keeping
-a hidden writer. Preserve existing SQL columns, legacy JSON, host/mapping records
-and project run/test instructions unchanged. Agent operators must preserve and
-explicitly disposition any historical configuration and repository context
-before retirement; no profile/model or checkout equivalence is inferred.
-Native summary settings remain separately authorized and unchanged.
+a hidden writer. The follow-up migration `0045_remove_project_chat_settings.sql`
+drops the five dead project chat columns only after PR154's no-reader code has
+fully deployed and older instances have stopped. Keep already-applied migrations
+unchanged.
+
+Preserve still-used legacy JSON, host/mapping records and project run/test
+instructions. Agent operators must preserve and explicitly disposition that
+historical configuration and repository context before connector retirement;
+no profile/model or checkout equivalence is inferred. Native summary settings
+remain separately authorized and unchanged.
 
 
 ### Operator execution-dump contract
@@ -401,8 +406,9 @@ re-keying remain separate Task 5 requirements.
 
 Here, default writes means the legacy `execution_defaults` JSON. Ordinary native
 claims and native summary settings remain available after freeze. There is no
-project chat-settings API or defaults mapper; historical configuration remains
-stored for explicit preservation and operator disposition.
+project chat-settings API or defaults mapper. Still-used legacy configuration
+remains stored for explicit preservation and operator disposition; it is not
+part of the five-column chat-settings cleanup.
 
 ### Admission and inventory implementation slices
 
