@@ -19,10 +19,9 @@ export function resolveChatProfile(profiles, work) {
   for (const key of ['command', 'args', 'env', 'acpCommand', 'acpArgs', 'providerEnvironment']) {
     if (Object.hasOwn(work, key)) throw new Error('Remote process configuration is not permitted');
   }
-  const profile = profiles.find((p) => p.id === (work.profile ?? profiles[0]?.id));
+  const profile = profiles[0];
   if (!profile) throw new Error('Unknown chat profile');
-  const model = work.model ?? profile.defaultModel;
-  if (model != null && !profile.models.includes(model)) throw new Error('Unknown chat model');
+  const model = profile.defaultModel;
   return { ...profile, model };
 }
 

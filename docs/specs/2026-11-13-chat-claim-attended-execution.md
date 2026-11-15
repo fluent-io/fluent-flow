@@ -2,6 +2,12 @@
 
 **Status:** Draft v3 — execution design revised after cross-provider review (Claude Code + Codex, 2026-11-13), with subsequent user-approved initiation, handoff, and Flowly-style UX decisions. These subsequent additions have not yet had cross-provider re-review. Reviewer findings from the earlier execution review are cited inline as (C#) for Claude Code and (X#) for Codex.
 
+**2026-11-15 user decision:** chat claims use ordinary agent routing and agent-owned
+configuration. The separate project attended-execution panel, backend selector and
+project chat overrides are removed. This supersedes the earlier project-default
+and rollout-flag design. Legacy configuration/history is preserved; independent
+native summary settings remain separate.
+
 ## Purpose
 
 Today Fluent Flow runs AI work through two unrelated execution stacks:
@@ -27,7 +33,7 @@ In scope:
 - An `end_session` command kind distinct from `cancel`; chat claims end as `cancelled` with an `end_reason`.
 - Interactive command cadence (1 s poll, unchanged from the existing default) and an end-to-end latency target that includes the dashboard's read side.
 - Capacity admission control: per-agent `max_chat_slots` (default `capacity − 1`), pending TTL, visible chat/work slot split.
-- Project settings collapse: `collab_projects.default_agent_id`, a profile catalog advertised by runners in session metadata, and removal of repository mapping from execution defaults.
+- Chat uses ordinary claim routing and local agent configuration; no separate project execution settings or backend choice is required.
 - **A re-key stage before any destructive migration**: evidence, artifacts, workpad, summaries, usage samples, and scoped tokens re-keyed from `collab_runs` to claims.
 - Deprecation and removal of execution hosts, the connector, repository mappings, and all downstream readers.
 - Security/threat-model section for interactive execution on operator infrastructure.
@@ -158,10 +164,10 @@ v1's "reuse the worktree for `root_claim_id`" contradicted force-remove teardown
 
 ### Routing
 
-- New column `collab_projects.default_agent_id` and `agent_claims.target_agent_id` (C5, X7); the poll query gains `AND (claims.target_agent_id IS NULL OR claims.target_agent_id = agent.id)`.
+- Optional per-operation `agent_claims.target_agent_id` is validated against the current organization; an absent target uses ordinary eligible agents. Project `default_agent_id` is not consulted.
 - Repo-less eligibility: an agent matches a repo-less chat claim iff `target_agent_id` matches (or is NULL and the agent accepts chats) — repository allowlists do not apply to repo-less rows (X7).
 - Offline target agent: the claim stays pending until its TTL expires; **no silent failover** to another agent (X7).
-- Execution defaults shrink to: default agent, default profile + model override, default instructions, run summaries. The profile catalog **lives in `session_meta`**, advertised by the runner the same way `supported_claim_types` already is (C6, X8); project default validation checks against the last-advertised catalog, and the model override flows through `agent_claims.payload` into `resolveAcpCommand`. Existing projects' host-mapping defaults are migrated to `default_agent_id` + profile in the re-key stage.
+- Chat always uses the selected runner's first locally configured profile, permission policy and default model. Project profile/model/instructions overrides and old delivered profile/model fields do not select chat policy. Explicit per-request instructions remain request content. Runner-advertised catalogs still support the separate native-summary feature. Historical project configuration is preserved for explicit operator disposition, not migrated into new chat defaults.
 
 ### Security / threat model (C3, X10, X11)
 
@@ -201,8 +207,8 @@ A chat session is a natural place to design work; building it belongs to the una
 
 Staged; **deletion is gated on the re-key stage, not on one preview cycle** (C15/X15, C16/X14, C4/X9):
 
-1. **Ship chat claims** (additive migrations only: `task_id`, `last_activity_at`, `end_reason`, `end_session` command CHECK, `collab_projects.default_agent_id`, `max_chat_slots`). Task page **Open session** creates a chat claim; **New session** atomically creates a minimal task and chat claim. The claim panel is the default attended UI; Ready-task **Start** continues to launch unattended work. The connector path stays available and is not the opt-out — the opt-in flag is a `collab_projects` column (`execution_mode: 'chat' | 'connector'`, named migration), flipped to `'chat'` for new projects. This flag selects only the attended implementation; it never changes Start into a chat action.
-2. **Re-key** (separate migration + PR): re-key evidence, artifacts, workpad plans/questions, summaries, usage samples, and scoped tokens from `collab_runs`/`collab_sessions` to `claim_id`/`root_claim_id`; re-bind the collab MCP reporting tools (`report_check`, `add_artifact`, `report_plan`, …) to claim-scoped tokens; migrate or archive historic run transcripts so pre-cutover history survives; migrate project execution defaults.
+1. **Ship chat claims** with additive task/lease/command/capacity support. Task page **Open session** creates a chat claim; **New session** atomically creates a minimal task and chat claim. Ready-task **Start** continues to launch unattended work. All eligible projects can use chat without an execution-mode switch. Already-applied project configuration columns remain inert until separately authorized schema retirement.
+2. **Re-key** (separate migration + PR): re-key evidence, artifacts, workpad plans/questions, summaries, usage samples, and scoped tokens from `collab_runs`/`collab_sessions` to `claim_id`/`root_claim_id`; re-bind collab MCP reporting tools to claim-scoped tokens; migrate or archive historic run transcripts so pre-cutover history survives. Preserve old project configuration for explicit operator review rather than writing replacement chat overrides.
 3. **Freeze**: server-side, `collaboration_start_run`/`collaboration_send_prompt` and the host/mapping write APIs stop accepting new runs/hosts/mappings; existing host executions keep working until drained (active runs complete or are reconciled), connector credentials revoked at drain.
 4. **Delete** — gated on: zero active connector runs, re-key migration shipped, historic transcripts archived. The PR removes:
    - `packages/fluent-flow-agent-server/src/connector/*` and the `fluent-flow-connector` bin + `connector.example.json` (C15);
@@ -230,7 +236,7 @@ Staged; **deletion is gated on the re-key stage, not on one preview cycle** (C15
 
 ## Rollout
 
-1. Stage 1 behind the `collab_projects.execution_mode` flag; new projects default `'chat'`. Mount claim-backed sessions and unattended progress in the board-preserving drawer; replace the old task-detail tab strip. The flag selects the attended backend, not a different meaning for Ready-task Start.
+1. Mount claim-backed sessions and unattended progress in the board-preserving drawer; replace the old task-detail tab strip. No project rollout mode gates chat. Ready-task Start remains unattended.
 2. Re-key migration + PR.
 3. Freeze; drain; then the delete PR, gated as above. Docs updated at freeze and again at delete.
 
@@ -244,5 +250,5 @@ Staged; **deletion is gated on the re-key stage, not on one preview cycle** (C15
 - An abandoned chat ends within the idle window on a healthy host and is **never** redispatched (unit tests on all three redispatch paths).
 - `max_chat_slots` guarantees ≥ 1 slot for work claims; pending chats expire by TTL.
 - Zero Paseo references in `packages/db`, `packages/fluent-flow`, and the dashboard; `src/connector` deleted; every removed collaboration table's dependents re-keyed or archived first.
-- Project settings contain no hosts, mappings, or enrollment; profile catalog comes from runner session metadata.
+- Project settings contain no attended-execution panel or chat overrides. Agent-owned configuration controls chat; final host/mapping/enrollment removal remains gated by preservation and drain.
 - All existing suites green; new suites cover idle expiry vs. heartbeat, no-redispatch, explicit end idempotency, repo-less chats, capacity admission, pending TTL, and transcript truncation.

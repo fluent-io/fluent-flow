@@ -12,7 +12,7 @@ show a live paid-provider or GitHub execution.
 - `02-session-desktop.png`: attended session after five turns.
 - `03-session-mobile.png`: mobile session and composer.
 - `04-task-mobile.png`: task overview after ending the session.
-- `05-settings-desktop.png`: explicit execution settings.
+- `05-settings-desktop.png`: independent summary settings, with no attended-execution panel.
 - `06-revoked-session.png`: private session cleared after authority loss.
 - `07-structured-session.png`: permission and elicitation interaction.
 

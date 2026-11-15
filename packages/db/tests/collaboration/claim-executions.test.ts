@@ -448,32 +448,58 @@ describe('task-linked claim executions', () => {
     expect(await insertPendingClaim({ ...input, taskId: a.id })).toMatchObject({ attempt: 2 });
   });
 
-  it('snapshots project routing and timeouts while replay remains attached to its original target', async () => {
-    await getPool().query(`INSERT INTO agents(org_id,id,agent_type,transport) VALUES ($1,'chat-default','test','long_poll')`,[orgId]);
-    await getPool().query(`UPDATE collab_projects SET default_agent_id='chat-default',chat_pending_ttl_seconds=45,chat_idle_timeout_seconds=60 WHERE id=$1`,[projectId]);
+  it('ignores stored project chat routing, policy, instructions and timeouts', async () => {
+    await getPool().query(`INSERT INTO agents(org_id,id,agent_type,transport) VALUES ($1,'chat-default','test','long_poll')`, [orgId]);
+    await getPool().query(`INSERT INTO agent_sessions(org_id,agent_id,status,last_seen_at,expires_at,session_meta)
+      VALUES ($1,'chat-default','online',NOW(),NOW()+interval '5 minutes',$2)`, [orgId, JSON.stringify({
+      capacity: 2, supported_claim_types: ['chat'], profiles: [{id: 'legacy', models: ['old-model'], default_model: 'old-model'}],
+    })]);
+    await getPool().query(`UPDATE collab_projects SET default_agent_id='chat-default',
+      chat_execution_defaults=$2,chat_pending_ttl_seconds=45,chat_idle_timeout_seconds=60 WHERE id=$1`,
+    [projectId, JSON.stringify({profileId: 'legacy', model: 'old-model', instructions: 'Obsolete project instructions'})]);
     try {
-      const task=await createCollabTask({actor:managerActor,projectId,title:'Default chat routing'});
-      const input={actor:managerActor,taskId:task.id,expectedVersion:1,idempotencyKey:crypto.randomUUID(),repo:null,claimType:'chat' as const};
-      const created=await startCollabClaimExecution(input);
-      expect(await rows(`SELECT target_agent_id,idle_timeout_seconds,round(extract(epoch FROM pending_deadline_at-created_at))::integer AS ttl FROM agent_claims WHERE id=$1`,[created.claim.id]))
-        .toEqual([{target_agent_id:'chat-default',idle_timeout_seconds:60,ttl:45}]);
-      await getPool().query(`UPDATE collab_projects SET default_agent_id='unavailable-agent' WHERE id=$1`,[projectId]);
+      const task = await createCollabTask({actor: managerActor, projectId, title: 'Ordinary chat routing'});
+      const input = {actor: managerActor, taskId: task.id, expectedVersion: 1, idempotencyKey: crypto.randomUUID(), repo: null, claimType: 'chat' as const};
+      const created = await startCollabClaimExecution(input);
+      expect(await rows(`SELECT target_agent_id,idle_timeout_seconds,
+        round(extract(epoch FROM pending_deadline_at-created_at))::integer AS ttl,payload
+        FROM agent_claims WHERE id=$1`, [created.claim.id])).toEqual([{
+        target_agent_id: null, idle_timeout_seconds: 900, ttl: 120,
+        payload: expect.objectContaining({instructions: ''}),
+      }]);
+      const payload = (await rows<{payload: Record<string, unknown>}>('SELECT payload FROM agent_claims WHERE id=$1', [created.claim.id]))[0].payload;
+      expect(payload).not.toHaveProperty('profile');
+      expect(payload).not.toHaveProperty('model');
+      expect((await rows(`SELECT default_agent_id,chat_execution_defaults,
+        chat_pending_ttl_seconds,chat_idle_timeout_seconds FROM collab_projects WHERE id=$1`, [projectId]))[0])
+        .toEqual({
+          default_agent_id: 'chat-default',
+          chat_execution_defaults: {profileId: 'legacy', model: 'old-model', instructions: 'Obsolete project instructions'},
+          chat_pending_ttl_seconds: 45,
+          chat_idle_timeout_seconds: 60,
+        });
+      await getPool().query(`UPDATE collab_projects SET default_agent_id='unavailable-agent' WHERE id=$1`, [projectId]);
       expect((await startCollabClaimExecution(input)).claim.id).toBe(created.claim.id);
-      await expect(startCollabClaimExecution({...input,idempotencyKey:crypto.randomUUID(),taskId:taskId})).rejects.toMatchObject({status:404});
+      const nextTask = await createCollabTask({actor: managerActor, projectId, title: 'Request-owned chat instructions'});
+      const next = await startCollabClaimExecution({...input, taskId: nextTask.id, idempotencyKey: crypto.randomUUID(), instructions: 'Use this request only.'});
+      expect((await rows<{payload: Record<string, unknown>}>('SELECT payload FROM agent_claims WHERE id=$1', [next.claim.id]))[0].payload.instructions).toBe('Use this request only.');
     } finally {
-      await getPool().query(`UPDATE collab_projects SET default_agent_id=NULL,chat_pending_ttl_seconds=120,chat_idle_timeout_seconds=900 WHERE id=$1`,[projectId]);
+      await getPool().query(`UPDATE collab_projects SET default_agent_id=NULL,chat_execution_defaults=$2,
+        chat_pending_ttl_seconds=120,chat_idle_timeout_seconds=900 WHERE id=$1`,
+      [projectId, JSON.stringify({profileId: null, model: null, instructions: ''})]);
     }
   });
 
-  it('gates only new attended creation behind the project rollout mode', async () => {
-    const task=await createCollabTask({actor:managerActor,projectId,title:'Attended rollout gate'});
-    await getPool().query("UPDATE collab_projects SET execution_mode='connector' WHERE id=$1",[projectId]);
+  it('allows ordinary chat creation despite the obsolete connector project mode', async () => {
+    const task = await createCollabTask({actor: managerActor, projectId, title: 'No attended rollout gate'});
+    await getPool().query("UPDATE collab_projects SET execution_mode='connector' WHERE id=$1", [projectId]);
     try {
-      await expect(startCollabClaimExecution({actor:managerActor,taskId:task.id,expectedVersion:1,idempotencyKey:crypto.randomUUID(),repo:null,claimType:'chat'}))
-        .rejects.toMatchObject({status:409,code:'chat_unavailable'});
-      expect((await startCollabClaimExecution(startInput({taskId:task.id,idempotencyKey:crypto.randomUUID(),prNumber:990}))).created).toBe(true);
+      const result = await startCollabClaimExecution({actor: managerActor, taskId: task.id, expectedVersion: 1, idempotencyKey: crypto.randomUUID(), repo: null, claimType: 'chat'});
+      expect((await rows('SELECT task_id,target_agent_id,status FROM agent_claims WHERE id=$1', [result.claim.id]))[0])
+        .toEqual({task_id: task.id, target_agent_id: null, status: 'pending'});
+      expect((await startCollabClaimExecution(startInput({taskId: task.id, idempotencyKey: crypto.randomUUID(), prNumber: 990}))).created).toBe(true);
     } finally {
-      await getPool().query("UPDATE collab_projects SET execution_mode='chat' WHERE id=$1",[projectId]);
+      await getPool().query("UPDATE collab_projects SET execution_mode='chat' WHERE id=$1", [projectId]);
     }
   });
 
@@ -894,24 +920,11 @@ describe('task-linked claim executions', () => {
     expect(agents).toEqual([{ id: 'collab-history-runner' }]);
     expect(links).toEqual([{ claim_id: started.claim.id }]);
   });
-  it('configures only project-scoped advertised agent profiles, versions writes, and delivers validated defaults', async () => {
-    const {getProjectChatSettings, updateProjectChatSettings} = await import('../../src/collaboration/chat-settings.js');
+  it('keeps task state and command receipts private without project chat configuration', async () => {
     await rows(`INSERT INTO agents(org_id,id,agent_type,transport) VALUES ($1,'catalog-agent','test','long_poll')`,[orgId]);
     await rows(`INSERT INTO agent_sessions(org_id,agent_id,status,last_seen_at,expires_at,session_meta) VALUES ($1,'catalog-agent','online',NOW(),NOW()+interval '5 minutes',$2)`,[orgId,JSON.stringify({capacity:2,supported_claim_types:['chat'],profiles:[{id:'design',models:['small','large'],default_model:'small'}]})]);
     const project=await createCollabProject({actor:managerActor,workspaceId,name:'Configured chat'});
-    const initial=await getProjectChatSettings({actor:managerActor,projectId:project.id});
-    expect(initial.agents.find(a=>a.id==='catalog-agent')?.profiles).toEqual([{id:'design',models:['small','large'],default_model:'small'}]);
-    const input={actor:managerActor,projectId:project.id,expectedVersion:initial.version,executionMode:'chat' as const,defaultAgentId:'catalog-agent',defaults:{profileId:'design',model:'large',instructions:'Use the project conventions.'}};
-    const saved=await withSingleConnection(()=>updateProjectChatSettings(input));
-    expect(saved.version).toBe(initial.version+1);
-    await expect(updateProjectChatSettings(input)).rejects.toMatchObject({code:'version_conflict'});
-    await expect(updateProjectChatSettings({...input,expectedVersion:saved.version,defaults:{...input.defaults,model:'not-advertised'}})).rejects.toMatchObject({code:'profile_unavailable'});
-    await expect(getProjectChatSettings({actor:outsiderActor,projectId:project.id})).rejects.toMatchObject({status:404});
-    await expect(getProjectChatSettings({actor:collaboratorActor,projectId:project.id})).rejects.toMatchObject({status:403});
-    const started=await startCollabChatSession({actor:managerActor,projectId:project.id,title:'Use saved defaults',idempotencyKey:crypto.randomUUID()});
-    expect('payload' in started.claim && started.claim.payload).toMatchObject({profile:'design',model:'large',instructions:'Use the project conventions.'});
-    const persisted=await rows<{target_agent_id:string}>(`SELECT target_agent_id FROM agent_claims WHERE id=$1`,[started.claim.id]);
-    expect(persisted[0].target_agent_id).toBe('catalog-agent');
+    const started=await startCollabChatSession({actor:managerActor,projectId:project.id,title:'Ordinary chat state',idempotencyKey:crypto.randomUUID()});
     const {getCollabTask}=await import('../../src/collaboration/tasks.js');
     const {task:taskProjection}=await getCollabTask(managerActor,started.taskId);
     expect(taskProjection.claimActivity).toEqual({claimId:started.claim.id,claimType:'chat',status:'pending',endReason:null,needsInput:false});
@@ -929,8 +942,6 @@ describe('task-linked claim executions', () => {
     expect(prompts.prompts).toEqual([expect.objectContaining({commandId:command.command.id,text:'Private draft',status:'pending'})]);
     await expect(listCollabClaimPrompts({actor:collaboratorActor,claimId:started.claim.id})).rejects.toMatchObject({status:403});
     await expect(getCollabClaimCommand({actor:collaboratorActor,claimId:started.claim.id,commandId:command.command.id})).rejects.toMatchObject({status:403});
-
-    const reread=await getProjectChatSettings({actor:managerActor,projectId:project.id});expect(reread.defaults).toEqual(input.defaults);
   });
 
 });

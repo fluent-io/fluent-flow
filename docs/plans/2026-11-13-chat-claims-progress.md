@@ -739,3 +739,63 @@ All log names here are relative to `/home/victor/.hermes/cache/scratch/`:
   real PostgreSQL, Git, ACP, reporting MCP and signed-webhook pipeline coverage.
 - Fresh hosted Windows verification remains required after this follow-up.
 
+### Agent-owned chat configuration decision — 2026-11-15
+
+The user chose ordinary claim routing and agent-owned chat configuration.
+The separate attended-execution panel and its backend project overrides are
+removed, not hidden. This supersedes the earlier project-default mapping design.
+Summary settings and historical connector configuration remain separate.
+
+Implementation plan:
+
+- Replace project-routed chat creation with ordinary eligibility and optional
+  explicit per-operation targeting. Ignore stored project mode, agent,
+  profile/model/instructions and lifecycle overrides; keep canonical claim limits.
+- Remove the project chat-settings API, UI, public mode field and obsolete mapper
+  that writes those overrides. Keep existing SQL columns and legacy source rows
+  inert rather than applying destructive schema or configuration changes.
+- Keep local runner validation, permission policy and model defaults authoritative,
+  including when older delivered chat payloads still contain profile/model fields.
+- Update every caller, fixture and live runbook. Prove stale project values do not
+  affect chat claims; verify the production drawer/settings surface and publish
+  updated permanent screenshots in PR154.
+
+No new routing abstraction, replacement settings panel, legacy history deletion,
+production freeze or credential operation is part of this change.
+
+### Agent-owned chat configuration verification
+
+- The initial regressions failed on actual behavior: project values selected the
+  target/model/instructions/timeouts, connector mode rejected chat, and the
+  supposedly removed settings route returned 200. The local-policy regression
+  also selected the old delivered profile/model before the repair.
+- Chat creation now uses ordinary eligibility and optional explicit operation
+  targeting. The settings API, project mode DTO and defaults mapper are removed.
+  Previously applied SQL columns and legacy configuration remain unchanged but
+  are no longer read as chat configuration. The runner ignores old delivered
+  profile/model fields while retaining local validation and injection rejection.
+- Full package runs pass: DB 470/38 files, server 853/80 files, agent server
+  971/57 files and dashboard 513/34 files. Removed cases cover the obsolete
+  project-settings and mapper contracts; stale-setting, removed-route and
+  agent-owned-policy regressions replace the affected behavior expectations.
+  Both runner typechecks, DB/Next production builds and portable smoke pass.
+- The actual production browser passes with stale connector-mode, target,
+  profile/model/instructions and timeout values still stored on the project.
+  Both Open session and atomic New session work; claims are untargeted and carry
+  no inherited profile/model/instructions, and the real ACP child applies the
+  local model. There are no extra initial paid turns. Independent summary
+  save/conflict/attribution, history, ideas, handoff, permissions and revocation
+  paths continue to pass.
+- All seven permanent screenshots were refreshed and visually inspected.
+  Settings shows no attended-execution controls; the steering-security note is
+  on session entry instead. The production dashboard service was stopped.
+- The assembled root run passes all six build/test tasks with zero cache hits.
+  Its server run passes 843 cases, with the existing ten opt-in legacy SQL cases
+  covered by the separate 853-case package run and CI check. The exact release
+  agent command also passes 964 cases across 56 files.
+- Independent quality and security reviewers approve the removal delta. The
+  shared catalog module is staged; ordinary untargeted routing and capability-
+  based session controls are confirmed as intentional. Reviews were read-only.
+- Fresh hosted checks are required on the published commit. No production
+  configuration, credential, freeze or deletion action occurred.
+

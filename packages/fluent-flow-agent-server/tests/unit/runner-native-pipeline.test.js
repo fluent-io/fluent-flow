@@ -276,14 +276,6 @@ describe('chat handoff to native build review pipeline', () => {
     const runningChat = chatRunner.start();
     const runningWork = workRunner.start();
     try {
-      const settings = await until(async () => {
-        const current = await db.getProjectChatSettings({ actor: asActor(owner), projectId });
-        return current.agents.some(agent => agent.id === chatAgentId && agent.available) ? current : null;
-      }, 10000);
-      await db.updateProjectChatSettings({
-        actor: asActor(owner), projectId, expectedVersion: settings.version, executionMode: 'chat', defaultAgentId: chatAgentId,
-        defaults: { profileId: 'design', model: 'small', instructions: 'Write durable design notes.' },
-      });
       const task = await db.createCollabTask({ actor: asActor(owner), projectId, title: 'Pipeline joined acceptance' });
       const started = await db.startCollabClaimExecution({
         actor: asActor(owner), taskId: task.id, expectedVersion: task.version,

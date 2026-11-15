@@ -255,7 +255,7 @@ export function BoardView() {
 
   const createTarget = createTaskTarget(projects, me, projectId || null);
   const canWriteAnywhere = createTarget.projectIds.length > 0;
-  const chatProjects = projects.filter(p => p.executionMode === 'chat' && ['task.write','run.start','internal.read'].every(cap => capabilitiesFor(me,p.id).includes(cap)));
+  const chatProjects = projects.filter(p => ['task.write','run.start','internal.read'].every(cap => capabilitiesFor(me,p.id).includes(cap)));
   const sessionAuthority = `${scopeKey}:${me?.principal.id}:${me?.principal.sessionVersion}:${chatProjects.map(p=>p.id).join(',')}`;
 
   return (

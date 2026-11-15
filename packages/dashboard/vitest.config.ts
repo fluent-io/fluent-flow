@@ -4,7 +4,6 @@ import path from 'path';
 const collabDomTests = [
   'tests/collab/claim-execution.test.tsx',
   'tests/collab/chat-session.test.tsx',
-  'tests/collab/chat-settings.test.tsx',
   'tests/collab/new-session.test.tsx',
   'tests/collab/start-work.test.tsx',
   'tests/collab/task-drawer.test.tsx',

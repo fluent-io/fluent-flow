@@ -166,7 +166,6 @@ export {
 } from './tasks.js';
 export { enforceRateLimitBucket, rateLimitBucket } from './rate-limit.js';
 
-export { getProjectChatSettings, updateProjectChatSettings } from './chat-settings.js';
 export { getProjectSummarySettings, updateProjectSummarySettings } from './summary-settings.js';
 export type { SummaryDefaults, SummaryAgent, ProjectSummarySettings } from './summary-settings.js';
 export { queueClaimSummary, listTaskSummaries, getClaimSummaryWork, linkSummaryClaimAttempt } from './summary-claims.js';

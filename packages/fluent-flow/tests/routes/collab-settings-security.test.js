@@ -189,4 +189,16 @@ describe('mounted Settings scope and configuration security',()=>{
       await db.getPool().query('UPDATE agent_sessions SET session_meta=$2 WHERE id=$1',[session.id,JSON.stringify(session.session_meta)]);
     }
   });
+  it('does not expose or mutate the removed project chat configuration',async()=>{
+    const current=await db.getPool().query('SELECT version,execution_mode,default_agent_id,chat_execution_defaults FROM collab_projects WHERE id=$1',[project.id]);
+    const response=await api('GET',`/projects/${project.id}/execution-settings`,{actor:actors.config});
+    expect(response.status).toBe(404);
+    const write=await api('PATCH',`/projects/${project.id}/execution-settings`,{actor:actors.config,body:{
+      expectedVersion:current.rows[0].version,executionMode:'chat',defaultAgentId:null,
+      defaults:{profileId:null,model:null,instructions:'Must not become a hidden override'},
+    }});
+    expect(write.status).toBe(404);
+    expect((await db.getPool().query('SELECT version,execution_mode,default_agent_id,chat_execution_defaults FROM collab_projects WHERE id=$1',[project.id])).rows).toEqual(current.rows);
+  });
+
 });

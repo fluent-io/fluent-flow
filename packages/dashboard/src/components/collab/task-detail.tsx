@@ -93,7 +93,7 @@ export function TaskDetailPage({ taskId, selectedClaimId = null, onSelectClaim =
   }
   const authority = `${taskId}:${me?.principal.id}:${me?.principal.sessionVersion}:${capabilities.join(',')}`;
   const project = me?.workspaces?.flatMap(w=>w.projects).find(p=>p.id===detail.projectId);
-  return <TaskDetailContent key={authority} detail={scoped} setDetail={setDetail} error={error} reload={reload} repo={project?.linkedRepoFullName??null} attendedAvailable={project?.executionMode === 'chat'}
+  return <TaskDetailContent key={authority} detail={scoped} setDetail={setDetail} error={error} reload={reload} repo={project?.linkedRepoFullName??null}
     selectedClaimId={selectedClaimId} onSelectClaim={onSelectClaim} selectedRunId={selectedRunId} selectedSessionId={selectedSessionId} onSelectHistory={onSelectHistory} />;
 }
 
@@ -105,8 +105,8 @@ function Disclosure({ title, children }: {title: string; children: React.ReactNo
   </details>;
 }
 
-function TaskDetailContent({detail, setDetail, error, reload, selectedClaimId, onSelectClaim, repo, attendedAvailable, selectedRunId, selectedSessionId, onSelectHistory}: {
-  repo: string | null; attendedAvailable: boolean;
+function TaskDetailContent({detail, setDetail, error, reload, selectedClaimId, onSelectClaim, repo, selectedRunId, selectedSessionId, onSelectHistory}: {
+  repo: string | null;
   detail: TaskDetail; setDetail: (value: TaskDetail) => void; error: string | null; reload: () => Promise<void>;
   selectedClaimId: number | null; onSelectClaim: (id: number | null) => void;
   selectedRunId: string | null; selectedSessionId: string | null;
@@ -152,11 +152,11 @@ function TaskDetailContent({detail, setDetail, error, reload, selectedClaimId, o
       <StartTaskWork detail={detail} repo={repo} reload={reload} onSelectClaim={onSelectClaim}/>
       {can(detail,'internal.read') && <RetainedWorkNotice taskId={detail.id}/>}
     </section>
-    <TaskSessions detail={detail} reload={reload} onSelectClaim={onSelectClaim} attendedAvailable={attendedAvailable} repo={repo} onProgress={setProgress} />
+    <TaskSessions detail={detail} reload={reload} onSelectClaim={onSelectClaim} repo={repo} onProgress={setProgress} />
     <TaskSummaries detail={detail} onOpenSource={source => source.kind === 'claim' ? onSelectClaim(source.claimId) : onSelectHistory({ runId: source.runId, sessionId: source.sessionId })} />
     <div>
       <Disclosure title="Workpad & artifacts"><WorkpadTab detail={detail} setDetail={setDetail} reload={reload} sourceNavigation={sourceNavigation} /></Disclosure>
-      <Disclosure title="Ideas"><IdeasTab detail={detail} claimProgress={progress} attendedAvailable={attendedAvailable} sourceNavigation={sourceNavigation} /></Disclosure>
+      <Disclosure title="Ideas"><IdeasTab detail={detail} claimProgress={progress} sourceNavigation={sourceNavigation} /></Disclosure>
       <Disclosure title="Run history">
         <TaskSessions detail={detail} reload={reload} onSelectClaim={onSelectClaim} history />
         <LegacyRunHistory taskId={detail.id} internalRead={can(detail, 'internal.read')} onSelectRun={runId => onSelectHistory({ runId, sessionId: null })} />

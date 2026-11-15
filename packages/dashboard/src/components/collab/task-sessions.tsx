@@ -37,7 +37,7 @@ function needsInputLabel(progress: ClaimProgressCard | undefined, canSteer: bool
   return progress?.needsInput ? (canSteer ? 'Needs your input' : 'Session needs attention') : 'Unread';
 }
 
-export function TaskSessions({detail,reload,onSelectClaim,history=false,attendedAvailable=true,repo=null,onProgress}:{detail:TaskDetail;reload:()=>Promise<void>;onSelectClaim:(id:number)=>void;history?:boolean;attendedAvailable?:boolean;repo?:string|null;onProgress?:(claims:ClaimProgressCard[])=>void}) {
+export function TaskSessions({detail,reload,onSelectClaim,history=false,repo=null,onProgress}:{detail:TaskDetail;reload:()=>Promise<void>;onSelectClaim:(id:number)=>void;history?:boolean;repo?:string|null;onProgress?:(claims:ClaimProgressCard[])=>void}) {
  const canSteer=detail.capabilities?.includes('run.steer')??false;
  const [claims,setClaims]=useState<SessionCard[]>([]);
  const [progress,setProgress]=useState<Record<number,ClaimProgressCard>>({});
@@ -90,7 +90,8 @@ export function TaskSessions({detail,reload,onSelectClaim,history=false,attended
   }finally{inFlight.current=false;if(alive.current)setBusy(false);}
  }
  return <section aria-label={history?'Run history':'Agent sessions'} className="border-t border-border pt-5">
-  {!history?<div className="flex items-center justify-between gap-2"><h2 className="text-sm font-medium">Agent sessions</h2>{attendedAvailable&&detail.capabilities?.includes('internal.read')&&detail.capabilities.includes('run.start')?<Button variant="outline" size="sm" disabled={busy||loading} onClick={()=>void open()}>Open session</Button>:null}</div>:null}
+  {!history?<div className="flex items-center justify-between gap-2"><h2 className="text-sm font-medium">Agent sessions</h2>{detail.capabilities?.includes('internal.read')&&detail.capabilities.includes('run.start')?<Button variant="outline" size="sm" disabled={busy||loading} onClick={()=>void open()}>Open session</Button>:null}</div>:null}
+  {!history&&detail.capabilities?.includes('internal.read')&&detail.capabilities.includes('run.start')?<p className="mt-3 text-xs text-muted-foreground">Agent sessions run on operator infrastructure. Steering can execute code with the agent’s access.</p>:null}
   {error?<p role="alert" className="mt-3 text-sm text-destructive">{error}<Button variant="ghost" size="sm" onClick={()=>{intent.current={version:null,key:crypto.randomUUID()};void reload();void load();}}>Refresh task</Button></p>:null}
   {loading?<p role="status" className="mt-3 text-sm text-muted-foreground">Loading sessions…</p>:null}
   {!loading&&!claims.some(c=>history?c.claimType!=='chat':c.claimType==='chat')?<p className="mt-3 text-sm text-muted-foreground">{history?'No unattended claims yet.':'No attended sessions yet.'}</p>:null}

@@ -3,7 +3,7 @@ import type { PoolClient } from 'pg';
 import { getPool } from '../pool.js';
 import type { CollabActor } from './auth.js';
 import { authorize } from './authorize.js';
-import { readRunnerProfileCatalogs, type RunnerProfileCatalog } from './chat-settings.js';
+import { readRunnerProfileCatalogs, type RunnerProfileCatalog } from './runner-profile-catalogs.js';
 import { CollabServiceError } from './errors.js';
 import { withClientTransaction } from './tx.js';
 

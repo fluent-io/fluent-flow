@@ -57,7 +57,6 @@ export interface Project {
   version: number;
   boardVersion: number;
   executionDefaults: ExecutionDefaults | null;
-  executionMode?: 'chat' | 'connector';
 }
 
 export interface MeCapabilities {

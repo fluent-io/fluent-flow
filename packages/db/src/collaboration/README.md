@@ -37,8 +37,8 @@ surface; `identity.ts` preserves the shared import facade.
 - `claim-executions.ts`: task-linked claim start and history projections,
   capability-checked event/request readers, and transactional idempotent ACP
   prompts, request answers and cancellation.
-- `chat-settings.ts`: versioned project chat defaults and the public runner
-  profile/model catalog. Runtime process configuration is never browser input.
+- `runner-profile-catalogs.ts`: validated runner-advertised profiles shared by
+  summary selection. Chat configuration is owned by the selected agent.
 - `summary-settings.ts`: separate versioned native summary defaults, requiring
   project administration and internal-read access. It reuses the validated
   runner profile catalog but uses ordinary capacity, not chat-slot limits.
@@ -161,64 +161,24 @@ surface; `identity.ts` preserves the shared import facade.
   The operator `artifacts` command reports required/captured counts and blockers.
   Exit 2 means bytes or declared hashes are missing/invalid; exit 0 means this
   inventory is complete, not that retirement is authorized.
-- `project-execution-migration.ts`: explicit operator mapping of stored legacy
-  defaults to advertised native agent/profile/model identities. Preview does not
-  write. Apply copies instructions exactly and changes chat/summary defaults
-  atomically with one version bump. Source host/mapping locks precede the project
-  lock; authority and source identity are rechecked after waiting. Legacy JSON,
-  host/mapping records and project run/test instructions remain unchanged.
 - `tx.ts`, `errors.ts`: shared transaction lifecycle and safe typed errors.
 
-## Operator defaults mapping
+## Agent-owned chat configuration
 
-Build the DB package first. From the repository root, inspect one authorized
-project using its current principal/session version:
+Chat uses ordinary claim eligibility and the selected agent's local profile,
+permission policy and model. An explicit per-operation target remains scoped to
+the current organization; otherwise any eligible agent can claim the work.
+Project mode, agent, profile/model, instructions and lifecycle defaults do not
+configure chat. New/Open session needs no project setup.
 
-```sh
-node packages/db/scripts/project-execution-migration.mjs inspect \
-  --workspace-id "$WORKSPACE_ID" --project-id "$PROJECT_ID" \
-  --principal-id "$PRINCIPAL_ID" --session-version "$SESSION_VERSION"
-```
+The project chat-settings service and defaults-mapping launcher were removed.
+Previously stored chat configuration columns remain inert historical storage;
+their values are neither exposed as execution controls nor copied into new
+claims. Existing legacy `execution_defaults`, hosts and mappings stay intact.
+Preserve and explicitly disposition that configuration with the agent operator
+before retirement; do not invent an equivalent profile or silently discard it.
+Native summary settings remain a separate authorized feature.
 
-Set `DATABASE_URL` through the operator's environment. Inspection returns only
-version, source identity/hash and mapping requirements, not instructions or host
-catalogs. A private JSON input contains `actor`, `workspaceId`, `projectId`,
-`expectedVersion`, `sourceHash`, `chat` and `summary`. Each target contains
-`agentId`, `profileId` and an explicit nullable `model`; `summary` is null only
-when the stored source needs no summary mapping. Do not include `apply`.
-`actor` contains `principalId` and `sessionVersion` from the same authorized
-session used for inspection. Copy `expectedVersion` and `sourceHash` from that
-inspection; select targets from advertised native catalogs, not host-name guesses.
-
-The current safety gate requires an org-registered linked repository matching
-the legacy repository key exactly, with legacy base ref `origin/HEAD`. Unlinked
-projects, aliases, mismatched repositories and other base refs are refused
-without changing mode or version. Other refs remain unsupported; retain unresolved
-sources rather than guessing an equivalent native checkout.
-
-```sh
-node packages/db/scripts/project-execution-migration.mjs preview --input "$MAPPING_FILE"
-node packages/db/scripts/project-execution-migration.mjs apply --input "$MAPPING_FILE"
-```
-
-The input requires POSIX no-follow/non-blocking descriptor support and must be a
-regular file owned by the current operator with no group or other permissions,
-such as mode 0600. Symlinks and repeated flags are refused.
-Only the explicit `apply` command authorizes writes. Conflicts and invalid
-targets fail without partial changes; an unchanged replay returns
-`already_mapped` without another version bump.
-
-This maps defaults only. It does not transfer repository/base-ref bindings,
-capture all dependent data, freeze admissions, revoke credentials or authorize
-connector removal. Establish native repository context before switching a
-repository-backed legacy project; unmapped context remains a retirement blocker.
-
-Mapping remains available after the legacy admission freeze. Its write set is
-`execution_mode` to `chat`, `default_agent_id`, `chat_execution_defaults` and
-`summary_execution_defaults`, with one project version/timestamp update.
-Legacy `execution_defaults`, hosts and mappings stay unchanged; mapping cannot
-reopen admissions or queue legacy work. Native summary settings also remain
-editable after freeze.
 
 ## Legacy admission fence and drain inventory
 
@@ -247,7 +207,7 @@ Freeze is global because host enrollment has no workspace scope. It blocks new
 legacy host/mapping/default writes and legacy execution/model-turn intents;
 admitted work, acknowledgements, observations, permissions, cancellation and
 artifact retrieval remain available to drain. Here, legacy defaults means
-`execution_defaults`; native settings and the explicit mapper remain available.
+`execution_defaults`; ordinary native claims and native summary settings remain available.
 There is no unfreeze command, automatic activation, retry, migration, credential
 revocation or deletion in this launcher.
 

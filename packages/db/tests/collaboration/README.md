@@ -22,7 +22,6 @@
   sealing serialized against record writes.
 - `execution-archive-transfer.test.ts`: private actual-CLI dump/restore, original IDs/bytes, full-stream replay, scope validation and atomic corruption refusal.
 - `execution-archive-artifacts.test.ts`: required byte inventory and verified historical artifact reads after fixture retirement/restore.
-- `project-execution-migration.test.ts`: explicit defaults mappings, repository/ref refusal, current authority after lock waits, connector lock ordering and private operator CLI.
 - `execution-retirement.test.ts`: isolated admission/freeze races, rollback, native claim creation after freeze, and owner observation/permission/cancel/artifact/reconciliation drains.
 - `execution-retirement-operator.test.ts`: truthful server-record counts, private actual-CLI output, explicit global confirmation and missing-state refusal.
 

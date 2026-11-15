@@ -37,8 +37,11 @@ rate-limited secret invitation redemption.
   `POST /tasks/:id/claim-executions` with `expectedVersion` and an
   `Idempotency-Key`; `repo` may be null/omitted. Chat requires both `run.start`
   and `internal.read`, never changes the task lane, and allows one pending or
-  claimed chat per task. `targetAgentId` overrides the project's default agent;
-  an offline target never silently fails over. `POST /projects/:id/chat-sessions`
+  claimed chat per task. With no explicit `targetAgentId`, ordinary eligible
+  agents can claim the work. An explicit offline target never silently fails over.
+  Chat uses the agent's local profile/model and canonical lifecycle limits;
+  stored project execution settings do not configure or gate it.
+  `POST /projects/:id/chat-sessions`
   accepts `title`, optional `repo`/`targetAgentId`, and the same header to create
   one Backlog task plus chat atomically. It additionally requires `task.write`
   (the repository's actual task-creation capability).

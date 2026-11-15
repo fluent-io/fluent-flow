@@ -148,12 +148,9 @@ describe('claim-bound reporting over the collaboration MCP endpoint', () => {
       meta: { capacity: 2, supported_claim_types: ['chat'], profiles: [{ id: 'ideas', models: ['small'], default_model: 'small' }] },
     });
     expect(registered.status).toBe(200);
-    const settings = await db.getProjectChatSettings({ actor: asActor(owner), projectId });
-    await db.updateProjectChatSettings({ actor: asActor(owner), projectId, expectedVersion: settings.version,
-      executionMode: 'chat', defaultAgentId: chatAgentId, defaults: { profileId: 'ideas', model: 'small', instructions: '' } });
     const task = (await collab('GET', `/tasks/${taskId}`)).body.data;
     const started = await db.startCollabClaimExecution({ actor: asActor(owner), taskId, expectedVersion: task.version,
-      idempotencyKey: crypto.randomUUID(), repo: null, claimType: 'chat' });
+      idempotencyKey: crypto.randomUUID(), repo: null, claimType: 'chat', targetAgentId: chatAgentId });
     const target = { token: token.plaintext, sessionId: registered.body.session_id };
     const work = lease ? (await poll(target)).body.work : null;
     if (lease) expect(work.claim_id).toBe(started.claim.id);

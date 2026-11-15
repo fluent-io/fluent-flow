@@ -16,7 +16,7 @@ export function NewSessionDialog({projects,onClose,onCreated}:{projects:Project[
   catch{if(active.current)setError('Could not create the session. Try again; the same request will be reused.');}
   finally{inFlight.current=false;if(active.current)setBusy(false);}
  }
- return <Dialog open onOpenChange={open=>{if(!open)onClose();}}><DialogContent><DialogTitle>New session</DialogTitle><DialogDescription>Create a Backlog task and open an attended agent session. No prompt is sent until you send one.</DialogDescription>
+ return <Dialog open onOpenChange={open=>{if(!open)onClose();}}><DialogContent><DialogTitle>New session</DialogTitle><DialogDescription>Create a Backlog task and open an attended agent session. No prompt is sent until you send one. Sessions run on operator infrastructure; steering can execute code with the agent’s access.</DialogDescription>
  <form onSubmit={event=>void submit(event)} className="space-y-4">
  <label className="block text-sm">Project<select aria-label="Session project" disabled={busy} className="mt-1 h-9 w-full rounded border border-border bg-background px-2" value={projectId} onChange={e=>{changed();setProjectId(e.target.value);}}>{projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}</select></label>
  <label className="block text-sm">Session title<Input aria-label="Session title" maxLength={300} required disabled={busy} value={title} onChange={e=>{changed();setTitle(e.target.value);}}/></label>

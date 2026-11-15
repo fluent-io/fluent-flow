@@ -44,10 +44,6 @@ Developer CLIs for `@fluent-flow/db`.
   fail if live writers have advanced since capture. Capture or restored seal
   metadata does not establish an operational freeze/drain/deletion receipt;
   those gates still require separate evidence and authorization.
-- `project-execution-migration.mjs` — inspect, preview and explicitly apply
-  stored project-default mappings. See [operator defaults mapping](../src/collaboration/README.md#operator-defaults-mapping)
-  for the private input contract, current-authority checks and limits. This
-  changes defaults only; repository/base-ref migration and retirement stay gated.
 - `execution-retirement.mjs` — global legacy admission fence and read-only
   server-record inventory. Build `packages/db` first and supply `DATABASE_URL`
   through the environment. `inventory` never certifies removal readiness.

@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
-import { chatDefaultsSchema, readChatAgents, validateChatSelection } from './chat-settings.js';
 import { createCollabTask } from './tasks.js';
 import { z } from 'zod';
 import { getPool } from '../pool.js';
@@ -411,21 +410,15 @@ export async function startCollabClaimExecution(input: {
       );
     }
     let chatOptions = {};
-    let chatPayload: Record<string, unknown> = {};
     if (parsed.claimType === 'chat') {
       const open = await tx.query(`SELECT id FROM agent_claims WHERE org_id=$1 AND task_id=$2 AND claim_type='chat' AND status IN ('pending','claimed')`, [orgId, parsed.taskId]);
       if (open.rows.length) throw new CollabServiceError(409, 'chat_already_open', 'This task already has an open session.');
-      const settings = await tx.query(`SELECT execution_mode, default_agent_id, chat_execution_defaults, chat_pending_ttl_seconds, chat_idle_timeout_seconds FROM collab_projects WHERE id=$1`, [scope.projectId]);
-      if (settings.rows[0].execution_mode !== 'chat') throw new CollabServiceError(409, 'chat_unavailable', 'Sessions are not available for this project.');
-      const targetAgentId = parsed.targetAgentId ?? settings.rows[0].default_agent_id;
+      const targetAgentId = parsed.targetAgentId ?? null;
       if (targetAgentId !== null) {
         const target = await tx.query(`SELECT id FROM agents WHERE org_id=$1 AND id=$2 AND transport='long_poll'`, [orgId, targetAgentId]);
         if (!target.rows.length) throw new CollabServiceError(404, 'not_found', 'Not found.');
       }
-      const defaults = chatDefaultsSchema.parse(settings.rows[0].chat_execution_defaults);
-      validateChatSelection(await readChatAgents(orgId, tx), targetAgentId, defaults);
-      chatPayload = { ...(defaults.profileId ? { profile: defaults.profileId } : {}), ...(defaults.model ? { model: defaults.model } : {}), instructions: parsed.instructions ?? defaults.instructions };
-      chatOptions = { taskId: parsed.taskId, targetAgentId, pendingTtlSeconds: settings.rows[0].chat_pending_ttl_seconds, idleTimeoutSeconds: settings.rows[0].chat_idle_timeout_seconds };
+      chatOptions = { taskId: parsed.taskId, targetAgentId };
     }
     const createTaskBranch = parsed.claimType !== 'chat' && parsed.prNumber == null && parsed.branch == null;
     const claim = await insertPendingClaim({
@@ -439,7 +432,6 @@ export async function startCollabClaimExecution(input: {
         branch: createTaskBranch ? `ff/task-${parsed.taskId}` : parsed.branch ?? null,
         ...(createTaskBranch ? { create_branch: true } : {}),
         instructions: parsed.instructions ?? '',
-        ...chatPayload,
       },
     }, tx);
     if (claim === null) {

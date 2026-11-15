@@ -262,7 +262,7 @@ try {
   runnerEnv.LOG_LEVEL = 'warn';
   writeFileSync(join(runnerCwd,'runner-token'),token.plaintext,{mode:0o600});
   runnerEnv.FLUENT_FLOW_TOKEN_FILE=join(runnerCwd,'runner-token');
-  writeFileSync(join(runnerCwd,'chat-profiles.json'),JSON.stringify([{id:'design',permission:{configId:'approval',value:'ask'},models:['small','large'],modelConfigId:'model',defaultModel:'small'}]),{mode:0o600});
+  writeFileSync(join(runnerCwd,'chat-profiles.json'),JSON.stringify([{id:'design',permission:{configId:'approval',value:'ask'},models:['small','large'],modelConfigId:'model',defaultModel:'large'}]),{mode:0o600});
 
   await new Promise((resolve, reject) => {
     server.once('listening', resolve);
@@ -370,11 +370,9 @@ try {
   });
 
   const launched=await launchRunner('chat-policy');
-  await waitFor('advertised catalog',async()=>{
-    const settings=await db.getProjectChatSettings({actor,projectId:project.id});return settings.agents.find(a=>a.id===agentId)?.profiles.length;
-  });
-  const initialSettings=await db.getProjectChatSettings({actor,projectId:project.id});
-  await db.updateProjectChatSettings({actor,projectId:project.id,expectedVersion:initialSettings.version,executionMode:'chat',defaultAgentId:agentId,defaults:{profileId:'design',model:'large',instructions:'Use the project conventions.'}});
+  const obsoleteChatDefaults={profileId:'removed-project-profile',model:'removed-project-model',instructions:'Obsolete project instructions'};
+  await pool.query(`UPDATE collab_projects SET execution_mode='connector',default_agent_id='unavailable-project-agent',
+    chat_execution_defaults=$2,chat_pending_ttl_seconds=45,chat_idle_timeout_seconds=60 WHERE id=$1`,[project.id,JSON.stringify(obsoleteChatDefaults)]);
   const boardPath=`/board?projectId=${project.id}&q=Deterministic`;
   const taskPath=`${boardPath}&taskId=${task.id}`;
   const mutations=[];
@@ -464,7 +462,8 @@ try {
   await expect(drawer.getByRole('button',{name:'Send to agent',exact:true})).toBeVisible({timeout:30000});
   const selected=new URL(page.url()).searchParams.get('claimId');const claimId=Number(selected);assert.ok(claimId>0);
   const {rows:[claimRow]}=await pool.query('SELECT payload,status,repo,target_agent_id FROM agent_claims WHERE id=$1',[claimId]);
-  assert.equal(claimRow.repo,null);assert.equal(claimRow.target_agent_id,agentId);assert.equal(claimRow.payload.profile,'design');assert.equal(claimRow.payload.model,'large');
+  assert.equal(claimRow.repo,null);assert.equal(claimRow.target_agent_id,null);
+  assert.equal(claimRow.payload.profile,undefined);assert.equal(claimRow.payload.model,undefined);assert.equal(claimRow.payload.instructions,'');
   assert.equal((await pool.query('SELECT status FROM collab_tasks WHERE id=$1',[task.id])).rows[0].status,'backlog');
   const timings=[];
   for(let turn=1;turn<=5;turn++){
@@ -491,7 +490,9 @@ try {
   await publishedProgress.json();
   const trace=readFileSync(launched.tracePath,'utf8').split('\n').filter(Boolean).map(JSON.parse);
   const actualPrompts=trace.filter(e=>e.kind==='session_prompt');
-  assert.ok(JSON.stringify(actualPrompts[0].params).includes('Use the project conventions.'));
+  assert.equal(actualPrompts.length,5);
+  assert.ok(JSON.stringify(actualPrompts[0].params).includes('Design turn 1'));
+  assert.equal(JSON.stringify(actualPrompts).includes('Obsolete project instructions'),false);
   assert.ok(trace.some(e=>e.kind==='set_config_option'&&e.params.configId==='model'&&e.params.value==='large'));
   await expect(drawer.getByText('Design turn 5',{exact:true})).toBeVisible();
   await shot('02-session-desktop');
@@ -618,10 +619,12 @@ try {
   await stopRunner();await launchRunner('chat-policy',['--permission','yes','--elicitation','yes']);
   await page.getByRole('button',{name:'New session',exact:true}).click();
   const create=page.getByRole('dialog',{name:'New session',exact:true});
+  await create.getByRole('combobox',{name:'Session project',exact:true}).selectOption(project.id);
   await create.getByRole('textbox',{name:'Session title'}).fill('A fresh design session');
   await create.getByRole('button',{name:'Create session'}).click();
   await expect(drawer.getByRole('button',{name:'Send to agent',exact:true})).toBeVisible({timeout:30000});
   const newTaskId=new URL(page.url()).searchParams.get('taskId');assert.notEqual(newTaskId,task.id);
+  assert.equal((await pool.query('SELECT project_id FROM collab_tasks WHERE id=$1',[newTaskId])).rows[0].project_id,project.id);
   assert.equal((await pool.query("SELECT count(*)::int AS n FROM collab_tasks WHERE title='A fresh design session'")).rows[0].n,1);
   await drawer.getByRole('textbox',{name:'Prompt',exact:true}).fill('Exercise structured requests');
   await drawer.getByRole('button',{name:'Send to agent',exact:true}).click();
@@ -642,18 +645,12 @@ try {
   await expect(drawer.getByText(/Session ended · user/)).toBeVisible({timeout:10000});
   await drawer.getByRole('button',{name:'Close task',exact:true}).click();
   await page.goto(`${origin}/settings?projectId=${project.id}`);
-  await expect(page.getByRole('combobox',{name:'Default agent',exact:true})).toHaveValue(agentId);
-  await page.getByRole('combobox',{name:'Model override',exact:true}).selectOption('small');
-  await page.getByRole('button',{name:'Save execution settings',exact:true}).click();
-  await expect.poll(async()=>(await db.getProjectChatSettings({actor,projectId:project.id})).defaults.model).toBe('small');
+  await expect(page.getByRole('region',{name:'Native summary execution settings',exact:true})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Attended execution',exact:true})).toHaveCount(0);
+  await expect(page.getByRole('combobox',{name:'Session implementation',exact:true})).toHaveCount(0);
+  await expect(page.getByRole('combobox',{name:'Default agent',exact:true})).toHaveCount(0);
+  await expect(page.getByRole('textbox',{name:'Default instructions',exact:true})).toHaveCount(0);
   await shot('05-settings-desktop');
-  await page.getByRole('textbox',{name:'Default instructions',exact:true}).fill('Preserve my unsaved draft');
-  await pool.query('UPDATE collab_projects SET version=version+1 WHERE id=$1',[project.id]);
-  await page.getByRole('button',{name:'Save execution settings',exact:true}).click();
-  await expect(page.getByText(/Your draft is preserved/).first()).toBeVisible();
-  await expect(page.getByRole('textbox',{name:'Default instructions',exact:true})).toHaveValue('Preserve my unsaved draft');
-  await page.getByRole('button',{name:'Reload defaults',exact:true}).click();
-  await expect(page.getByRole('textbox',{name:'Default instructions',exact:true})).toHaveValue('Use the project conventions.');
   await stopRunner();
   await launchRunner('summary-report');
   await page.reload();
@@ -671,7 +668,7 @@ try {
   await expect(page.getByRole('alert').filter({ hasText: /draft/i })).toBeVisible();
   await page.getByRole('button', { name: 'Reload summary defaults', exact: true }).click();
   await expect(page.getByRole('combobox', { name: 'Summary model', exact: true })).toHaveValue('small');
-  assert.equal((await db.getProjectChatSettings({ actor, projectId: project.id })).defaults.model, 'small');
+  assert.deepEqual((await pool.query('SELECT chat_execution_defaults FROM collab_projects WHERE id=$1',[project.id])).rows[0].chat_execution_defaults,obsoleteChatDefaults);
   const summarySourceSeq = (await pool.query('SELECT MAX(seq)::text AS seq FROM agent_claim_events WHERE claim_id=$1', [claimId])).rows[0].seq;
   await page.goto(`${origin}${taskPath}&claimId=${claimId}`);
   await drawer.getByText('Summaries', { exact: true }).click();
@@ -890,7 +887,7 @@ try {
   assert.deepEqual(pageErrors,[]);
   assert.ok(badCollab.every(entry=>entry.endsWith(' 409')||entry.endsWith(' 403')));
 
-  results.flow=['board task drawer','human comment isolated','explicit existing-task chat','five sticky turns','authoritative acceptance','Stop keeps session','Back and Forward','Escape preserves scope','pasted session deep link','mobile composer and no overflow','End closes session','legacy task redirect','atomic New session','real settings save and readback','real settings conflict preserves draft','structured permission and elicitation answers','overview needs-input action','real delayed transcript cannot restore prior task','expanded transcript revocation','zero private reads after authority settles','Ready movement is non-executing','Start queues unattended spec only','validated model and instructions observed by ACP child'];
+  results.flow=['board task drawer','human comment isolated','explicit existing-task chat','five sticky turns','authoritative acceptance','Stop keeps session','Back and Forward','Escape preserves scope','pasted session deep link','mobile composer and no overflow','End closes session','legacy task redirect','atomic New session','no attended project configuration','summary settings save and conflict preserve independent policy','structured permission and elicitation answers','overview needs-input action','real delayed transcript cannot restore prior task','expanded transcript revocation','zero private reads after authority settles','Ready movement is non-executing','Start queues unattended spec only','agent-owned model observed by ACP child despite stale project settings'];
   results.flow.push('rendered per-reader cursor persisted','actual agent busy split','admin capacity save and default restore','capacity shrink preserves live chat','retained scratch work surfaced','reviewed handoff survives lost confirmation response');
   results.fixtureSendToVisibleMs=timings;results.latencyScope='Five deterministic local ACP turns; not a statistically supported p95 or provider measurement.';
   results.pageErrors=pageErrors;results.badCollabResponses=badCollab;

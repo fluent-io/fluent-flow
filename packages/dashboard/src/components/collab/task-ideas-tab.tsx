@@ -10,10 +10,9 @@ import type { ClaimProgressCard } from '@/lib/collab/claim-progress';
 import { can, type TaskDetail } from './task-detail';
 import { ExecutionSourceLink, type ExecutionSourceNavigation } from './execution-source-link';
 
-export function IdeasTab({ detail, claimProgress, attendedAvailable, sourceNavigation }: {
+export function IdeasTab({ detail, claimProgress, sourceNavigation }: {
   detail: TaskDetail;
   claimProgress: ClaimProgressCard[] | null;
-  attendedAvailable: boolean;
   sourceNavigation: ExecutionSourceNavigation;
 }) {
   const [ideas, setIdeas] = useState<Idea[]>([]);
@@ -25,7 +24,7 @@ export function IdeasTab({ detail, claimProgress, attendedAvailable, sourceNavig
   const [selectedClaimId, setSelectedClaimId] = useState<number | null>(null);
   const [followUpDenied, setFollowUpDenied] = useState(false);
   const internalRead = can(detail, 'internal.read');
-  const canFollowUp = attendedAvailable && internalRead && can(detail, 'task.write') && can(detail, 'run.steer') && !followUpDenied;
+  const canFollowUp = internalRead && can(detail, 'task.write') && can(detail, 'run.steer') && !followUpDenied;
   const activeChats = useMemo(() => claimProgress?.filter(claim => claim.claimType === 'chat' && claim.status === 'claimed') ?? [], [claimProgress]);
   const selectedChat = activeChats.find(claim => claim.claimId === selectedClaimId);
   const visibleIdeas = useMemo(() => ideas.filter(idea => idea.visibility === 'client' || internalRead), [ideas, internalRead]);

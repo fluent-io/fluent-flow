@@ -136,7 +136,7 @@ it('opens read-only historical sessions from the task drawer without losing task
 it('requires explicit idea session selection and never retargets a closed selection to its replacement', async () => {
  const fetchMock = vi.fn(async () => Response.json({ data: [privateIdea] }));
  vi.stubGlobal('fetch', fetchMock);
- const view = render(<IdeasTab detail={ideaDetail} claimProgress={[ideaChat]} attendedAvailable sourceNavigation={{ onSelectClaim: vi.fn(), onSelectHistory: vi.fn() }} />);
+ const view = render(<IdeasTab detail={ideaDetail} claimProgress={[ideaChat]} sourceNavigation={{ onSelectClaim: vi.fn(), onSelectHistory: vi.fn() }} />);
  await screen.findByText(privateIdea.body);
  const select = screen.getByRole('combobox', { name: 'Follow-up session' }) as HTMLSelectElement;
  const send = screen.getByRole('button', { name: 'Send follow-up' }) as HTMLButtonElement;
@@ -144,7 +144,7 @@ it('requires explicit idea session selection and never retargets a closed select
  expect(send.disabled).toBe(true);
  await userEvent.selectOptions(select, '7');
  expect(send.disabled).toBe(false);
- view.rerender(<IdeasTab detail={ideaDetail} claimProgress={[{ ...ideaChat, status: 'completed' }, { ...ideaChat, claimId: 8 }]} attendedAvailable sourceNavigation={{ onSelectClaim: vi.fn(), onSelectHistory: vi.fn() }} />);
+ view.rerender(<IdeasTab detail={ideaDetail} claimProgress={[{ ...ideaChat, status: 'completed' }, { ...ideaChat, claimId: 8 }]} sourceNavigation={{ onSelectClaim: vi.fn(), onSelectHistory: vi.fn() }} />);
  expect(select.value).toBe('7');
  expect(send.disabled).toBe(true);
  await userEvent.click(send);
@@ -156,9 +156,9 @@ it('requires explicit idea session selection and never retargets a closed select
 it('masks cached internal ideas and session controls immediately when internal authority is lost', async () => {
  const publicIdea: Idea = { ...privateIdea, id: '66666666-6666-4666-8666-666666666666', title: 'Public reminder', body: 'Visible discussion context', visibility: 'client', claimId: null };
  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ data: [privateIdea, publicIdea] })));
- const view = render(<IdeasTab detail={ideaDetail} claimProgress={[ideaChat]} attendedAvailable sourceNavigation={{ onSelectClaim: vi.fn(), onSelectHistory: vi.fn() }} />);
+ const view = render(<IdeasTab detail={ideaDetail} claimProgress={[ideaChat]} sourceNavigation={{ onSelectClaim: vi.fn(), onSelectHistory: vi.fn() }} />);
  await screen.findByText(privateIdea.body);
- view.rerender(<IdeasTab detail={{ ...ideaDetail, capabilities: ['task.read', 'task.write'] }} claimProgress={[ideaChat]} attendedAvailable sourceNavigation={{ onSelectClaim: vi.fn(), onSelectHistory: vi.fn() }} />);
+ view.rerender(<IdeasTab detail={{ ...ideaDetail, capabilities: ['task.read', 'task.write'] }} claimProgress={[ideaChat]} sourceNavigation={{ onSelectClaim: vi.fn(), onSelectHistory: vi.fn() }} />);
  expect(screen.queryByText(privateIdea.title)).toBeNull();
  expect(screen.queryByText(privateIdea.body)).toBeNull();
  expect(screen.queryByRole('combobox', { name: 'Follow-up session' })).toBeNull();

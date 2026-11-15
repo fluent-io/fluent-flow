@@ -209,9 +209,6 @@ it('rejects new legacy runs, retries, sessions and model turns after freeze whil
 
   const nativeTask = await db.createCollabTask({ actor, projectId, title: 'Native backlog after freeze' });
   expect(nativeTask.status).toBe('backlog');
-  const settings = await db.getProjectChatSettings({ actor, projectId });
-  const savedChat = await db.updateProjectChatSettings({ actor, projectId, expectedVersion: settings.version, executionMode: 'chat', defaultAgentId: null, defaults: { profileId: null, model: null, instructions: '' } });
-  expect(savedChat.executionMode).toBe('chat');
   const summarySettings = await db.getProjectSummarySettings({ actor, projectId });
   const savedSummary = await db.updateProjectSummarySettings({ actor, projectId, expectedVersion: summarySettings.version, defaults: { enabled: false, agentId: null, profileId: null, model: null } });
   expect(savedSummary.defaults.enabled).toBe(false);
@@ -221,9 +218,7 @@ it('rejects new legacy runs, retries, sessions and model turns after freeze whil
     WHERE claim.id=$1`, [native.claim.id])).rows).toEqual([{ claim_type: 'chat', status: 'pending', task_id: nativeTask.id }]);
 });
 
-it('blocks mapping, default and connector-fallback writes after freeze while native settings stay editable', async () => {
-  const initial = await db.getProjectChatSettings({ actor, projectId });
-  await db.updateProjectChatSettings({ actor, projectId, expectedVersion: initial.version, executionMode: 'chat', defaultAgentId: null, defaults: { profileId: null, model: null, instructions: '' } });
+it('blocks mapping and legacy-default writes after freeze while native summary settings stay editable', async () => {
   const defaultsBefore = (await getPool().query('SELECT execution_defaults FROM collab_projects WHERE id=$1', [projectId])).rows[0].execution_defaults;
   await freezeLegacyExecution();
 
@@ -247,21 +242,13 @@ it('blocks mapping, default and connector-fallback writes after freeze while nat
   expect((await getPool().query<{ version: number }>('SELECT version FROM collab_projects WHERE id=$1', [projectId])).rows[0].version).toBe(projectVersionBefore);
   expect((await getPool().query('SELECT execution_defaults FROM collab_projects WHERE id=$1', [projectId])).rows[0].execution_defaults).toEqual(defaultsBefore);
 
-  const settings = await db.getProjectChatSettings({ actor, projectId });
-  let switchFailure;
-  try {
-    await db.updateProjectChatSettings({ actor, projectId, expectedVersion: settings.version, executionMode: 'connector', defaultAgentId: null, defaults: { profileId: null, model: null, instructions: '' } });
-  } catch (error) {
-    switchFailure = error;
-  }
-  expect(switchFailure).toMatchObject({ status: 409, code: 'legacy_execution_frozen' });
-  const afterSwitch = await db.getProjectChatSettings({ actor, projectId });
-  expect(afterSwitch.executionMode).toBe('chat');
-  expect(afterSwitch.version).toBe(settings.version);
-
-  const savedChat = await db.updateProjectChatSettings({ actor, projectId, expectedVersion: settings.version, executionMode: 'chat', defaultAgentId: null, defaults: { profileId: null, model: null, instructions: '' } });
-  expect(savedChat.executionMode).toBe('chat');
-  expect(savedChat.version).toBe(settings.version + 1);
+  const settings = await db.getProjectSummarySettings({ actor, projectId });
+  const savedSummary = await db.updateProjectSummarySettings({
+    actor, projectId, expectedVersion: settings.version,
+    defaults: { enabled: false, agentId: null, profileId: null, model: null },
+  });
+  expect(savedSummary.defaults.enabled).toBe(false);
+  expect(savedSummary.version).toBe(settings.version + 1);
 });
 
 it('retrieves existing artifact bytes and settles cancellation through the owning connector after freeze', async () => {

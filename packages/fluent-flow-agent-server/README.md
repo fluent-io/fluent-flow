@@ -278,7 +278,7 @@ There is no API-key fallback. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and any othe
 
 ## Opt-in attended chat (preview)
 
-Chat execution is integrated into the ordinary claim transport but remains **off by default** until the settings/UI/release gates ship. Omitting `--chat-profiles-file` keeps existing unattended behavior and does not advertise `chat`. The connector is unchanged and remains available.
+Chat uses ordinary claim routing and the selected agent's local configuration. Omitting `--chat-profiles-file` keeps existing unattended behavior and does not advertise `chat`. No attended-execution project panel or project profile/model override is required. The connector remains available for historical work until the separate retirement gates pass.
 
 The local JSON file is an array of strict objects:
 
@@ -294,7 +294,7 @@ The local JSON file is an array of strict objects:
 ]
 ```
 
-These selector/model strings are placeholders, **not supported-provider defaults**. Inspect the installed ACP v2 adapter's advertised session configuration and pin its actual selector/value. Permission value must be `ask` or `confirm`; unsupported configurations fail closed before prompting. Each selected value must exist in the provider's selector list and be confirmed after setting it. Later permission/model drift terminates the session. Omit model fields and use `"models": []` to leave the provider model unchanged. Profiles never contain an executable, argv or environment. Those remain local server configuration. Delivered `profile` and `model` select only this allowlist; omitted profile selects the first local profile.
+These selector/model strings are placeholders, **not supported-provider defaults**. Inspect the installed ACP v2 adapter's advertised session configuration and pin its actual selector/value. Permission value must be `ask` or `confirm`; unsupported configurations fail closed before prompting. Each selected value must exist in the provider's selector list and be confirmed after setting it. Later permission/model drift terminates the session. Omit model fields and use `"models": []` to leave the provider model unchanged. Profiles never contain an executable, argv or environment. Those remain local server configuration. Chat always uses the first local profile and its `defaultModel`; old delivered `profile` and `model` overrides are ignored. Summary work retains its separately frozen, allowlisted selection.
 
 - A chat opens without an initial prompt, services commands while idle, and has a maximum duration of 8 hours (or the earlier provider-issued GitHub credential expiry). It is exempt from the work-claim execution timeout. No token refresh or context replay is implemented.
 - `cancel` stops the current response; `end_session` closes the session. Heartbeats continue while idle but do not refresh user activity. Authoritative control-plane idle/host expiry always wins; terminal chats never redispatch.

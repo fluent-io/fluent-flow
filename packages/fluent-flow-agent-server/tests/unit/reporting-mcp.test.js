@@ -572,11 +572,8 @@ describe('claim-runner native reporting', () => {
     const profile = { id: 'design', permission: { configId: 'approval', value: 'ask' }, modelConfigId: 'model', models: ['small', 'large'], defaultModel: 'small' };
     const advertised = await agentRequest(token.plaintext, '/register', { meta: { instance_id: 'reporting-native', slot_id: 1, capacity: 2, supported_claim_types: ['chat'], profiles: [{ id: 'design', models: profile.models, default_model: 'small' }] } });
     expect(advertised.status).toBe(200);
-    const settings = await db.getProjectChatSettings({ actor: asActor(owner), projectId });
-    await db.updateProjectChatSettings({ actor: asActor(owner), projectId, expectedVersion: settings.version, executionMode: 'chat', defaultAgentId: chatAgentId,
-      defaults: { profileId: 'design', model: 'small', instructions: 'REPORT_FILE:reports/from-runner.txt' } });
     const task = await db.createCollabTask({ actor: asActor(owner), projectId, title: 'Real runner reporting' });
-    const started = await db.startCollabClaimExecution({ actor: asActor(owner), taskId: task.id, expectedVersion: task.version, idempotencyKey: randomUUID(), claimType: 'chat', repo: null });
+    const started = await db.startCollabClaimExecution({ actor: asActor(owner), taskId: task.id, expectedVersion: task.version, idempotencyKey: randomUUID(), claimType: 'chat', repo: null, instructions: 'REPORT_FILE:reports/from-runner.txt' });
     const fixture = workspaceFixture();
     const workDir = join(fixture.root, 'work');
     mkdirSync(workDir);

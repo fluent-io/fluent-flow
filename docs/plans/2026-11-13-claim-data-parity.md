@@ -289,7 +289,7 @@ Verification order:
 - [ ] Capture remaining legacy file bytes through existing authorized artifact reads before host revocation. Validate cached historical bytes against the declared artifact SHA; expose missing/unavailable captures as blockers, never as successful archival.
 - [x] Implement operator-only raw execution snapshot export/import with counts, per-record SHA and manifest verification. Keep private configuration out of browser APIs. Restore original IDs, bytes and timestamps; reject tampered or foreign ownership data. This covers the four-record dump contract below, not the separate artifact/dependency backup.
 - [ ] Add native/archive source references to every surviving canonical dependent and reader, including idea conversion command/session references, usage sentinel handling, delivery arrays and soft JSON references. Do not rewrite immutable acceptance decisions.
-- [x] Migrate project instructions/defaults only with an explicit org-scoped agent/profile mapping. Do not guess that a host profile equals a runner profile; preserve unmapped configuration and block retirement until resolved. Preserve separate summary settings. The supported repository/ref context is bounded below.
+- [x] Preserve legacy project configuration without guessing host-to-runner identities. The 2026-11-15 user decision removes project chat overrides and the defaults mapper; agent operators must explicitly disposition stored configuration before retirement. Independent summary settings remain separate.
 - [x] Prove authorized historic transcript/artifact access after a disposable export/restore rehearsal. Original canonical artifact rows and identifiers remain intact; this does not prove a complete canonical-dependency backup, authorize production deletion or ship replacement source constraints.
 
 ### Native idea follow-up contract
@@ -336,47 +336,23 @@ navigation. Delayed reference lookups cannot reopen a previous task or restore
 revoked context. Existing canonical delivery/decision/idempotency JSON and arrays
 remain unchanged; their cross-source dependency preflight is still required.
 
-### Explicit project-default mapping contract
+### Agent-owned chat configuration contract
 
-Provide a protected operator inspection and migration service, not automatic
-profile matching or another browser settings convention. Inspect one explicit
-workspace/project under current project-admin and internal-read authority. Return
-its version, source mapping ID and SHA-256 of the stored legacy defaults plus
-their scoped mapping/host catalog and linked repository. Do not return raw
-instructions, host paths, catalog payloads or credentials.
+The 2026-11-15 user decision supersedes the earlier project-default mapper.
+Chat uses ordinary eligible agents, or an explicit per-operation target, and
+the selected runner's local profile/model/permission policy. There is no project
+chat-settings panel, backend selector, settings API or replacement mapping writer.
+Stored project mode/agent/profile/model/instructions and lifecycle overrides do
+not affect new chat claims. Old delivered profile/model values do not override
+local runner policy.
 
-Migration requires that exact source hash, optimistic project version and
-explicit org-scoped native agent/profile/model identities. Copy validated legacy
-instructions byte-exact into attended chat defaults; preserve project run/test
-instructions, source legacy JSON, host and mapping rows. Do not infer an agent
-from a host or a default model from a profile. The configured legacy summary
-identity needs its own explicit native mapping, even when disabled; an empty
-legacy summary leaves separately configured native summary settings untouched.
+Remove the obsolete project-default mapper and its launcher rather than keeping
+a hidden writer. Preserve existing SQL columns, legacy JSON, host/mapping records
+and project run/test instructions unchanged. Agent operators must preserve and
+explicitly disposition any historical configuration and repository context
+before retirement; no profile/model or checkout equivalence is inferred.
+Native summary settings remain separately authorized and unchanged.
 
-Preview is read-only by default. Apply locks the project and validates source,
-current authority and native advertised catalogs inside one transaction, then
-updates chat mode/defaults and any mapped summary together with one version bump.
-Unknown/foreign/unadvertised/disabled targets, stale source/version and
-conflicting existing native settings leave everything unchanged. A matching
-already-mapped state is a read-only acknowledgment, not another version bump.
-Unconfigured or unmapped source remains stored and blocks retirement; no
-guess-based fallback, row deletion, token revocation or admission freeze occurs.
-
-The operator launcher exposes `inspect` with explicit workspace/project/principal
-and session-version flags, and `preview`/`apply` with one private JSON input.
-Read that input through a single owned regular-file descriptor without following
-symlinks; group/world-readable files and repeated flags fail. A file cannot
-contain an `apply` field. Only the command authorizes mutation. Startup, parsing,
-service and cleanup failures return generic diagnostics and nonzero status.
-Repository/base-ref bindings are not mapped by this defaults-only service;
-establish equivalent native repository context separately before switching a
-repository-backed legacy project or permitting retirement.
-The present fail-closed gate admits only an org-registered linked repository
-exactly matching the locked legacy key and base ref `origin/HEAD`. Concrete refs
-such as `main` and `release` remain unsupported; do not infer that a name is the
-remote default. The production inventory identified no source requiring broader
-translation, so no new ref engine is part of this cutover. Newly discovered
-unresolved sources still block retirement until explicitly preserved.
 
 ### Operator execution-dump contract
 
@@ -417,19 +393,16 @@ re-keying remain separate Task 5 requirements.
 
 ## Task 6: Freeze/drain preparation and staged publication
 
-- [x] Implement a server-side global admission fence for every new legacy run/session/prompt/retry/summary/follow-up, legacy `execution_defaults`, host and mapping write, and transition into connector mode. Serialize admission against freeze; leave acknowledgements, observations, permission answers, cancellation, reconciliation and artifact capture available to drain. Global scope is explicit because host enrollment has no workspace scope.
+- [x] Implement a server-side global admission fence for every new legacy run/session/prompt/retry/summary/follow-up, legacy `execution_defaults`, host and mapping write. Serialize admission against freeze; leave acknowledgements, observations, permission answers, cancellation, reconciliation and artifact capture available to drain. Global scope is explicit because host enrollment has no workspace scope. The obsolete project chat-backend switch has been removed.
 - [x] Provide truthful drain inventory covering idle/resumable sessions and pending/accepted/ambiguous commands as well as active runs. Native-child settlement and remote retained work require authoritative operator/host evidence, not heartbeat guesses.
 - [ ] Seal only verified immutable archive snapshots after their source is fenced and required bytes captured. Host and reporting-token revocation are distinct steps. No sealing flag by itself authorizes deletion.
 - [ ] Run full suites, actual production UI/protocol paths, integrity/restore rehearsal and independent cross-provider/security reviews. Open the separate parity PR against the additive branch and verify its CI; do not merge.
 - [ ] Keep final removal blocked until the re-key PR has shipped, real target counts/checksums/backup/restore/drain are verified and the destructive migration is separately approved. Only then remove obsolete connector runtime/config/API/settings/callers and preserve surviving attribution.
 
-Here, default writes means the legacy `execution_defaults` JSON and transitions
-back into connector mode. Native chat and summary settings remain editable.
-The explicit mapper is allowed after freeze: it may update only
-`execution_mode` to `chat`, `default_agent_id`, `chat_execution_defaults` and
-`summary_execution_defaults`, plus the normal project version/timestamp.
-It preserves legacy JSON, hosts and mappings and cannot reopen admission or
-queue legacy work.
+Here, default writes means the legacy `execution_defaults` JSON. Ordinary native
+claims and native summary settings remain available after freeze. There is no
+project chat-settings API or defaults mapper; historical configuration remains
+stored for explicit preservation and operator disposition.
 
 ### Admission and inventory implementation slices
 
