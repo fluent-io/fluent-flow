@@ -2,7 +2,17 @@
 
 [Agent server README](../README.md) · [Scripts and smoke tests](../scripts/README.md) · [Connector tests](unit/connector/README.md)
 
-Vitest suites run with `npm test --workspace packages/fluent-flow-agent-server`. Everything in `unit/` runs without a database except `unit/connector/real-app.test.js`, which needs a disposable PostgreSQL database in `COLLAB_CONNECTOR_TEST_DATABASE_URL`. The release workflow excludes that file.
+Run all Vitest suites with `npm test --workspace packages/fluent-flow-agent-server`.
+`unit/connector/real-app.test.js` requires its own disposable loopback
+`ff_connector_*` database in `COLLAB_CONNECTOR_TEST_DATABASE_URL`.
+`unit/reporting-mcp.test.js`, `unit/runner-summary.test.js`,
+`unit/runner-native-pr.test.js` and `unit/runner-native-pipeline.test.js` require a
+separate loopback `ff_reporting_mcp_*` database in
+`COLLAB_REPORTING_MCP_TEST_DATABASE_URL`. These suites reset their schema and run
+sequentially; never share their database with another workspace's suite.
+The release workflow provisions PostgreSQL and runs all four reporting suites.
+Only `unit/connector/real-app.test.js` remains excluded from release verification;
+the full CI job exercises it separately.
 
 ## Agent server
 
@@ -34,6 +44,13 @@ Vitest suites run with `npm test --workspace packages/fluent-flow-agent-server`.
 - `unit/chat-handoff.test.js`: published branch snapshots, same-context ACP summaries, live chat after handoff and new-task spec/build artifact transfer.
 - `unit/runner-chat.test.js`: production runner/bridge integration, catalog policy, resource release and asynchronous cleanup reports.
 - `unit/chat-profiles.test.js` and `unit/chat-event-budget.test.js`: operator profile allowlists and bounded transcripts that preserve critical events.
+- `unit/reporting-mcp.test.js`: real control-plane/MCP forwarding, durable file capture, redaction, helper shutdown and ACP new/resume paths.
+  The real-chat durability case waits for the canonical retained-work receipt
+  before deleting fixture storage. End and runner shutdown do not drain the
+  asynchronous filesystem release.
+- `unit/runner-summary.test.js`: frozen summary policy, one bounded ACP turn, canonical publication, role containment and cleanup.
+- `unit/runner-native-pr.test.js`: owner-observed final workspace and automatic PR association before worktree cleanup.
+- `unit/runner-native-pipeline.test.js`: real Git chat/handoff/spec/build, signed webhook review lineage, deterministic failing-before/passing-after verification and rereview. GitHub/provider boundaries are fixtures.
 
 CI exercises the Linux chat paths on Node 20 as well as the full Node 22 package suite. The separate runtime typecheck is `npm run typecheck:runtime --workspace packages/fluent-flow-agent-server`. Chat workspace support remains Linux/procfs-only; the existing cross-platform work runner is not widened by these checks.
 

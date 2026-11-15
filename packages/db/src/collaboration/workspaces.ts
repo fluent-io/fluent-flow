@@ -12,6 +12,7 @@ import {
 import { SYSTEM_ROLE_PRESETS } from './capabilities.js';
 import type { CollabCapability } from './capabilities.js';
 import { requireCurrentPrincipal } from './principals.js';
+import { assertLegacyExecutionOpen } from './execution-retirement.js';
 import { withClientTransaction } from './tx.js';
 
 const bootstrapSchema = z.object({
@@ -269,7 +270,6 @@ export type MeProject = {
   boardVersion: number;
   linkedRepoFullName: string | null;
   executionDefaults: unknown | null;
-  executionMode?: 'chat' | 'connector';
 };
 
 export type MeWorkspace = {
@@ -302,10 +302,9 @@ export async function getPrincipalMeProfile(principalId: string): Promise<MeProf
     board_version: number;
     linked_repo_full_name: string | null;
     execution_defaults: unknown;
-    execution_mode: 'chat' | 'connector';
     capability: CollabCapability;
   }>(
-    `SELECT p.id, p.workspace_id, p.name, p.version, p.board_version, p.linked_repo_full_name, p.execution_defaults, p.execution_mode,
+    `SELECT p.id, p.workspace_id, p.name, p.version, p.board_version, p.linked_repo_full_name, p.execution_defaults,
             cap.capability
      FROM collab_projects p
      JOIN collab_memberships m
@@ -330,7 +329,6 @@ export async function getPrincipalMeProfile(principalId: string): Promise<MeProf
         boardVersion: row.board_version,
         linkedRepoFullName: row.linked_repo_full_name,
         executionDefaults: row.execution_defaults ?? null,
-        executionMode: row.execution_mode,
       };
       projectsById.set(row.id, project);
     }
@@ -349,7 +347,6 @@ export async function getPrincipalMeProfile(principalId: string): Promise<MeProf
   for (const project of projectsById.values()) {
     if (!capabilitiesByProject.get(project.id)?.has('internal.read')) {
       project.executionDefaults = null;
-      delete project.executionMode;
     }
     workspacesById
       .get(project.workspaceId)!
@@ -408,6 +405,8 @@ export async function updateProjectExecutionDefaults(input: {
   const input2 = updateDefaultsSchema.parse(input);
   await authorize(input2.actor, { projectId: input2.projectId }, ['project.admin', 'internal.read']);
   return withClientTransaction(async tx => {
+  await assertLegacyExecutionOpen(tx);
+  await requireCurrentPrincipal(input2.actor, tx);
   const mapping = (await tx.query<{
     profile_ids: string[]; repository_key: string; revoked_at: Date | null;
     catalog: { repositories?: { key: string }[]; profiles?: { id: string; model?: string | null }[] } | null;

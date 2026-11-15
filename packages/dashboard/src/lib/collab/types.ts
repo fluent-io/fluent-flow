@@ -57,7 +57,6 @@ export interface Project {
   version: number;
   boardVersion: number;
   executionDefaults: ExecutionDefaults | null;
-  executionMode?: 'chat' | 'connector';
 }
 
 export interface MeCapabilities {
@@ -115,10 +114,17 @@ export interface Task {
   updatedAt: string;
 }
 
+export interface PublishedClaimProgress {
+  claimId: number;
+  text: string;
+  percent: number | null;
+}
+
 export interface TaskExecution {
   latestRun: Run | null;
   hostReachability: HostReachability | null;
   progress: string | null;
+  publishedProgress?: PublishedClaimProgress | null;
   attentionCount: number;
 }
 
@@ -176,6 +182,7 @@ export interface CheckEvidence {
   checkId: string;
   runId: string | null;
   sessionId: string | null;
+  claimId: number | null;
   commit: string | null;
   dirty: boolean | null;
   status: 'passed' | 'failed' | 'not_run';
@@ -193,6 +200,7 @@ export interface Artifact {
   taskId: string;
   runId: string | null;
   sessionId: string | null;
+  claimId: number | null;
   direction: 'input' | 'output';
   kind: 'file' | 'url' | 'text';
   name: string;
@@ -213,9 +221,12 @@ export interface Idea {
   conversionTargetTaskId: string | null;
   conversionCommandId: string | null;
   conversionSessionId: string | null;
+  conversionClaimId: number | null;
+  conversionClaimCommandId: number | null;
   sourceTaskId: string;
   runId: string | null;
   sessionId: string | null;
+  claimId: number | null;
   title: string;
   body: string;
   status: 'inbox' | 'converted' | 'dismissed';
@@ -305,6 +316,7 @@ export interface TaskDecision {
     headCommit: string | null;
     dirty: boolean | null;
     evidenceRevision: string;
+    source?: { kind: 'claim'; claimId: number };
   } | null;
   createdAt: string;
 }
@@ -328,6 +340,7 @@ export interface WorkpadPlanView {
   taskId: string;
   runId: string | null;
   sessionId: string | null;
+  claimId: number | null;
   items: { text: string; status: 'pending' | 'in_progress' | 'completed' }[];
   provenance: 'agent' | 'human';
   createdAt: string;
@@ -338,6 +351,7 @@ export interface OpenQuestionView {
   taskId: string;
   runId: string | null;
   sessionId: string | null;
+  claimId: number | null;
   text: string;
   answer: string | null;
   state: 'open' | 'resolved' | 'dismissed';
@@ -414,4 +428,12 @@ export interface SubmitClaimCommandResult {
   kind: 'prompt' | 'cancel' | 'end_session' | 'handoff' | 'permission' | 'elicitation';
   status: string;
   created: boolean;
+}
+
+export interface HistoricalTimelineEntry {
+  eventId: string;
+  kind: string;
+  payload: Record<string, unknown>;
+  observedAt: string;
+  providerCursor: { epoch: string; seq: string } | null;
 }

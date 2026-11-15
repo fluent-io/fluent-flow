@@ -48,7 +48,7 @@ export async function insertVerificationResultAtomic(row: VerificationResultInse
       row.outcome,
       row.matrix ?? null,
       row.manifest ?? null,
-      row.testHashes ?? null,
+      row.testHashes == null ? null : JSON.stringify(row.testHashes),
       row.artifactSha ?? null,
       row.redBaseSha ?? null,
       row.greenSha ?? null,

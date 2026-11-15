@@ -43,6 +43,7 @@ export function createAgentServer(options) {
     acpCommand = null,
     acpArgs = [],
     chatProfilesFile,
+    summaryClaims = false,
     restartBaseMs = DEFAULT_RESTART_BASE_MS,
     restartMaxMs = DEFAULT_RESTART_MAX_MS,
     executionTimeoutMs,
@@ -188,7 +189,7 @@ export function createAgentServer(options) {
     if (chatProfilesFile !== undefined) {
       const contents = await readFile(chatProfilesFile);
       if (contents.byteLength > 64 * 1024) throw new Error('Local chat catalog is too large');
-      chat = { enabled: true, profiles: validateChatProfiles(JSON.parse(contents.toString('utf8'))) };
+      chat = { enabled: true, profiles: validateChatProfiles(JSON.parse(contents.toString('utf8'))), summary: summaryClaims === true };
       chatWorkspaceManager = createChatWorkspaceManager({ workDir, storageDir: stateDir, environment: providerEnvironment });
       await chatWorkspaceManager.reconcileStartup();
     }

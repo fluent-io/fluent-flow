@@ -161,6 +161,11 @@ export async function listOpenPRs(owner, repo, ctx) {
   return githubRequest(`/repos/${owner}/${repo}/pulls?state=open&per_page=100`, {}, token);
 }
 
+export async function findPullRequestsByHead(owner, repo, branch, ctx) {
+  const token = await resolveToken(ctx);
+  return githubRequest(`/repos/${owner}/${repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}&per_page=2`, {}, token);
+}
+
 /**
  * Fetch a PR as unified diff text.
  */

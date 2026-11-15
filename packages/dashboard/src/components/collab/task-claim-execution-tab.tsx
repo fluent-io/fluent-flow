@@ -873,7 +873,7 @@ function ClaimExecutionPanel({ detail, reload, selectedClaimId, onBack }: PanelP
             {visibleRequests.length > 0 && <div className="mt-5 border-t border-border pt-4"><h3 className="mb-3 text-sm font-medium">Requests</h3><div className="space-y-2">{visibleRequests.map((request) => <RequestCard key={request.requestKey} request={request} active={Boolean(active && canSteer && !answerInFlight.current.has(request.requestKey))} submit={submitAnswer} />)}</div></div>}</div>
             {inline && !following && <Button variant="outline" size="sm" className="mx-auto my-2" onClick={()=>{setFollowing(true);if(output.current)output.current.scrollTop=output.current.scrollHeight;}}>Jump to latest</Button>}
 
-            {canSteer && active && <div className={inline ? "flow-root shrink-0 border-t border-border bg-background p-5" : "rounded-lg border border-border bg-card p-4"}><label className="text-sm"><span className="mb-1 block text-muted-foreground">{inline ? `Send to agent · session ${selectedId}` : 'Prompt'}</span><textarea aria-label="Prompt" maxLength={20000} className={textareaClass} value={prompt} onChange={(event) => {
+            {canSteer && active && selectedBadge.claimType !== 'summary' && <div className={inline ? "flow-root shrink-0 border-t border-border bg-background p-5" : "rounded-lg border border-border bg-card p-4"}><label className="text-sm"><span className="mb-1 block text-muted-foreground">{inline ? `Send to agent · session ${selectedId}` : 'Prompt'}</span><textarea aria-label="Prompt" maxLength={20000} className={textareaClass} value={prompt} onChange={(event) => {
               const next = event.target.value;
               if (next !== prompt) promptKey.current = newKey();
               setPrompt(next);

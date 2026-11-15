@@ -166,10 +166,48 @@ export {
 } from './tasks.js';
 export { enforceRateLimitBucket, rateLimitBucket } from './rate-limit.js';
 
-export { getProjectChatSettings, updateProjectChatSettings } from './chat-settings.js';
+export { getProjectSummarySettings, updateProjectSummarySettings } from './summary-settings.js';
+export type { SummaryDefaults, SummaryAgent, ProjectSummarySettings } from './summary-settings.js';
+export { queueClaimSummary, listTaskSummaries, getClaimSummaryWork, linkSummaryClaimAttempt } from './summary-claims.js';
 export {getCollabClaimCommand} from './claim-executions.js';
 export {listCollabClaimPrompts} from './claim-executions.js';
 export { getCollabClaimHandoff, startCollabClaimHandoff } from './claim-handoffs.js';
 export { recordClaimWorkspace, listCollabRetainedWork } from './claim-workspaces.js';
 export { listTaskClaimProgress, markClaimReadCursor } from './claim-progress.js';
 export type { ClaimProgressCard, TaskClaimProgress } from './claim-progress.js';
+export {
+  captureLegacyRunArchive,
+  verifyExecutionArchive,
+  readExecutionArchiveExportPage,
+  getCollabExecutionArchive,
+  getExecutionArchiveTimeline,
+  listTaskExecutionHistory,
+  listExecutionArchiveSessions,
+} from './execution-archives.js';
+export type { ExecutionArchiveManifest, ExecutionArchiveRecord, ExecutionArchiveRecordType, ExecutionArchiveVerification } from './execution-archives.js';
+export type { ExecutionHistoryEntry, ArchivedExecutionSession } from './execution-archives.js';
+export {
+  ensureClaimReportingBinding,
+  buildClaimReportingBootstrap,
+  resolveClaimReportingContext,
+  authenticateClaimReportingToken,
+  resolveClaimEvidenceAuthority,
+  verifyClaimCaptureProof,
+  captureProofSigningMaterial,
+} from './claim-reporting.js';
+export type { ClaimReportingBinding, ClaimReportingContext, ClaimEvidenceAuthority } from './claim-reporting.js';
+export type { ReportSource } from './runs.js';
+export { reportSourceSchema } from './evidence.js';
+export type { CollabReportSource } from './evidence.js';
+export { getExecutionHistoryEntry, listExecutionHistorySessions, getExecutionHistoryTimeline, resolveExecutionHistoryReference } from './execution-archives.js';
+export type { ExecutionHistorySession, ExecutionHistoryReferenceSelection } from './execution-archives.js';
+export { writeExecutionArchiveDump, restoreExecutionArchiveDump } from './execution-archives.js';
+export type { ExecutionArchiveDumpEntry } from './execution-archives.js';
+export { recordClaimWorkspaceObservation } from './claim-workspace-state.js';
+export type { ClaimWorkspaceState } from './claim-workspace-state.js';
+export { projectClaimEventReports } from './claim-event-reports.js';
+export { getClaimPullRequestSource, recordClaimPullRequest, observeNativePullRequest, readNativePullRequestLink, lockPullRequestPipeline, attachPullRequestClaim } from './claim-pull-requests.js';
+export { insertPullRequestPipelineClaim } from './claim-pull-requests.js';
+export { cancelInvalidNativePrReservations } from './claim-pull-requests.js';
+export { nativeReviewVerdictSchema, publishNativeReviewResult, applyNativeReviewResult } from './claim-review-results.js';
+export { assertNativePullRequestCompletion } from './claim-pull-requests.js';

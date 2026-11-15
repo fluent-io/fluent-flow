@@ -35,7 +35,7 @@ export function assertLogLevel(level) {
  * @param {string} level — minimum level, defaults to LOG_LEVEL or info
  * @returns {{ info, warn, error, debug, isDebug, child }}
  */
-export function createLogger(verbose = false, level = process.env.LOG_LEVEL ?? 'info') {
+export function createLogger(verbose = false, level = process.env.LOG_LEVEL ?? 'info', destination = undefined) {
   assertLogLevel(level);
   return wrap(pino({
     level: verbose && level !== 'trace' ? 'debug' : level,
@@ -44,5 +44,5 @@ export function createLogger(verbose = false, level = process.env.LOG_LEVEL ?? '
     timestamp: pino.stdTimeFunctions.isoTime,
     formatters: { level: (label) => ({ level: label }) },
     redact: { paths: REDACT_PATHS, censor: '[REDACTED]' },
-  }, process.stdout));
+  }, destination ?? process.stdout));
 }

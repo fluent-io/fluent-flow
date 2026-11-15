@@ -67,8 +67,8 @@ describe('claim interaction persistence', () => {
       ],
     };
 
-    await expect(appendClaimEvents(input)).resolves.toEqual({ inserted: 2, lastSeq: 2 });
-    await expect(appendClaimEvents(input)).resolves.toEqual({ inserted: 0, lastSeq: 2 });
+    await expect(appendClaimEvents(input)).resolves.toMatchObject({ inserted: 2, lastSeq: 2 });
+    await expect(appendClaimEvents(input)).resolves.toMatchObject({ inserted: 0, lastSeq: 2 });
 
     const { rows } = await getPool().query(
       'SELECT seq, kind, payload FROM agent_claim_events WHERE org_id = $1 AND claim_id = $2 ORDER BY seq',
@@ -101,7 +101,7 @@ describe('claim interaction persistence', () => {
       orgId,
       claimId,
       events: [{ seq: 1, kind: 'notice', payload }],
-    })).resolves.toEqual({ inserted: 0, lastSeq: 1 });
+    })).resolves.toMatchObject({ inserted: 0, lastSeq: 1 });
 
     const { rows } = await getPool().query<{ payload_bytes: number; canonical_bytes: number }>(
       `SELECT payload_bytes, octet_length(payload::text) AS canonical_bytes

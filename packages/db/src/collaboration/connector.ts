@@ -557,7 +557,7 @@ export async function submitConnectorObservations(input: {
         if(!currentCancel.rows.length) continue;
       }
 
-      const reportContext = { taskId:bound.rows[0].task_id,runId:event.runId,sessionId:event.sessionId };
+      const reportContext = { taskId:bound.rows[0].task_id, source:{ kind:'legacy' as const, runId:event.runId, sessionId:event.sessionId } };
       if (event.kind === 'state' && event.payload.plan && sessionRole==='work') {
         const plan = z.object({ items:z.array(z.object({text:z.string().min(1).max(500),status:z.enum(['pending','in_progress','completed'])})).min(1).max(50) }).parse(event.payload.plan);
         await recordWorkpadPlanReport({ ...reportContext,items:plan.items },client);
@@ -568,7 +568,7 @@ export async function submitConnectorObservations(input: {
       }
       if (event.kind === 'summary') {
         const summary = z.object({body:z.string().min(1).max(100000),model:z.string().max(200).nullable().optional(),sourceCursor:z.object({epoch:z.string().max(200),seq:z.string().max(200)}).nullable().optional()}).parse(event.payload);
-        await recordCollabSummaryReport({...reportContext,body:summary.body,model:summary.model??null,sourceEpoch:summary.sourceCursor?.epoch??null,sourceSeq:summary.sourceCursor?.seq??null,visibility:'internal'},client);
+        await recordCollabSummaryReport({taskId:reportContext.taskId,source:{kind:'legacy',runId:event.runId,sessionId:event.sessionId},body:summary.body,model:summary.model??null,sourceEpoch:summary.sourceCursor?.epoch??null,sourceSeq:summary.sourceCursor?.seq??null,visibility:'internal'},client);
       }
       if (event.kind === 'state' && ('headCommit' in event.payload || 'dirty' in event.payload || 'progress' in event.payload)) {
         const sample = z.object({headCommit:z.string().regex(/^[a-f0-9]{40,64}$/i).nullable().optional(),dirty:z.boolean().nullable().optional(),progress:z.object({text:z.string().max(1000),percent:z.number().min(0).max(100).nullable().optional()}).nullable().optional()}).parse(event.payload);

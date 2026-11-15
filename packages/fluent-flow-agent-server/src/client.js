@@ -36,6 +36,7 @@ export function createClient({ serverUrl, token, fetch: fetchFn = globalThis.fet
   }
 
   return {
+    get serverUrl() { return base; },
     enroll: async (enrollmentToken, instanceId) => {
       const data = await post(
         '/api/agent-server/enroll',

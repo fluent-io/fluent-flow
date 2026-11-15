@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -262,12 +262,35 @@ try {
   runnerEnv.LOG_LEVEL = 'warn';
   writeFileSync(join(runnerCwd,'runner-token'),token.plaintext,{mode:0o600});
   runnerEnv.FLUENT_FLOW_TOKEN_FILE=join(runnerCwd,'runner-token');
-  writeFileSync(join(runnerCwd,'chat-profiles.json'),JSON.stringify([{id:'design',permission:{configId:'approval',value:'ask'},models:['small','large'],modelConfigId:'model',defaultModel:'small'}]),{mode:0o600});
+  writeFileSync(join(runnerCwd,'chat-profiles.json'),JSON.stringify([{id:'design',permission:{configId:'approval',value:'ask'},models:['small','large'],modelConfigId:'model',defaultModel:'large'}]),{mode:0o600});
 
   await new Promise((resolve, reject) => {
     server.once('listening', resolve);
     server.once('error', reject);
   });
+  const historicalTask = await db.createCollabTask({ actor, projectId: project.id, title: 'Deterministic historical design' });
+  const historicalHost = await db.createExecutionHost({ actor, name: 'Historical fixture host' });
+  diagnosticSecrets.add(historicalHost.token);
+  await db.createProjectHostMapping({ actor, projectId: project.id, hostId: historicalHost.id, repositoryKey: 'history/repo', profileIds: ['archive-profile'], defaultProfileId: 'archive-profile' });
+  const registeredHistory = await fetch(`${apiOrigin}/api/connector/v1/register`, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${historicalHost.token}` },
+    body: JSON.stringify({ instanceId: 'historical-browser', protocolVersion: 1, sdkVersion: '0.12.0', daemonVersion: '1.0.0', capabilities: {},
+      catalog: { repositories: [{ key: 'history/repo' }], profiles: [{ id: 'archive-profile', provider: 'omp' }] } }),
+  });
+  assert.equal(registeredHistory.status, 200);
+  const historicalConnector = (await registeredHistory.json()).data;
+  const historical = await db.startCollabRun({ actor, taskId: historicalTask.id, expectedVersion: historicalTask.version, idempotencyKey: 'historical-browser-start', profileId: 'archive-profile' });
+  await pool.query('UPDATE collab_sessions SET title=$2 WHERE id=$1', [historical.sessionId, 'Original design session']);
+  const historicalObservation = await fetch(`${apiOrigin}/api/connector/v1/observations`, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${historicalHost.token}` },
+    body: JSON.stringify({ ...historicalConnector, events: [
+      { eventId: 'historical-browser-message', runId: historical.run.id, sessionId: historical.sessionId, kind: 'timeline', observedAt: new Date().toISOString(), payload: { item: { type: 'assistant_message', text: 'The original feature design' } } },
+      { eventId: 'historical-browser-ended', runId: historical.run.id, sessionId: historical.sessionId, kind: 'state', observedAt: new Date().toISOString(), payload: { state: 'cancelled' } },
+    ] }),
+  });
+  assert.equal(historicalObservation.status, 200);
+  const historicalPrivatePath = '/private/machine/historical-browser-canary';
+  await pool.query('UPDATE collab_runs SET workspace_id=$2 WHERE id=$1', [historical.run.id, historicalPrivatePath]);
   const launchRunner = async (scenario, extraArgs=[]) => {
     const processCwd = scenario === 'accepted-loss-resume-running' ? recoveredRunnerCwd : runnerCwd;
     const { rows: [priorSession] } = await pool.query(
@@ -294,6 +317,7 @@ try {
       '--health-port', '3867',
       '--capacity', '2',
       '--chat-profiles-file', join(runnerCwd,'chat-profiles.json'),
+      ...(scenario.startsWith('summary-') ? ['--summary-claims'] : []),
     ], {
       cwd: processCwd,
       env: runnerEnv,
@@ -346,11 +370,9 @@ try {
   });
 
   const launched=await launchRunner('chat-policy');
-  await waitFor('advertised catalog',async()=>{
-    const settings=await db.getProjectChatSettings({actor,projectId:project.id});return settings.agents.find(a=>a.id===agentId)?.profiles.length;
-  });
-  const initialSettings=await db.getProjectChatSettings({actor,projectId:project.id});
-  await db.updateProjectChatSettings({actor,projectId:project.id,expectedVersion:initialSettings.version,executionMode:'chat',defaultAgentId:agentId,defaults:{profileId:'design',model:'large',instructions:'Use the project conventions.'}});
+  const obsoleteChatDefaults={profileId:'removed-project-profile',model:'removed-project-model',instructions:'Obsolete project instructions'};
+  await pool.query(`UPDATE collab_projects SET execution_mode='connector',default_agent_id='unavailable-project-agent',
+    chat_execution_defaults=$2,chat_pending_ttl_seconds=45,chat_idle_timeout_seconds=60 WHERE id=$1`,[project.id,JSON.stringify(obsoleteChatDefaults)]);
   const boardPath=`/board?projectId=${project.id}&q=Deterministic`;
   const taskPath=`${boardPath}&taskId=${task.id}`;
   const mutations=[];
@@ -370,6 +392,62 @@ try {
   await page.getByPlaceholder('Password',{exact:true}).fill(owner.password);
   await page.getByRole('button',{name:'Sign in',exact:true}).click();
   await page.waitForURL(`${origin}${boardPath}`,{timeout:30000});
+  const historicalDrawer = page.getByRole('dialog', { name: 'Task details' });
+  const legacySourceIdea = await db.createCollabIdea({ actor, taskId: historicalTask.id, runId: null, sessionId: historical.sessionId,
+    title: 'Legacy source navigation', body: 'Read the original session without rerunning it.', visibility: 'internal' });
+  const legacyCommandsBeforeSource = (await pool.query('SELECT id,state FROM collab_connector_commands WHERE run_id=$1 ORDER BY id', [historical.run.id])).rows;
+  await page.getByRole('link', { name: historicalTask.title, exact: true }).click();
+  await historicalDrawer.getByText('Ideas', { exact: true }).click();
+  await historicalDrawer.getByRole('button', { name: 'View reporting session', exact: true }).click();
+  await expect(historicalDrawer.getByRole('heading', { name: 'Historical execution', exact: true })).toBeVisible();
+  await expect(historicalDrawer.getByText('The original feature design', { exact: true })).toBeVisible();
+  assert.equal(new URL(page.url()).searchParams.get('runId'), historical.run.id);
+  assert.equal(new URL(page.url()).searchParams.get('sessionId'), historical.sessionId);
+  assert.deepEqual((await pool.query('SELECT id,state FROM collab_runs WHERE task_id=$1', [historicalTask.id])).rows, [{ id: historical.run.id, state: 'cancelled' }]);
+  assert.deepEqual((await pool.query('SELECT id,state FROM collab_connector_commands WHERE run_id=$1 ORDER BY id', [historical.run.id])).rows, legacyCommandsBeforeSource);
+  assert.deepEqual((await pool.query('SELECT claim_id FROM collab_claim_executions WHERE task_id=$1', [historicalTask.id])).rows, []);
+  await pool.query('DELETE FROM collab_ideas WHERE id=$1', [legacySourceIdea.id]);
+  await historicalDrawer.getByRole('button', { name: 'Back to task', exact: true }).click();
+  await expect(historicalDrawer.getByRole('heading', { name: 'Agent sessions', exact: true })).toBeVisible();
+  results.legacySourceNavigation = { resolvedOriginalSession: true, noExecutionStarted: true };
+  await historicalDrawer.getByText('Run history', { exact: true }).click();
+  await historicalDrawer.getByRole('button', { name: /View historical execution from/ }).click();
+  await expect(historicalDrawer.getByRole('heading', { name: 'Historical execution', exact: true })).toBeVisible();
+  await historicalDrawer.getByRole('button', { name: 'Original design session', exact: true }).click();
+  await expect(historicalDrawer.getByText('The original feature design', { exact: true })).toBeVisible();
+  assert.equal(await historicalDrawer.getByRole('button', { name: 'Send to agent', exact: true }).count(), 0);
+  assert.equal((await historicalDrawer.textContent()).includes(historicalPrivatePath), false);
+  const historyArchive = await db.captureLegacyRunArchive({ workspaceId: workspace.id, runId: historical.run.id });
+  assert.deepEqual(await db.verifyExecutionArchive({ workspaceId: workspace.id, archiveId: historyArchive.id, compareSource: true }), { integrityValid: true, sourceMatches: true, issues: [] });
+  await pool.query('UPDATE collab_execution_archives SET sealed_at=now() WHERE id=$1', [historyArchive.id]);
+  for (const table of ['collab_connector_observations', 'collab_connector_commands', 'collab_scoped_tokens', 'collab_sessions']) {
+    await pool.query(`DELETE FROM ${table} WHERE run_id=$1`, [historical.run.id]);
+  }
+  await pool.query('DELETE FROM collab_runs WHERE id=$1', [historical.run.id]);
+  await page.goto(`${origin}/tasks/${historicalTask.id.toUpperCase()}?projectId=${project.id}&q=Deterministic&runId=${historical.run.id.toUpperCase()}&sessionId=${historical.sessionId.toUpperCase()}`);
+  await expect(historicalDrawer.getByRole('heading', { name: 'Archived execution', exact: true })).toBeVisible();
+  await expect(historicalDrawer.getByText('The original feature design', { exact: true })).toBeVisible();
+  const historicalUrl = new URL(page.url());
+  assert.equal(historicalUrl.pathname, '/board');
+  assert.equal(historicalUrl.searchParams.get('taskId'), historicalTask.id);
+  assert.equal(historicalUrl.searchParams.get('runId'), historical.run.id);
+  assert.equal(historicalUrl.searchParams.get('sessionId'), historical.sessionId);
+  assert.equal(historicalUrl.searchParams.get('q'), 'Deterministic');
+  assert.equal((await historicalDrawer.textContent()).includes(historicalPrivatePath), false);
+  const historicalMembership = (await pool.query('SELECT id,role_id FROM collab_memberships WHERE workspace_id=$1 AND principal_id=$2 AND project_id IS NULL', [workspace.id, principal.id])).rows[0];
+  const historicalClientRole = (await pool.query("SELECT id FROM collab_roles WHERE workspace_id=$1 AND name='collaborator'", [workspace.id])).rows[0];
+  await pool.query('UPDATE collab_memberships SET role_id=$2 WHERE id=$1', [historicalMembership.id, historicalClientRole.id]);
+  await expect(historicalDrawer.getByText('The original feature design', { exact: true })).not.toBeVisible({ timeout: 12000 });
+  await expect(historicalDrawer.getByText('Execution history is available to project operators.', { exact: true })).toBeVisible({ timeout: 12000 });
+  let historicalReadsAfterRevocation = 0;
+  const countHistoricalReads = request => { if (request.url().includes(`/execution-history/${historical.run.id}`)) historicalReadsAfterRevocation++; };
+  page.on('request', countHistoricalReads);
+  await page.waitForTimeout(2200);
+  page.off('request', countHistoricalReads);
+  assert.equal(historicalReadsAfterRevocation, 0);
+  await pool.query('UPDATE collab_memberships SET role_id=$2 WHERE id=$1', [historicalMembership.id, historicalMembership.role_id]);
+  await page.goto(`${origin}${boardPath}`);
+  results.historicalExecution = { liveAndArchived: true, originalIds: true, deepLinkRedirect: true, readOnly: true, privateMetadataHidden: true, revocationClearsTranscript: true };
   await page.getByRole('link',{name:task.title,exact:true}).click();
   const drawer=page.getByRole('dialog',{name:'Task details'});
   await expect(drawer.getByRole('heading',{name:task.title,exact:true})).toBeVisible();
@@ -384,7 +462,8 @@ try {
   await expect(drawer.getByRole('button',{name:'Send to agent',exact:true})).toBeVisible({timeout:30000});
   const selected=new URL(page.url()).searchParams.get('claimId');const claimId=Number(selected);assert.ok(claimId>0);
   const {rows:[claimRow]}=await pool.query('SELECT payload,status,repo,target_agent_id FROM agent_claims WHERE id=$1',[claimId]);
-  assert.equal(claimRow.repo,null);assert.equal(claimRow.target_agent_id,agentId);assert.equal(claimRow.payload.profile,'design');assert.equal(claimRow.payload.model,'large');
+  assert.equal(claimRow.repo,null);assert.equal(claimRow.target_agent_id,null);
+  assert.equal(claimRow.payload.profile,undefined);assert.equal(claimRow.payload.model,undefined);assert.equal(claimRow.payload.instructions,'');
   assert.equal((await pool.query('SELECT status FROM collab_tasks WHERE id=$1',[task.id])).rows[0].status,'backlog');
   const timings=[];
   for(let turn=1;turn<=5;turn++){
@@ -397,9 +476,23 @@ try {
     await expect(drawer.getByText('Accepted by agent.',{exact:true})).toBeVisible();
     await expect(drawer.locator('[data-runner-state]')).toHaveText('Idle');
   }
+  const progressOwner = (await pool.query('SELECT session_id FROM agent_claims WHERE id=$1', [claimId])).rows[0];
+  const progressBinding = await db.buildClaimReportingBootstrap({ orgId, agentId, claimId, runnerSessionId: progressOwner.session_id, agentTokenId: token.id });
+  assert.ok(progressBinding);
+  diagnosticSecrets.add(progressBinding.credential);
+  diagnosticSecrets.add(progressBinding.captureKey);
+  const publishedProgress = await fetch(`${apiOrigin}/mcp/collab`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${progressBinding.credential}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'collaboration_report_progress', arguments: { text: 'Feature design ready for implementation.', percent: 60 } } }),
+  });
+  assert.equal(publishedProgress.status, 200);
+  await publishedProgress.json();
   const trace=readFileSync(launched.tracePath,'utf8').split('\n').filter(Boolean).map(JSON.parse);
   const actualPrompts=trace.filter(e=>e.kind==='session_prompt');
-  assert.ok(JSON.stringify(actualPrompts[0].params).includes('Use the project conventions.'));
+  assert.equal(actualPrompts.length,5);
+  assert.ok(JSON.stringify(actualPrompts[0].params).includes('Design turn 1'));
+  assert.equal(JSON.stringify(actualPrompts).includes('Obsolete project instructions'),false);
   assert.ok(trace.some(e=>e.kind==='set_config_option'&&e.params.configId==='model'&&e.params.value==='large'));
   await expect(drawer.getByText('Design turn 5',{exact:true})).toBeVisible();
   await shot('02-session-desktop');
@@ -430,6 +523,41 @@ try {
   assert.equal((await pool.query('SELECT status FROM agent_claims WHERE id=$1',[claimId])).rows[0].status,'claimed');
   await drawer.getByRole('button',{name:'Back to task',exact:true}).click();
   await expect(drawer.getByRole('heading',{name:'Agent sessions',exact:true})).toBeVisible();
+  await expect(drawer.getByRole('region', { name: 'Latest progress' })).toContainText('Feature design ready for implementation.');
+  results.canonicalProgress = true;
+  const proposedFollowUp = await fetch(`${apiOrigin}/mcp/collab`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${progressBinding.credential}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'collaboration_propose_idea', arguments: { title: 'Browser native follow-up', body: 'Review the drawer keyboard flow.' } } }),
+  });
+  assert.equal(proposedFollowUp.status, 200);
+  assert.notEqual((await proposedFollowUp.json()).result.isError, true);
+  await drawer.getByText('Ideas', { exact: true }).click();
+  const ideasPanel = drawer.getByRole('region', { name: 'Ideas', exact: true });
+  await expect(ideasPanel.getByText('Browser native follow-up', { exact: true })).toBeVisible();
+  const followUpSession = ideasPanel.getByRole('combobox', { name: 'Follow-up session', exact: true });
+  await expect(followUpSession).toHaveValue('');
+  await expect(ideasPanel.getByRole('button', { name: 'Send follow-up', exact: true })).toBeDisabled();
+  await followUpSession.selectOption(String(claimId));
+  await ideasPanel.getByRole('button', { name: 'Send follow-up', exact: true }).click();
+  await expect(ideasPanel.getByRole('button', { name: 'Open follow-up session', exact: true })).toBeVisible();
+  const { rows: [convertedIdea] } = await pool.query(
+    `SELECT idea.claim_id, idea.conversion_claim_id, idea.conversion_claim_command_id, command.kind, command.payload
+       FROM collab_ideas idea JOIN agent_claim_commands command ON command.id=idea.conversion_claim_command_id
+      WHERE idea.task_id=$1 AND idea.title='Browser native follow-up'`, [task.id]);
+  assert.equal(convertedIdea.claim_id, claimId);
+  assert.equal(convertedIdea.conversion_claim_id, claimId);
+  assert.equal(convertedIdea.kind, 'prompt');
+  assert.equal(convertedIdea.payload.text, 'Follow-up idea: Browser native follow-up\n\nReview the drawer keyboard flow.');
+  await ideasPanel.getByRole('button', { name: 'Open follow-up session', exact: true }).click();
+  await expect(drawer.getByText(convertedIdea.payload.text, { exact: true })).toBeVisible({ timeout: 10000 });
+  await expect(drawer.locator('[data-runner-state]')).toHaveText('Idle');
+  await waitFor('native idea prompt reaches the agent', async () => readFileSync(launched.tracePath, 'utf8').split('\n').filter(Boolean).map(JSON.parse)
+    .some(entry => entry.kind === 'session_prompt' && JSON.stringify(entry.params).includes('Follow-up idea: Browser native follow-up')));
+  assert.equal((await pool.query('SELECT status FROM collab_tasks WHERE id=$1', [task.id])).rows[0].status, 'backlog');
+  await drawer.getByRole('button', { name: 'Back to task', exact: true }).click();
+  await expect(drawer.getByRole('heading', { name: 'Agent sessions', exact: true })).toBeVisible();
+  results.nativeIdeaFollowUp = { explicitSession: true, canonicalCommand: true, realAgentTurn: true, noUnattendedStart: true };
   await page.goBack();await expect(drawer.getByRole('button',{name:'Back to task',exact:true})).toBeVisible();
   await page.goForward();await expect(drawer.getByRole('heading',{name:'Agent sessions',exact:true})).toBeVisible();
   await page.keyboard.press('Escape');await expect(drawer).not.toBeVisible();
@@ -467,15 +595,36 @@ try {
   await expect(drawer.getByRole('region',{name:'Retained work'})).toContainText(`Session ${claimId}: last reported retained on agent ${agentId} (session notes).`,{timeout:10000});
   await drawer.getByRole('button',{name:'Close task',exact:true}).click();
   await page.goto(`${origin}/tasks/${task.id}`);await expect(drawer).toBeVisible();assert.ok(new URL(page.url()).pathname==='/board');
+  await expect(drawer.getByRole('region', { name: 'Latest progress' })).toContainText('Feature design ready for implementation.');
+  const authorizedTaskResponse = await page.request.get(`${origin}/api/collab/v1/tasks/${task.id}`);
+  assert.equal(authorizedTaskResponse.status(), 200);
+  const authorizedTaskBody = await authorizedTaskResponse.body();
+  const staleTaskPattern = `**/api/collab/v1/tasks/${task.id}`;
+  await page.route(staleTaskPattern, route => route.fulfill({ status: 200, contentType: 'application/json', body: authorizedTaskBody }));
+  await pool.query('UPDATE collab_memberships SET role_id=$2 WHERE id=$1', [historicalMembership.id, historicalClientRole.id]);
+  try {
+    await page.reload();
+    await expect(drawer.getByRole('heading', { name: task.title, exact: true })).toBeVisible();
+    await expect(drawer.getByRole('button', { name: 'Open session', exact: true })).not.toBeVisible();
+    await expect(drawer.getByText('Feature design ready for implementation.', { exact: true })).not.toBeVisible();
+    results.staleProgressRevocation = true;
+  } finally {
+    await page.unroute(staleTaskPattern);
+    await pool.query('UPDATE collab_memberships SET role_id=$2 WHERE id=$1', [historicalMembership.id, historicalMembership.role_id]);
+  }
+  await page.goto(`${origin}${taskPath}`);
+  await expect(drawer.getByRole('region', { name: 'Latest progress' })).toContainText('Feature design ready for implementation.');
   await drawer.getByRole('button',{name:'Close task',exact:true}).click();
   await page.setViewportSize({width:1440,height:1000});
   await stopRunner();await launchRunner('chat-policy',['--permission','yes','--elicitation','yes']);
   await page.getByRole('button',{name:'New session',exact:true}).click();
   const create=page.getByRole('dialog',{name:'New session',exact:true});
+  await create.getByRole('combobox',{name:'Session project',exact:true}).selectOption(project.id);
   await create.getByRole('textbox',{name:'Session title'}).fill('A fresh design session');
   await create.getByRole('button',{name:'Create session'}).click();
   await expect(drawer.getByRole('button',{name:'Send to agent',exact:true})).toBeVisible({timeout:30000});
   const newTaskId=new URL(page.url()).searchParams.get('taskId');assert.notEqual(newTaskId,task.id);
+  assert.equal((await pool.query('SELECT project_id FROM collab_tasks WHERE id=$1',[newTaskId])).rows[0].project_id,project.id);
   assert.equal((await pool.query("SELECT count(*)::int AS n FROM collab_tasks WHERE title='A fresh design session'")).rows[0].n,1);
   await drawer.getByRole('textbox',{name:'Prompt',exact:true}).fill('Exercise structured requests');
   await drawer.getByRole('button',{name:'Send to agent',exact:true}).click();
@@ -496,18 +645,65 @@ try {
   await expect(drawer.getByText(/Session ended · user/)).toBeVisible({timeout:10000});
   await drawer.getByRole('button',{name:'Close task',exact:true}).click();
   await page.goto(`${origin}/settings?projectId=${project.id}`);
-  await expect(page.getByRole('combobox',{name:'Default agent',exact:true})).toHaveValue(agentId);
-  await page.getByRole('combobox',{name:'Model override',exact:true}).selectOption('small');
-  await page.getByRole('button',{name:'Save execution settings',exact:true}).click();
-  await expect.poll(async()=>(await db.getProjectChatSettings({actor,projectId:project.id})).defaults.model).toBe('small');
+  await expect(page.getByRole('region',{name:'Native summary execution settings',exact:true})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Attended execution',exact:true})).toHaveCount(0);
+  await expect(page.getByRole('combobox',{name:'Session implementation',exact:true})).toHaveCount(0);
+  await expect(page.getByRole('combobox',{name:'Default agent',exact:true})).toHaveCount(0);
+  await expect(page.getByRole('textbox',{name:'Default instructions',exact:true})).toHaveCount(0);
   await shot('05-settings-desktop');
-  await page.getByRole('textbox',{name:'Default instructions',exact:true}).fill('Preserve my unsaved draft');
-  await pool.query('UPDATE collab_projects SET version=version+1 WHERE id=$1',[project.id]);
-  await page.getByRole('button',{name:'Save execution settings',exact:true}).click();
-  await expect(page.getByText(/Your draft is preserved/).first()).toBeVisible();
-  await expect(page.getByRole('textbox',{name:'Default instructions',exact:true})).toHaveValue('Preserve my unsaved draft');
-  await page.getByRole('button',{name:'Reload defaults',exact:true}).click();
-  await expect(page.getByRole('textbox',{name:'Default instructions',exact:true})).toHaveValue('Use the project conventions.');
+  await stopRunner();
+  await launchRunner('summary-report');
+  await page.reload();
+  await page.getByRole('combobox', { name: 'Summary execution', exact: true }).selectOption('true');
+  await page.getByRole('combobox', { name: 'Summary agent', exact: true }).selectOption(agentId);
+  await page.getByRole('combobox', { name: 'Summary profile', exact: true }).selectOption('design');
+  await page.getByRole('combobox', { name: 'Summary model', exact: true }).selectOption('small');
+  await page.getByRole('button', { name: 'Save summary settings', exact: true }).click();
+  await expect.poll(async () => (await db.getProjectSummarySettings({ actor, projectId: project.id })).defaults)
+    .toEqual({ enabled: true, agentId, profileId: 'design', model: 'small' });
+  await page.getByRole('combobox', { name: 'Summary model', exact: true }).selectOption('large');
+  await pool.query('UPDATE collab_projects SET version=version+1 WHERE id=$1', [project.id]);
+  await page.getByRole('button', { name: 'Save summary settings', exact: true }).click();
+  await expect(page.getByRole('combobox', { name: 'Summary model', exact: true })).toHaveValue('large');
+  await expect(page.getByRole('alert').filter({ hasText: /draft/i })).toBeVisible();
+  await page.getByRole('button', { name: 'Reload summary defaults', exact: true }).click();
+  await expect(page.getByRole('combobox', { name: 'Summary model', exact: true })).toHaveValue('small');
+  assert.deepEqual((await pool.query('SELECT chat_execution_defaults FROM collab_projects WHERE id=$1',[project.id])).rows[0].chat_execution_defaults,obsoleteChatDefaults);
+  const summarySourceSeq = (await pool.query('SELECT MAX(seq)::text AS seq FROM agent_claim_events WHERE claim_id=$1', [claimId])).rows[0].seq;
+  await page.goto(`${origin}${taskPath}&claimId=${claimId}`);
+  await drawer.getByText('Summaries', { exact: true }).click();
+  const nativeSummaryCount = (await pool.query('SELECT count(*)::integer AS count FROM collab_summaries WHERE task_id=$1', [task.id])).rows[0].count;
+  await drawer.getByRole('button', { name: 'Generate summary', exact: true }).click();
+  await expect(drawer.getByText('Deterministic summary body.', { exact: true })).toBeVisible({ timeout: 20000 });
+  const nativeSummary = (await pool.query(`SELECT s.claim_id,s.model,s.source_seq,c.status,r.source_identity
+    FROM collab_summaries s JOIN agent_claims c ON c.id=s.claim_id
+    JOIN collab_summary_requests r ON r.id=s.summary_request_id WHERE s.task_id=$1`, [task.id])).rows;
+  assert.equal(nativeSummary.length, nativeSummaryCount + 1);
+  assert.deepEqual(nativeSummary[0].source_identity, { kind: 'claim', claimId });
+  assert.equal(nativeSummary[0].model, 'small');
+  assert.equal(nativeSummary[0].source_seq, summarySourceSeq);
+  await expect.poll(async () => (await pool.query('SELECT status FROM agent_claims WHERE id=$1', [nativeSummary[0].claim_id])).rows[0].status).toBe('completed');
+  await expect(drawer.getByText(/not verification evidence/i)).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.ok(await noHorizontalOverflow());
+  await drawer.getByRole('button', { name: 'Back to task', exact: true }).click();
+  await expect(drawer.getByText('Deterministic summary body.', { exact: true })).toBeVisible();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto(`${origin}/board?projectId=${project.id}&taskId=${historicalTask.id}&runId=${historical.run.id}&sessionId=${historical.sessionId}`);
+  await expect(drawer.getByText('The original feature design', { exact: true })).toBeVisible();
+  await drawer.getByText('Summaries', { exact: true }).click();
+  await drawer.getByRole('button', { name: 'Generate summary', exact: true }).click();
+  await expect(drawer.getByText('Deterministic summary body.', { exact: true })).toBeVisible({ timeout: 20000 });
+  const archivedSummary = (await pool.query(`SELECT r.source_identity,r.source_text,s.model
+    FROM collab_summaries s JOIN collab_summary_requests r ON r.id=s.summary_request_id WHERE s.task_id=$1`, [historicalTask.id])).rows[0];
+  assert.deepEqual(archivedSummary.source_identity, { kind: 'archive', runId: historical.run.id, sessionId: historical.sessionId, archiveId: historyArchive.id });
+  assert.ok(archivedSummary.source_text.includes('The original feature design'));
+  assert.equal(archivedSummary.source_text.includes(historicalPrivatePath), false);
+  assert.equal(archivedSummary.model, 'small');
+  assert.equal((await pool.query('SELECT id FROM collab_runs WHERE id=$1', [historical.run.id])).rows.length, 0);
+  results.nativeSummaries = true;
+  results.archivedSummarySource = true;
+  await stopRunner();
   let releaseLateEvents;
   const lateGate=new Promise(resolve=>{releaseLateEvents=resolve;});
   let capturedLateEvents;
@@ -526,12 +722,47 @@ try {
   await page.unroute(oldEventsPattern);
   await page.goto(`${origin}${taskPath}&claimId=${claimId}`);
   await expect(drawer.getByText('Design turn 5',{exact:true})).toBeVisible();
+  await drawer.getByText('Summaries', { exact: true }).click();
+  await expect(drawer.getByText('Deterministic summary body.', { exact: true })).toBeVisible();
+  let releaseSummary;
+  const summaryGate = new Promise(resolve => { releaseSummary = resolve; });
+  let summaryCaptured;
+  const capturedSummary = new Promise(resolve => { summaryCaptured = resolve; });
+  let summaryHandled;
+  const handledSummary = new Promise(resolve => { summaryHandled = resolve; });
+  let summaryRequest;
+  let summaryRouteFailure;
+  const summaryPattern = `**/api/collab/v1/tasks/${task.id}/summaries`;
+  await page.route(summaryPattern, async route => {
+    try {
+      summaryRequest = route.request();
+      const response = await route.fetch();
+      assert.equal(response.status(), 200);
+      summaryCaptured();
+      await summaryGate;
+      if (summaryRequest.failure() === null) await route.fulfill({ response });
+    } catch (error) {
+      summaryRouteFailure = error;
+      summaryCaptured();
+    } finally {
+      summaryHandled();
+    }
+  }, { times: 1 });
+  await runBounded('capturing authorized summary response', () => capturedSummary);
   const membership=(await pool.query('SELECT id,role_id FROM collab_memberships WHERE workspace_id=$1 AND principal_id=$2 AND project_id IS NULL',[workspace.id,principal.id])).rows[0];
   const clientRole=(await pool.query("SELECT id FROM collab_roles WHERE workspace_id=$1 AND name='collaborator'",[workspace.id])).rows[0];
   assert.ok(clientRole);
   await pool.query('UPDATE collab_memberships SET role_id=$2 WHERE id=$1',[membership.id,clientRole.id]);
   await expect(drawer.getByText('Design turn 5',{exact:true})).not.toBeVisible({timeout:12000});
   await expect(drawer.getByText('Internal transcript and controls require operator permissions.',{exact:true})).toBeVisible({timeout:12000});
+  await expect(drawer.getByText('Deterministic summary body.', { exact: true })).not.toBeVisible();
+  await waitFor('revoked summary request cancellation', () => summaryRequest?.failure());
+  releaseSummary();
+  await runBounded('settling cancelled summary response', () => handledSummary);
+  if (summaryRouteFailure) throw summaryRouteFailure;
+  await page.unroute(summaryPattern);
+  await expect(drawer.getByText('Deterministic summary body.', { exact: true })).not.toBeVisible();
+  results.nativeSummaryRevocation = true;
   let privateReadsAfterRevocation=0;
   const countRevokedReads=request=>{if(/\/claim-executions\/\d+\/(events|requests|prompts)(\?|$)/.test(request.url()))privateReadsAfterRevocation++;};
   page.on('request',countRevokedReads);await page.waitForTimeout(2200);page.off('request',countRevokedReads);
@@ -592,10 +823,71 @@ try {
   assert.equal(handedOff[0].payload.handed_off_from,chat.claim.id);
   assert.equal((await pool.query('SELECT status FROM agent_claims WHERE id=$1',[chat.claim.id])).rows[0].status,'claimed');
   results.handoffScope='Actual dashboard/proxy/HTTP/PostgreSQL with an external-runner protocol fixture; live-context summary generation and real Git snapshot checks have separate runtime tests.';
+  const deliverySlot = await runnerPost('/register', { meta: { instance_id: 'native-delivery-browser', slot_id: 1, capacity: 2, supported_claim_types: ['spec'] } });
+  const deliveryClaimId = handedOff[0].id;
+  await pool.query(`UPDATE agent_claims SET status='claimed',session_id=$2,claimed_at=now(),expires_at=now()+interval '1 hour' WHERE id=$1`,
+    [deliveryClaimId, deliverySlot.session_id]);
+  await pool.query("UPDATE collab_tasks SET status='in_progress' WHERE id=$1", [designTask.id]);
+  const deliveryBinding = await db.buildClaimReportingBootstrap({ orgId, agentId, claimId: deliveryClaimId, runnerSessionId: deliverySlot.session_id, agentTokenId: token.id });
+  assert.ok(deliveryBinding);
+  for (const secret of Object.values(deliveryBinding)) diagnosticSecrets.add(secret);
+  const deliveryMcp = async (name, args, meta) => {
+    const response = await fetch(`${apiOrigin}/mcp/collab`, { method: 'POST',
+      headers: { authorization: `Bearer ${deliveryBinding.credential}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args, ...(meta ? { _meta: meta } : {}) } }) });
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.notEqual(result.result.isError, true);
+    return JSON.parse(result.result.content[0].text);
+  };
+  const deliveryWorkspace = async (seq, headCommit, dirty) => {
+    const proof = { version: 1, bindingId: deliveryBinding.bindingId, seq, state: 'known', headCommit, dirty, final: false, repository: null, taskBranch: null, taskBranchHead: null };
+    const material = JSON.stringify(['fluent-flow:workspace-observation:v1', proof.bindingId, deliveryClaimId, seq, proof.state, headCommit, dirty, false, null, null, null]);
+    proof.hmac = createHmac('sha256', Buffer.from(deliveryBinding.captureKey, 'base64url')).update(material).digest('base64url');
+    await deliveryMcp('collaboration_report_workspace', {}, { 'fluent-flow/workspace-observation': proof });
+  };
+  await deliveryWorkspace('1', 'c'.repeat(40), false);
+  await deliveryMcp('collaboration_report_check', { name: 'Native browser check', command: 'native-browser-fixture', status: 'passed', commit: 'c'.repeat(40), dirty: false, exitCode: 0 });
+  await runnerPost(`/claims/${deliveryClaimId}/requests`, { session_id: deliverySlot.session_id,
+    request: { requestKey: 'native-browser-approval', kind: 'permission', payload: { toolCall: { title: 'Native browser approval' } } } });
+  await page.goto(`${origin}${boardPath}&taskId=${designTask.id}`);
+  await drawer.getByText('Workpad & artifacts', { exact: true }).click();
+  const nativeChecks = drawer.getByRole('region', { name: 'Named checks', exact: true });
+  await nativeChecks.getByText('Evidence history (1)', { exact: true }).click();
+  await nativeChecks.getByRole('button', { name: 'View execution source', exact: true }).click();
+  await expect(drawer.getByRole('button', { name: 'Back to task', exact: true })).toBeVisible();
+  assert.equal(new URL(page.url()).searchParams.get('claimId'), String(deliveryClaimId));
+  assert.equal(new URL(page.url()).searchParams.get('taskId'), designTask.id);
+  await drawer.getByRole('button', { name: 'Back to task', exact: true }).click();
+  await expect(drawer.getByRole('heading', { name: 'Agent sessions', exact: true })).toBeVisible();
+  const deliveryPanel = drawer.getByRole('region', { name: 'Review and delivery', exact: true });
+  if (!await deliveryPanel.isVisible()) await drawer.getByText('Workpad & artifacts', { exact: true }).click();
+  results.evidenceSourceNavigation = { originalClaim: true, boardTaskPreserved: true };
+  await deliveryPanel.getByPlaceholder('Delivery note — what changed, what was tested').fill('Native source inspected by a human.');
+  await deliveryPanel.getByRole('button', { name: 'Submit for review', exact: true }).click();
+  const currentDeliverySource = deliveryPanel.getByRole('region', { name: 'Current delivery source', exact: true });
+  await expect(currentDeliverySource.getByText(`Execution source: claim #${deliveryClaimId}`, { exact: true })).toBeVisible();
+  await expect(currentDeliverySource).toContainText('c'.repeat(40));
+  await expect(deliveryPanel.getByRole('button', { name: 'Accept (Done)', exact: true })).toBeDisabled();
+  await deliveryPanel.getByRole('checkbox', { name: 'Acknowledge Native approval: Native browser approval', exact: true }).check();
+  await deliveryPanel.getByRole('textbox', { name: 'Decision note', exact: true }).fill('Reviewed the native commit and acknowledged the pending approval.');
+  await deliveryPanel.getByRole('button', { name: 'Accept (Done)', exact: true }).click();
+  await expect.poll(async () => (await pool.query('SELECT status FROM collab_tasks WHERE id=$1', [designTask.id])).rows[0].status).toBe('done');
+  const nativeDecisionHistory = deliveryPanel.getByRole('region', { name: 'Decision history', exact: true });
+  await expect(nativeDecisionHistory.getByText(`Reviewed execution: claim #${deliveryClaimId}`, { exact: true })).toBeVisible();
+  const acceptedNativeSnapshot = (await pool.query("SELECT review_snapshot FROM collab_task_decisions WHERE task_id=$1 AND decision='accept'", [designTask.id])).rows[0].review_snapshot;
+  await deliveryWorkspace('2', 'd'.repeat(40), true);
+  await expect(currentDeliverySource).toContainText('d'.repeat(40), { timeout: 10000 });
+  await expect(currentDeliverySource).toContainText('Current worktree: dirty');
+  await expect(nativeDecisionHistory).toContainText('c'.repeat(40));
+  await expect(nativeDecisionHistory).not.toContainText('d'.repeat(40));
+  assert.deepEqual((await pool.query("SELECT review_snapshot FROM collab_task_decisions WHERE task_id=$1 AND decision='accept'", [designTask.id])).rows[0].review_snapshot, acceptedNativeSnapshot);
+  results.nativeDeliveryReview = { ownerBoundSource: true, explicitAcknowledgment: true, acceptedSnapshotRetained: true,
+    scope: 'Actual dashboard, HTTP/MCP and PostgreSQL; workspace/runner protocol fixture, not a live GitHub/provider execution.' };
   assert.deepEqual(pageErrors,[]);
   assert.ok(badCollab.every(entry=>entry.endsWith(' 409')||entry.endsWith(' 403')));
 
-  results.flow=['board task drawer','human comment isolated','explicit existing-task chat','five sticky turns','authoritative acceptance','Stop keeps session','Back and Forward','Escape preserves scope','pasted session deep link','mobile composer and no overflow','End closes session','legacy task redirect','atomic New session','real settings save and readback','real settings conflict preserves draft','structured permission and elicitation answers','overview needs-input action','real delayed transcript cannot restore prior task','expanded transcript revocation','zero private reads after authority settles','Ready movement is non-executing','Start queues unattended spec only','validated model and instructions observed by ACP child'];
+  results.flow=['board task drawer','human comment isolated','explicit existing-task chat','five sticky turns','authoritative acceptance','Stop keeps session','Back and Forward','Escape preserves scope','pasted session deep link','mobile composer and no overflow','End closes session','legacy task redirect','atomic New session','no attended project configuration','summary settings save and conflict preserve independent policy','structured permission and elicitation answers','overview needs-input action','real delayed transcript cannot restore prior task','expanded transcript revocation','zero private reads after authority settles','Ready movement is non-executing','Start queues unattended spec only','agent-owned model observed by ACP child despite stale project settings'];
   results.flow.push('rendered per-reader cursor persisted','actual agent busy split','admin capacity save and default restore','capacity shrink preserves live chat','retained scratch work surfaced','reviewed handoff survives lost confirmation response');
   results.fixtureSendToVisibleMs=timings;results.latencyScope='Five deterministic local ACP turns; not a statistically supported p95 or provider measurement.';
   results.pageErrors=pageErrors;results.badCollabResponses=badCollab;

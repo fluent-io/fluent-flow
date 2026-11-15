@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChatExecutionSettings } from './chat-execution-settings';
+import { SummaryExecutionSettings } from './summary-execution-settings';
 import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -236,7 +236,6 @@ function WorkspaceScopedPanels({ me, workspaceId, reload }: { me: MeResponse; wo
 }
 
 function ProjectScopedPanels({ me, project, reload }: { me: MeResponse; project: (Project & { workspaceName?: string }) | null; reload: () => Promise<void> }) {
-  const [executionMode, setExecutionMode] = useState<'chat'|'connector'|null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
@@ -281,10 +280,8 @@ function ProjectScopedPanels({ me, project, reload }: { me: MeResponse; project:
   return (
     <>
       {loadError ? <p role="alert" className="text-xs text-destructive">{loadError}</p> : null}
-      {canExecutionAdmin ? <ChatExecutionSettings key={`${project.id}:${me.principal.id}:${me.principal.sessionVersion}:${caps.join(',')}`} projectId={project.id} onChanged={reload} onMode={setExecutionMode}/> : null}
-      {canExecutionAdmin && executionMode !== 'chat' ? <ExecutionDefaultsPanel project={project} mappings={mappings} onChanged={async () => { await loadScoped(); await reload(); }} /> : null}
-      {canHostAdmin && executionMode !== 'chat' ? <MappingsPanel project={project} mappings={mappings} hosts={hosts} onChanged={loadScoped} /> : null}
-      {canExecutionAdmin && executionMode === 'chat' ? <details className="rounded-md border border-border p-4"><summary className="cursor-pointer text-sm">Legacy connector configuration & summaries</summary><div className="mt-4 space-y-4"><ExecutionDefaultsPanel project={project} mappings={mappings} onChanged={async()=>{await loadScoped();await reload();}}/>{canHostAdmin?<MappingsPanel project={project} mappings={mappings} hosts={hosts} onChanged={loadScoped}/>:null}</div></details>:null}
+      {canExecutionAdmin ? <SummaryExecutionSettings key={`summary:${project.id}:${me.principal.id}:${me.principal.sessionVersion}:${caps.join(',')}`} projectId={project.id} onChanged={reload}/> : null}
+      {canExecutionAdmin ? <details className="rounded-md border border-border p-4"><summary className="cursor-pointer text-sm">Legacy connector configuration &amp; summaries</summary><div className="mt-4 space-y-4"><ExecutionDefaultsPanel project={project} mappings={mappings} onChanged={async()=>{await loadScoped();await reload();}}/>{canHostAdmin?<MappingsPanel project={project} mappings={mappings} hosts={hosts} onChanged={loadScoped}/>:null}</div></details>:null}
       {canMembershipAdmin ? (
         <MembersPanel
           scopePath={`projects/${project.id}`}

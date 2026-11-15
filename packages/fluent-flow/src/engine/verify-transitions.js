@@ -148,7 +148,7 @@ export async function applyVerifyTransition(claim, verification, ctx, external =
           branch: payload?.branch,
           findings: payload?.findings ?? [],
         },
-        headSha: head_sha,
+        headSha: verification.artifact_sha ?? head_sha,
       };
       return result;
     }
@@ -283,7 +283,7 @@ export async function applyVerifyTransitionWithEffects(claim, verification, ctx,
     decision.action === 'create_claim' &&
     decision.claimSpec?.attempt === expectedNextAttempt
   ) {
-    await createClaimWithRetry(decision.claimSpec, createClaim);
+    await createClaimWithRetry({ ...decision.claimSpec, parentClaimId: claim.id }, createClaim);
     logger.info({
       msg: 'Created claim after verify transition',
       claimType: decision.claimSpec.claimType,
@@ -295,7 +295,7 @@ export async function applyVerifyTransitionWithEffects(claim, verification, ctx,
     decision.action === 'dispatch_review' &&
     decision.dispatchReviewSpec?.attempt === expectedNextAttempt
   ) {
-    await dispatchReview(decision.dispatchReviewSpec);
+    await dispatchReview({ ...decision.dispatchReviewSpec, parentClaimId: claim.id });
     logger.info({ msg: 'Dispatched re-review after green PASS', repo, prNumber: pr_number });
   }
 
@@ -342,7 +342,7 @@ export async function applyVerifyTransitionWithEffects(claim, verification, ctx,
   }
 
   const installCtx = await installationCtxForRepo(owner, repoName);
-  const provider = getProvider({ provider: 'github', installation_id: installCtx.installation_id });
+  const provider = getProvider({ provider: 'github', installation_id: installCtx?.installation_id });
   const conclusion = verification.outcome === 'PASS'
     ? 'success'
     : verification.outcome === 'SKIPPED'

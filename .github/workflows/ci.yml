@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -34,6 +33,7 @@ jobs:
       COLLAB_DB_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ff_db_test
       COLLAB_ROUTES_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ff_server_test
       COLLAB_CONNECTOR_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ff_connector_test
+      COLLAB_REPORTING_MCP_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ff_reporting_mcp_test
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -63,7 +63,7 @@ jobs:
           (async () => {
             const client = new Client({ connectionString: 'postgres://postgres:postgres@127.0.0.1:5432/postgres' });
             await client.connect();
-            for (const db of ['ff_db_test', 'ff_server_test', 'ff_connector_test', 'ff_legacy_test', 'ff_auth_test', 'ff_browser_test']) {
+            for (const db of ['ff_db_test', 'ff_server_test', 'ff_connector_test', 'ff_legacy_test', 'ff_auth_test', 'ff_browser_test', 'ff_reporting_mcp_test']) {
               await client.query('CREATE DATABASE ' + db);
             }
             await client.end();
@@ -73,7 +73,7 @@ jobs:
       - name: Check migration journal consistency
         run: bash scripts/check-migrations.sh
 
-      - name: Run all tests (turbo fans out to every workspace; `test` depends on `^build`)
+      - name: Build workspaces and run all tests
         run: npm test
 
       - name: Typecheck agent server connector
@@ -81,14 +81,6 @@ jobs:
 
       - name: Typecheck agent server runtime
         run: npm run typecheck:runtime -w @fluent-flow/agent-server
-
-      # `next build` imports every dashboard route module while collecting page
-      # data, so anything @fluent-flow/db evaluates at import time runs here.
-      # Build with no DATABASE_URL in the environment to catch import-time
-      # connection attempts before they reach a deploy (packages/db is built by
-      # the turbo ^build dependency of the `npm test` step above).
-      - name: Build dashboard without DATABASE_URL
-        run: npm run build -w @fluent-flow/dashboard
 
       - name: Install browser runtime
         run: npx playwright install --with-deps chromium

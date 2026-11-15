@@ -11,9 +11,11 @@ import { safeError } from './safe-error.js';
 import { runVerifyClaim } from './verify.js';
 import { runChatSession } from './chat-loop.js';
 import { createChatWorkspaceManager } from './chat-workspace.js';
-import { validateChatProfiles, resolveChatProfile, advertisedChatProfiles } from './chat-profiles.js';
+import { validateChatProfiles, resolveChatProfile, advertisedChatProfiles, parseSummaryWork, resolveSummaryProfile } from './chat-profiles.js';
 import { createChatEventBudget } from './chat-event-budget.js';
 import { prepareChatHandoff } from './chat-handoff.js';
+import { createSummaryScratch } from './summary-claim.js';
+import { createReportingMcpDescriptor, reportFinalWorkspace, summaryPublished } from './reporting-mcp.js';
 
 const DEFAULT_MAX_POLL_FAILURES = 30;
 const BASE_BACKOFF_MS = 2000;
@@ -165,6 +167,7 @@ export function createRunner({
   const leaseRenewMs = Math.max(1, Math.floor(commandLeaseRenewMs));
   const baseCwd = resolvePath(cwd ?? process.cwd());
   const chatProfiles = chat?.enabled === true ? validateChatProfiles(chat.profiles) : [];
+  const summaryEnabled = chat?.enabled === true && chat?.summary === true && chatProfiles.length > 0;
   const chatWorkspaces = chatProfiles.length ? chatWorkspaceManager ?? createChatWorkspaceManager({ workDir: baseCwd, environment: childEnvironment }) : null;
   const workspaceReleases = new Set();
   const batchSize = Math.max(1, Math.floor(eventBatchSize));
@@ -175,9 +178,34 @@ export function createRunner({
       os: platform(),
       ...(cwd && { cwd }),
     }),
-    supported_claim_types: chatProfiles.length ? [...CLAIM_TYPES, 'chat'] : CLAIM_TYPES,
+    supported_claim_types: [
+      ...CLAIM_TYPES,
+      ...(chatProfiles.length ? ['chat'] : []),
+      ...(summaryEnabled ? ['summary'] : []),
+    ],
     ...(chatProfiles.length && { profiles: advertisedChatProfiles(chatProfiles) }),
   };
+  function reportingServers(state, workspaceRoot, runtimeEnvironment) {
+    if (!state.work.reporting) return [];
+    const denyValues = [
+      state.work.githubToken,
+      ...(state.redactionPaths ?? []),
+      baseCwd,
+      ...environmentSecrets(runtimeEnvironment),
+    ].filter((value) => typeof value === 'string' && (!runnerToken || !value.includes(runnerToken)));
+    return [createReportingMcpDescriptor({
+      serverUrl: client.serverUrl,
+      claimId: claimIdOf(state.work),
+      reporting: state.work.reporting,
+      workspaceRoot,
+      denyValues,
+    })];
+  }
+  async function finalizeReportingWorkspace(state, workspaceRoot, runtimeEnvironment = childEnvironment, requirePullRequest = false) {
+    if (!state.work.reporting || state.ownershipLost || state.shuttingDown || state.executionTimedOut) return;
+    const [descriptor] = reportingServers(state, workspaceRoot, runtimeEnvironment);
+    await reportFinalWorkspace(descriptor, { signal: state.verificationController.signal, requirePullRequest });
+  }
 
   function claimIdOf(work) {
     return work.claim_id ?? work.claimId ?? work.id ?? null;
@@ -244,7 +272,7 @@ export function createRunner({
         });
       } catch (error) {
         log.error('Failed to report claim', { event: 'claim_report_failed', ...claimFields, reason: safeError(error) });
-        if (state.isChat) throw error;
+        if (state.isChat || state.isSummary) throw error;
       }
     })();
     return state.reportPromise;
@@ -262,7 +290,7 @@ export function createRunner({
     clearTimeout(state.executionTimer);
     state.executionTimer = null;
   }
-  function armExecutionTimeout(state, claimId) {
+  function armExecutionTimeout(state, claimId, timeoutMs = executionTimeoutMs) {
     clearExecutionTimeout(state);
     if (state.executionTimedOut || state.ownershipLost || state.shuttingDown) return;
     state.executionTimer = setTimeout(() => {
@@ -280,7 +308,7 @@ export function createRunner({
       closeStateRuntime(state).catch((error) => {
         log.warn('ACP runtime close failed after claim execution timeout', { claimId, reason: safeError(error) });
       });
-    }, executionTimeoutMs);
+    }, timeoutMs);
     state.executionTimer.unref?.();
   }
   function stopCommandService(state) {
@@ -391,6 +419,8 @@ export function createRunner({
       runnerToken,
       ...secretValues,
       state.work.githubToken,
+      state.work.reporting?.credential,
+      state.work.reporting?.captureKey,
       ...(state.redactionPaths ?? []),
       ...environmentSecrets(runtimeEnvironment),
       ...environmentSecrets(process.env),
@@ -569,6 +599,10 @@ export function createRunner({
   }
 
   function schedulePromptCommand(state, claimId, command) {
+    if (state.summaryOnly) {
+      void acknowledgeNotApplied(state, claimId, command);
+      return;
+    }
     state.queuedPromptCount += 1;
     let queued = true;
     let turnSettled = false;
@@ -905,13 +939,15 @@ export function createRunner({
     state.closePromise = null;
   }
 
-  async function runAcpPrompt(state, claimId, { command, prompt, agentCwd, bridge, runtimeEnvironment }) {
+  async function runAcpPrompt(state, claimId, { command, prompt, agentCwd, bridge, runtimeEnvironment, sessionPolicy = undefined }) {
     resetCommandSignals(state);
     try {
       state.runtime = createAcpRuntime({
         command,
         cwd: agentCwd,
         env: runtimeEnvironment,
+        ...(sessionPolicy && { sessionPolicy }),
+        mcpServers: reportingServers(state, agentCwd, runtimeEnvironment),
         onEvent: bridge.onEvent,
         onRequest: bridge.onRequest,
         onRequestCancelled: bridge.onRequestCancelled,
@@ -929,7 +965,14 @@ export function createRunner({
       if (!state.claimDeadline) armExecutionTimeout(state, claimId);
       installTurnTail(
         state,
-        (async () => state.runtime.runInitialPrompt(prompt))().then(
+        (async () => {
+          if (sessionPolicy) {
+            await state.runtime.openSession();
+            if (state.dashboardCancelApplied) return { stopReason: 'cancelled' };
+            return state.runtime.prompt(prompt);
+          }
+          return state.runtime.runInitialPrompt(prompt);
+        })().then(
           (result) => ({ result }),
           (error) => ({ error }),
         ),
@@ -1044,6 +1087,7 @@ export function createRunner({
     const state = {
       work,
       isChat: (work.claim_type ?? work.claimType) === 'chat',
+      isSummary: (work.claim_type ?? work.claimType) === 'summary',
       runtime: null,
       closePromise: null,
       bridge: null,
@@ -1088,6 +1132,7 @@ export function createRunner({
     activeState = state;
     startHeartbeat(state, claimId);
     let worktreeCleanup = null;
+    let scratch = null;
     let bridge = null;
     let runtimeResult = null;
     let runtimeFailure = null;
@@ -1114,6 +1159,7 @@ export function createRunner({
             state.runtime = createAcpRuntime({
               command: resolveAcpCommand({ agentType: work.agentType, command: acpCommand, args: acpArgs }),
               cwd: workspace.path, env: runtimeEnvironment, sessionPolicy: profile,
+              mcpServers: reportingServers(state, workspace.path, runtimeEnvironment),
               onEvent: bridge.onEvent, onRequest: bridge.onRequest, onRequestCancelled: bridge.onRequestCancelled,
               log: createRuntimeLog(log), ...(runtimeLimits && { limits: runtimeLimits }),
             });
@@ -1130,9 +1176,11 @@ export function createRunner({
         } finally {
           try {
             await closeStateRuntime(state);
+            if (workspace) await finalizeReportingWorkspace(state, workspace.path);
           } catch (error) {
             cleanupFailed = true;
-            log.error('Chat runtime cleanup failed', { claimId, reason: safeError(error) });
+            outcome = { status: 'failed', failure_kind: 'terminal', end_reason: 'host_lost' };
+            log.error('Chat session teardown failed', { claimId, reason: safeError(error) });
           } finally {
             bridge?.clearFlushTimer();
             if (workspace) {
@@ -1162,6 +1210,69 @@ export function createRunner({
         if (!state.ownershipLost) await reportState(state, outcome.status, Object.fromEntries(Object.entries(outcome).filter(([key]) => key !== 'status')));
         return;
       }
+      if (state.isSummary) {
+        try {
+          if (!summaryEnabled || !agentMatchesProvider(work.agentType)) throw new Error('Summary execution is unavailable');
+          const summary = parseSummaryWork(work.summary ?? null);
+          const policy = resolveSummaryProfile(chatProfiles, summary);
+          if (summary.reported === true) {
+            stopHeartbeat(state);
+            await reportState(state, 'completed');
+            return;
+          }
+          const runtimeEnvironment = childEnvironment;
+          scratch = createSummaryScratch({ workDir: baseCwd, claimId });
+          const scratchPath = (await scratch.prepare()).path;
+          state.redactionPaths = [scratchPath, baseCwd];
+          bridge = createInteractionBridge(state, claimId, runtimeEnvironment);
+          state.bridge = bridge;
+          const command = resolveAcpCommand({ agentType: work.agentType, command: acpCommand, args: acpArgs });
+          state.summaryOnly = true;
+          state.claimDeadline = true;
+          armExecutionTimeout(state, claimId, Math.min(summary.timeoutMs, executionTimeoutMs));
+          const turn = await runAcpPrompt(state, claimId, { command, prompt: summary.prompt, agentCwd: scratchPath, bridge, runtimeEnvironment, sessionPolicy: policy });
+          try {
+            await bridge.finalizeEvents();
+          } catch (error) {
+            log.error('Summary events could not be delivered', { event: 'claim_events_failed', claimId, reason: safeError(error) });
+            throw error;
+          }
+          if (turn.stopReason === 'cancelled' && state.dashboardCancelApplied) {
+            stopHeartbeat(state);
+            await reportState(state, 'cancelled');
+            return;
+          }
+          if (state.executionTimedOut) throw new Error('Summary execution timed out');
+          if (turn.stopReason !== 'end_turn') throw new Error('Summary turn did not complete');
+          const [descriptor] = reportingServers(state, scratchPath, runtimeEnvironment);
+          if (!descriptor) throw new Error('Summary reporting is unavailable');
+          const published = await summaryPublished(descriptor, { signal: state.verificationController.signal });
+          stopHeartbeat(state);
+          if (!published) {
+            log.error('Summary turn ended without publishing', { event: 'summary_not_published', claimId, attempt: work.attempt });
+            await reportState(state, 'failed', { failure_kind: 'terminal' });
+            return;
+          }
+          await reportState(state, 'completed');
+          return;
+        } catch (error) {
+          log.error('Summary execution failed', { claimId, reason: safeError(error) });
+          stopHeartbeat(state);
+          await reportState(state, 'failed', { failure_kind: state.executionTimedOut ? 'transient' : 'terminal' });
+          return;
+        } finally {
+          clearExecutionTimeout(state);
+          if (scratch) {
+            try {
+              await scratch.cleanup();
+            } catch (cleanupError) {
+              cleanupFailed = true;
+              log.error('Summary scratch cleanup failed; continuing claim finalization', { claimId, reason: safeError(cleanupError) });
+            }
+            scratch = null;
+          }
+        }
+      }
       const claimEnvironment = withClaimGitHubToken(childEnvironment, work.githubToken);
 
       if (!agentMatchesProvider(work.agentType)) {
@@ -1189,6 +1300,7 @@ export function createRunner({
           environment: childEnvironment,
           githubToken: work.githubToken,
           onPromptTooLarge: (violation) => logPromptTooLarge(claimId, work, violation),
+          finalizeWorkspace: (path) => finalizeReportingWorkspace(state, resolvePath(path), runtimeEnvironment),
           execute: (command, commandCwd, timeoutMs) => (
             executeCommand(
               command,
@@ -1308,6 +1420,7 @@ export function createRunner({
           command,
           cwd: agentCwd,
           env: runtimeEnvironment,
+          mcpServers: reportingServers(state, agentCwd, runtimeEnvironment),
           onEvent: bridge.onEvent,
           onRequest: bridge.onRequest,
           onRequestCancelled: bridge.onRequestCancelled,
@@ -1404,6 +1517,16 @@ export function createRunner({
         }
       }
 
+      const claimType = work.claim_type ?? work.claimType;
+      const requirePullRequest = ['build', 'review_fix'].includes(claimType)
+        && runtimeResult?.stopReason === 'end_turn'
+        && !runtimeFailure && !state.commandFailure && !state.interactionFailure;
+      try {
+        await finalizeReportingWorkspace(state, agentCwd, runtimeEnvironment, requirePullRequest);
+      } catch (error) {
+        runtimeFailure = runtimeFailure ?? error;
+        log.error('Workspace state could not be finalized', { claimId, reason: safeError(error) });
+      }
       await cleanupWorktree(worktreeCleanup);
       worktreeCleanup = null;
       stopHeartbeat(state);
@@ -1425,7 +1548,6 @@ export function createRunner({
         status = 'failed';
       }
 
-      const claimType = work.claim_type ?? work.claimType;
       const verdict = status === 'completed' && claimType === 'review' && bridge
         ? verdictFrom(bridge.agentMessageText())
         : undefined;

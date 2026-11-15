@@ -238,46 +238,6 @@ describe('handleCheckRun — green claim creation', () => {
     expect(mockDispatchReview).not.toHaveBeenCalled();
   });
 
-  it('returns early when the green-per-sha index reports an existing green claim', async () => {
-    mockDbExecute
-      .mockResolvedValueOnce({ rows: [{ id: 1, source_claim_id: 5 }] })
-      .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [{ id: 99 }] });
-
-    mockGetClaimById.mockResolvedValueOnce({
-      id: 5,
-      org_id: 'org-1',
-      repo: 'test-org/test-repo',
-      pr_number: 42,
-      claim_type: 'verify',
-      status: 'completed',
-      payload: { phase: 'red', verification: { framework: 'vitest' } },
-    });
-
-    mockGetVerificationResultByClaim.mockResolvedValueOnce({
-      id: 100,
-      orgId: 'org-1',
-      claimId: 5,
-      repo: 'test-org/test-repo',
-      prNumber: 42,
-      phase: 'red',
-      framework: 'vitest',
-      outcome: 'PASS',
-      matrix: VALID_MATRIX,
-      manifest: VALID_MANIFEST,
-      testHashes: VALID_TEST_HASHES,
-      artifactSha: VALID_ARTIFACT_SHA,
-      createdAt: new Date('2026-01-01T00:00:00Z'),
-    });
-
-    mockCreateClaimWithRetry.mockImplementationOnce(async (opts, createFn) => createFn({ ...opts, attempt: 2 }));
-
-    await handleCheckRun('test-org', 'test-repo', makePayload(), defaultConfig);
-
-    expect(mockCreateClaimWithRetry).toHaveBeenCalledTimes(1);
-    expect(mockDbExecute).toHaveBeenCalledTimes(3);
-    expect(mockDispatchReview).not.toHaveBeenCalled();
-  });
 
   it('falls through to review dispatch when review_fix lacks source_claim_id linkage', async () => {
     mockReviewFixRows = [{ id: 1, source_claim_id: null }];

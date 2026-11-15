@@ -2,7 +2,8 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { TaskDetailPage } from './task-detail';
-export function TaskDrawer({taskId,claimId,onClose,onSelectClaim}:{taskId:string|null;claimId:number|null;onClose:()=>void;onSelectClaim:(id:number|null)=>void}) {
+import type { HistoricalSelection } from '@/lib/collab/task-navigation';
+export function TaskDrawer({taskId,claimId,history=null,onClose,onSelectClaim,onSelectHistory}:{taskId:string|null;claimId:number|null;history?:HistoricalSelection|null;onClose:()=>void;onSelectClaim:(id:number|null)=>void;onSelectHistory:(selection:HistoricalSelection|null)=>void}) {
  return <Dialog.Root open={taskId!==null} onOpenChange={open=>{if(!open)onClose();}}><Dialog.Portal>
   <Dialog.Overlay className="fixed inset-0 z-40 bg-black/25"/>
   <Dialog.Content aria-describedby="task-drawer-description" onCloseAutoFocus={event=>{
@@ -16,7 +17,7 @@ export function TaskDrawer({taskId,claimId,onClose,onSelectClaim}:{taskId:string
     <Dialog.Close className="flex h-9 items-center gap-2 rounded-md px-2 text-xs text-muted-foreground hover:bg-secondary focus-visible:ring-2 focus-visible:ring-ring"><span className="sm:sr-only">Close task</span><X aria-hidden className="h-4 w-4"/></Dialog.Close>
    </div>
    <div className={claimId===null?'min-h-0 flex-1 overflow-y-auto [overflow-wrap:anywhere]':'min-h-0 flex-1 overflow-hidden'}>
-    {taskId?<TaskDetailPage key={taskId} taskId={taskId} selectedClaimId={claimId} onSelectClaim={onSelectClaim}/>:null}
+    {taskId?<TaskDetailPage key={taskId} taskId={taskId} selectedClaimId={claimId} onSelectClaim={onSelectClaim} selectedRunId={history?.runId??null} selectedSessionId={history?.sessionId??null} onSelectHistory={onSelectHistory}/>:null}
    </div>
   </Dialog.Content>
  </Dialog.Portal></Dialog.Root>;

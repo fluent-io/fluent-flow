@@ -58,11 +58,15 @@ const configSchema = z.object({
   acpCommand: noNulString.refine((value) => !/\s/u.test(value)).nullable(),
   acpArgs: z.array(z.string().refine((value) => !value.includes('\0'))),
   chatProfilesFile: noNulString.optional(),
+  summaryClaims: z.boolean(),
   executionTimeoutMs: z.number().int().min(MS_PER_MINUTE).max(1440 * MS_PER_MINUTE),
   logLevel: z.enum(LOG_LEVELS, { error: 'LOG_LEVEL must be one of trace, debug, info, warn, error, fatal.' }),
 }).strict().superRefine((config, context) => {
   if (config.deployment !== 'local' && config.providerSecretFile === null) {
     context.addIssue({ code: 'custom', path: ['providerSecretFile'], message: 'Provider credentials are required for this deployment.' });
+  }
+  if (config.summaryClaims && config.chatProfilesFile === undefined) {
+    context.addIssue({ code: 'custom', path: ['summaryClaims'], message: 'Summary claims require an explicit local profile catalog file.' });
   }
 });
 
@@ -95,6 +99,7 @@ export function parseConfig(argv, {
     healthPort: 3860,
     acpCommand: null,
     acpArgs: [],
+    summaryClaims: false,
     executionTimeoutMs: 60 * MS_PER_MINUTE,
     logLevel: env.LOG_LEVEL ?? 'info',
   };
@@ -105,6 +110,10 @@ export function parseConfig(argv, {
       if (index + 1 >= argv.length) throw new Error('--acp-arg requires a value.');
       values.acpArgs.push(argv[index + 1]);
       index += 1;
+      continue;
+    }
+    if (flag === '--summary-claims') {
+      values.summaryClaims = true;
       continue;
     }
     const property = valueFlags.get(flag);

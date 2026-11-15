@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
-import { chatDefaultsSchema, readChatAgents, validateChatSelection } from './chat-settings.js';
 import { createCollabTask } from './tasks.js';
 import { z } from 'zod';
 import { getPool } from '../pool.js';
@@ -411,21 +410,15 @@ export async function startCollabClaimExecution(input: {
       );
     }
     let chatOptions = {};
-    let chatPayload: Record<string, unknown> = {};
     if (parsed.claimType === 'chat') {
       const open = await tx.query(`SELECT id FROM agent_claims WHERE org_id=$1 AND task_id=$2 AND claim_type='chat' AND status IN ('pending','claimed')`, [orgId, parsed.taskId]);
       if (open.rows.length) throw new CollabServiceError(409, 'chat_already_open', 'This task already has an open session.');
-      const settings = await tx.query(`SELECT execution_mode, default_agent_id, chat_execution_defaults, chat_pending_ttl_seconds, chat_idle_timeout_seconds FROM collab_projects WHERE id=$1`, [scope.projectId]);
-      if (settings.rows[0].execution_mode !== 'chat') throw new CollabServiceError(409, 'chat_unavailable', 'Sessions are not available for this project.');
-      const targetAgentId = parsed.targetAgentId ?? settings.rows[0].default_agent_id;
+      const targetAgentId = parsed.targetAgentId ?? null;
       if (targetAgentId !== null) {
         const target = await tx.query(`SELECT id FROM agents WHERE org_id=$1 AND id=$2 AND transport='long_poll'`, [orgId, targetAgentId]);
         if (!target.rows.length) throw new CollabServiceError(404, 'not_found', 'Not found.');
       }
-      const defaults = chatDefaultsSchema.parse(settings.rows[0].chat_execution_defaults);
-      validateChatSelection(await readChatAgents(orgId, tx), targetAgentId, defaults);
-      chatPayload = { ...(defaults.profileId ? { profile: defaults.profileId } : {}), ...(defaults.model ? { model: defaults.model } : {}), instructions: parsed.instructions ?? defaults.instructions };
-      chatOptions = { taskId: parsed.taskId, targetAgentId, pendingTtlSeconds: settings.rows[0].chat_pending_ttl_seconds, idleTimeoutSeconds: settings.rows[0].chat_idle_timeout_seconds };
+      chatOptions = { taskId: parsed.taskId, targetAgentId };
     }
     const createTaskBranch = parsed.claimType !== 'chat' && parsed.prNumber == null && parsed.branch == null;
     const claim = await insertPendingClaim({
@@ -439,7 +432,6 @@ export async function startCollabClaimExecution(input: {
         branch: createTaskBranch ? `ff/task-${parsed.taskId}` : parsed.branch ?? null,
         ...(createTaskBranch ? { create_branch: true } : {}),
         instructions: parsed.instructions ?? '',
-        ...chatPayload,
       },
     }, tx);
     if (claim === null) {
@@ -447,9 +439,9 @@ export async function startCollabClaimExecution(input: {
     }
     await tx.query(
       `INSERT INTO collab_claim_executions
-         (task_id, project_id, claim_id, root_claim_id, created_by_principal_id)
-       VALUES ($1, $2, $3, $3, $4)`,
-      [parsed.taskId, scope.projectId, claim.id, principal.id],
+         (task_id, project_id, claim_id, root_claim_id, created_by_principal_id, created_by_session_version)
+       VALUES ($1, $2, $3, $3, $4, $5)`,
+      [parsed.taskId, scope.projectId, claim.id, principal.id, principal.sessionVersion],
     );
     await tx.query(
       `INSERT INTO collab_idempotency_records
@@ -553,8 +545,8 @@ export async function getCollabClaimExecution(input: {
   return projectClaim(principal.id, row.project_id, row);
 }
 
-async function claimExecutionScope(claimId: number): Promise<ExecutionScope> {
-  const result = await getPool().query<ExecutionScope>(
+async function claimExecutionScope(claimId: number, executor: Pick<PoolClient, 'query'> = getPool()): Promise<ExecutionScope> {
+  const result = await executor.query<ExecutionScope>(
     `SELECT execution.project_id, claim.org_id
      FROM collab_claim_executions execution
      JOIN agent_claims claim ON claim.id = execution.claim_id
@@ -706,27 +698,27 @@ export async function submitCollabClaimCommand(input: {
   kind: 'prompt' | 'cancel' | 'end_session' | 'handoff' | 'permission' | 'elicitation';
   payload: Record<string, unknown>;
   requestKey?: string;
-}): Promise<SubmitClaimCommandResult> {
+}, client?: PoolClient): Promise<SubmitClaimCommandResult> {
   const parsed = commandSchema.parse(input);
   if (Buffer.byteLength(JSON.stringify(parsed.payload), 'utf8') > 256 * 1024) {
     throw new CollabServiceError(413, 'payload_too_large', 'The request payload is too large.');
   }
-  const principal = await requireCurrentPrincipal(parsed.actor);
-  const scope = await claimExecutionScope(parsed.claimId);
-  const required = parsed.kind === 'cancel' || parsed.kind === 'end_session'
-    ? ['internal.read', 'run.cancel'] as const
-    : parsed.kind === 'handoff' ? ['internal.read', 'run.start', 'run.steer'] as const
-    : ['internal.read', 'run.steer'] as const;
-  await authorize(parsed.actor, { projectId: scope.project_id }, required);
-  const canonical = {
-    kind: parsed.kind,
-    payload: parsed.payload,
-    requestKey: parsed.kind === 'permission' || parsed.kind === 'elicitation'
-      ? parsed.requestKey
-      : null,
-  };
-  const hash = requestHash(canonical);
-  return withClientTransaction<SubmitClaimCommandResult>(async (tx) => {
+  const write = async (tx: PoolClient): Promise<SubmitClaimCommandResult> => {
+    const principal = await requireCurrentPrincipal(parsed.actor, tx);
+    const scope = await claimExecutionScope(parsed.claimId, tx);
+    const required = parsed.kind === 'cancel' || parsed.kind === 'end_session'
+      ? ['internal.read', 'run.cancel'] as const
+      : parsed.kind === 'handoff' ? ['internal.read', 'run.start', 'run.steer'] as const
+      : ['internal.read', 'run.steer'] as const;
+    await authorize(parsed.actor, { projectId: scope.project_id }, required, tx);
+    const canonical = {
+      kind: parsed.kind,
+      payload: parsed.payload,
+      requestKey: parsed.kind === 'permission' || parsed.kind === 'elicitation'
+        ? parsed.requestKey
+        : null,
+    };
+    const hash = requestHash(canonical);
     const locked = await tx.query<{ org_id: string; status: string; claim_type: string; repo: string | null }>(
       `SELECT claim.org_id, claim.status, claim.claim_type, claim.repo
        FROM collab_claim_executions execution
@@ -739,6 +731,9 @@ export async function submitCollabClaimCommand(input: {
     );
     if (locked.rows.length === 0) throw new CollabServiceError(404, 'not_found', 'Not found.');
     const claim = locked.rows[0];
+    if (claim.claim_type === 'summary' && parsed.kind === 'prompt') {
+      throw new CollabServiceError(409, 'summary_not_interactive', 'A generated summary uses its frozen source and cannot accept follow-up prompts.');
+    }
     const endsClaim = parsed.kind === 'end_session' || (parsed.kind === 'cancel' && claim.claim_type !== 'chat');
     if (parsed.kind === 'end_session' && claim.claim_type !== 'chat') throw new CollabServiceError(400, 'malformed', 'Invalid request.');
     if (parsed.kind === 'handoff' && (claim.claim_type !== 'chat' || claim.repo === null)) {
@@ -883,7 +878,8 @@ export async function submitCollabClaimCommand(input: {
     } catch (error) {
       interactionConflict(error, 'idempotency_conflict');
     }
-  });
+  };
+  return client ? write(client) : withClientTransaction(write);
 }
 
 export async function getCollabClaimCommand(input:{actor:CollabActor;claimId:number;commandId:number}):Promise<{commandId:number;kind:string;status:string}> {

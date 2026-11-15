@@ -16,6 +16,14 @@ rate-limited secret invitation redemption.
   Role creation remains workspace-only. Project-only member lists exclude
   inherited workspace people unless the actor also has workspace-scope
   membership administration.
+  `GET/PATCH /projects/:id/summary-settings` reads/saves separate native summary
+  defaults under current `project.admin` + `internal.read`. PATCH requires
+  `{expectedVersion,defaults:{enabled,agentId,profileId,model}}`; conflicts
+  return 409 without replacing the draft. Agent/profile/model identities are
+  org-scoped and advertised for summary work. Ordinary capacity applies,
+  including capacity-one or chat-disabled runners. Known offline selections
+  can be saved; disabling a stale selection preserves its identity. Saving
+  these defaults creates no claims and does not alter chat or legacy defaults.
 - `routes-tasks.js`: independent backlog, versioned ordering and legacy delivery links.
 - `routes-runs.js`: explicit Start, session controls, timeline, reconciliation,
   wrap-up and scoped live `/events`. SSE stays open, resumes by cursor and
@@ -29,8 +37,11 @@ rate-limited secret invitation redemption.
   `POST /tasks/:id/claim-executions` with `expectedVersion` and an
   `Idempotency-Key`; `repo` may be null/omitted. Chat requires both `run.start`
   and `internal.read`, never changes the task lane, and allows one pending or
-  claimed chat per task. `targetAgentId` overrides the project's default agent;
-  an offline target never silently fails over. `POST /projects/:id/chat-sessions`
+  claimed chat per task. With no explicit `targetAgentId`, ordinary eligible
+  agents can claim the work. An explicit offline target never silently fails over.
+  Chat uses the agent's local profile/model and canonical lifecycle limits;
+  stored project execution settings do not configure or gate it.
+  `POST /projects/:id/chat-sessions`
   accepts `title`, optional `repo`/`targetAgentId`, and the same header to create
   one Backlog task plus chat atomically. It additionally requires `task.write`
   (the repository's actual task-creation capability).
@@ -67,6 +78,17 @@ rate-limited secret invitation redemption.
   child/slot release through its authenticated claim workspace endpoint.
   Reports expose no local paths or file contents. Saving/discarding retained
   work remains an explicit operator action, not an automatic cleanup API.
+  `POST /tasks/:id/summaries` requires `Idempotency-Key` and
+  `{expectedVersion,source:{kind:"claim",claimId}}` or an execution source
+  `{kind:"execution",runId,sessionId}`. Current `internal.read`, `run.start`
+  and `run.steer` are required. Source/profile/model are server-frozen; clients
+  cannot supply a prompt or overwrite attribution. The route returns
+  `{claimId,taskId,requestId,created}` (202 new / 200 replay), without moving lanes.
+  `GET` on the same resource returns `{summaries,generation}` inside `data`;
+  task-only readers see client-visible historical summaries and no generation
+  metadata. Native results remain internal and are not verification evidence.
+  Summary claims reject follow-up prompts with 409 `summary_not_interactive`;
+  cancellation and permission replies retain their normal capability checks.
 - `routes-hosts.js`: owner-scoped host enrollment and allowlisted mappings.
   `POST /hosts` returns the one-time `{id,name,token}` enrollment DTO.
   `GET /hosts` returns token-free summaries with nullable `lastHeartbeatAt`;
@@ -76,11 +98,17 @@ rate-limited secret invitation redemption.
   drops the connection (response closes before it finishes) it aborts the
   wait so the server stops rechecking.
 - `routes-evidence.js`: retained workpad/artifact/idea/summary/usage/delivery APIs.
-- `mcp.js`: separate `/mcp/collab` Streamable HTTP endpoint, twelve canonical
-  task tools plus bound plan/progress/summary reporting. Human tokens scope
-  current user permissions to one project. Delivered agent credentials scope
-  reports to one run/session; summary sessions can report summaries only.
-  Existing `/mcp` and old delivery execution retain their original contracts.
+- `mcp.js`: separate `/mcp/collab` Streamable HTTP endpoint for canonical task
+  tools and bound reporting. Human tokens scope current permissions to one
+  project. Agent credentials bind reports to a legacy run/session or a native
+  claim acquisition; summary-purpose claims can report summaries only.
+  `collaboration_report_review` accepts a final native-review verdict and
+  blocking/advisory findings from its owning review credential. It returns the
+  exact public `marker` to place in the GitHub review body. Publication is
+  immutable: identical replays succeed; changed verdicts return a conflict.
+  GitHub delivery verifies the authored publication and actual commit before
+  atomically queuing follow-on work. Markers contain no reporting credentials,
+  capture keys or binding IDs. Existing `/mcp` retains its original contract.
 
 Successful JSON responses use `{data,nextCursor?}`. Errors carry a stable code,
 generic message and request ID on the REST surface. Start and commands require
@@ -150,6 +178,18 @@ capture was unavailable for an older decision or the decision was cancel/reopen.
 UAT: accept a current review, change the current run's Git state, then confirm
 history still shows the accepted revision. Reopen or cancel and confirm those
 new rows do not claim an accepted review.
+
+`GET /tasks/:id/delivery-review` requires current `delivery.accept`. Native
+workspace reviews add `source: {kind: "claim", claimId}`; `runId` remains null,
+not a synthetic run identity. `headCommit`/`dirty` reflect that task's newest
+repository execution, with unknown acquisition/cleanup state left null.
+`openItems` include stable UUIDs for ACP permission and elicitation requests;
+queued and uncertain answers still require acknowledgment. Reviewers without
+`internal.read` receive generic labels, not request text or reporting identities.
+Acceptance requires the exact current snapshot and all current open-item IDs.
+Source, evidence or request changes return `409 review_changed`; omitted
+acknowledgments return `422 acknowledgment_required`. Stored decisions keep
+the original validated snapshot after later workspace changes.
 
 New error cases include invalid update/timeline cursors (`invalid_cursor`,
 refresh required), follow-up on a closed task (`task_closed`, reopen first),

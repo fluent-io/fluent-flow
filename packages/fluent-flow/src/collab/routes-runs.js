@@ -3,6 +3,11 @@ import {
   CollabServiceError,
   getCollabRun,
   listCollabRuns,
+  listTaskExecutionHistory,
+  getExecutionHistoryEntry,
+  listExecutionHistorySessions,
+  getExecutionHistoryTimeline,
+  resolveExecutionHistoryReference,
   startCollabRun,
   updateRunStage,
   createRunSession,
@@ -29,9 +34,70 @@ function requireIdempotencyKey(req) {
 }
 
 export function registerRunRoutes(router) {
+  router.get('/tasks/:id/execution-history', async (req, res, next) => {
+    try {
+      const result = await listTaskExecutionHistory({
+        actor: req.collabActor, taskId: req.params.id, cursor: req.query.cursor,
+        limit: req.query.limit === undefined ? undefined : Number(req.query.limit),
+      });
+      res.json({ data: result.entries, nextCursor: result.nextCursor });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get('/tasks/:id/execution-history/reference', async (req, res, next) => {
+    try {
+      const result = await resolveExecutionHistoryReference({
+        actor: req.collabActor, taskId: req.params.id, sessionId: req.query.sessionId, commandId: req.query.commandId,
+      });
+      res.json({ data: result });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get('/tasks/:id/execution-history/:runId', async (req, res, next) => {
+    try {
+      const result = await getExecutionHistoryEntry({ actor: req.collabActor, taskId: req.params.id, runId: req.params.runId });
+      res.json({ data: result });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get('/tasks/:id/execution-history/:runId/sessions', async (req, res, next) => {
+    try {
+      const result = await listExecutionHistorySessions({
+        actor: req.collabActor, taskId: req.params.id, runId: req.params.runId, cursor: req.query.cursor,
+        limit: req.query.limit === undefined ? undefined : Number(req.query.limit),
+      });
+      res.json({ data: result.sessions, nextCursor: result.nextCursor });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.get('/tasks/:id/execution-history/:runId/sessions/:sessionId/timeline', async (req, res, next) => {
+    try {
+      const result = await getExecutionHistoryTimeline({
+        actor: req.collabActor, taskId: req.params.id, runId: req.params.runId, sessionId: req.params.sessionId,
+        cursor: req.query.cursor, limit: req.query.limit === undefined ? undefined : Number(req.query.limit),
+      });
+      res.json({ data: result.entries, nextCursor: result.nextCursor, cursor: result.cursor });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   router.get('/tasks/:id/runs', async (req, res, next) => {
     try {
-      const result = await listCollabRuns({ actor: req.collabActor, taskId: req.params.id });
+      const result = await listCollabRuns({
+        actor: req.collabActor,
+        taskId: req.params.id,
+        cursor: req.query.cursor,
+        limit: req.query.limit === undefined ? undefined : Number(req.query.limit),
+      });
       res.json({ data: result.runs, nextCursor: result.nextCursor });
     } catch (err) {
       next(err);

@@ -201,3 +201,601 @@ All log names here are relative to `/home/victor/.hermes/cache/scratch/`:
 - macOS/Windows exposed an added wiring-only unit that passed catalog data into fake runners but unconditionally constructed Linux-only chat storage. Removed that test and its dead imports rather than weakening the platform safety guard or adding broad skips. Supported chat startup remains covered by the mounted real-runner suite and production browser; the workspace suite still checks unsupported-platform rejection.
 - After these two CI corrections, root `npm test` passes all five tasks: DB **325**, dashboard **487**, server **785**, agent server **933** tests. The agent suite ran fresh; four unchanged tasks were cached. Preview **61** and release/workflow **24** policy tests pass. Remote checks must be rerun for the correction commit before claiming CI green.
 
+### Claim data parity: archive foundation
+
+- PR 153 correction commit `9c32292` passed all eight remote checks, including
+  the actual production browser, Node 20, Linux/macOS/Windows ACP, image and
+  automatic PR preview. It remains unmerged; no production deployment was made.
+  Subsequent work is isolated on stacked branch `chat-claim-data-parity`.
+- The concrete [parity plan](2026-11-13-claim-data-parity.md) preserves canonical
+  reporting rather than introducing a second collaboration stack. File reports
+  will use a runner-local stdio MCP adapter and atomic metadata/byte capture.
+- Archive acceptance tests failed on the absent implementation, then passed
+  against real PostgreSQL: original UUIDs and provider sequence strings,
+  microsecond boundaries, raw/private projection separation, current authority,
+  changed-source detection, nullable org preservation and atomic rollback.
+- A new concurrency regression proved that a non-locking sealed-record trigger
+  allowed sealing during a pending record write. The record guard now holds a
+  shared manifest lock; the sealer waits or fails rather than certifying mutable
+  bytes. All nine archive tests pass. DB TypeScript build passes after explicit
+  types resolve generator/cursor inference, without suppressing checks.
+- Ruling: snapshots preserve original nullable organization ownership; current
+  task access still determines browser authorization. Capture is not a seal or
+  a cutover gate. No legacy source, host credential or production schema changed.
+- Native-reporting acceptance tests are being prepared independently; their
+  implementation waits for the parent to observe RED. Archive operator tooling,
+  restore rehearsal, historical drawer access and the remaining parity gates
+  are not yet complete.
+
+### Native reporting authority and transport
+
+- Repaired the initial native reporting implementation rather than weakening
+  its tests: exact SQL microsecond/runner-session fencing, original principal
+  snapshots, current authority, token/session expiry, fail-fast poll delivery
+  and atomic file bytes. DB build, **23** real-PG authority tests and **17**
+  mounted HTTP/MCP tests pass. Independent security review is in progress.
+- The native stdio transport passed **12** actual SDK/HTTP/PG scenarios,
+  including durable bytes after workspace removal/server restart, the 512 KiB
+  boundary, secure-file rejection, changed files, generic upstream failures,
+  ACP new/resume, protocol-only stdout and EOF/SIGTERM shutdown.
+- The first teardown run reproduced a real hang: shutdown awaited an unfinished
+  connection before it could close the client. The helper now owns the client
+  before connecting and aborts it directly; both teardown regressions pass.
+- An additional actual claim-runner scenario passes: a repo-less chat receives
+  an explicit user prompt, the provider registers a real file through its
+  injected helper, End releases the session, and authorized HTTP reads return
+  identical bytes after the owned workspace is removed. This uses the existing
+  fake provider boundary, not a paid model or GitHub integration.
+- Runtime JavaScript typechecking passes. The SDK is a pinned direct runtime
+  dependency; CI/Turbo use a separate guarded reporting database. Broader
+  Node 20, package smoke, full suites and transport privacy regressions remain
+  to run after final integration.
+- Historical discovery now preserves original run/session deep links across
+  sealed archival. **12** archive tests and **17** focused drawer/navigation
+  tests pass; mounted HTTP tests cover microsecond run paging and archived
+  transcript access with original identities after live rows are removed.
+  The new historical drawer still needs actual production-browser verification.
+- No archive was operationally sealed, no workspace was frozen, and no legacy
+  connector, credential or production schema was removed. Native freshness,
+  summaries, usage identity, decision/PR lineage and restore/drain gates remain.
+
+### Native workspace, usage identity and historical drawer verification
+
+- The native SDK/HTTP/PostgreSQL/ACP/Git transport suite passes **19 tests on
+  Node 22 and Node 20**. Owner-signed workspace observations preserve exact
+  sequence ordering, report unknown rather than inferred state, and finalize
+  before workspace cleanup. Freshness stays within the original acquisition.
+- A hanging Git-filter regression exposed that `execFile` does not forward
+  `detached`; the secure reader now uses `spawn` and kills only its owned
+  process group on deadline or shutdown. Protocol stdout and private-value
+  redaction regressions pass.
+- **8 PostgreSQL usage tests pass** after separating native samples by their
+  reporting acquisition. Equal turn IDs no longer overwrite another claim,
+  another acquisition or legacy usage. Accepted event-to-canonical projection
+  and typed snapshot precedence were subsequently verified below.
+- **13 archive tests pass**, including a failing-before/passing-after UUID
+  casing regression. The database build, environment-less production dashboard
+  build and **7 migration-journal tests** pass through migration `0037`.
+- The actual production browser harness passes historical discovery, live
+  transcript reading, fixture archival and deletion of the fixture's live
+  rows, and the same original session deep link through the legacy task URL.
+  The view remains read-only, hides private configuration, and clears the
+  transcript without further private reads after authority is revoked.
+  Existing chat, settings, unattended Start and reviewed handoff browser
+  checks also pass. Screenshots were disabled; the owned Next service stopped.
+- Historical retirement was simulated only in the dedicated browser fixture.
+  No operational archive was sealed, no workspace was frozen and no production
+  data or connector credential was changed. Full parity integration, summaries,
+  delivery/PR lineage, export/restore and freeze/drain gates remain open.
+
+### Accepted usage projection and private published progress
+
+- **54 database tests and 58 mounted server tests pass** for usage, legacy
+  reporting, accepted-event projection and claim ownership. The projection
+  preserves cumulative cost, explicit null/non-USD cost, late sequence ordering,
+  exact replays and acquisition identity. Typed provider snapshots do not add
+  ordinary turn samples twice. Raw insertion and canonical projection roll back
+  together. An actual task/claim lock inversion failed before the shared
+  task-before-claim lock order and passes after it.
+- Independent read-only review approved that usage and lock-order slice; it did
+  not approve unfinished summary, lineage or retirement work.
+- Published agent progress now has its own internal task-detail field, preserving
+  generic public execution status. **22 mounted reporting tests pass**, including
+  public-reader redaction. Database and environment-less production dashboard
+  builds pass.
+- The actual production browser caught stale authorized progress remaining
+  visible after current permissions were downgraded. Separating the field and
+  masking it with current intersected UI authority makes that same regression
+  pass. The full browser harness also passes history, chat, settings, structured
+  inputs, revocation, unattended Start and reviewed handoff. Screenshots were
+  disabled and the owned Next service was stopped.
+- The first archive-transfer run exposed pool shutdown, seal ordering and
+  fixture-isolation failures. These were repaired; **31 transfer tests pass**,
+  including all four actual operator CLI commands, storage-loss restore,
+  original IDs/microseconds/large provider sequences, full replay validation,
+  recomputed-hash tampering and import after a historical NULL-org workspace is
+  linked. The wider archive/history/settings gate passed **62 tests**.
+  Independent scoped review approved archive metadata coherence. This is a
+  private four-record execution dump, not a complete artifact/dependency backup
+  or operational production-backup evidence.
+- Native summary defaults are separate from chat and preserved legacy defaults.
+  Backend settings, source freezing and request/publication services now pass
+  **24 real database tests**. The settings UI passes **10 interaction tests**,
+  including late project responses and unavailable model identities; actual
+  production summary UI verification remains pending.
+- **25 mounted reporting tests pass**, including explicit/idempotent summary
+  requests, capacity-one/chat-disabled runners, exact profile/model admission,
+  internal-only publication with frozen attribution, completion proof rollback,
+  terminal result replay and transient attempt linkage. A retry retains the
+  original producing claim and avoids inventing a second result.
+- **44 legacy evidence/protocol tests pass** after the report-source cutover.
+  The real summary wire acceptance test passes. The full runtime gate exposed
+  invalid local-profile fixtures before executing six scenarios. Runtime
+  profile application, one-turn containment and fixture repair are in progress;
+  summary execution is not approved. Summary display, delivery/PR lineage,
+  canonical dependents and freeze/drain remain open.
+
+### Native summaries: production browser and runtime gate
+
+- The full database suite passes **426 tests**. The dashboard suite passes
+  **510 tests**. The serialized complete agent-server suite passes **959 tests**;
+  after the last cancellation tightening, its **8 real summary runner tests**,
+  runtime/connector typechecks and package smoke pass again.
+- The actual production Next/NextAuth/proxy/HTTP/PostgreSQL/CLI/ACP/MCP browser
+  harness passes native summary configuration, shared-version conflict/draft
+  retention, explicit native-source publication, archived-source publication
+  after live-row retirement, original source identity/cursor, mobile layout,
+  and private in-flight request cancellation on authority loss. Existing
+  history, chat, structured answers, unattended Start and reviewed handoff
+  browser assertions still pass, with no page errors. Screenshots were disabled,
+  interrupted fixture directories removed and the owned Next service stopped.
+- Browser failures exposed and repaired a transcript flex-height regression,
+  duplicate sibling React keys in chat/summary settings, and a missing work root
+  on the first real summary CLI job. Unit fixtures no longer pre-create that
+  work root. An actual adapter regression caught the frozen model not being
+  applied by `runInitialPrompt`; the policy-aware session startup now applies it.
+- A real cancellation regression failed with `failed` instead of `cancelled`.
+  The runner now preserves applied cancellation and flushes final buffered
+  provider events before releasing the claim. A deliberately delayed flush
+  reproduces the event-loss bug before the fix and passes afterward. Summary
+  terminal-report errors propagate rather than being silently logged.
+- OpenAI source review and independent GLM security review approved the summary
+  snapshot. OpenAI also approved the final cancellation/event-flush delta.
+  GLM approved the repaired settings keys and scratch initialization.
+  Pending summary TTL was withdrawn as a defect: ordinary offline work remains
+  queued and cancellable; target deletion protection is intentional. New files
+  remain uncommitted and must be staged during PR assembly.
+- This does not establish a paid-provider/GitHub run, new platform support,
+  soak behavior or statistically supported latency. Delivery/PR lineage,
+  canonical dependents, full artifact backup/default mappings and freeze/drain
+  gates remain open. No production data, operational seals or credentials changed.
+
+### Native delivery/review continuation
+
+- Ruling: review freshness uses the newest repository-bearing execution on the
+  task, not a convenient earlier head. Pending/unobserved or changed acquisitions
+  remain unknown; repository-free chats and summaries cannot replace a worktree
+  witness. A wrong ordering would falsely mark checks fresh, so native checks
+  retain both their own acquisition fence and the current task-head comparison.
+- Ruling: ACP request rows gain genuine stable UUID identities for the existing
+  delivery acknowledgment contract. Compound provider request keys are not
+  exposed as fabricated observation/session identities. Open, answer-queued and
+  uncertain requests need human acknowledgment; resolved/cancelled ones do not.
+- Five real-PostgreSQL regressions first reproduced stale native evidence,
+  missing source identity and missing ACP acknowledgment items, then passed.
+  Snapshot comparison is structural after schema parsing; binding identifiers
+  remain private, and existing acceptance JSON is never reconstructed.
+- Delivery/PR lineage remains in progress. Archive-backed review sources,
+  mounted route/browser proof and the full affected-suite gates remain pending.
+
+- Native delivery verification: database **431/431**, dashboard **511/511**,
+  mounted reporting **26/26**, and the environment-less production build pass.
+  The production Next/HTTP/MCP/PostgreSQL browser flow also passes: owner-bound
+  source shown, acceptance disabled until explicit request acknowledgment,
+  canonical decision stored, later dirty/head changes shown separately from
+  the unchanged acceptance. No screenshots were written; the owned UI service
+  was stopped after verification. Workspace acquisition is a protocol fixture,
+  not a paid-provider/GitHub run.
+- Ruling: PR lineage uses verified delivery links and pending-only reservations
+  for early webhook work. Retrospective adoption of executed unlinked claims
+  would fabricate reporting authority, so those rows remain unrelated. A signed
+  PR event is not itself an owner-workspace witness; admission stays blocked
+  until actual GitHub repository/branch/head match the bound producer proof.
+  The detailed contract is under Task 4 in the parity plan. Its risk is held
+  pending work if the producer never supplies valid proof, not unauthorized spend.
+
+### Native pull-request association and review ancestry
+
+- Mounted native PR coverage passes **20/20** against the owned disposable
+  database. The path uses real registration, leasing, spec completion, build
+  creation, MCP reporting, signed GitHub webhooks and canonical SQL; only the
+  external GitHub network is controlled. A separate real-Git reporting suite
+  passed **20/20**, including actual configured origin and remote task-ref
+  observation; both agent-server typechecks passed.
+- Original PR attribution is immutable. A later authorized start on the same
+  task/PR adds its own genuine root/producer mapping and carries that initiating
+  principal/session snapshot into subsequent claims. Early webhook reservations
+  remain unleased until owner proof supplies authority; executed unrelated
+  history is never adopted.
+- Six review regressions reproduced unverified-marker retry mutation, stale
+  acquisition/commit acceptance and premature runner completion, then passed.
+  Native reviews now carry a public, domain-separated acquisition marker, not a
+  reporting credential, capture key or binding ID. Webhooks use the review's
+  actual `commit_id`; the marker, actual review lease, current actor authority
+  and current PR head must agree before follow-up work. GitHub PASS does not
+  finalize the active native runner.
+- Owner-authenticated verification completion exposed two previously hidden
+  production issues: raw PostgreSQL array encoding broke JSON verification
+  hashes, and missing optional GitHub-App context broke transition effects.
+  JSON serialization and the optional context boundary are repaired. Mounted
+  regressions now prove spec→build and review→red-verifier→fixer parentage using
+  genuine claims with preserved root and creator snapshots.
+- Automatic owner PR linking, controller build completion proof, green/review
+  ancestry, full real-Git pipeline and final independent review remain open.
+  No paid-provider or live GitHub acceptance is claimed. Connector retirement
+  and the wider parity task are not complete.
+
+### Native review publication and runner completion proof
+
+- Native review results are now immutable canonical publications. The public
+  marker signs the exact verdict, findings, claim acquisition and reviewed head;
+  the earlier nonce-only marker has been removed. Publication application,
+  retry accounting and actual child insertion commit together. Copied or altered
+  verdicts and redeliveries cannot create additional paid work.
+- Early PR reservations pin their original producer binding, task, root and head.
+  Revoked or abandoned sources are cancelled transactionally, not released into
+  the ordinary queue. The real-PostgreSQL reservation suite passes **10/10**.
+- Mounted native PR coverage passes **28/28**, including completion rejection
+  without the owning final clean/pushed witness and current verified PR producer.
+  A previous acquisition at the same commit cannot satisfy a new build.
+- Runner-owned finalization publishes the final witness, calls the canonical
+  PR-link tool and verifies the returned producer before cleanup and completion.
+  Real Git plus actual ACP/runner/control-plane regressions prove successful
+  completion and worktree removal, and failed completion when no PR exists.
+  Both runner cases pass; the reporting-helper suite passes **27/27**.
+- Full orchestration regression passes **827 tests** with **10 skipped**; runtime
+  typechecking passes. Reviewers approved the scoped source-pin/publication
+  boundaries read-only; their approval is not independent execution evidence.
+- Remaining Task 4 gates include early-CI fixer/green ordering, avoiding stale
+  ancestry after a later root, and a combined chat/handoff-to-native-review path.
+  No paid-provider/live-GitHub, connector retirement or whole-initiative
+  completion is claimed.
+
+### Combined runner path and authority-isolated handoffs
+
+- The permanent combined acceptance passes actual chat commands, Git design
+  commit/push, explicit handoff, actual spec/build ACP runners, final workspace
+  proof, automatic PR association and signed webhook review queuing. External
+  provider/GitHub calls are controlled; no paid-provider/live-GitHub proof is
+  implied. Actual red/green verifier subprocess execution in that same fixture
+  remains a separate gate from the mounted verification-result protocol tests.
+- Combined execution exposed a missing chat-to-spec parent. Same-task,
+  same-principal/session handoffs now preserve that actual parent; another
+  initiator/session or destination gets its own genuine spec root. The original
+  transfer remains in `handed_off_from`; a destination gets its own task branch
+  seeded by the published source commit. Destination creation acquires board
+  and project locks before task/claim locks.
+- Real-PostgreSQL handoff coverage passes **11/11**, including actual principal
+  session rotation and a concurrent board/task lock test. Native PR coverage
+  passes **32/32**; affected legacy regressions bring the scoped run to **70**.
+  Current-producer ancestry excludes an older active fix even within the same
+  root. Already accepted terminal result replay remains a no-mutation
+  acknowledgement after reporting revocation or producer advancement.
+- Full uncached workspace regression passes **444 DB**, **511 dashboard**,
+  **970 agent-server** and **832 server** tests (**2,757 passed**, **10 skipped**).
+  Package smoke passes. Scoped security re-review approves the handoff,
+  recursive producer ancestry and source guard; no checks were run by the
+  reviewer.
+- Historical dependency audit is complete as read-only code research. It found
+  surviving conversion-command/session references, usage sentinels, immutable
+  delivery/decision JSON and arrays, mapping-based authorization and legacy
+  attention/insights readers beyond the raw four-record archive. Artifact
+  capture, complete source preservation/default mapping and freeze/drain remain
+  unfinished. No connector deletion, production mutation, commit or push.
+
+### Actual red/fix/green execution in the combined path
+
+- The combined acceptance now executes the native review publication, signed
+  review webhook, actual Node red tests, artifact commit/push, actual fixer ACP
+  turn, signed CI, actual Node green tests and pending rereview. Original
+  chat/spec/build/review/red/fix/green/rereview parentage and initiator snapshots
+  remain intact. Green starts no additional model process.
+- This exposed a stale-head defect: successful red verification pushes the test
+  artifact, but the fixer was queued at the older reviewed head. Mounted cases
+  failed with HTTP 500 when the GitHub boundary reflected the actual artifact
+  head. The fixer now uses the returned artifact SHA, preserving the original
+  red baseline separately. Native mounted plus transition coverage passes
+  **53/53** after that RED-to-GREEN fix.
+- The combined real-Git/ACP/MCP/control-plane/Node-verifier case passes in
+  **9.53 seconds**. It checks committed test hashes, the fix's artifact parent,
+  application-only fix changes, current verified PR producer, actual assertion
+  failure/pass outcomes and the final pending rereview. GitHub/provider APIs
+  remain controlled external boundaries, not a paid-provider/live-GitHub run.
+- The earlier full **2,757-test** result predates this last transition fix and
+  expanded fixture. Historical artifact preservation and canonical native
+  plan/progress projection are the next parity gates; retirement remains blocked.
+
+### Canonical native plans and progress
+
+- Mounted regressions first showed accepted ACP plans missing from the canonical
+  workpad and post-revocation plan events still accepted without reporting
+  authority. Typed plans and state/tool progress now project in the same owner
+  transaction as accepted events and usage, using the existing canonical writers
+  and acquisition-scoped idempotency records. No synthetic run/session is added.
+- Replays and older source sequences cannot replace newer reports; empty plans
+  clear the workpad. Unsupported raw shapes remain raw data. Summary-role events
+  cannot acquire work reporting powers; their usage still projects separately.
+- An older transaction applying an explicit report after an event exposed stale
+  canonical plan and progress reads. Both failures were observed. Report writes
+  now use application-time database timestamps rather than transaction-start time.
+- DB build and **50 mounted/interaction tests pass**, including visibility,
+  source attribution, empty plans, rollback of raw events plus canonical writes,
+  revocation, summary-role containment and report chronology. Full server
+  regression is running; historical artifact work remains separate.
+
+### Archived workspace freshness and historical counts
+
+- Native plan/progress changes pass the full **845-server-test** suite and the
+  full **970-agent-server-test** suite. Connector typechecking passes. The first
+  agent-server invocation omitted its required connector DB environment and had
+  one load failure; the corrected invocation exercised all 57 files successfully.
+- Real PostgreSQL tests exposed loss of original workspace head/dirty and run
+  counts after removing their fixture's live execution rows. Delivery freshness
+  now verifies and reads the sealed original run snapshot. The actual human
+  delivery-review fingerprint remains identical across that storage cutover;
+  no historic decision is reconstructed or changed.
+- Historical run counts include the sealed source only when the live run is
+  absent. A fixture initially attempted two sealed snapshots, but the existing
+  unique sealed-source index correctly rejected that setup. No history-dedup
+  defect existed and no redundant DISTINCT/history rewrite was introduced.
+- Archive reader/export/restore suites pass **46/46**, including current human
+  review continuity, ignored unsealed snapshots and rejection of corrupt
+  workspace data. This is a disposable rehearsal, not authorization to remove
+  production runs or evidence of a complete canonical dependency backup.
+
+### Historical artifacts, summaries and native idea follow-ups
+
+- Runtime typechecking and the actual portable package smoke pass. These follow
+  the earlier 970-agent-server result; they are not live-provider/platform proof.
+- Historical run summaries resolve their original sealed source after disposable
+  live-row retirement. Canonical body, author, model and provider cursor remain
+  unchanged. Summary-source/archive/transfer coverage passed 54 tests before the
+  artifact-reader additions.
+- Actual artifact reads first failed after restore and for superseded exact IDs.
+  Verified sealed command captures now supply the original bytes without a live
+  host or a new retrieval command. Inventory checks every canonical agent/runner
+  file version against its declared hash, exact source session/reference, strict
+  base64, size and completeness. Missing or unverifiable bytes block archival.
+- Three new test-fixture errors were repaired without weakening source constraints:
+  the alternate session is real, noncanonical base64 retains identical decoded
+  bytes, and corruption is introduced before sealing. The archive/artifact/raw
+  transfer/summary-source suites pass 73 tests; the full DB suite passes 466.
+  Disposable fixture FK retirement preserves original canonical artifact fields
+  and restores constraints afterward. No production FK cutover has shipped.
+- Native idea conversion creates one originator-scoped prompt in an explicitly
+  selected active chat. Its integer claim/command destination is distinct from
+  legacy UUID destinations and from the idea's original source claim. Idea,
+  command and receipt roll back together. The first mounted API slice passed
+  93 affected tests; further pending/ambiguous/oversized target coverage was added.
+- The production drawer requires an explicit session choice, never auto-retargets
+  a closed selection, and masks cached internal ideas on capability loss. Full
+  dashboard coverage passes 513 tests. Production build and the UI detector pass.
+- Actual NextAuth, HTTP, PostgreSQL and ACP browser flow passes: a native MCP idea
+  is selected in the drawer, converted to its canonical prompt, consumed by the
+  real child process and reopened through its genuine session link. The task
+  stays Backlog; no unattended build starts. Existing history, summary, delivery,
+  handoff, permission, revocation, mobile and navigation scenarios also pass.
+  No page errors; expected conflict/denial responses remain deliberate fixtures.
+- Independent scoped review found no blocking authority, identity or transaction
+  defect. Public HTTP archived-artifact coverage is still being expanded; the
+  wider canonical dependency/default mapping/freeze/drain/removal gates remain
+  incomplete. No connector deletion, production mutation, commit or push.
+
+### Execution-source navigation and protected default mapping
+
+- Canonical check evidence, artifacts, plans and questions now expose genuine
+  nullable claim IDs alongside unchanged legacy IDs. The mounted native
+  reporting test failed on missing attribution, then passed after projection
+  changes; no binding credentials enter the public views.
+- The task-scoped session/command resolver preserves original destination IDs,
+  including an idea follow-up in a different run. Two real-PG tests pass for
+  live/archived resolution, unchanged conversion receipts and corrupt storage.
+  A mounted HTTP test passes before and after fixture retirement, including
+  anonymous, private-reader, outsider, foreign-task and malformed references.
+- Drawer source links reject late task/authority responses. Twelve focused UI
+  tests, production build and the UI detector pass. The actual production browser
+  passes native evidence navigation and a legacy session-only lookup through HTTP.
+  The latter preserves the cancelled original run, command rows and absence of
+  native claims; viewing history does not start work. Summary, handoff, permission,
+  revocation and mobile scenarios still pass, with no page errors. No screenshots
+  or temporary verification outputs were created.
+- The defaults operator CLI supports inspect/preview/apply and idempotent replay.
+  It uses an owned private regular-file descriptor, rejects symlinks and
+  input-controlled apply, and handles failures generically. A duplicate-flag
+  overwrite was reproduced and repaired. The service and CLI suite passes 28
+  real-PG cases after the DB build.
+- Review found a real repository-transition defect: an unlinked or mismatched
+  source could become scratch/wrong-repo work, and concrete base refs became
+  origin/HEAD. The safety gate now requires exact org-registered linked-repo
+  identity and origin/HEAD, leaving unsupported contexts unchanged. New regression
+  fixtures initially leaked a shared host's catalog mutation/revocation; isolated
+  fixtures repaired those errors without weakening assertions.
+- Public artifact review was narrowed by HTTP evidence: outsiders already receive
+  matching not-found responses; a custom role without task-read received 403 for
+  an existing ID versus 404 for unknown. The by-ID reader now masks permission
+  denial as not-found. The expanded HTTP test passes with archived/raw bytes,
+  corruption refusal, restricted-role masking and current-session validation.
+- Full regressions before the admission-fence slice passed on separate owned
+  databases: DB 497 tests, server 852, dashboard 515. Independent source-link
+  review found no blocking identity or stale-response defect.
+- The serialized design review reached consensus: keep the strict mapper; do
+  not add a profile/Git-ref engine for nonexistent identified production data.
+  A read-only aggregate snapshot found one project, no stored legacy defaults,
+  mappings, runs, sessions or commands, and two unrevoked hosts. This is not a
+  decisive post-fence inventory or proof about either host's local storage.
+- Credential/remote-process, canonical/config backup, post-deployment recount
+  and destructive-removal gates remain unverified. No production freeze,
+  revocation, deletion, deployment or merge has been performed.
+
+
+### Global legacy admission fence and operator preflight
+
+- Migration 0044 adds an initially-open global control row. Admission shares its
+  lock inside producer transactions; freeze uses an exclusive NOWAIT lock.
+  A blocking-freeze race was reproduced, then changed to an explicit busy
+  refusal so the freezer cannot queue behind task/project-held admissions.
+  Successful activation and idempotent receipts retain transactional semantics.
+- The operator CLI exposes read-only inventory and explicitly confirmed global
+  freeze only. The inventory counts idle/resumable and accepted/ambiguous work,
+  unrevoked hosts and legacy reporting tokens without printing private values
+  or claiming remote-child, backup or removal readiness.
+- The missing CLI was observed failing its positive acceptance case before
+  implementation. DB build and seven real-PG/actual-CLI cases then passed.
+  A disabled-summary fixture was corrected to enable and bind a real source
+  before testing rejection; the unchanged-state check now compares its actual
+  baseline instead of assuming another test left defaults empty.
+- Full regressions after the production fence edits passed: DB 508 tests across
+  40 files, server 852 across 80 files, dashboard 515 across 35 files and agent
+  server 970 across 57 files. Both runtime typechecks, the portable package smoke,
+  migration journal check and dashboard production build without a database URL
+  pass. The rebuilt actual production browser also passes, with no page errors.
+- Ten focused retirement/operator cases pass, including byte retrieval,
+  authoritative cancellation, legacy follow-up rollback and same-command
+  ambiguous reconciliation after freeze. A native chat claim is actually
+  persisted after freeze; the tests no longer prove only native settings edits.
+- Independent security review approved the producer/fence/drain boundary.
+  Testing review required per-case fixture reset, specific lock-owner probing
+  and bounded CLI children. Both helpers now reject spawn errors and abnormal
+  exits, so a timeout cannot satisfy an expected-failure assertion; the final
+  focused CLI suites pass 31 cases and the reviewer approved these fixes.
+- A second read-only production aggregate found zero legacy-source artifacts,
+  checks, ideas, plans, questions, summaries, usage samples, deliveries,
+  decisions, delivery links, idempotency records and source-linked task events.
+  This remains a pre-fence snapshot. Preserve canonical rows, source constraints
+  and private configuration until post-deployment backup/recount/host gates
+  explicitly permit a later cutover; no dependency backfill is invented for
+  absent sources.
+- Final publication review approved the assembled diff after correcting release
+  verification: the old missing reporting-DB prerequisite failed both native
+  runner suites at load. Release now provisions pinned PostgreSQL, builds the
+  canonical DB package and runs all four reporting suites. The equivalent local
+  release command passes 963 tests; release-policy/workflow-pin tests pass 24.
+- A mapper-after-freeze case proves native settings can migrate without changing
+  legacy JSON, host/mapping rows or the frozen control. All 29 mapper cases pass.
+  This exemption is explicit in the plan and operator runbook; native settings
+  are not new legacy execution intent.
+- The production browser passed again while capturing seven permanent
+  [PR evidence images](2026-11-13-chat-claim-evidence/README.md). Desktop, mobile,
+  settings, permission and revoked-session captures were visually inspected.
+  No temporary screenshots or private production backup files were created.
+
+
+### Stacked PR publication
+
+- Committed the reviewed parity implementation and permanent evidence as
+  `74c6de9`; opened [PR 154](https://github.com/fluent-io/fluent-flow/pull/154)
+  against the still-open additive PR 153 branch, not main. Neither was merged
+  or deployed.
+- The initial check watch reported no checks. CI filtered pull requests to main,
+  excluding the stacked base. The follow-up removes only that PR-base filter;
+  main-only push behavior and read-only permissions remain unchanged.
+  Release-policy/workflow-pin tests still pass 24 cases. Hosted checks must be
+  observed on the follow-up head before publication is called verified.
+- Actual production activation, host/configuration inspection, private backups,
+  decisive post-fence recount, credential revocation and destructive connector
+  removal remain blocked. The empty read-only snapshots do not waive them.
+
+
+- Hosted run `43659046845` passed the cross-platform ACP, Node 20 and container
+  checks. The root integration task failed nine positive mapper CLI cases:
+  `test` depended only on `^build`, so DB tests started before their own
+  compiled CLI services existed. Direct service cases passed.
+- Tests now depend on their own `build`, which already depends on dependency
+  builds. The dry graph confirms the DB test-to-build edge. The assembled
+  local root run passes all six tasks without cache: DB 508, dashboard 515,
+  agent server 970, server 842 with the 10 legacy-database cases reserved for
+  their separate CI step. No assertions or timeouts were weakened.
+- The root run also exposed undeclared Next build output. Build outputs now
+  include `.next` without its cache; the duplicate standalone CI build and its
+  stale comment were removed. The graph still builds without `DATABASE_URL`
+  before production browser execution. Workflow policy checks pass 24 cases.
+  Fresh hosted verification remains required on this fix.
+
+### Windows ACP liveness fixture ordering
+
+- Hosted run `43660241802` passes the main integration job, including the
+  production browser and separate legacy-database checks, plus Linux/macOS ACP,
+  Node 20 and container checks. Windows exposes a silence-scenario fixture race:
+  its second liveness reply could send idle before the delayed running update.
+  The runtime correctly requires running before idle can complete the turn.
+- A 100 ms delayed-start regression reproduces the same 5-second timeout locally.
+  The fixture now arms its response after running and sends message/idle on the
+  next liveness probe, independent of probe count. No production runtime changes,
+  retry additions, skips or timeout increases were made.
+- Both 10 ms and 100 ms paths pass within the full 26-case ACP suite. Runtime
+  typecheck and the packaged portable-server smoke pass. Independent read-only
+  review approves the fixture ordering and retained behavior assertions.
+- The complete agent-server suite passes 971 tests across 57 files, including
+  real PostgreSQL, Git, ACP, reporting MCP and signed-webhook pipeline coverage.
+- Fresh hosted Windows verification remains required after this follow-up.
+
+### Agent-owned chat configuration decision — 2026-11-15
+
+The user chose ordinary claim routing and agent-owned chat configuration.
+The separate attended-execution panel and its backend project overrides are
+removed, not hidden. This supersedes the earlier project-default mapping design.
+Summary settings and historical connector configuration remain separate.
+
+Implementation plan:
+
+- Replace project-routed chat creation with ordinary eligibility and optional
+  explicit per-operation targeting. Ignore stored project mode, agent,
+  profile/model/instructions and lifecycle overrides; keep canonical claim limits.
+- Remove the project chat-settings API, UI, public mode field and obsolete mapper
+  that writes those overrides. Keep existing SQL columns and legacy source rows
+  inert rather than applying destructive schema or configuration changes.
+- Keep local runner validation, permission policy and model defaults authoritative,
+  including when older delivered chat payloads still contain profile/model fields.
+- Update every caller, fixture and live runbook. Prove stale project values do not
+  affect chat claims; verify the production drawer/settings surface and publish
+  updated permanent screenshots in PR154.
+
+No new routing abstraction, replacement settings panel, legacy history deletion,
+production freeze or credential operation is part of this change.
+
+### Agent-owned chat configuration verification
+
+- The initial regressions failed on actual behavior: project values selected the
+  target/model/instructions/timeouts, connector mode rejected chat, and the
+  supposedly removed settings route returned 200. The local-policy regression
+  also selected the old delivered profile/model before the repair.
+- Chat creation now uses ordinary eligibility and optional explicit operation
+  targeting. The settings API, project mode DTO and defaults mapper are removed.
+  Previously applied SQL columns and legacy configuration remain unchanged but
+  are no longer read as chat configuration. The runner ignores old delivered
+  profile/model fields while retaining local validation and injection rejection.
+- Full package runs pass: DB 470/38 files, server 853/80 files, agent server
+  971/57 files and dashboard 513/34 files. Removed cases cover the obsolete
+  project-settings and mapper contracts; stale-setting, removed-route and
+  agent-owned-policy regressions replace the affected behavior expectations.
+  Both runner typechecks, DB/Next production builds and portable smoke pass.
+- The actual production browser passes with stale connector-mode, target,
+  profile/model/instructions and timeout values still stored on the project.
+  Both Open session and atomic New session work; claims are untargeted and carry
+  no inherited profile/model/instructions, and the real ACP child applies the
+  local model. There are no extra initial paid turns. Independent summary
+  save/conflict/attribution, history, ideas, handoff, permissions and revocation
+  paths continue to pass.
+- All seven permanent screenshots were refreshed and visually inspected.
+  Settings shows no attended-execution controls; the steering-security note is
+  on session entry instead. The production dashboard service was stopped.
+- The assembled root run passes all six build/test tasks with zero cache hits.
+  Its server run passes 843 cases, with the existing ten opt-in legacy SQL cases
+  covered by the separate 853-case package run and CI check. The exact release
+  agent command also passes 964 cases across 56 files.
+- Independent quality and security reviewers approve the removal delta. The
+  shared catalog module is staged; ordinary untargeted routing and capability-
+  based session controls are confirmed as intentional. Reviews were read-only.
+- Fresh hosted checks are required on the published commit. No production
+  configuration, credential, freeze or deletion action occurred.
+

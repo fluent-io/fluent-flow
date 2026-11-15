@@ -12,6 +12,8 @@ import {
   startCollabChatSession,
   submitCollabClaimCommand,
   listCollabRetainedWork,
+  queueClaimSummary,
+  listTaskSummaries,
 } from '@fluent-flow/db';
 
 function requireIdempotencyKey(req) {
@@ -54,6 +56,17 @@ function queryCursor(value) {
 }
 
 export function registerClaimExecutionRoutes(router) {
+  router.get('/tasks/:id/summaries', async (req, res, next) => {
+    try { res.json({ data: await listTaskSummaries({ actor: req.collabActor, taskId: req.params.id }) }); }
+    catch (error) { next(error); }
+  });
+  router.post('/tasks/:id/summaries', async (req, res, next) => {
+    try {
+      const result = await queueClaimSummary({ actor: req.collabActor, taskId: req.params.id,
+        expectedVersion: req.body?.expectedVersion, source: req.body?.source, idempotencyKey: requireIdempotencyKey(req) });
+      res.status(result.created ? 202 : 200).json({ data: result });
+    } catch (error) { next(error); }
+  });
   router.get('/tasks/:id/retained-work', async (req, res, next) => {
     try {
       const result = await listCollabRetainedWork({ actor: req.collabActor, taskId: req.params.id,

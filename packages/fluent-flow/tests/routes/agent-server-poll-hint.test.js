@@ -67,6 +67,7 @@ vi.mock('@fluent-flow/db', async (importOriginal) => {
     upsertClaimRequest: vi.fn(),
     leaseClaimCommands: vi.fn(),
     ackClaimCommand: vi.fn(),
+    buildClaimReportingBootstrap: vi.fn().mockResolvedValue(null),
   };
 });
 

@@ -15,6 +15,7 @@ vi.mock('../../src/agents/session-manager.js', () => ({
 
 vi.mock('../../src/agents/claim-manager.js', () => ({
   assertClaimOwner: vi.fn(),
+  assertClaimReporter: vi.fn(),
   withClaimOwner: vi.fn(),
   completeClaim: vi.fn(),
   failClaim: vi.fn(),
@@ -31,6 +32,7 @@ vi.mock('../../src/agents/claim-manager.js', () => ({
 
 import {
   assertClaimOwner,
+  assertClaimReporter,
   cancelClaimById,
   completeClaimById,
   createClaim,
@@ -75,6 +77,7 @@ const RESULT = {
 beforeEach(() => {
   vi.clearAllMocks();
   assertClaimOwner.mockResolvedValue(CLAIM_ROW);
+  assertClaimReporter.mockResolvedValue(CLAIM_ROW);
 });
 
 describe('handleClaimResult owner-bound terminal results', () => {

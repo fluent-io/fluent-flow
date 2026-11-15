@@ -1,4 +1,5 @@
 import { isAbsolute } from 'node:path';
+import { z } from 'zod';
 import {
   AGENT_METHODS,
   CLIENT_METHODS,
@@ -10,6 +11,13 @@ import {
 } from '@agentclientprotocol/sdk/experimental/v2';
 import { spawnAcpProcess } from './process.js';
 import { assertChatConfigOption } from '../chat-profiles.js';
+
+const mcpServerSchema = z.object({
+  type: z.literal('stdio'), name: z.string().min(1),
+  command: z.string().refine(isAbsolute),
+  args: z.array(z.string()).default([]),
+  env: z.array(z.object({ name: z.string().min(1), value: z.string() }).strict()).default([]),
+}).strict();
 
 const restartHistory = new Map();
 
@@ -167,6 +175,7 @@ export function createAcpRuntime({
   command = undefined,
   cwd = undefined,
   env = undefined,
+  mcpServers: mcpServerInput = undefined,
   onEvent = async (_params = undefined) => {},
   sessionPolicy = undefined,
   onRequest = async (_request = undefined) => {},
@@ -195,6 +204,7 @@ export function createAcpRuntime({
   if (!timers || typeof timers.setTimeout !== 'function' || typeof timers.clearTimeout !== 'function') {
     throw safeError('ACP timers are invalid');
   }
+  const mcpServers = z.array(mcpServerSchema).parse(mcpServerInput ?? []);
 
   const limits = createLimits(limitInput);
   const budgetKey = JSON.stringify([command.bin, command.args]);
@@ -566,7 +576,7 @@ export function createAcpRuntime({
     try {
       created = await requestWithDeadline(record.agent, AGENT_METHODS.session_new, {
         cwd,
-        mcpServers: [],
+        mcpServers,
       }, 'ACP session setup failed');
     } catch {
       await shutdownRecord(record);
@@ -689,7 +699,7 @@ export function createAcpRuntime({
       await requestWithDeadline(replacement.agent, AGENT_METHODS.session_resume, {
         sessionId,
         cwd,
-        mcpServers: [],
+        mcpServers,
       }, 'ACP session resume failed with a transient error');
       await eventTail;
     } catch {

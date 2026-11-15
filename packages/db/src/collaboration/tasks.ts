@@ -96,6 +96,7 @@ function rowToTask(row: Record<string, unknown>): CollabTask {
       } : null,
       hostReachability: row.execution_id ? row.execution_reachability as 'online'|'stale'|'offline' : null,
       progress: row.execution_id ? ({ queued:'Queued', launching:'Connecting', running:'Working', needs_input:'Response needed', idle:'Turn complete', failed:'Execution failed', reconciling:'Execution needs review', cancel_requested:'Cancellation requested', cancelled:'Execution stopped' } as Record<string,string>)[row.execution_state as string] ?? null : null,
+      publishedProgress: null,
       attentionCount: ['needs_input','failed','reconciling'].includes(row.execution_state as string) || row.command_attention === 1 ? 1 : 0,
     },
   };
@@ -320,7 +321,20 @@ export async function getCollabTask(
     throw new CollabServiceError(404, 'not_found', 'Not found.');
   }
   const capabilities = await getProjectCapabilities(actor.principalId, projectId);
-  return { task: rowToTask(rows[0]), capabilities: [...capabilities] };
+  const task = rowToTask(rows[0]);
+  if (task.execution && capabilities.has('internal.read')) {
+    const reports = await getPool().query<{ claim_id: number; progress: { text: string; percent: number | null } }>(
+      `SELECT execution.claim_id, event.payload->'progress' AS progress FROM collab_task_events event
+       JOIN collab_claim_executions execution ON execution.task_id = event.task_id
+         AND execution.project_id = event.project_id AND execution.claim_id::text = event.payload->>'claimId'
+       WHERE event.task_id = $1 AND event.kind = 'run_state' AND event.visibility = 'internal'
+         AND jsonb_typeof(event.payload->'progress'->'text') = 'string'
+       ORDER BY event.created_at DESC, event.id DESC LIMIT 1`,
+      [task.id],
+    );
+    if (reports.rows[0]) task.execution.publishedProgress = { claimId: reports.rows[0].claim_id, text: reports.rows[0].progress.text, percent: reports.rows[0].progress.percent };
+  }
+  return { task, capabilities: [...capabilities] };
 }
 
 async function projectIdForTask(taskId: string): Promise<string> {

@@ -58,8 +58,15 @@ const TEMPLATES = {
     ].join('\n');
   },
 
-  review({ repo, prNumber, priorIssues = [], message }) {
+  review({ repo, prNumber, priorIssues = [], message, claim_id: claimId, reporting, attempt = 1 }) {
     const [owner, name] = repo.split('/');
+    const native = Boolean(reporting);
+    const identity = Number.isSafeInteger(claimId) && claimId > 0 ? { claim_id: claimId, attempt } : {};
+    const passMarker = native
+      ? '<!-- reviewer-result: <exact marker JSON returned by collaboration_report_review> -->'
+      : `<!-- reviewer-result: ${JSON.stringify({ status: 'PASS', ...identity })} -->`;
+    const failMarker = native ? passMarker : `<!-- reviewer-result: ${JSON.stringify({ status: 'FAIL', ...identity,
+      blocking: [{ file: 'src/x.ts', line: 10, issue: 'desc' }], advisory: [] })} -->`;
     const parts = [
       `You are a code review agent for ${repo} (PR #${prNumber}).`,
       '',
@@ -81,10 +88,12 @@ const TEMPLATES = {
       '',
       '2. Analyze for correctness bugs, security issues, broken tests, and convention violations.',
       '',
-      '3. Post a review with inline comments. Write a JSON file and POST it:',
+      native
+        ? '3. Publish the final verdict through `collaboration_report_review` with status PASS or FAIL and blocking/advisory finding arrays. This freezes the verdict once. Copy its returned `marker` object unchanged into the hidden marker below, then post the GitHub review with inline comments. Never invent or edit the returned marker.'
+        : '3. Post a review with inline comments. Write a JSON file and POST it:',
       '   ```bash',
       '   cat > /tmp/review.json << \'EOF\'\n   {',
-      '     "body": "Overall summary here.\n\n<!-- reviewer-result: { \\"status\\": \\"PASS\\" } -->",',
+      `     "body": ${JSON.stringify(`Overall summary here.\n\n${passMarker}`)},`,
       '     "event": "APPROVE",',
       '     "commit_id": "<head SHA>",',
       '     "comments": [',
@@ -111,11 +120,11 @@ const TEMPLATES = {
       '',
       '4. The review body MUST end with a hidden verdict marker on its own line:',
       '   ```',
-      '   <!-- reviewer-result: { "status": "PASS" } -->',
+      `   ${passMarker}`,
       '   ```',
       '   or for failures:',
       '   ```',
-      '   <!-- reviewer-result: { "status": "FAIL", "blocking": [{"file":"src/x.ts","line":10,"issue":"desc"}], "advisory": [] } -->',
+      `   ${failMarker}`,
       '   ```',
       '',
       '## Rules',

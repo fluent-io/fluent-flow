@@ -5,12 +5,17 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAcpRuntime } from '../../src/acp/runtime.js';
 const fixture = join(dirname(fileURLToPath(import.meta.url)), 'fake-acp-agent.js');
-it('resolves only local profiles/models and rejects remote process injection', async () => {
+it('uses the local chat profile and model despite old delivered policy overrides', async () => {
   const { validateChatProfiles, resolveChatProfile } = await import('../../src/chat-profiles.js');
-  const profiles = validateChatProfiles([{ id: 'safe', permission: { configId: 'approval', value: 'ask' }, modelConfigId: 'model', models: ['small', 'large'], defaultModel: 'small' }]);
-  expect(resolveChatProfile(profiles, { profile: 'safe', model: 'large' })).toMatchObject({ model: 'large', permission: { value: 'ask' } });
-  expect(() => resolveChatProfile(profiles, { profile: 'safe', model: 'unknown' })).toThrow();
-  expect(() => resolveChatProfile(profiles, { profile: 'safe', env: { BAD: '1' } })).toThrow();
+  const profiles = validateChatProfiles([
+    { id: 'safe', permission: { configId: 'approval', value: 'ask' }, modelConfigId: 'model', models: ['small', 'large'], defaultModel: 'small' },
+    { id: 'old-project', permission: { configId: 'approval', value: 'confirm' }, modelConfigId: 'model', models: ['large'], defaultModel: 'large' },
+  ]);
+  expect(resolveChatProfile(profiles, { profile: 'old-project', model: 'large' }))
+    .toMatchObject({ id: 'safe', model: 'small', permission: { value: 'ask' } });
+  expect(resolveChatProfile(profiles, { profile: 'removed-project-profile', model: 'unknown' }))
+    .toMatchObject({ id: 'safe', model: 'small' });
+  expect(() => resolveChatProfile(profiles, { env: { BAD: '1' } })).toThrow();
   expect(() => validateChatProfiles([{ id: 'unsafe', permission: { configId: 'mode', value: 'bypass' }, models: [] }])).toThrow();
 });
 it('bounds programmatic catalogs to the file/remote contract and projects no private settings', async () => {
@@ -22,14 +27,17 @@ it('bounds programmatic catalogs to the file/remote contract and projects no pri
     models: Array.from({ length: 100 }, (_, m) => `m${m}-${'x'.repeat(100)}`), defaultModel: `m0-${'x'.repeat(100)}` }));
   expect(() => validateChatProfiles(large)).toThrow();
 });
-it('validates advertised provider config and applies ask/model before allowing any prompt', async () => {
+it('applies the agent-owned permission and model before opening a chat with stale remote overrides', async () => {
   const root = await mkdtemp(join(tmpdir(), 'ff-chat-policy-'));
+  const { validateChatProfiles, resolveChatProfile } = await import('../../src/chat-profiles.js');
+  const profiles = validateChatProfiles([{ id: 'local', permission: { configId: 'approval', value: 'ask' }, modelConfigId: 'model', models: ['small', 'large'], defaultModel: 'small' }]);
+  const sessionPolicy = resolveChatProfile(profiles, { profile: 'old-project', model: 'large' });
   const runtime = createAcpRuntime({ command: { bin: process.execPath, args: [fixture, '--scenario', 'chat-policy'] }, cwd: root,
-    env: { PATH: process.env.PATH }, sessionPolicy: { permission: { configId: 'approval', value: 'ask' }, modelConfigId: 'model', model: 'large' } });
+    env: { PATH: process.env.PATH }, sessionPolicy });
   try {
     await runtime.openSession();
     expect(runtime.sessionConfiguration).toEqual(expect.arrayContaining([
-      expect.objectContaining({ configId: 'approval', currentValue: 'ask' }), expect.objectContaining({ configId: 'model', currentValue: 'large' }),
+      expect.objectContaining({ configId: 'approval', currentValue: 'ask' }), expect.objectContaining({ configId: 'model', currentValue: 'small' }),
     ]));
   } finally { await runtime.close(); await rm(root, { recursive: true, force: true }); }
 });

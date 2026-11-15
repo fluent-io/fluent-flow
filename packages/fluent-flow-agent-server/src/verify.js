@@ -602,7 +602,11 @@ async function withPreparedWorktree(context, opts, fn) {
   try {
     return await fn(prepared.worktreePath, data, prepared);
   } finally {
-    await prepared.cleanup?.();
+    try {
+      await context.finalizeWorkspace?.(prepared.worktreePath);
+    } finally {
+      await prepared.cleanup?.();
+    }
   }
 }
 

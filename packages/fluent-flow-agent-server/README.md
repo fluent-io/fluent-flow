@@ -13,6 +13,7 @@ One process runs up to `--capacity` claims at once, 2 by default and 16 at most.
 - [CLI and environment reference](#cli-and-environment-reference)
 - [Credentials and enrollment](#credentials-and-enrollment)
 - [Provider credentials](#provider-credentials)
+- [Opt-in native summaries](#opt-in-native-summaries-preview)
 - [Capacity and slots](#capacity-and-slots)
 - [Health and status](#health-and-status)
 - [Startup checks](#startup-checks)
@@ -65,6 +66,31 @@ Each pipeline phase is a separate claim, so any server with free capacity can ru
 Verification claims come in two phases. Red verification uses the configured ACP agent to write requirement tests at the reviewed commit. The server copies only validated test-scope artifacts into a separate checkout of that commit, requires every declared test file to report results in both reproductions, records the artifact hashes and publishes the red artifact commit. Green verification starts no model: it checks the server-owned hashes, requires results from every pinned test file and runs the full suite. A branch move or publication failure fails the claim transiently. Deterministic subprocesses use argv execution without a shell.
 
 All ACP children are spawned with `shell: false`. Prompts and service data are protocol messages, never command text. The control plane never supplies an executable, arguments or environment to the agent server.
+
+### Collaboration reporting
+
+Task-linked claims with an original initiating-principal snapshot receive
+acquisition-bound reporting authority. The runner injects its packaged stdio
+MCP helper into new and resumed ACP sessions. It forwards canonical collaboration
+tools to the control plane; native reporting does not require Paseo.
+
+A successful file report commits verified bytes and metadata together, capped
+at 512 KiB. Missing, unsupported, unsafe or known-secret-bearing files fail
+registration instead of leaving metadata that depends on a surviving workspace.
+The helper observes Git itself; model-supplied head/dirty assertions are not
+authoritative. The runner publishes final workspace state before cleanup.
+Successful native build/fix turns then associate the actual GitHub PR with that
+same verified producer before reporting completion; a missing, ambiguous,
+unpushed or mismatched PR fails finalization. This requires no extra model turn.
+Unknown workspace state remains unknown.
+
+ACP usage updates report context occupancy and cumulative session cost.
+Reported USD cost is projected atomically with accepted events; omitted cost
+preserves the previous value, while an explicit null clears it. Input/output
+token consumption is not inferred from context size. Provider sessions and
+claim acquisitions retain separate totals, including after provider restart.
+Claims predating the original-principal snapshot remain raw-event-only; the
+server does not invent reporting authority for historical work.
 
 ## Quick start
 
@@ -192,6 +218,7 @@ Every option takes one value except `--acp-arg`, which can repeat. Unknown optio
 | `--health-port` | `3860` | Integer from 1 to 65535. |
 | `--acp-command` | none | One executable name or path, without whitespace or shell text. Replaces the built-in adapter for `--provider`. |
 | `--chat-profiles-file` | absent (chat disabled) | Explicit operator-local preview opt-in. JSON profile allowlist, at most 64 KiB; see below. Never set by a claim payload. |
+| `--summary-claims` | absent (summaries disabled) | Advertise bounded summary work. Requires `--chat-profiles-file`; it shares that local profile catalog, not chat-slot admission. |
 | `--execution-timeout-minutes` | `60` | Integer from 1 to 1440. Time limit for one claim's ACP execution. See [Capacity and slots](#capacity-and-slots). |
 | `--acp-arg` | none | One literal argument for `--acp-command`. Repeat it for more. Requires `--acp-command`. |
 | `FLUENT_FLOW_TOKEN_FILE` | none | Path to a durable `ff_` token. Wins over stored state and enrollment. |
@@ -251,7 +278,7 @@ There is no API-key fallback. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and any othe
 
 ## Opt-in attended chat (preview)
 
-Chat execution is integrated into the ordinary claim transport but remains **off by default** until the settings/UI/release gates ship. Omitting `--chat-profiles-file` keeps existing unattended behavior and does not advertise `chat`. The connector is unchanged and remains available.
+Chat uses ordinary claim routing and the selected agent's local configuration. Omitting `--chat-profiles-file` keeps existing unattended behavior and does not advertise `chat`. No attended-execution project panel or project profile/model override is required. The connector remains available for historical work until the separate retirement gates pass.
 
 The local JSON file is an array of strict objects:
 
@@ -267,7 +294,7 @@ The local JSON file is an array of strict objects:
 ]
 ```
 
-These selector/model strings are placeholders, **not supported-provider defaults**. Inspect the installed ACP v2 adapter's advertised session configuration and pin its actual selector/value. Permission value must be `ask` or `confirm`; unsupported configurations fail closed before prompting. Each selected value must exist in the provider's selector list and be confirmed after setting it. Later permission/model drift terminates the session. Omit model fields and use `"models": []` to leave the provider model unchanged. Profiles never contain an executable, argv or environment. Those remain local server configuration. Delivered `profile` and `model` select only this allowlist; omitted profile selects the first local profile.
+These selector/model strings are placeholders, **not supported-provider defaults**. Inspect the installed ACP v2 adapter's advertised session configuration and pin its actual selector/value. Permission value must be `ask` or `confirm`; unsupported configurations fail closed before prompting. Each selected value must exist in the provider's selector list and be confirmed after setting it. Later permission/model drift terminates the session. Omit model fields and use `"models": []` to leave the provider model unchanged. Profiles never contain an executable, argv or environment. Those remain local server configuration. Chat always uses the first local profile and its `defaultModel`; old delivered `profile` and `model` overrides are ignored. Summary work retains its separately frozen, allowlisted selection.
 
 - A chat opens without an initial prompt, services commands while idle, and has a maximum duration of 8 hours (or the earlier provider-issued GitHub credential expiry). It is exempt from the work-claim execution timeout. No token refresh or context replay is implemented.
 - `cancel` stops the current response; `end_session` closes the session. Heartbeats continue while idle but do not refresh user activity. Authoritative control-plane idle/host expiry always wins; terminal chats never redispatch.
@@ -289,6 +316,33 @@ node packages/fluent-flow-agent-server/bin/fluent-flow-chat-discard.js \
 The shipped `bin/fluent-flow-chat-discard.js` refuses active work, unknown identities, symlinked workspace targets and missing confirmation. There is no remote discard command. The runtime catalog, retention receipts and exact follow-up UI/API contracts are documented in [the integration report](../../docs/plans/2026-11-13-chat-claims-runtime-integration-report.md).
 
 The local confirmation is an operational safeguard, not a sandbox or proof of human origin. A steered agent runs as the same OS user and can execute filesystem commands with that user's access. Retention checks prevent automatic cleanup from destroying unfinished work; isolate mutually untrusted organizations at the machine/container boundary.
+
+## Opt-in native summaries (preview)
+
+Pass `--summary-claims` with the existing local profile file to advertise
+`summary`. Select its agent, profile and optional model in the project's separate
+native summary settings. Saving defaults does not start work. An authorized user
+must request a summary from an execution session.
+
+Summary claims use ordinary work slots, including capacity-one servers with
+chats disabled. The control plane freezes the selected native or archived source,
+its cursor, at most 100 entries and 60000 characters, and the effective configured
+profile/model. The runner applies that exact local policy before one bounded ACP
+turn in a private temporary directory. It does not acquire or inject a GitHub
+credential, create a worktree or run PR verification. Existing operator-provided
+environment and OS access remain the trust boundary; this is not a sandbox.
+
+The deadline is at most five minutes, shortened by the host execution limit.
+Follow-up prompts are rejected. Permission answers and cancellation remain
+available. An idle or ended turn without a published canonical summary fails.
+The summary credential cannot publish work progress, checks, artifacts or ideas.
+
+Results are internal and retain the server-frozen source/model attribution.
+Ordinary bounded retries share one logical request; if publication preceded a
+lost result acknowledgement, the retry acknowledges it without another paid
+turn. The original producing claim remains attached to the result. Scratch and
+child resources are closed after the attempt. A generated summary is not
+verification evidence, a delivery approval or a chat-to-build handoff digest.
 
 ## Capacity and slots
 
@@ -478,7 +532,7 @@ npm run smoke --workspace packages/fluent-flow-agent-server
 AGENT_SERVER_IMAGE=fluent-flow-agent-server:test CONTAINER_CLI=docker npm run smoke:image --workspace packages/fluent-flow-agent-server
 ```
 
-`tests/unit/connector/real-app.test.js` needs a disposable PostgreSQL database in `COLLAB_CONNECTOR_TEST_DATABASE_URL`. Without one, run `npm test --workspace packages/fluent-flow-agent-server -- --exclude tests/unit/connector/real-app.test.js`, as the release workflow does.
+The real connector suite needs a disposable database in `COLLAB_CONNECTOR_TEST_DATABASE_URL`. Native reporting and summary runner suites share a dedicated loopback `/ff_reporting_mcp_*` database in `COLLAB_REPORTING_MCP_TEST_DATABASE_URL`. Tests run sequentially because these integration files reset that isolated schema. Without those databases, exclude `tests/unit/connector/real-app.test.js`, `tests/unit/reporting-mcp.test.js` and `tests/unit/runner-summary.test.js`; the release workflow does so, while the full CI job exercises all three.
 
 `smoke` starts the real server against a loopback fake control plane and runs two overlapping claims, an ownership loss and a third claim. `smoke:image` repeats it inside the built image. See [scripts/README.md](scripts/README.md) for what each assertion covers and how to build the image.
 

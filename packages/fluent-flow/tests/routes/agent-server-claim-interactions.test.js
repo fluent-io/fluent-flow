@@ -37,6 +37,7 @@ vi.mock('@fluent-flow/db', async (importOriginal) => ({
   ...(await importOriginal()),
   db: {},
   appendClaimEvents: vi.fn(),
+  projectClaimEventReports: vi.fn(),
   cancelClaimRequest: vi.fn(),
   upsertClaimRequest: vi.fn(),
   leaseClaimCommands: vi.fn(),

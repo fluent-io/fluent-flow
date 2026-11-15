@@ -10,14 +10,17 @@ import { collabFetch, ApiError } from '@/lib/collab/api';
 import { capabilitiesFor, useMe } from '@/lib/collab/use-me';
 import { TaskSessions } from './task-sessions';
 import { StartTaskWork } from './start-task-work';
-import type { AttentionItem, Comment, Criterion, Priority, Run, Task, Visibility } from '@/lib/collab/types';
+import type { AttentionItem, Comment, Criterion, Priority, PublishedClaimProgress, Run, Task, Visibility } from '@/lib/collab/types';
 import type { ClaimProgressCard } from '@/lib/collab/claim-progress';
 import { ExecutionBadge } from './execution-badge';
 import { TaskClaimExecutionTab } from './task-claim-execution-tab';
 import { WorkpadTab } from './task-workpad-tab';
 import { IdeasTab } from './task-ideas-tab';
+import { TaskSummaries } from './task-summaries';
 
 import { RetainedWorkNotice } from './retained-work-notice';
+import { LegacyExecutionReader, LegacyRunHistory } from './legacy-run-history';
+import type { HistoricalSelection } from '@/lib/collab/task-navigation';
 export const PRIORITIES: Priority[] = ['low', 'normal', 'high', 'urgent'];
 
 export interface TaskDetail extends Task {
@@ -26,7 +29,8 @@ export interface TaskDetail extends Task {
   execution?: {
     latestRun: Pick<Run, 'id' | 'state' | 'stage' | 'lastObservedAt'> | null;
     hostReachability: string | null;
-    progress: string | { text: string; percent: number | null } | null;
+    progress: string | null;
+    publishedProgress?: PublishedClaimProgress | null;
     attentionCount: number;
   } | null;
 }
@@ -73,8 +77,10 @@ export function can(detail: TaskDetail | null, capability: string): boolean {
   return detail?.capabilities?.includes(capability) ?? false;
 }
 
-export function TaskDetailPage({ taskId, selectedClaimId = null, onSelectClaim = () => {} }: {
+export function TaskDetailPage({ taskId, selectedClaimId = null, onSelectClaim = () => {}, selectedRunId = null, selectedSessionId = null, onSelectHistory }: {
   taskId: string; selectedClaimId?: number | null; onSelectClaim?: (id: number | null) => void;
+  selectedRunId?: string | null; selectedSessionId?: string | null;
+  onSelectHistory: (selection: HistoricalSelection | null) => void;
 }) {
   const { detail, setDetail, error, loading, reload } = useTaskDetail(taskId);
   const { me } = useMe();
@@ -82,10 +88,13 @@ export function TaskDetailPage({ taskId, selectedClaimId = null, onSelectClaim =
   if (!detail) return <p role="alert" className="p-6 text-sm">{error ?? 'This task is unavailable.'}</p>;
   const capabilities = (detail.capabilities ?? []).filter(cap => capabilitiesFor(me, detail.projectId).includes(cap));
   const scoped = { ...detail, capabilities };
+  if (!capabilities.includes('internal.read') && scoped.execution?.publishedProgress) {
+    scoped.execution = { ...scoped.execution, publishedProgress: null };
+  }
   const authority = `${taskId}:${me?.principal.id}:${me?.principal.sessionVersion}:${capabilities.join(',')}`;
   const project = me?.workspaces?.flatMap(w=>w.projects).find(p=>p.id===detail.projectId);
-  return <TaskDetailContent key={authority} detail={scoped} setDetail={setDetail} error={error} reload={reload} repo={project?.linkedRepoFullName??null} attendedAvailable={project?.executionMode === 'chat'}
-    selectedClaimId={selectedClaimId} onSelectClaim={onSelectClaim} />;
+  return <TaskDetailContent key={authority} detail={scoped} setDetail={setDetail} error={error} reload={reload} repo={project?.linkedRepoFullName??null}
+    selectedClaimId={selectedClaimId} onSelectClaim={onSelectClaim} selectedRunId={selectedRunId} selectedSessionId={selectedSessionId} onSelectHistory={onSelectHistory} />;
 }
 
 function Disclosure({ title, children }: {title: string; children: React.ReactNode}) {
@@ -96,19 +105,35 @@ function Disclosure({ title, children }: {title: string; children: React.ReactNo
   </details>;
 }
 
-function TaskDetailContent({detail, setDetail, error, reload, selectedClaimId, onSelectClaim, repo, attendedAvailable}: {
-  repo: string | null; attendedAvailable: boolean;
+function TaskDetailContent({detail, setDetail, error, reload, selectedClaimId, onSelectClaim, repo, selectedRunId, selectedSessionId, onSelectHistory}: {
+  repo: string | null;
   detail: TaskDetail; setDetail: (value: TaskDetail) => void; error: string | null; reload: () => Promise<void>;
   selectedClaimId: number | null; onSelectClaim: (id: number | null) => void;
+  selectedRunId: string | null; selectedSessionId: string | null;
+  onSelectHistory: (selection: HistoricalSelection | null) => void;
 }) {
   const [progress, setProgress] = useState<ClaimProgressCard[] | null>(null);
+  const sourceNavigation = { onSelectClaim, onSelectHistory };
   const attention = progress === null
     ? detail.claimActivity?.needsInput ? [{ claimId: detail.claimActivity.claimId, claimType: detail.claimActivity.claimType }] : []
     : progress.filter(claim => ['pending', 'claimed'].includes(claim.status) && claim.needsInput);
   const liveWork = progress?.filter(claim => claim.claimType !== 'chat' && ['pending', 'claimed'].includes(claim.status)) ?? [];
   const unread = progress?.filter(claim => ['pending', 'claimed'].includes(claim.status) && claim.unread).length ?? 0;
-  if (selectedClaimId !== null) return <TaskClaimExecutionTab detail={detail} reload={reload}
-    selectedClaimId={selectedClaimId} onBack={() => onSelectClaim(null)} />;
+  const publishedProgress = can(detail, 'internal.read') ? detail.execution?.publishedProgress : null;
+  if (selectedClaimId !== null) return <div className="flex h-full min-h-0 flex-col">
+    <TaskClaimExecutionTab detail={detail} reload={reload} selectedClaimId={selectedClaimId} onBack={() => onSelectClaim(null)} />
+    <div className="max-h-[45%] shrink-0 overflow-y-auto px-5 pb-5 [overflow-wrap:anywhere] sm:px-6"><Disclosure title="Summaries"><TaskSummaries detail={detail} source={{ kind: 'claim', claimId: selectedClaimId }}
+      onOpenSource={source => source.kind === 'claim' ? onSelectClaim(source.claimId) : onSelectHistory({ runId: source.runId, sessionId: source.sessionId })} /></Disclosure></div>
+  </div>;
+  if (selectedRunId !== null) return <div>
+    <LegacyExecutionReader taskId={detail.id} runId={selectedRunId} sessionId={selectedSessionId}
+      internalRead={can(detail, 'internal.read')} onBack={() => onSelectHistory(null)}
+      onSelectSession={sessionId => onSelectHistory({ runId: selectedRunId, sessionId })} />
+    {selectedSessionId !== null && can(detail, 'internal.read') ? <div className="px-5 pb-5 sm:px-6"><Disclosure title="Summaries">
+      <TaskSummaries detail={detail} source={{ kind: 'execution', runId: selectedRunId, sessionId: selectedSessionId }}
+        onOpenSource={source => source.kind === 'claim' ? onSelectClaim(source.claimId) : onSelectHistory({ runId: source.runId, sessionId: source.sessionId })} />
+    </Disclosure></div> : null}
+  </div>;
   return <div className="space-y-6 p-5 sm:p-6">
     {error ? <p role="status" className="text-sm text-muted-foreground">{error}</p> : null}
     <header><h1 className="break-words text-2xl font-semibold tracking-tight">{detail.title}</h1>
@@ -117,7 +142,8 @@ function TaskDetailContent({detail, setDetail, error, reload, selectedClaimId, o
     <OverviewTab detail={detail} setDetail={setDetail} reload={reload} />
     <section aria-label="Latest progress" className="border-t border-border pt-5">
       <h2 className="text-sm font-medium">Latest progress</h2>
-      <p className="mt-3 text-sm text-muted-foreground">{detail.blockedReason ? `Blocked: ${detail.blockedReason}` : detail.execution?.progress ? (typeof detail.execution.progress === 'string' ? detail.execution.progress : detail.execution.progress.text) : 'No published progress yet.'}</p>
+      <p className="mt-3 text-sm text-muted-foreground">{detail.blockedReason ? `Blocked: ${detail.blockedReason}` : publishedProgress?.text ?? detail.execution?.progress ?? 'No published progress yet.'}</p>
+      {!detail.blockedReason && publishedProgress ? <div className="mt-2 flex items-center gap-3 text-xs text-muted-foreground">{publishedProgress.percent !== null ? <span>{publishedProgress.percent}% reported</span> : null}{publishedProgress.claimId !== detail.claimActivity?.claimId ? <button className="hover:text-foreground" onClick={() => onSelectClaim(publishedProgress.claimId)}>View reporting session</button> : null}</div> : null}
       {detail.claimActivity ? <button className="mt-3 block text-left text-sm text-muted-foreground hover:text-foreground" onClick={()=>onSelectClaim(detail.claimActivity!.claimId)}>{detail.claimActivity.claimType === 'chat' ? 'Agent session' : detail.claimActivity.claimType} · {detail.claimActivity.status === 'claimed' && detail.claimActivity.claimType === 'chat' ? 'Open' : detail.claimActivity.status}{detail.claimActivity.endReason ? ` · ${detail.claimActivity.endReason.replaceAll('_',' ')}` : ''}</button> : null}
       {detail.execution?.attentionCount ? <p className="mt-2 text-sm">Needs attention · {detail.execution.attentionCount}</p> : null}
       {attention.map(claim => <Button key={claim.claimId} variant="outline" size="sm" className="mt-3 mr-2" onClick={()=>onSelectClaim(claim.claimId)}>{can(detail,'run.steer') ? attention.length === 1 ? 'Needs your input — view session' : `Needs your input — view ${claim.claimType} ${claim.claimId}` : 'Session needs attention'}</Button>)}
@@ -126,11 +152,15 @@ function TaskDetailContent({detail, setDetail, error, reload, selectedClaimId, o
       <StartTaskWork detail={detail} repo={repo} reload={reload} onSelectClaim={onSelectClaim}/>
       {can(detail,'internal.read') && <RetainedWorkNotice taskId={detail.id}/>}
     </section>
-    <TaskSessions detail={detail} reload={reload} onSelectClaim={onSelectClaim} attendedAvailable={attendedAvailable} repo={repo} onProgress={setProgress} />
+    <TaskSessions detail={detail} reload={reload} onSelectClaim={onSelectClaim} repo={repo} onProgress={setProgress} />
+    <TaskSummaries detail={detail} onOpenSource={source => source.kind === 'claim' ? onSelectClaim(source.claimId) : onSelectHistory({ runId: source.runId, sessionId: source.sessionId })} />
     <div>
-      <Disclosure title="Workpad & artifacts"><WorkpadTab detail={detail} setDetail={setDetail} reload={reload} /></Disclosure>
-      <Disclosure title="Ideas"><IdeasTab detail={detail} /></Disclosure>
-      <Disclosure title="Run history"><TaskSessions detail={detail} reload={reload} onSelectClaim={onSelectClaim} history /></Disclosure>
+      <Disclosure title="Workpad & artifacts"><WorkpadTab detail={detail} setDetail={setDetail} reload={reload} sourceNavigation={sourceNavigation} /></Disclosure>
+      <Disclosure title="Ideas"><IdeasTab detail={detail} claimProgress={progress} sourceNavigation={sourceNavigation} /></Disclosure>
+      <Disclosure title="Run history">
+        <TaskSessions detail={detail} reload={reload} onSelectClaim={onSelectClaim} history />
+        <LegacyRunHistory taskId={detail.id} internalRead={can(detail, 'internal.read')} onSelectRun={runId => onSelectHistory({ runId, sessionId: null })} />
+      </Disclosure>
     </div>
     <CommentsPanel detail={detail} canInternal={can(detail, 'internal.read')} reload={reload} />
   </div>;

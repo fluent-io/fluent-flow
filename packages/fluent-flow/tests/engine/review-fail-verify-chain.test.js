@@ -54,6 +54,7 @@ vi.mock('../../src/engine/pause-manager.js', () => ({
 const mockGetVerificationResultsForPR = vi.fn();
 
 vi.mock('@fluent-flow/db', () => ({
+  readNativePullRequestLink: async () => null,
   db: {
     insert: () => ({
       values: () => ({

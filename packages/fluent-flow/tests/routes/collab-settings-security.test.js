@@ -57,6 +57,10 @@ describe('mounted Settings scope and configuration security',()=>{
     actors.siblingStaff=await member('Sibling private staff',['task.read'],'project',sibling.id);
     actors.workspaceAdmin=await member('Workspace membership admin',['task.read','membership.admin'],'workspace');
     actors.blindStart=await member('Private starter',['task.read','run.start']);
+    await db.getPool().query(`INSERT INTO agents(id,org_id,agent_type,transport,max_chat_slots) VALUES('native-summary-runner','settings-org','codex','long_poll',0)`);
+    await db.getPool().query(`INSERT INTO agent_sessions(org_id,agent_id,session_meta,status,last_seen_at,expires_at)
+      VALUES('settings-org','native-summary-runner',$1,'online',NOW(),NOW()+interval '10 minutes')`,
+    [JSON.stringify({capacity:1,supported_claim_types:['summary'],profiles:[{id:'digest',models:['small'],default_model:'small'}]})]);
     if(process.env.FF_SETTINGS_BROWSER_FIXTURE_PATH){
       const path=process.env.FF_SETTINGS_BROWSER_FIXTURE_PATH;
       if(!path.startsWith('/tmp/'))throw new Error('Browser fixture must stay private in /tmp');
@@ -145,4 +149,56 @@ describe('mounted Settings scope and configuration security',()=>{
     const viewerRole=roles.body.data.find(role=>role.name==='viewer');
     expect((await api('POST',`/projects/${project.id}/invitations`,{actor:actors.memberAdmin,body:{email:'scoped-invite@example.test',roleId:viewerRole.id,expiresInHours:24}})).status).toBe(201);
   });
+
+  it('saves separate native summary defaults only for a current internal project administrator',async()=>{
+    const path=`/projects/${project.id}/summary-settings`;
+    const current=await api('GET',path,{actor:actors.config});
+    expect(current.status).toBe(200);
+    expect(current.body.data.agents.find(agent=>agent.id==='native-summary-runner')).toMatchObject({available:true,capacity:1,profiles:[{id:'digest',models:['small'],default_model:'small'}]});
+    const nativeDefaults={enabled:true,agentId:'native-summary-runner',profileId:'digest',model:'small'};
+    const saved=await api('PATCH',path,{actor:actors.config,body:{expectedVersion:current.body.data.version,defaults:nativeDefaults}});
+    expect(saved.status).toBe(200);
+    expect(saved.body.data.defaults).toEqual(nativeDefaults);
+    expect((await api('GET',path,{actor:actors.config})).body.data.defaults).toEqual(nativeDefaults);
+    const legacy=(await api('GET','/me',{actor:actors.config})).body.data.workspaces.flatMap(item=>item.projects).find(item=>item.id===project.id);
+    expect(legacy.executionDefaults).toEqual(defaults());
+    for(const actor of [actors.viewer,actors.adminOnly]){
+      const denied=await api('GET',path,{actor});
+      expect(denied.status).toBe(403);
+      expect(JSON.stringify(denied.body)).not.toMatch(/native-summary-runner|digest|summary_execution_defaults|SELECT|INSERT/);
+      expect((await api('PATCH',path,{actor,body:{actor:owner,projectId:sibling.id,expectedVersion:saved.body.data.version,defaults:nativeDefaults}})).status).toBe(403);
+    }
+    const stale=await api('PATCH',path,{actor:actors.config,body:{expectedVersion:current.body.data.version,defaults:{...nativeDefaults,model:null}}});
+    expect(stale.status).toBe(409);
+    expect((await api('GET',path,{actor:actors.config})).body.data.defaults).toEqual(nativeDefaults);
+  });
+
+  it('can disable a stale native summary selection without discarding its identity',async()=>{
+    const path=`/projects/${project.id}/summary-settings`;
+    const current=await api('GET',path,{actor:actors.config});
+    expect(current.status).toBe(200);
+    const session=(await db.getPool().query(`SELECT id,session_meta FROM agent_sessions WHERE org_id='settings-org' AND agent_id='native-summary-runner'`)).rows[0];
+    await db.getPool().query(`UPDATE agent_sessions SET session_meta=$2 WHERE id=$1`,[session.id,JSON.stringify({...session.session_meta,profiles:[]})]);
+    try{
+      const disabled={...current.body.data.defaults,enabled:false};
+      const saved=await api('PATCH',path,{actor:actors.config,body:{expectedVersion:current.body.data.version,defaults:disabled}});
+      expect(saved.status).toBe(200);
+      expect(saved.body.data.defaults).toEqual(disabled);
+      expect((await api('GET',path,{actor:actors.config})).body.data.defaults).toEqual(disabled);
+    }finally{
+      await db.getPool().query('UPDATE agent_sessions SET session_meta=$2 WHERE id=$1',[session.id,JSON.stringify(session.session_meta)]);
+    }
+  });
+  it('does not expose or mutate the removed project chat configuration',async()=>{
+    const current=await db.getPool().query('SELECT version,execution_mode,default_agent_id,chat_execution_defaults FROM collab_projects WHERE id=$1',[project.id]);
+    const response=await api('GET',`/projects/${project.id}/execution-settings`,{actor:actors.config});
+    expect(response.status).toBe(404);
+    const write=await api('PATCH',`/projects/${project.id}/execution-settings`,{actor:actors.config,body:{
+      expectedVersion:current.rows[0].version,executionMode:'chat',defaultAgentId:null,
+      defaults:{profileId:null,model:null,instructions:'Must not become a hidden override'},
+    }});
+    expect(write.status).toBe(404);
+    expect((await db.getPool().query('SELECT version,execution_mode,default_agent_id,chat_execution_defaults FROM collab_projects WHERE id=$1',[project.id])).rows).toEqual(current.rows);
+  });
+
 });

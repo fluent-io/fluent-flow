@@ -8,15 +8,18 @@ import { collabFetch, ApiError } from '@/lib/collab/api';
 import type { Artifact, Check, CheckEvidence, DeliverySnapshot, TaskDecision, Visibility } from '@/lib/collab/types';
 import type { OpenQuestionView, WorkpadPlanView } from '@/lib/collab/types';
 import { can, type TaskDetail } from './task-detail';
+import { ExecutionSourceLink, type ExecutionSourceNavigation } from './execution-source-link';
 
 export function WorkpadTab({
   detail,
   setDetail,
   reload,
+  sourceNavigation,
 }: {
   detail: TaskDetail;
   setDetail: (t: TaskDetail) => void;
   reload: () => Promise<void>;
+  sourceNavigation: ExecutionSourceNavigation;
 }) {
   const canAccept = can(detail, 'delivery.accept');
   const canInternal = can(detail, 'internal.read');
@@ -51,10 +54,10 @@ export function WorkpadTab({
   return (
     <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
       {loadError?<p role="alert" className="text-sm text-destructive lg:col-span-2">{loadError}</p>:null}
-      <WorkpadPlanPanel detail={detail} canInternal={canInternal} onChanged={loadAll} />
-      <OpenQuestionsPanel detail={detail} canInternal={canInternal} onChanged={loadAll} />
-      <ChecksPanel detail={detail} checks={checks} canInternal={canInternal} onChanged={loadAll} />
-      <ArtifactsPanel detail={detail} artifacts={artifacts} canInternal={canInternal} onChanged={loadAll} />
+      <WorkpadPlanPanel detail={detail} canInternal={canInternal} onChanged={loadAll} navigation={sourceNavigation} />
+      <OpenQuestionsPanel detail={detail} canInternal={canInternal} onChanged={loadAll} navigation={sourceNavigation} />
+      <ChecksPanel detail={detail} checks={checks} canInternal={canInternal} onChanged={loadAll} navigation={sourceNavigation} />
+      <ArtifactsPanel detail={detail} artifacts={artifacts} canInternal={canInternal} onChanged={loadAll} navigation={sourceNavigation} />
       <DeliveryPanel
         detail={detail}
         setDetail={setDetail}
@@ -81,10 +84,12 @@ function WorkpadPlanPanel({
   detail,
   canInternal,
   onChanged,
+  navigation,
 }: {
   detail: TaskDetail;
   canInternal: boolean;
   onChanged: () => Promise<void>;
+  navigation: ExecutionSourceNavigation;
 }) {
   const [plan, setPlan] = useState<WorkpadPlanView | null>(null);
   const [items, setItems] = useState<PlanItem[]>([]);
@@ -128,6 +133,7 @@ function WorkpadPlanPanel({
         <h2 className="text-sm font-medium">Plan</h2>
         {plan ? <span className="text-[11px] text-muted-foreground">latest · {plan.provenance}</span> : null}
       </div>
+      {plan ? <ExecutionSourceLink taskId={detail.id} source={plan} internalRead={canInternal} navigation={navigation} /> : null}
       {plan && !editing ? (
         <ol className="mt-2 flex flex-col gap-1 text-sm">
           {plan.items.map((item, i) => (
@@ -220,10 +226,12 @@ function OpenQuestionsPanel({
   detail,
   canInternal,
   onChanged,
+  navigation,
 }: {
   detail: TaskDetail;
   canInternal: boolean;
   onChanged: () => Promise<void>;
+  navigation: ExecutionSourceNavigation;
 }) {
   const [questions, setQuestions] = useState<OpenQuestionView[]>([]);
   const [text, setText] = useState('');
@@ -302,6 +310,7 @@ function OpenQuestionsPanel({
             </div>
             <p className="mt-1">{question.text}</p>
             {question.answer ? <p className="mt-1 text-emerald-600 dark:text-emerald-400">→ {question.answer}</p> : null}
+            <ExecutionSourceLink taskId={detail.id} source={question} internalRead={canInternal} navigation={navigation} />
             {question.state === 'open' && canInternal ? (
               <form
                 className="mt-2 flex gap-2"
@@ -342,11 +351,13 @@ function ChecksPanel({
   checks,
   canInternal,
   onChanged,
+  navigation,
 }: {
   detail: TaskDetail;
   checks: (Check & { evidence?: CheckEvidence[] })[];
   canInternal: boolean;
   onChanged: () => Promise<void>;
+  navigation: ExecutionSourceNavigation;
 }) {
   const [evidenceDraft, setEvidenceDraft] = useState<{ checkId: string; status: string; commit: string; dirty: string } | null>(null);
   const [name, setName] = useState('');
@@ -438,6 +449,7 @@ function ChecksPanel({
                 <p>{evidence.status}{evidence.stale?' · stale':''} · {evidence.provenance} · {new Date(evidence.observedAt).toLocaleString()}</p>
                 <p>Commit: {evidence.commit??'unknown'} · worktree {evidence.dirty===false?'clean':evidence.dirty===true?'dirty':'unknown'} · exit {evidence.exitCode??'not reported'}</p>
                 {evidence.staleReason?<p>{evidence.staleReason}</p>:null}
+                <ExecutionSourceLink taskId={detail.id} source={evidence} internalRead={canInternal} navigation={navigation} />
               </li>)}</ul></details>:null}
               {evidenceDraft?.checkId === check.id ? (
                 <form
@@ -502,11 +514,13 @@ function ArtifactsPanel({
   artifacts,
   canInternal,
   onChanged,
+  navigation,
 }: {
   detail: TaskDetail;
   artifacts: Artifact[];
   canInternal: boolean;
   onChanged: () => Promise<void>;
+  navigation: ExecutionSourceNavigation;
 }) {
   const [name, setName] = useState('');
   const [text, setText] = useState('');
@@ -546,7 +560,7 @@ function ArtifactsPanel({
       <ul className="mt-2 flex flex-col gap-2">
         {artifacts.length === 0 ? <li className="text-xs text-muted-foreground">No artifacts.</li> : null}
         {artifacts.map((artifact) => (
-          <ArtifactRow key={artifact.id} artifact={artifact} canPublish={can(detail, 'task.write')} onChanged={onChanged} />
+          <ArtifactRow key={artifact.id} taskId={detail.id} artifact={artifact} canPublish={can(detail, 'task.write')} canInternal={canInternal} navigation={navigation} onChanged={onChanged} />
         ))}
       </ul>
       {can(detail, 'task.write') ? (
@@ -579,7 +593,9 @@ function ArtifactsPanel({
   );
 }
 
-function ArtifactRow({ artifact,canPublish,onChanged }: { artifact: Artifact;canPublish:boolean;onChanged:()=>Promise<void> }) {
+function ArtifactRow({ artifact, taskId, canPublish, canInternal, navigation, onChanged }: {
+  artifact: Artifact; taskId: string; canPublish: boolean; canInternal: boolean; navigation: ExecutionSourceNavigation; onChanged: () => Promise<void>;
+}) {
   const [preview, setPreview] = useState<string | null>(null);
   const [previewType, setPreviewType] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -641,6 +657,7 @@ function ArtifactRow({ artifact,canPublish,onChanged }: { artifact: Artifact;can
         <span className="font-medium">{artifact.name}</span>
         <span className="text-[11px] text-muted-foreground">{artifact.direction} · {artifact.visibility} · {artifact.provenance}</span>
       </div>
+      <ExecutionSourceLink taskId={taskId} source={artifact} internalRead={canInternal} navigation={navigation} />
       <div className="mt-1 flex items-center gap-2">
         <Button size="sm" variant="outline" disabled={busy} onClick={() => void loadPreview()}>Preview</Button>
         {canPublish?<Button size="sm" variant="ghost" disabled={busy} onClick={()=>void (async()=>{
@@ -680,10 +697,9 @@ function DeliveryPanel({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [ackIds, setAckIds] = useState<string[]>([]);
-  const [review, setReview] = useState<{
-    deliveryId: string; runId: string | null; headCommit: string | null; dirty: boolean | null;
-    evidenceRevision: string; openItems: { id: string; label: string }[];
-  } | null>(null);
+  const [review, setReview] = useState<(NonNullable<TaskDecision['reviewSnapshot']> & {
+    openItems: { id: string; label: string }[];
+  }) | null>(null);
   const reviewRequests = useRef(new LatestRequest());
   const reviewRevision = useRef<string | null>(null);
   const canViewHistory = canAccept || can(detail, 'internal.read');
@@ -818,6 +834,13 @@ function DeliveryPanel({
   return (
     <section aria-label="Review and delivery" className="rounded-lg border border-border bg-card p-4">
       <h2 className="text-sm font-medium">Review and delivery</h2>
+      {review ? (
+        <section aria-label="Current delivery source" className="mt-2 text-xs text-muted-foreground">
+          {review.source ? <p>Execution source: claim #{review.source.claimId}</p> : null}
+          <p className="break-all">Current commit: {review.headCommit ?? 'unknown'}</p>
+          <p>Current worktree: {review.dirty === false ? 'clean' : review.dirty === true ? 'dirty' : 'unknown'}</p>
+        </section>
+      ) : null}
 
       {openItems.length > 0 ? (
         <div className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-2.5 text-sm">
@@ -915,6 +938,7 @@ function DeliveryPanel({
                 <p className="mt-1">Acknowledged open items: {decision.acknowledgedOpenItemIds.length}</p>
                 {decision.reviewSnapshot ? (
                   <div className="mt-1 text-muted-foreground">
+                    {decision.reviewSnapshot.source ? <p>Reviewed execution: claim #{decision.reviewSnapshot.source.claimId}</p> : null}
                     <p className="break-all">Reviewed commit: {decision.reviewSnapshot.headCommit ?? 'unknown'}</p>
                     <p>Worktree at decision: {decision.reviewSnapshot.dirty === false ? 'clean' : decision.reviewSnapshot.dirty === true ? 'dirty' : 'unknown'}</p>
                   </div>

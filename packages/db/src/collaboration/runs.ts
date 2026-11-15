@@ -5,6 +5,7 @@ import { getPool } from '../pool.js';
 import { withClientTransaction } from './tx.js';
 import { authorize, getProjectCapabilities } from './authorize.js';
 import { requireCurrentPrincipal } from './principals.js';
+import { assertLegacyExecutionOpen } from './execution-retirement.js';
 import { CollabServiceError } from './errors.js';
 import type { CollabTask, RunState, ExecutionStage } from './schemas.js';
 
@@ -81,14 +82,20 @@ export const REPORTING_CAPABILITIES = [
 
 export type ReportingCapability = (typeof REPORTING_CAPABILITIES)[number];
 
-export type AgentReportingContext = {
+export type LegacyReportSource = { kind: 'legacy'; runId: string; sessionId: string | null };
+export type ClaimReportSource = { kind: 'claim'; claimId: number; reportingBindingId: string };
+export type ReportSource = LegacyReportSource | ClaimReportSource;
+
+type ReportingContextBase = {
   kind: 'agent';
   projectId: string;
-  runId: string;
-  sessionId: string | null;
   capabilities: ReportingCapability[];
   tokenPrefix: string;
 };
+
+export type LegacyReportingContext = ReportingContextBase & { source: LegacyReportSource };
+export type ClaimReportingContext = ReportingContextBase & { taskId: string; source: ClaimReportSource };
+export type AgentReportingContext = LegacyReportingContext | ClaimReportingContext;
 
 export function reportingServerKey(): string {
   const key = process.env.FF_COLLAB_AUTH_SECRET;
@@ -129,7 +136,7 @@ export async function ensureReportingBinding(
   );
 }
 
-export async function authenticateAgentToken(token: string): Promise<AgentReportingContext> {
+export async function authenticateAgentToken(token: string): Promise<LegacyReportingContext> {
   const match = /^ffag_([0-9a-fA-F-]{36})_([A-Za-z0-9_-]{32})$/.exec(token);
   const secret = reportingServerKey();
   if (match === null) {
@@ -161,10 +168,9 @@ export async function authenticateAgentToken(token: string): Promise<AgentReport
   return {
     kind: 'agent',
     projectId: row.project_id,
-    runId: row.run_id,
-    sessionId: row.session_id,
     capabilities: row.scopes.filter((cap:ReportingCapability)=>row.role==='summary'?cap==='report.summary':cap!=='report.summary'),
     tokenPrefix: row.token_prefix,
+    source: { kind: 'legacy', runId: row.run_id, sessionId: row.session_id },
   };
 }
 
@@ -263,6 +269,9 @@ export async function startCollabRun(input: {
       );
       return { run: rowToRun(run.rows[0]), sessionId: session.rows[0].id, created: false };
     }
+
+    await assertLegacyExecutionOpen(tx);
+    await requireCurrentPrincipal(input2.actor, tx);
 
     const taskNow = await tx.query(
       `SELECT version FROM collab_tasks WHERE id = $1 FOR UPDATE`,
@@ -567,15 +576,28 @@ export async function listCollabRuns(input: {
   limit?: number;
 }): Promise<{ runs: Array<Run | RunBadge>; nextCursor: string | null }> {
   const limit = Math.min(Math.max(input.limit ?? 50, 1), 100);
+  if (!Number.isInteger(limit)) {
+    throw new CollabServiceError(400, 'invalid_limit', 'The page size is invalid.');
+  }
+  if (input.cursor !== undefined && !z.string().uuid().safeParse(input.cursor).success) {
+    throw new CollabServiceError(400, 'invalid_cursor', 'The cursor is invalid.');
+  }
   const task = await getPool().query(`SELECT project_id FROM collab_tasks WHERE id = $1`, [input.taskId]);
   if (task.rows.length === 0) {
     throw new CollabServiceError(404, 'not_found', 'Not found.');
   }
   await authorizeRunRead(input.actor, task.rows[0].project_id);
   const capabilities = await getProjectCapabilities(input.actor.principalId, task.rows[0].project_id);
+  if (input.cursor !== undefined) {
+    const anchor = await getPool().query('SELECT 1 FROM collab_runs WHERE id=$1 AND task_id=$2', [input.cursor, input.taskId]);
+    if (!anchor.rows[0]) throw new CollabServiceError(400, 'invalid_cursor', 'The cursor is invalid.');
+  }
   const { rows } = await getPool().query(
-    `${RUN_SELECT} WHERE r.task_id = $1 ORDER BY r.created_at DESC, r.id LIMIT $2`,
-    [input.taskId, limit + 1],
+    `WITH boundary AS (SELECT created_at,id FROM collab_runs WHERE id=$3 AND task_id=$1)
+     ${RUN_SELECT} WHERE r.task_id=$1 AND ($3::uuid IS NULL OR EXISTS (
+       SELECT 1 FROM boundary b WHERE r.created_at<b.created_at OR (r.created_at=b.created_at AND r.id>b.id)
+     )) ORDER BY r.created_at DESC,r.id LIMIT $2`,
+    [input.taskId, limit + 1, input.cursor ?? null],
   );
   const page = rows.slice(0, limit);
   const nextCursor = rows.length > limit && page.length > 0 ? page[page.length - 1].id : null;
@@ -669,6 +691,9 @@ export async function createRunSession(input: {
       );
       return { session: rowToSession(session.rows[0]), commandId: command.rows[0].id, created: false };
     }
+
+    await assertLegacyExecutionOpen(tx);
+    await requireCurrentPrincipal(input.actor, tx);
 
     const run = await tx.query(`SELECT * FROM collab_runs WHERE id = $1 FOR UPDATE`, [input.runId]);
     if (run.rows.length === 0) {
@@ -781,6 +806,10 @@ export async function submitSessionCommand(input: {
         );
       }
       return { commandId: existing.rows[0].resource_id, created: false };
+    }
+    if (command.kind === 'prompt') {
+      await assertLegacyExecutionOpen(tx);
+      await requireCurrentPrincipal(input.actor, tx);
     }
     const run = await tx.query(`SELECT * FROM collab_runs WHERE id = $1 FOR UPDATE`, [
       sessionRows.rows[0].run_id,
@@ -940,6 +969,10 @@ export async function queueRunCommand(input: {
         );
       }
       return { commandId: existing.rows[0].resource_id, created: false };
+    }
+    if (input.kind !== 'artifact_read') {
+      await assertLegacyExecutionOpen(tx);
+      await requireCurrentPrincipal(input.actor, tx);
     }
     if (input.sessionId !== null) {
       const session=await tx.query('SELECT id FROM collab_sessions WHERE id=$1 AND run_id=$2',[input.sessionId,input.runId]);

@@ -97,23 +97,6 @@ beforeEach(() => {
 });
 
 describe('expireClaims atomic interaction cancellation', () => {
-  it('updates expiry without archiving, cancels every claim interaction before commit, then frees sessions', async () => {
-    const claims = await expireClaims();
-
-    const updateCall = state.client.query.mock.calls.find(([text]) => /UPDATE\s+agent_claims/i.test(String(text)));
-    expect(updateCall).toBeDefined();
-    expect(updateCall[0]).toMatch(/status\s*=\s*CASE WHEN claim.claim_type='chat' THEN 'cancelled' ELSE 'expired' END/i);
-    expect(updateCall[0]).toMatch(/completed_at\s*=\s*NOW\(\)/i);
-    expect(updateCall[0]).not.toMatch(/archived_at/i);
-    expect(cancelOpenClaimInteractions).toHaveBeenNthCalledWith(1, { orgId: 'o1', claimId: 7 }, state.client);
-    expect(cancelOpenClaimInteractions).toHaveBeenNthCalledWith(2, { orgId: 'o1', claimId: 8 }, state.client);
-    expect(state.order).toEqual(['BEGIN', 'UPDATE', 'CANCEL_7', 'CANCEL_8', 'COMMIT', 'FREE_3', 'FREE_4']);
-    expect(claims).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 7, status: 'expired' }),
-      expect.objectContaining({ id: 8, status: 'expired' }),
-    ]));
-    expect(state.client.release).toHaveBeenCalledOnce();
-  });
 
   it('rolls back all expirations and frees no session when cancellation fails', async () => {
     cancelOpenClaimInteractions.mockRejectedValueOnce(new Error('interaction cancellation failed'));

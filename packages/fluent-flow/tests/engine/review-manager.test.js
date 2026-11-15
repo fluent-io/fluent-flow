@@ -11,9 +11,8 @@ vi.mock('../../src/agents/session-manager.js', () => ({
   resolveSession: (...a) => mockResolveSession(...a),
 }));
 
-// review-manager only touches db.update/insert for reviewRetries — stub them
-// to no-op so dispatchReview can run without a real connection.
 vi.mock('@fluent-flow/db', () => ({
+  readNativePullRequestLink: async () => null,
   db: {
     insert: () => ({
       values: () => ({

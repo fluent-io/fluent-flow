@@ -30,11 +30,13 @@ const resultSchema = z.object({
   headSha: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/),
 }).strict();
 
-type Scope = { org_id: string; project_id: string; task_id: string; root_claim_id: number; repo: string | null; claim_type: string };
+type Scope = { org_id: string; project_id: string; task_id: string; root_claim_id: number; repo: string | null; claim_type: string;
+  created_by_principal_id: string; created_by_session_version: number | null };
 type Identity = z.infer<typeof identitySchema>;
 
 async function scopeFor(input: Identity, tx: PoolClient, lock = false): Promise<Scope> {
-  const { rows } = await tx.query<Scope>(`SELECT c.org_id,c.repo,c.claim_type,e.project_id,e.task_id,e.root_claim_id
+  const { rows } = await tx.query<Scope>(`SELECT c.org_id,c.repo,c.claim_type,e.project_id,e.task_id,e.root_claim_id,
+    e.created_by_principal_id,e.created_by_session_version
     FROM agent_claims c JOIN collab_claim_executions e ON e.claim_id=c.id WHERE c.id=$1${lock ? ' FOR UPDATE OF c' : ''}`, [input.claimId]);
   if (!rows[0]) throw new CollabServiceError(404, 'not_found', 'Not found.');
   await authorize(input.actor, { projectId: rows[0].project_id }, ['internal.read', 'run.start', 'run.steer'], tx);
@@ -94,7 +96,17 @@ export async function startCollabClaimHandoff(input: {
   const hash = createHash('sha256').update(JSON.stringify({ expectedVersion: parsed.expectedVersion,
     destinationTitle: parsed.destinationTitle ?? null })).digest('hex');
   return withClientTransaction(async tx => {
+    const initial = await scopeFor(parsed, tx);
+    if (parsed.destinationTitle !== undefined) {
+      await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`board:${initial.project_id}`]);
+      await tx.query('SELECT id FROM collab_projects WHERE id=$1 FOR UPDATE', [initial.project_id]);
+    }
+    await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`run-start:${initial.task_id}`]);
+    const source = await tx.query('SELECT version,description FROM collab_tasks WHERE id=$1 FOR UPDATE', [initial.task_id]);
     const scope = await scopeFor(parsed, tx, true);
+    if (scope.task_id !== initial.task_id || scope.project_id !== initial.project_id) {
+      throw new CollabServiceError(409, 'version_conflict', 'This item changed. Refresh before starting the build.');
+    }
     const command = await commandFor(parsed, scope, tx);
     if (parsed.destinationTitle !== undefined) await authorize(parsed.actor, { projectId: scope.project_id }, ['task.write'], tx);
     const existing = await tx.query(`SELECT * FROM collab_claim_handoffs WHERE command_id=$1`, [parsed.commandId]);
@@ -106,8 +118,6 @@ export async function startCollabClaimHandoff(input: {
       return { claimId: row.claim_id, taskId: row.task_id, created: false };
     }
     const prepared = preparedResult(command, scope);
-    await tx.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`run-start:${scope.task_id}`]);
-    const source = await tx.query(`SELECT version,description FROM collab_tasks WHERE id=$1${parsed.destinationTitle === undefined ? ' FOR UPDATE' : ''}`, [scope.task_id]);
     if (!source.rows[0] || source.rows[0].version !== parsed.expectedVersion) {
       throw new CollabServiceError(409, 'version_conflict', 'This item changed. Refresh before starting the build.', { currentVersion: source.rows[0]?.version });
     }
@@ -122,13 +132,16 @@ export async function startCollabClaimHandoff(input: {
       if (description.length > 65535) throw new CollabServiceError(409, 'task_description_full', 'The task description is full. Create a separate build task.');
       await tx.query(`UPDATE collab_tasks SET description=$2,version=version+1,updated_at=now() WHERE id=$1`, [taskId, description]);
     }
+    const continuesLineage = taskId === scope.task_id && scope.created_by_principal_id === parsed.actor.principalId
+      && scope.created_by_session_version === parsed.actor.sessionVersion;
     const claim = await insertPendingClaim({ orgId: scope.org_id, repo: scope.repo, prNumber: null, claimType: 'spec',
       headSha: prepared.headSha, payload: { source: 'collab', handed_off_from: parsed.claimId,
         handoff_command_id: parsed.commandId, handoff_base_sha: prepared.headSha, handoff_digest: prepared.digest,
-        branch: prepared.branch, message: summary, instructions: summary } }, tx);
+        branch: taskId === scope.task_id ? prepared.branch : `ff/task-${taskId}`, message: summary, instructions: summary } }, tx);
     if (!claim) throw new CollabServiceError(409, 'claim_conflict', 'The work could not be started.');
-    await tx.query(`INSERT INTO collab_claim_executions(task_id,project_id,claim_id,root_claim_id,created_by_principal_id)
-      VALUES ($1,$2,$3,$4,$5)`, [taskId,scope.project_id,claim.id,scope.root_claim_id,parsed.actor.principalId]);
+    await tx.query(`INSERT INTO collab_claim_executions(task_id,project_id,claim_id,root_claim_id,created_by_principal_id,created_by_session_version,parent_claim_id)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)`, [taskId,scope.project_id,claim.id,continuesLineage ? scope.root_claim_id : claim.id,
+      parsed.actor.principalId,parsed.actor.sessionVersion,continuesLineage ? parsed.claimId : null]);
     await tx.query(`INSERT INTO collab_claim_handoffs(command_id,task_id,claim_id,principal_id,idempotency_key,request_hash)
       VALUES ($1,$2,$3,$4,$5,$6)`, [parsed.commandId,taskId,claim.id,parsed.actor.principalId,parsed.idempotencyKey,hash]);
     return { claimId: claim.id, taskId, created: true };
