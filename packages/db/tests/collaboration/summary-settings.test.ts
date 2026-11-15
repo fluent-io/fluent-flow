@@ -53,17 +53,16 @@ describe('native summary configuration authority', () => {
     expect(settings.agents.some(agent => agent.id === 'summary-foreign')).toBe(false);
   });
 
-  it('saves explicit summary identity without rewriting chat or legacy configuration', async () => {
+  it('saves explicit summary identity without rewriting legacy configuration', async () => {
     const target = await project('Separate summary configuration');
     const legacy = { summary: { enabled: true, profileId: 'legacy-summary-profile', model: 'legacy-model' }, instructions: 'Preserve historical instructions' };
     await getPool().query('UPDATE collab_projects SET execution_defaults=$2 WHERE id=$1', [target.id, JSON.stringify(legacy)]);
-    const before = (await getPool().query('SELECT execution_mode,default_agent_id,chat_execution_defaults FROM collab_projects WHERE id=$1', [target.id])).rows[0];
     const current = await getProjectSummarySettings({ actor, projectId: target.id });
     const defaults = { enabled: true, agentId: 'summary-capacity-one', profileId: 'summarize', model: 'large' };
     const saved = await updateProjectSummarySettings({ actor, projectId: target.id, expectedVersion: current.version, defaults });
     expect(saved.defaults).toEqual(defaults);
-    const persisted = (await getPool().query('SELECT execution_mode,default_agent_id,chat_execution_defaults,execution_defaults,summary_execution_defaults,version FROM collab_projects WHERE id=$1', [target.id])).rows[0];
-    expect(persisted).toMatchObject({ ...before, execution_defaults: legacy, summary_execution_defaults: defaults, version: current.version + 1 });
+    const persisted = (await getPool().query('SELECT execution_defaults,summary_execution_defaults,version FROM collab_projects WHERE id=$1', [target.id])).rows[0];
+    expect(persisted).toEqual({ execution_defaults: legacy, summary_execution_defaults: defaults, version: current.version + 1 });
   });
 
   it('preserves an explicit offline selection rather than silently replacing it', async () => {

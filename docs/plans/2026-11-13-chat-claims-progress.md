@@ -799,3 +799,43 @@ production freeze or credential operation is part of this change.
 - Fresh hosted checks are required on the published commit. No production
   configuration, credential, freeze or deletion action occurred.
 
+
+### Remove obsolete project chat storage — 2026-11-15
+
+The user chose to remove unused chat settings from the schema, superseding the
+earlier decision to retain their values. Work continues on
+`cleanup/remove-project-chat-columns`, based on PR154 at `f190b07`.
+
+- Replace obsolete fixture writes with a real-PG regression proving the five
+  project chat columns are absent and ordinary chat creation/replay still work.
+- Add forward migration `0045_remove_project_chat_settings.sql` and its journal
+  entry. Drop only `execution_mode`, `default_agent_id`, `chat_execution_defaults`,
+  `chat_pending_ttl_seconds` and `chat_idle_timeout_seconds`, without CASCADE.
+- Update summary, removed-route and production-browser fixtures to stop reading
+  those columns. Keep independent summary and legacy execution configuration.
+- Run migration/package tests and the actual production browser, then obtain
+  independent reviews and publish a follow-up PR.
+
+Deployment prerequisite: merge and fully deploy PR154 first, including stopping
+older instances that still query these fields. Only then ship the cleanup
+migration. Applied migrations 0029/0030 remain unchanged; no production database
+operation is authorized or performed by this work.
+
+Verification so far:
+
+- The real-PG regression first failed because all five columns still existed,
+  then passed with the forward migration. The focused claim and summary suites
+  pass 45 cases across two files.
+- The built production migrator upgraded an existing owned loopback database
+  with two project rows from 45 to 46 migration records. All five columns were
+  removed; a digest of every retained project field stayed byte-identical.
+  Re-running the production migrator left the rows and migration count unchanged.
+- Full root verification passes all six build/test tasks with zero cache hits:
+  DB 469/38 files, dashboard 513/34, agent server 971/57 and server 843 with ten
+  opt-in SQL cases assigned to the separate check. Those ten also pass.
+- The actual production browser passes after column removal, including a final
+  run after deleting the now-unseeded obsolete-instruction assertion and fixing
+  the evidence label. Prompt-count, local-model, summary/history and authority
+  assertions remain. No new screenshot or temporary verification file was made.
+- Independent quality and security reviews approve the scoped migration and
+  fixture/documentation changes. No applied migration or runtime logic changed.
