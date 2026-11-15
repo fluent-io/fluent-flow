@@ -448,28 +448,59 @@ describe('task-linked claim executions', () => {
     expect(await insertPendingClaim({ ...input, taskId: a.id })).toMatchObject({ attempt: 2 });
   });
 
-  it('creates and replays ordinary chat without project chat configuration storage', async () => {
-    expect(await rows(`SELECT attname FROM pg_attribute WHERE attrelid='collab_projects'::regclass
-      AND NOT attisdropped AND attname=ANY($1::text[]) ORDER BY attname`, [[
-      'execution_mode', 'default_agent_id', 'chat_execution_defaults',
-      'chat_pending_ttl_seconds', 'chat_idle_timeout_seconds',
-    ]])).toEqual([]);
-    const task = await createCollabTask({actor: managerActor, projectId, title: 'Ordinary chat routing'});
-    const input = {actor: managerActor, taskId: task.id, expectedVersion: 1, idempotencyKey: crypto.randomUUID(), repo: null, claimType: 'chat' as const};
-    const created = await startCollabClaimExecution(input);
-    expect(await rows(`SELECT target_agent_id,idle_timeout_seconds,
-      round(extract(epoch FROM pending_deadline_at-created_at))::integer AS ttl,payload
-      FROM agent_claims WHERE id=$1`, [created.claim.id])).toEqual([{
-      target_agent_id: null, idle_timeout_seconds: 900, ttl: 120,
-      payload: expect.objectContaining({instructions: ''}),
-    }]);
-    const payload = (await rows<{payload: Record<string, unknown>}>('SELECT payload FROM agent_claims WHERE id=$1', [created.claim.id]))[0].payload;
-    expect(payload).not.toHaveProperty('profile');
-    expect(payload).not.toHaveProperty('model');
-    expect((await startCollabClaimExecution(input)).claim.id).toBe(created.claim.id);
-    const nextTask = await createCollabTask({actor: managerActor, projectId, title: 'Request-owned chat instructions'});
-    const next = await startCollabClaimExecution({...input, taskId: nextTask.id, idempotencyKey: crypto.randomUUID(), instructions: 'Use this request only.'});
-    expect((await rows<{payload: Record<string, unknown>}>('SELECT payload FROM agent_claims WHERE id=$1', [next.claim.id]))[0].payload.instructions).toBe('Use this request only.');
+  it('ignores stored project chat routing, policy, instructions and timeouts', async () => {
+    await getPool().query(`INSERT INTO agents(org_id,id,agent_type,transport) VALUES ($1,'chat-default','test','long_poll')`, [orgId]);
+    await getPool().query(`INSERT INTO agent_sessions(org_id,agent_id,status,last_seen_at,expires_at,session_meta)
+      VALUES ($1,'chat-default','online',NOW(),NOW()+interval '5 minutes',$2)`, [orgId, JSON.stringify({
+      capacity: 2, supported_claim_types: ['chat'], profiles: [{id: 'legacy', models: ['old-model'], default_model: 'old-model'}],
+    })]);
+    await getPool().query(`UPDATE collab_projects SET default_agent_id='chat-default',
+      chat_execution_defaults=$2,chat_pending_ttl_seconds=45,chat_idle_timeout_seconds=60 WHERE id=$1`,
+    [projectId, JSON.stringify({profileId: 'legacy', model: 'old-model', instructions: 'Obsolete project instructions'})]);
+    try {
+      const task = await createCollabTask({actor: managerActor, projectId, title: 'Ordinary chat routing'});
+      const input = {actor: managerActor, taskId: task.id, expectedVersion: 1, idempotencyKey: crypto.randomUUID(), repo: null, claimType: 'chat' as const};
+      const created = await startCollabClaimExecution(input);
+      expect(await rows(`SELECT target_agent_id,idle_timeout_seconds,
+        round(extract(epoch FROM pending_deadline_at-created_at))::integer AS ttl,payload
+        FROM agent_claims WHERE id=$1`, [created.claim.id])).toEqual([{
+        target_agent_id: null, idle_timeout_seconds: 900, ttl: 120,
+        payload: expect.objectContaining({instructions: ''}),
+      }]);
+      const payload = (await rows<{payload: Record<string, unknown>}>('SELECT payload FROM agent_claims WHERE id=$1', [created.claim.id]))[0].payload;
+      expect(payload).not.toHaveProperty('profile');
+      expect(payload).not.toHaveProperty('model');
+      expect((await rows(`SELECT default_agent_id,chat_execution_defaults,
+        chat_pending_ttl_seconds,chat_idle_timeout_seconds FROM collab_projects WHERE id=$1`, [projectId]))[0])
+        .toEqual({
+          default_agent_id: 'chat-default',
+          chat_execution_defaults: {profileId: 'legacy', model: 'old-model', instructions: 'Obsolete project instructions'},
+          chat_pending_ttl_seconds: 45,
+          chat_idle_timeout_seconds: 60,
+        });
+      await getPool().query(`UPDATE collab_projects SET default_agent_id='unavailable-agent' WHERE id=$1`, [projectId]);
+      expect((await startCollabClaimExecution(input)).claim.id).toBe(created.claim.id);
+      const nextTask = await createCollabTask({actor: managerActor, projectId, title: 'Request-owned chat instructions'});
+      const next = await startCollabClaimExecution({...input, taskId: nextTask.id, idempotencyKey: crypto.randomUUID(), instructions: 'Use this request only.'});
+      expect((await rows<{payload: Record<string, unknown>}>('SELECT payload FROM agent_claims WHERE id=$1', [next.claim.id]))[0].payload.instructions).toBe('Use this request only.');
+    } finally {
+      await getPool().query(`UPDATE collab_projects SET default_agent_id=NULL,chat_execution_defaults=$2,
+        chat_pending_ttl_seconds=120,chat_idle_timeout_seconds=900 WHERE id=$1`,
+      [projectId, JSON.stringify({profileId: null, model: null, instructions: ''})]);
+    }
+  });
+
+  it('allows ordinary chat creation despite the obsolete connector project mode', async () => {
+    const task = await createCollabTask({actor: managerActor, projectId, title: 'No attended rollout gate'});
+    await getPool().query("UPDATE collab_projects SET execution_mode='connector' WHERE id=$1", [projectId]);
+    try {
+      const result = await startCollabClaimExecution({actor: managerActor, taskId: task.id, expectedVersion: 1, idempotencyKey: crypto.randomUUID(), repo: null, claimType: 'chat'});
+      expect((await rows('SELECT task_id,target_agent_id,status FROM agent_claims WHERE id=$1', [result.claim.id]))[0])
+        .toEqual({task_id: task.id, target_agent_id: null, status: 'pending'});
+      expect((await startCollabClaimExecution(startInput({taskId: task.id, idempotencyKey: crypto.randomUUID(), prNumber: 990}))).created).toBe(true);
+    } finally {
+      await getPool().query("UPDATE collab_projects SET execution_mode='chat' WHERE id=$1", [projectId]);
+    }
   });
 
   it('rejects stale authentication before looking up a task', async () => {

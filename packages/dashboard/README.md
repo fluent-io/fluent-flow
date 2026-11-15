@@ -24,8 +24,8 @@ does not resume a model or certify completion. Current permissions govern
 transcript access, and permission loss clears the loaded transcript.
 
 New/Open session creates ordinary chat claims without project execution setup.
-The selected agent owns the profile, permission policy and model. Projects do
-not store chat configuration.
+The selected agent owns the profile, permission policy and model. Old project
+mode, agent and chat-default values do not gate sessions or populate claims.
 There is no attended-execution settings panel or backend selector. Explicit
 per-operation targeting remains separate from project defaults.
 
