@@ -172,11 +172,14 @@ Project mode, agent, profile/model, instructions and lifecycle defaults do not
 configure chat. New/Open session needs no project setup.
 
 The project chat-settings service and defaults-mapping launcher were removed.
-Previously stored chat configuration columns remain inert historical storage;
-their values are neither exposed as execution controls nor copied into new
-claims. Existing legacy `execution_defaults`, hosts and mappings stay intact.
-Preserve and explicitly disposition that configuration with the agent operator
-before retirement; do not invent an equivalent profile or silently discard it.
+Migration `0045_remove_project_chat_settings.sql` removes the five obsolete
+project chat columns. Deploy PR154's no-reader code and stop older instances
+before shipping this follow-up migration; it is not safe to drop columns while
+an older service still queries them. Applied migrations 0029/0030 stay unchanged.
+
+Existing legacy `execution_defaults`, hosts and mappings stay intact. Preserve
+and explicitly disposition that configuration with the agent operator before
+retirement; do not invent an equivalent profile or silently discard it.
 Native summary settings remain a separate authorized feature.
 
 

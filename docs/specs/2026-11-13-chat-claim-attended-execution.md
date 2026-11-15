@@ -164,10 +164,10 @@ v1's "reuse the worktree for `root_claim_id`" contradicted force-remove teardown
 
 ### Routing
 
-- Optional per-operation `agent_claims.target_agent_id` is validated against the current organization; an absent target uses ordinary eligible agents. Project `default_agent_id` is not consulted.
+- Optional per-operation `agent_claims.target_agent_id` is validated against the current organization; an absent target uses ordinary eligible agents. There is no project default agent.
 - Repo-less eligibility: an agent matches a repo-less chat claim iff `target_agent_id` matches (or is NULL and the agent accepts chats) — repository allowlists do not apply to repo-less rows (X7).
 - Offline target agent: the claim stays pending until its TTL expires; **no silent failover** to another agent (X7).
-- Chat always uses the selected runner's first locally configured profile, permission policy and default model. Project profile/model/instructions overrides and old delivered profile/model fields do not select chat policy. Explicit per-request instructions remain request content. Runner-advertised catalogs still support the separate native-summary feature. Historical project configuration is preserved for explicit operator disposition, not migrated into new chat defaults.
+- Chat always uses the selected runner's first locally configured profile, permission policy and default model. Project profile/model/instructions overrides and old delivered profile/model fields do not select chat policy. Explicit per-request instructions remain request content. Runner-advertised catalogs still support the separate native-summary feature. Still-used legacy connector configuration is preserved for explicit operator disposition, not migrated into new chat defaults.
 
 ### Security / threat model (C3, X10, X11)
 
@@ -207,8 +207,8 @@ A chat session is a natural place to design work; building it belongs to the una
 
 Staged; **deletion is gated on the re-key stage, not on one preview cycle** (C15/X15, C16/X14, C4/X9):
 
-1. **Ship chat claims** with additive task/lease/command/capacity support. Task page **Open session** creates a chat claim; **New session** atomically creates a minimal task and chat claim. Ready-task **Start** continues to launch unattended work. All eligible projects can use chat without an execution-mode switch. Already-applied project configuration columns remain inert until separately authorized schema retirement.
-2. **Re-key** (separate migration + PR): re-key evidence, artifacts, workpad plans/questions, summaries, usage samples, and scoped tokens from `collab_runs`/`collab_sessions` to `claim_id`/`root_claim_id`; re-bind collab MCP reporting tools to claim-scoped tokens; migrate or archive historic run transcripts so pre-cutover history survives. Preserve old project configuration for explicit operator review rather than writing replacement chat overrides.
+1. **Ship chat claims** with additive task/lease/command/capacity support. Task page **Open session** creates a chat claim; **New session** atomically creates a minimal task and chat claim. Ready-task **Start** continues to launch unattended work. All eligible projects can use chat without an execution-mode switch. After PR154's no-reader code is fully deployed and older instances stop, forward migration 0045 removes the five unused project chat columns. Applied migrations remain unchanged.
+2. **Re-key** (separate migration + PR): re-key evidence, artifacts, workpad plans/questions, summaries, usage samples, and scoped tokens from `collab_runs`/`collab_sessions` to `claim_id`/`root_claim_id`; re-bind collab MCP reporting tools to claim-scoped tokens; migrate or archive historic run transcripts so pre-cutover history survives. Preserve still-used legacy connector configuration for explicit operator review rather than writing replacement chat overrides.
 3. **Freeze**: server-side, `collaboration_start_run`/`collaboration_send_prompt` and the host/mapping write APIs stop accepting new runs/hosts/mappings; existing host executions keep working until drained (active runs complete or are reconciled), connector credentials revoked at drain.
 4. **Delete** — gated on: zero active connector runs, re-key migration shipped, historic transcripts archived. The PR removes:
    - `packages/fluent-flow-agent-server/src/connector/*` and the `fluent-flow-connector` bin + `connector.example.json` (C15);
