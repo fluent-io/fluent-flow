@@ -22,6 +22,22 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    services:
+      postgres:
+        image: postgres:16@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: ff_reporting_mcp_release_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      COLLAB_REPORTING_MCP_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ff_reporting_mcp_release_test
     outputs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.policy.outputs.prerelease }}
@@ -61,6 +77,9 @@ jobs:
         env:
           PACKAGE_VERSION: ${{ steps.version.outputs.version }}
         run: node scripts/release-policy.mjs
+
+      - name: Build canonical reporting services
+        run: npm run build -w @fluent-flow/db
 
       - name: Run agent server tests
         run: npm test -w @fluent-flow/agent-server -- --exclude tests/unit/connector/real-app.test.js

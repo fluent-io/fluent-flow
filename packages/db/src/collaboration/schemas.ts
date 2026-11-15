@@ -43,6 +43,7 @@ export const collabTaskSchema = z.object({
     latestRun: z.object({ id: z.string().uuid(), state: runStateSchema, stage: executionStageSchema, lastObservedAt: z.string().datetime().nullable() }).nullable(),
     hostReachability: hostReachabilitySchema.nullable(),
     progress: z.string().nullable(),
+    publishedProgress: z.object({ claimId: z.number().int().positive(), text: z.string(), percent: z.number().min(0).max(100).nullable() }).nullable().optional(),
     attentionCount: z.number().int().min(0),
   }).optional(),
 });

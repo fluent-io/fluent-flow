@@ -13,6 +13,7 @@ import { resolveSession } from '../agents/session-manager.js';
 import { onClaimDispatched, onClaimResolved } from './check-run.js';
 import { getProvider } from '../providers/index.js';
 import logger from '../logger.js';
+import { consumeNativeReviewResult } from './native-pull-requests.js';
 
 function buildPriorRedRecordsPayload(rows) {
   return (rows ?? [])
@@ -102,7 +103,7 @@ export async function fetchLatestReviewVerdict({ owner, repo, prNumber, ctx }) {
   return latest?.body ? parseVerdictFromReviewBody(latest.body) : undefined;
 }
 
-export async function dispatchReview({ owner, repo, prNumber, ref = 'main', headSha, attempt = 1, priorIssues = [], issueNumber, ctx }) {
+export async function dispatchReview({ owner, repo, prNumber, ref = 'main', headSha, attempt = 1, priorIssues = [], issueNumber, ctx, parentClaimId, githubCheckId }) {
   const repoKey = `${owner}/${repo}`;
   const config = await resolveConfig(owner, repo);
 
@@ -155,6 +156,8 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', head
       prNumber,
       attempt,
       claimType: 'review',
+      ...(parentClaimId !== undefined ? { parentClaimId } : {}),
+      ...(githubCheckId !== undefined ? { githubCheckId } : {}),
       payload: {
         priorIssues,
         onFailure: config.reviewer?.on_failure,
@@ -229,12 +232,21 @@ export async function dispatchReview({ owner, repo, prNumber, ref = 'main', head
  * @param {string} [opts.reviewSha] - Commit SHA the review was for
  * @returns {Promise<{ action: 'pass'|'fail'|'escalate' }>}
  */
-export async function handleReviewResult({ owner, repo, prNumber, issueNumber, result, reviewSha, agentId, headBranch, ctx, prBody }) {
+export async function handleReviewResult({ owner, repo, prNumber, issueNumber, result, reviewSha, agentId, headBranch, ctx, prBody, githubReviewNodeId }) {
   const repoKey = `${owner}/${repo}`;
   const config = await resolveConfig(owner, repo);
   const maxRetries = config.reviewer?.max_retries ?? 3;
 
-  const { status, blocking = [], advisory = [], attempt = 1 } = result;
+  const native = await consumeNativeReviewResult({
+    orgId: await resolveOrgId(owner, repo), repo: repoKey, prNumber, result, reviewSha, githubReviewNodeId, ctx,
+    verification: config.verification ?? { enabled: false }, onFailure: config.reviewer?.on_failure, issueNumber, prBody,
+  });
+  if (native?.action === 'ignored') {
+    logger.warn({ msg: 'Ignored unverified native review result', repo: repoKey, prNumber });
+    return { action: 'ignored' };
+  }
+  if (native && !native.created) return { action: 'replayed' };
+  const { status, blocking = [], advisory = [], attempt = 1 } = native?.result ?? result;
 
   if (status === 'PASS') {
     let isCurrentHead = false;
@@ -272,16 +284,18 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
       logger.error({ msg: 'Failed to verify the PR head or enable auto-merge', repo: repoKey, prNumber, error: err.message });
     }
 
-    await db
-      .update(reviewRetries)
-      .set({ lastReviewSha: reviewSha ?? null, updatedAt: sql`NOW()` })
-      .where(and(eq(reviewRetries.repo, repoKey), eq(reviewRetries.prNumber, prNumber)));
+    if (!native) {
+      await db
+        .update(reviewRetries)
+        .set({ lastReviewSha: reviewSha ?? null, updatedAt: sql`NOW()` })
+        .where(and(eq(reviewRetries.repo, repoKey), eq(reviewRetries.prNumber, prNumber)));
+    }
 
     // Complete the active claim for this PR (claim was created on FAIL, attempt may differ)
     try {
       const resolvedOrgId = await resolveOrgId(owner, repo);
       const activeClaim = await getActiveClaim(resolvedOrgId, repoKey, prNumber);
-      if (activeClaim) {
+      if (activeClaim && !native) {
         await completeClaim(resolvedOrgId, repoKey, prNumber, activeClaim.attempt, activeClaim.claim_type);
         // Emit check-run resolved (fire-and-forget)
         const providerClient = getProvider({ installation_id: activeClaim.installation_id });
@@ -305,7 +319,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
 
         // The review claim was at `attempt`, so review_fix uses attempt + 1
         // to avoid the unique constraint on (org_id, repo, pr_number, claim_type, attempt).
-        const fixClaim = await createClaim({
+        const fixClaim = native ? native.claim : await createClaim({
           orgId: passOrgId,
           repo: repoKey,
           prNumber,
@@ -366,7 +380,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
     ...advisory.map((a) => ({ ...a, severity: 'advisory' })),
   ];
 
-  const [retryRecord] = await db
+  const [retryRecord] = native ? [{ retryCount: native.retryCount }] : await db
     .insert(reviewRetries)
     .values({
       repo: repoKey,
@@ -394,12 +408,14 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
   try {
     const failOrgId = await resolveOrgId(owner, repo);
     const verifyCfg = config.verification ?? { enabled: false };
-    const priorRedRecords = verifyCfg.enabled
+    const priorRedRecords = !native && verifyCfg.enabled
       ? await fetchPriorRedRecordsPayload(failOrgId, repoKey, prNumber)
       : [];
 
     let newClaim;
-    if (verifyCfg.enabled) {
+    if (native) {
+      newClaim = native.claim;
+    } else if (verifyCfg.enabled) {
       newClaim = await createClaimWithRetry(
         {
           orgId: failOrgId,
@@ -409,7 +425,7 @@ export async function handleReviewResult({ owner, repo, prNumber, issueNumber, r
           claimType: 'verify',
           payload: {
             phase: 'red',
-            findings: blocking.map((f, i) => ({ id: f.id ?? `F${i + 1}`, message: f.message ?? String(f) })),
+            findings: blocking.map((f, i) => ({ id: f.id ?? `F${i + 1}`, message: f.message ?? f.issue ?? String(f) })),
             pr_body: prBody ?? null,
             issue_number: issueNumber ?? null,
             red_base_sha: reviewSha,

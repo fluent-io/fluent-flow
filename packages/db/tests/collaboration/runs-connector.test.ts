@@ -512,8 +512,9 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     const { authenticateAgentToken } = await import('../../src/collaboration/identity.js');
     const context = await authenticateAgentToken(launch.payload.reportingCredential);
     expect(context.kind).toBe('agent');
-    expect(context.runId).toBe(stored[0].run_id);
-    expect(context.sessionId).toBe(run.sessionId);
+    expect(context.source).toEqual({ kind: 'legacy', runId: stored[0].run_id, sessionId: run.sessionId });
+    expect('runId' in context).toBe(false);
+    expect('sessionId' in context).toBe(false);
     expect(context.capabilities).toContain('report.check');
     expect(context.capabilities).not.toContain('run.start');
     await expect(authenticateAgentToken('ffag_totally-unknown-token')).rejects.toMatchObject({ status: 401 });
@@ -1075,5 +1076,23 @@ describe('A3 durable queue and host protocol (real Postgres)', () => {
     await submitConnectorObservations({token:hostToken,...connector,events:[{eventId:'timeline-live-tail',runId:run.run.id,sessionId:run.sessionId,kind:'timeline',observedAt:new Date().toISOString(),payload:{text:'live tail'}}]});
     const tail=await getSessionTimeline({actor:managerActor,sessionId:run.sessionId,limit:2,cursor:third.cursor});
     expect(tail.entries.map(row=>row.eventId)).toEqual(['timeline-live-tail']);
+  });
+
+  it('paginates run history by task-bound identity without losing microsecond ties', async () => {
+    const task = await createCollabTask({ actor: managerActor, projectId, title: 'Historical run pages' });
+    const ids: string[] = [];
+    const times = ['2026-11-13T01:00:00.123456Z', '2026-11-13T01:00:00.123457Z', '2026-11-13T01:00:00.123457Z', '2026-11-13T01:00:00.123458Z'];
+    for (const [index, createdAt] of times.entries()) {
+      const [current] = await rawQuery('SELECT version FROM collab_tasks WHERE id=$1', [task.id]);
+      const started = await startCollabRun({ actor: managerActor, taskId: task.id, expectedVersion: current.version, idempotencyKey: `run-history-page-${index}`, mappingId, profileId: 'ai3-coder' });
+      ids.push(started.run.id);
+      await rawQuery("UPDATE collab_runs SET state='cancelled',created_at=$2 WHERE id=$1", [started.run.id, createdAt]);
+    }
+    const first = await listCollabRuns({ actor: managerActor, taskId: task.id, limit: 2 });
+    const second = await listCollabRuns({ actor: managerActor, taskId: task.id, limit: 2, cursor: first.nextCursor! });
+    expect([...first.runs, ...second.runs].map(run => run.id)).toEqual([ids[3], ...[ids[1], ids[2]].sort(), ids[0]]);
+    expect(second.nextCursor).toBeNull();
+    const other = await createCollabTask({ actor: managerActor, projectId, title: 'Other history' });
+    await expect(listCollabRuns({ actor: managerActor, taskId: other.id, cursor: first.nextCursor! })).rejects.toMatchObject({ status: 400, code: 'invalid_cursor' });
   });
 });

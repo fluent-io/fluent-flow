@@ -7,7 +7,7 @@ import {
   ensureGithubPrincipal, startCollabClaimExecution, submitCollabClaimCommand,
 } from '../../src/collaboration/index.js';
 import * as collaboration from '../../src/collaboration/index.js';
-import { ackClaimCommand, leaseClaimCommands } from '../../src/queries/claim-interactions.js';
+import { ackClaimCommand, appendClaimEvents, leaseClaimCommands } from '../../src/queries/claim-interactions.js';
 import { resetCollabSchema, resolveCollabTestDatabaseUrl, seedOrgMembership, seedUser } from '../helpers/collab-db.js';
 
 process.env.DATABASE_URL = resolveCollabTestDatabaseUrl();
@@ -81,10 +81,11 @@ it('atomically starts one ordinary spec claim with reviewed digest, pinned artif
   ]);
   expect(first.claimId).toBe(replay.claimId);
   expect([first.created, replay.created].sort()).toEqual([false, true]);
-  const { rows } = await getPool().query(`SELECT c.*,e.root_claim_id FROM agent_claims c JOIN collab_claim_executions e ON e.claim_id=c.id WHERE c.id=$1`, [first.claimId]);
+  const { rows } = await getPool().query(`SELECT c.*,e.root_claim_id,e.parent_claim_id,e.created_by_principal_id,e.created_by_session_version FROM agent_claims c JOIN collab_claim_executions e ON e.claim_id=c.id WHERE c.id=$1`, [first.claimId]);
   expect(rows[0]).toMatchObject({
     claim_type: 'spec', status: 'pending', session_id: null, target_agent_id: null,
-    root_claim_id: source.claimId,
+    root_claim_id: source.claimId, parent_claim_id: source.claimId,
+    created_by_principal_id: actor.principalId, created_by_session_version: actor.sessionVersion,
     payload: { handed_off_from: source.claimId, handoff_command_id: source.commandId,
       branch: `ff/task-${source.task.id}`, handoff_base_sha: 'a'.repeat(40), handoff_digest: digest },
   });
@@ -117,6 +118,33 @@ it('creates a destination task only on explicit confirmation and keeps the sourc
   expect(destination.rows[0].description).toContain('Build the accepted feature');
   const original = await getPool().query(`SELECT description,version FROM collab_tasks WHERE id=$1`, [source.task.id]);
   expect(original.rows[0]).toEqual({ description: 'Original task', version: 1 });
+  const work = (await getPool().query(`SELECT claim.payload,execution.root_claim_id,execution.parent_claim_id
+    FROM agent_claims claim JOIN collab_claim_executions execution ON execution.claim_id=claim.id WHERE claim.id=$1`, [result.claimId])).rows[0];
+  expect(work).toMatchObject({ root_claim_id: result.claimId, parent_claim_id: null, payload: {
+    branch: `ff/task-${result.taskId}`, handed_off_from: source.claimId, handoff_base_sha: 'a'.repeat(40),
+  } });
+});
+
+it('gives a different authorized handoff initiator a genuine independent execution root', async () => {
+  const source = await preparedHandoff();
+  const userId = await seedUser(databaseUrl, { githubId: 9982, login: 'handoff-builder' });
+  await seedOrgMembership(databaseUrl, userId, orgId, 'member');
+  const principal = await ensureGithubPrincipal({ userId, displayName: 'Builder', email: 'builder@example.test' });
+  const builder = { principalId: principal.id, sessionVersion: principal.sessionVersion };
+  const workspaceId = (await getPool().query('SELECT workspace_id FROM collab_projects WHERE id=$1', [projectId])).rows[0].workspace_id;
+  const role = await collaboration.createWorkspaceRole({ actor, workspaceId, name: 'Handoff operator',
+    capabilities: ['task.read','internal.read','run.start','run.steer'] });
+  await collaboration.addCollabMember({ actor, workspaceId, principalId: builder.principalId, roleId: role.id });
+  const result = await collaboration.startCollabClaimHandoff({ actor: builder, claimId: source.claimId, commandId: source.commandId,
+    expectedVersion: source.task.version, idempotencyKey: randomUUID() });
+  const work = (await getPool().query(`SELECT claim.payload,execution.root_claim_id,execution.parent_claim_id,
+    execution.created_by_principal_id,execution.created_by_session_version FROM agent_claims claim
+    JOIN collab_claim_executions execution ON execution.claim_id=claim.id WHERE claim.id=$1`, [result.claimId])).rows[0];
+  expect(work).toMatchObject({ root_claim_id: result.claimId, parent_claim_id: null,
+    created_by_principal_id: builder.principalId, created_by_session_version: builder.sessionVersion,
+    payload: { handed_off_from: source.claimId, branch: `ff/task-${source.task.id}`, handoff_base_sha: 'a'.repeat(40) } });
+  expect((await getPool().query('SELECT created_by_principal_id,created_by_session_version FROM collab_claim_executions WHERE claim_id=$1', [source.claimId])).rows)
+    .toEqual([{ created_by_principal_id: actor.principalId, created_by_session_version: actor.sessionVersion }]);
 });
 
 it('rejects machine-local paths in a digest before publishing it into task content', async () => {
@@ -147,4 +175,87 @@ it('does not invent workspace cleanup uncertainty for a chat that never reached 
   const source = await chat();
   await getPool().query(`UPDATE agent_claims SET status='cancelled',end_reason='no_capacity' WHERE id=$1`, [source.claimId]);
   expect((await collaboration.listCollabRetainedWork({ actor, taskId: source.task.id })).items).toEqual([]);
+});
+
+it('preserves an accepted session event while a build handoff waits for the same task', async () => {
+  const source = await preparedHandoff();
+  const client = await getPool().connect();
+  let pending: Promise<{ result?: { claimId: number; taskId: string; created: boolean }; error?: unknown }> | undefined;
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT id FROM collab_tasks WHERE id=$1 FOR UPDATE', [source.task.id]);
+    const pid = (await client.query('SELECT pg_backend_pid() AS id')).rows[0].id;
+    pending = collaboration.startCollabClaimHandoff({ actor, claimId: source.claimId, commandId: source.commandId,
+      expectedVersion: source.task.version, idempotencyKey: randomUUID() }).then(result => ({ result }), error => ({ error }));
+    const deadline = Date.now() + 3000;
+    let blocked = false;
+    while (Date.now() < deadline) {
+      const state = await getPool().query('SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1::integer=ANY(pg_blocking_pids(pid))) AS blocked', [pid]);
+      if (state.rows[0].blocked) { blocked = true; break; }
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(blocked).toBe(true);
+    await client.query('SELECT id FROM agent_claims WHERE id=$1 FOR UPDATE', [source.claimId]);
+    await appendClaimEvents({ orgId, claimId: source.claimId,
+      events: [{ seq: 1, kind: 'notice', payload: { text: 'Final design event accepted before handoff.' } }] }, client);
+    await client.query('COMMIT');
+    const settled = await pending;
+    if (settled.error) throw settled.error;
+    expect(settled.result).toMatchObject({ taskId: source.task.id, created: true });
+    expect((await getPool().query('SELECT seq,payload FROM agent_claim_events WHERE claim_id=$1', [source.claimId])).rows)
+      .toEqual([{ seq: 1, payload: { text: 'Final design event accepted before handoff.' } }]);
+    expect((await getPool().query('SELECT payload FROM agent_claims WHERE id=$1', [settled.result!.claimId])).rows[0].payload.handoff_digest).toEqual(digest);
+  } finally {
+    await client.query('ROLLBACK');
+    client.release();
+    if (pending) await pending;
+  }
+});
+
+it('waits for the destination board before taking its source task lock', async () => {
+  const source = await preparedHandoff();
+  const client = await getPool().connect();
+  let pending: Promise<{ result?: { claimId: number; taskId: string; created: boolean }; error?: unknown }> | undefined;
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT id FROM collab_projects WHERE id=$1 FOR UPDATE', [projectId]);
+    const pid = (await client.query('SELECT pg_backend_pid() AS id')).rows[0].id;
+    pending = collaboration.startCollabClaimHandoff({ actor, claimId: source.claimId, commandId: source.commandId,
+      expectedVersion: source.task.version, idempotencyKey: randomUUID(), destinationTitle: 'Concurrent destination' })
+      .then(result => ({ result }), error => ({ error }));
+    const deadline = Date.now() + 3000;
+    let blocked = false;
+    while (Date.now() < deadline) {
+      const state = await getPool().query('SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1::integer=ANY(pg_blocking_pids(pid))) AS blocked', [pid]);
+      if (state.rows[0].blocked) { blocked = true; break; }
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(blocked).toBe(true);
+    expect((await client.query('SELECT id FROM collab_tasks WHERE id=$1 FOR UPDATE NOWAIT', [source.task.id])).rows)
+      .toEqual([{ id: source.task.id }]);
+    await client.query('COMMIT');
+    const settled = await pending;
+    if (settled.error) throw settled.error;
+    const destination = (await getPool().query('SELECT title,project_id FROM collab_tasks WHERE id=$1', [settled.result!.taskId])).rows;
+    expect(destination).toEqual([{ title: 'Concurrent destination', project_id: projectId }]);
+  } finally {
+    await client.query('ROLLBACK');
+    client.release();
+    if (pending) await pending;
+  }
+});
+
+it('starts from the current initiator snapshot after the chat creator session is replaced', async () => {
+  const source = await preparedHandoff();
+  const originalVersion = actor.sessionVersion;
+  const current = (await getPool().query(`UPDATE collab_principals SET session_version=session_version+1
+    WHERE id=$1 RETURNING session_version`, [actor.principalId])).rows[0];
+  actor = { principalId: actor.principalId, sessionVersion: current.session_version };
+  const result = await collaboration.startCollabClaimHandoff({ actor, claimId: source.claimId, commandId: source.commandId,
+    expectedVersion: source.task.version, idempotencyKey: randomUUID() });
+  expect((await getPool().query(`SELECT root_claim_id,parent_claim_id,created_by_session_version
+    FROM collab_claim_executions WHERE claim_id=$1`, [result.claimId])).rows)
+    .toEqual([{ root_claim_id: result.claimId, parent_claim_id: null, created_by_session_version: actor.sessionVersion }]);
+  expect((await getPool().query('SELECT created_by_session_version FROM collab_claim_executions WHERE claim_id=$1', [source.claimId])).rows)
+    .toEqual([{ created_by_session_version: originalVersion }]);
 });

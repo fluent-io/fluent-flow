@@ -1,4 +1,5 @@
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
 
 vi.mock('../../src/tracing.cjs', () => ({}));
 vi.mock('../../src/logger.js', async () => {
@@ -203,7 +204,7 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
     const host = await db.getPool().query(`INSERT INTO collab_hosts (name,token_hash,enrolled_by_principal_id) VALUES ('usage-host','usage-test',$1) RETURNING id`, [managerActor.principalId]);
     const mapping = await db.getPool().query(`INSERT INTO collab_project_host_mappings (project_id,host_id,repository_key,default_profile_id) VALUES ($1,$2,'test/repo','profile') RETURNING id`, [projectA1.id,host.rows[0].id]);
     const run = await db.getPool().query(`INSERT INTO collab_runs (task_id,project_id,host_id,mapping_id,profile_id,created_by_principal_id) VALUES ($1,$2,$3,$4,'profile',$5) RETURNING id`, [taskA1.id,projectA1.id,host.rows[0].id,mapping.rows[0].id,managerActor.principalId]);
-    const sample = { taskId: taskA1.id, runId: run.rows[0].id, sessionId: null, providerTurnId: 'partial-turn', tokensIn: 10, tokensOut: null, costUsd: null, unavailableReason: null };
+    const sample = { taskId: taskA1.id, source: { kind: 'legacy', runId: run.rows[0].id, sessionId: null }, providerTurnId: 'partial-turn', tokensIn: 10, tokensOut: null, costUsd: null, unavailableReason: null };
     await db.recordUsageSample(sample);
     await db.recordUsageSample({ ...sample, tokensIn: 20 });
     const range = () => `/projects/${projectA1.id}/insights?from=${new Date(Date.now()-3600000).toISOString()}&to=${new Date(Date.now()+10000).toISOString()}`;
@@ -227,10 +228,10 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
     const tx = await db.getPool().connect();
     try {
       await tx.query('BEGIN');
-      const binding = {taskId:taskA1.id,runId:run.id,sessionId:session.id};
+      const binding = {taskId:taskA1.id,source:{kind:'legacy',runId:run.id,sessionId:session.id}};
       await db.recordWorkpadPlanReport({...binding,items:[{text:'atomic plan',status:'pending'}]}, tx);
       await db.recordUsageSample({...binding,providerTurnId:'atomic-report',tokensIn:1,tokensOut:null,costUsd:null,unavailableReason:null}, tx);
-      await db.recordCollabSummaryReport({...binding,sessionId:summarySession.id,body:'atomic summary',model:'configured',sourceEpoch:'e',sourceSeq:'1',visibility:'internal'}, tx);
+      await db.recordCollabSummaryReport({taskId:binding.taskId,source:{kind:'legacy',runId:run.id,sessionId:summarySession.id},body:'atomic summary',model:'configured',sourceEpoch:'e',sourceSeq:'1',visibility:'internal'}, tx);
       await tx.query('ROLLBACK');
     } finally { tx.release(); }
     expect((await db.getPool().query('SELECT id FROM collab_workpad_plans WHERE session_id=$1', [session.id])).rows).toHaveLength(0);
@@ -248,7 +249,7 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
       expect(denied.body.error.code).toBe('file_reference_forbidden');
     }
     expect((await db.getPool().query('SELECT count(*)::int AS count FROM collab_artifacts WHERE task_id=$1', [taskA1.id])).rows[0].count).toBe(before);
-    await expect(db.recordCollabArtifactReport({ taskId: taskA1.id, runId: run.id, sessionId: null, direction: 'output', kind: 'file', name: 'Unbound file', reference: 'src/private.json' })).rejects.toMatchObject({ status: 422, code: 'invalid_artifact_source' });
+    await expect(db.recordCollabArtifactReport({ taskId: taskA1.id, source: { kind: 'legacy', runId: run.id, sessionId: null }, direction: 'output', kind: 'file', name: 'Unbound file', reference: 'src/private.json' })).rejects.toMatchObject({ status: 422, code: 'invalid_artifact_source' });
     const input = await api(baseUrl, 'POST', `/tasks/${taskA1.id}/artifacts`, { actor: collaboratorActor, body: { direction: 'input', kind: 'text', name: 'Supplied requirements', visibility: 'client', content: 'User-provided input, not a host file.' } });
     expect(input.status).toBe(201);
     const content = await api(baseUrl, 'GET', `/artifacts/${input.body.data.id}/content`, { actor: collaboratorActor });
@@ -341,6 +342,131 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
     expect(clientArtifacts.body.data.some(item => item.id === artifact.id)).toBe(false);
   });
 
+  it('serves authorized archived artifact bytes over HTTP without resurrecting host reads and refuses corrupt storage', async () => {
+    const db = await import('@fluent-flow/db');
+    const workspaceId = (await db.getPool().query('SELECT workspace_id FROM collab_projects WHERE id=$1', [projectA1.id])).rows[0].workspace_id;
+    const host = await db.createExecutionHost({ actor: managerActor, name: 'Archived HTTP artifacts' });
+    const mapping = await db.createProjectHostMapping({ actor: managerActor, projectId: projectA1.id, hostId: host.id, repositoryKey: 'archive/http', profileIds: ['archive'], defaultProfileId: 'archive' });
+    await db.registerConnector({ token: host.token, instanceId: 'archive-http', protocolVersion: 1, sdkVersion: '0.12.0', daemonVersion: '1.0.0', capabilities: {},
+      catalog: { repositories: [{ key: 'archive/http' }], profiles: [{ id: 'archive', name: 'Archive fixture', provider: 'fixture', model: 'fixture' }] } });
+    const task = await db.createCollabTask({ actor: managerActor, projectId: projectA1.id, title: 'Archived HTTP artifact scope' });
+    const started = await db.startCollabRun({ actor: managerActor, taskId: task.id, expectedVersion: task.version, idempotencyKey: crypto.randomUUID(), mappingId: mapping.id, profileId: 'archive', instructions: 'Preserve the original report.' });
+    const source = { kind: 'legacy', runId: started.run.id, sessionId: started.sessionId };
+    const text = 'Archived API report — original version.\n';
+    const bytes = Buffer.from(text);
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const artifact = await db.recordCollabArtifactReport({ taskId: task.id, source, kind: 'file', direction: 'output', name: 'Original API report',
+      reference: 'reports/archived-api.txt', mediaType: 'text/plain', sizeBytes: bytes.length, sha256 });
+    const unavailable = await db.recordCollabArtifactReport({ taskId: task.id, source, kind: 'file', direction: 'output', name: 'Uncaptured API report',
+      reference: 'reports/uncaptured-api.txt', mediaType: 'text/plain', sizeBytes: bytes.length, sha256 });
+    expect((await api(baseUrl, 'GET', `/artifacts/${artifact.id}/content`, { actor: managerActor })).status).toBe(202);
+    const { rows: [read] } = await db.getPool().query("SELECT id FROM collab_connector_commands WHERE run_id=$1 AND kind='artifact_read' AND payload->>'artifactId'=$2", [source.runId, artifact.id]);
+    await db.getPool().query("UPDATE collab_connector_commands SET state='applied',result=$2 WHERE id=$1", [read.id,
+      { status: 'available', mediaType: 'text/plain', sizeBytes: bytes.length, sha256, contentBase64: bytes.toString('base64'), truncated: false }]);
+    const archive = await db.captureLegacyRunArchive({ workspaceId, runId: source.runId });
+    await db.getPool().query('UPDATE collab_execution_archives SET sealed_at=now() WHERE id=$1', [archive.id]);
+    const beforeCommands = (await db.getPool().query('SELECT id,state FROM collab_connector_commands WHERE run_id=$1 ORDER BY id', [source.runId])).rows;
+    const missing = await api(baseUrl, 'GET', `/artifacts/${unavailable.id}/content`, { actor: managerActor });
+    expect(missing.status).toBe(200);
+    expect(missing.body.data.state).toBe('unavailable');
+    expect((await db.getPool().query('SELECT id,state FROM collab_connector_commands WHERE run_id=$1 ORDER BY id', [source.runId])).rows).toEqual(beforeCommands);
+    await db.getPool().query('UPDATE collab_hosts SET revoked_at=now() WHERE id=$1', [host.id]);
+    const restored = await api(baseUrl, 'GET', `/artifacts/${artifact.id}/content`, { actor: managerActor });
+    expect(restored.status).toBe(200);
+    expect(restored.body.data).toMatchObject({ name: artifact.name, content: text, truncated: false });
+    const raw = await fetch(`${baseUrl}/api/collab/v1/artifacts/${artifact.id}/content?raw=1`,
+      { headers: { 'x-fluent-flow-actor': actorHeader(managerActor.principalId, managerActor.sessionVersion) } });
+    expect(raw.status).toBe(200);
+    expect(raw.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(Buffer.from(await raw.arrayBuffer())).toEqual(bytes);
+    expect((await api(baseUrl, 'GET', `/artifacts/${artifact.id}/content`, { actor: collaboratorActor })).status).toBe(404);
+    const deniedRaw = await fetch(`${baseUrl}/api/collab/v1/artifacts/${artifact.id}/content?raw=1`,
+      { headers: { 'x-fluent-flow-actor': actorHeader(collaboratorActor.principalId, collaboratorActor.sessionVersion) } });
+    expect(deniedRaw.status).toBe(404);
+    expect(await deniedRaw.text()).not.toContain(text);
+    for (const suffix of ['', '?raw=1']) {
+      const foreign = await api(baseUrl, 'GET', `/artifacts/${artifact.id}/content${suffix}`, { actor: outsiderActor });
+      const unknown = await api(baseUrl, 'GET', `/artifacts/${crypto.randomUUID()}/content${suffix}`, { actor: outsiderActor });
+      expect(foreign.status).toBe(404);
+      expect(unknown.status).toBe(404);
+      expect({ code: foreign.body.error.code, message: foreign.body.error.message }).toEqual({ code: unknown.body.error.code, message: unknown.body.error.message });
+      expect(JSON.stringify(foreign.body)).not.toContain(text);
+    }
+    const invalidActor = { ...managerActor, sessionVersion: managerActor.sessionVersion + 1 };
+    const invalidKnown = await api(baseUrl, 'GET', `/artifacts/${artifact.id}/content`, { actor: invalidActor });
+    const invalidUnknown = await api(baseUrl, 'GET', `/artifacts/${crypto.randomUUID()}/content`, { actor: invalidActor });
+    const restrictedRole = await db.createWorkspaceRole({ actor: managerActor, workspaceId, name: 'Artifact non-reader', capabilities: ['comment.write'] });
+    const membership = (await db.getPool().query('SELECT role_id FROM collab_memberships WHERE workspace_id=$1 AND principal_id=$2 AND project_id IS NULL', [workspaceId, collaboratorActor.principalId])).rows[0];
+    let restrictedKnown;
+    let restrictedUnknown;
+    try {
+      await db.getPool().query('UPDATE collab_memberships SET role_id=$3 WHERE workspace_id=$1 AND principal_id=$2 AND project_id IS NULL', [workspaceId, collaboratorActor.principalId, restrictedRole.id]);
+      restrictedKnown = await api(baseUrl, 'GET', `/artifacts/${artifact.id}/content`, { actor: collaboratorActor });
+      restrictedUnknown = await api(baseUrl, 'GET', `/artifacts/${crypto.randomUUID()}/content`, { actor: collaboratorActor });
+    } finally {
+      await db.getPool().query('UPDATE collab_memberships SET role_id=$3 WHERE workspace_id=$1 AND principal_id=$2 AND project_id IS NULL', [workspaceId, collaboratorActor.principalId, membership.role_id]);
+    }
+    expect({
+      invalidSession: [invalidKnown.status, invalidUnknown.status],
+      noTaskRead: [restrictedKnown.status, restrictedUnknown.status],
+    }).toEqual({ invalidSession: [401, 401], noTaskRead: [404, 404] });
+
+    const corruptHost = await db.createExecutionHost({ actor: managerActor, name: 'Corrupt HTTP artifact source' });
+    const corruptMapping = await db.createProjectHostMapping({ actor: managerActor, projectId: projectA1.id, hostId: corruptHost.id, repositoryKey: 'archive/corrupt', profileIds: ['archive'], defaultProfileId: 'archive' });
+    await db.registerConnector({ token: corruptHost.token, instanceId: 'archive-corrupt-http', protocolVersion: 1, sdkVersion: '0.12.0', daemonVersion: '1.0.0', capabilities: {},
+      catalog: { repositories: [{ key: 'archive/corrupt' }], profiles: [{ id: 'archive', provider: 'fixture', model: 'fixture' }] } });
+    const corruptTask = await db.createCollabTask({ actor: managerActor, projectId: projectA1.id, title: 'Corrupt archive API scope' });
+    const corruptRun = await db.startCollabRun({ actor: managerActor, taskId: corruptTask.id, expectedVersion: corruptTask.version, idempotencyKey: crypto.randomUUID(), mappingId: corruptMapping.id, profileId: 'archive', instructions: 'Verify archive integrity.' });
+    const corruptArtifact = await db.recordCollabArtifactReport({ taskId: corruptTask.id, source: { kind: 'legacy', runId: corruptRun.run.id, sessionId: corruptRun.sessionId },
+      kind: 'file', direction: 'output', name: 'Corrupt source report', reference: 'reports/corrupt.txt', mediaType: 'text/plain', sha256 });
+    expect((await api(baseUrl, 'GET', `/artifacts/${corruptArtifact.id}/content`, { actor: managerActor })).status).toBe(202);
+    const corruptArchive = await db.captureLegacyRunArchive({ workspaceId, runId: corruptRun.run.id });
+    await db.getPool().query("UPDATE collab_execution_archive_records SET payload_json=payload_json || ' ' WHERE archive_id=$1 AND record_type='run'", [corruptArchive.id]);
+    await db.getPool().query('UPDATE collab_execution_archives SET sealed_at=now() WHERE id=$1', [corruptArchive.id]);
+    const corrupt = await api(baseUrl, 'GET', `/artifacts/${corruptArtifact.id}/content`, { actor: managerActor });
+    expect(corrupt.status).toBe(503);
+    expect(corrupt.body.error.code).toBe('archive_integrity_error');
+    expect(JSON.stringify(corrupt.body)).not.toContain(text);
+  });
+  it('resolves authorized original execution references through HTTP before and after archive retirement', async () => {
+    const db = await import('@fluent-flow/db');
+    const workspaceId = (await db.getPool().query('SELECT workspace_id FROM collab_projects WHERE id=$1', [projectA1.id])).rows[0].workspace_id;
+    const host = await db.createExecutionHost({ actor: managerActor, name: 'Reference HTTP fixture' });
+    const mapping = await db.createProjectHostMapping({ actor: managerActor, projectId: projectA1.id, hostId: host.id, repositoryKey: 'reference/http', profileIds: ['reference'], defaultProfileId: 'reference' });
+    await db.registerConnector({ token: host.token, instanceId: 'reference-http', protocolVersion: 1, sdkVersion: '0.12.0', daemonVersion: '1.0.0', capabilities: {},
+      catalog: { repositories: [{ key: 'reference/http' }], profiles: [{ id: 'reference', provider: 'fixture', model: 'fixture' }] } });
+    const task = await db.createCollabTask({ actor: managerActor, projectId: projectA1.id, title: 'Original reference HTTP scope' });
+    const started = await db.startCollabRun({ actor: managerActor, taskId: task.id, expectedVersion: task.version, idempotencyKey: crypto.randomUUID(), mappingId: mapping.id, profileId: 'reference', instructions: 'Keep source identities.' });
+    const command = await db.submitSessionCommand({ actor: managerActor, sessionId: started.sessionId, command: { kind: 'prompt', text: 'A controlled follow-up.', behavior: 'steer' }, idempotencyKey: crypto.randomUUID() });
+    const path = `/tasks/${task.id}/execution-history/reference`;
+    for (const query of [`sessionId=${started.sessionId}`, `commandId=${command.commandId}`]) {
+      const live = await api(baseUrl, 'GET', `${path}?${query}`, { actor: managerActor });
+      expect(live.status).toBe(200);
+      expect(live.body.data).toMatchObject({ runId: started.run.id, sessionId: started.sessionId, source: { kind: 'legacy', runId: started.run.id } });
+    }
+    expect((await api(baseUrl, 'GET', `${path}?sessionId=${started.sessionId}`)).status).toBe(401);
+    expect((await api(baseUrl, 'GET', `${path}?sessionId=${started.sessionId}`, { actor: collaboratorActor })).status).toBe(403);
+    expect((await api(baseUrl, 'GET', `${path}?sessionId=${started.sessionId}`, { actor: outsiderActor })).status).toBe(404);
+    expect((await api(baseUrl, 'GET', `${path}?sessionId=${started.sessionId}&commandId=${command.commandId}`, { actor: managerActor })).status).toBe(400);
+    expect((await api(baseUrl, 'GET', `${path}?commandId=123`, { actor: managerActor })).status).toBe(400);
+    const otherTask = await db.createCollabTask({ actor: managerActor, projectId: projectA1.id, title: 'Different reference scope' });
+    expect((await api(baseUrl, 'GET', `/tasks/${otherTask.id}/execution-history/reference?sessionId=${started.sessionId}`, { actor: managerActor })).status).toBe(404);
+    const archive = await db.captureLegacyRunArchive({ workspaceId, runId: started.run.id });
+    await db.getPool().query('UPDATE collab_execution_archives SET sealed_at=now() WHERE id=$1', [archive.id]);
+    for (const table of ['collab_connector_observations', 'collab_connector_commands', 'collab_scoped_tokens', 'collab_sessions']) {
+      await db.getPool().query(`DELETE FROM ${table} WHERE run_id=$1`, [started.run.id]);
+    }
+    await db.getPool().query('DELETE FROM collab_runs WHERE id=$1', [started.run.id]);
+    for (const query of [`sessionId=${started.sessionId}`, `commandId=${command.commandId}`]) {
+      const restored = await api(baseUrl, 'GET', `${path}?${query}`, { actor: managerActor });
+      expect(restored.status).toBe(200);
+      expect(restored.body.data).toMatchObject({ runId: started.run.id, sessionId: started.sessionId, source: { kind: 'archive', runId: started.run.id, archiveId: archive.id } });
+      expect(JSON.stringify(restored.body)).not.toMatch(/controlled follow-up|Keep source identities|reference\/http/);
+    }
+    expect((await db.getPool().query('SELECT id FROM collab_runs WHERE id=$1', [started.run.id])).rows).toEqual([]);
+  });
+
+
   it('does not enqueue a summary while generation is disabled', async () => {
     const db=await import('@fluent-flow/db');
     const run=(await db.getPool().query('SELECT id FROM collab_runs WHERE task_id=$1 LIMIT 1',[taskA1.id])).rows[0];
@@ -366,7 +492,7 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
     expect(commands[0].payload).toMatchObject({profileId:'profile',model:'fixture',sourceSessionId:expect.any(String)});
     const session=(await db.getPool().query('SELECT role FROM collab_sessions WHERE id=$1',[commands[0].session_id])).rows[0];
     expect(session.role).toBe('summary');
-    await db.recordCollabSummaryReport({taskId:taskA1.id,runId:run.id,sessionId:commands[0].session_id,body:'Observed summary',model:'untrusted-model',sourceEpoch:'untrusted-epoch',sourceSeq:'999',visibility:'internal'});
+    await db.recordCollabSummaryReport({taskId:taskA1.id,source:{kind:'legacy',runId:run.id,sessionId:commands[0].session_id},body:'Observed summary',model:'untrusted-model',sourceEpoch:'untrusted-epoch',sourceSeq:'999',visibility:'internal'});
     const history=await api(baseUrl,'GET',`/runs/${run.id}/summaries`,{actor:managerActor});
     expect(history.status).toBe(200);
     expect(history.body.data[0]).toMatchObject({body:'Observed summary',model:'fixture',sourceCursor:null,provenance:'agent'});
@@ -392,11 +518,11 @@ describe('A4 evidence slice 1: acceptance criteria', () => {
     const db=await import('@fluent-flow/db');
     const run=(await db.getPool().query('SELECT id FROM collab_runs WHERE task_id=$1 ORDER BY created_at LIMIT 1',[taskA1.id])).rows[0];
     const work=(await db.getPool().query(`SELECT id FROM collab_sessions WHERE run_id=$1 AND role='work' LIMIT 1`,[run.id])).rows[0];
-    await db.recordWorkpadPlanReport({taskId:taskA1.id,runId:run.id,sessionId:work.id,items:[{text:'Internal native plan',status:'pending'}]});
+    await db.recordWorkpadPlanReport({taskId:taskA1.id,source:{kind:'legacy',runId:run.id,sessionId:work.id},items:[{text:'Internal native plan',status:'pending'}]});
     const clientPlan=await api(baseUrl,'GET',`/tasks/${taskA1.id}/plan`,{actor:collaboratorActor});
     expect(clientPlan.status).toBe(200);
     expect(clientPlan.body.data.plan).toBeNull();
-    await expect(db.recordCollabSummaryReport({taskId:taskA1.id,runId:run.id,sessionId:work.id,body:'Work session cannot forge summarizer output',model:'fixture',sourceEpoch:null,sourceSeq:null,visibility:'client'})).rejects.toMatchObject({status:403,code:'invalid_summary_source'});
+    await expect(db.recordCollabSummaryReport({taskId:taskA1.id,source:{kind:'legacy',runId:run.id,sessionId:work.id},body:'Work session cannot forge summarizer output',model:'fixture',sourceEpoch:null,sourceSeq:null,visibility:'client'})).rejects.toMatchObject({status:403,code:'invalid_summary_source'});
   });
 
   it('prevents a collaborator from publishing an unreadable internal artifact', async () => {

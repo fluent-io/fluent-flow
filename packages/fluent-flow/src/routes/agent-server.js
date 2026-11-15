@@ -19,9 +19,14 @@ import {
   ackClaimCommand,
   cancelClaimRequest,
   appendClaimEvents,
+  buildClaimReportingBootstrap,
+  assertNativePullRequestCompletion,
+  CollabServiceError,
+  projectClaimEventReports,
   db,
   exchangeEnrollmentToken,
   getVerificationResultByClaim,
+  getClaimSummaryWork,
   insertVerificationResultAtomic,
   leaseClaimCommands,
   renewClaimCommand,
@@ -216,8 +221,9 @@ function payloadTooLarge(res) {
 }
 
 function ownershipErrorResponse(error, res) {
-  if (error?.statusCode === 404) return res.status(404).json({ error: 'Claim not found' });
-  if (error?.statusCode === 409) return res.status(409).json({ error: 'Claim is not active for this runner' });
+  const status = error instanceof CollabServiceError ? error.status : error?.statusCode;
+  if (status === 404) return res.status(404).json({ error: 'Claim not found' });
+  if (status === 409) return res.status(409).json({ error: 'Claim is not active for this runner' });
   return null;
 }
 
@@ -335,8 +341,9 @@ export async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 6
         WHERE pending.org_id = ${orgId}
           AND pending.status = 'pending'
           AND pending.session_id IS NULL
+          AND NOT EXISTS (SELECT 1 FROM collab_claim_pr_reservations reservation WHERE reservation.claim_id=pending.id)
           AND (pending.target_agent_id IS NULL OR pending.target_agent_id = agent.id)
-          AND ((pending.claim_type = 'chat' AND pending.repo IS NULL) OR agent.repos = '{}' OR pending.repo = ANY(agent.repos))
+          AND ((pending.claim_type IN ('chat','summary') AND pending.repo IS NULL) OR agent.repos = '{}' OR pending.repo = ANY(agent.repos))
           AND CASE WHEN pending.claim_type = 'chat' THEN
             pending.pending_deadline_at > NOW()
             AND chat_slot_available(pending.org_id, agent.id,
@@ -348,6 +355,13 @@ export async function claimPendingWork(orgId, agentId, sessionId, ttlMs = 15 * 6
               THEN (live_session.session_meta->'supported_claim_types') ? pending.claim_type
             ELSE pending.claim_type IN ('review', 'review_fix', 'spec', 'build', 'test_verify', 'triage')
           END
+          AND (pending.claim_type <> 'summary' OR EXISTS (
+            SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(live_session.session_meta->'profiles')='array'
+              THEN live_session.session_meta->'profiles' ELSE '[]'::jsonb END) profile
+            WHERE profile->>'id'=pending.payload->>'profile'
+              AND (pending.payload->>'model' IS NULL OR
+                (CASE WHEN jsonb_typeof(profile->'models')='array' THEN profile->'models' ELSE '[]'::jsonb END) ? (pending.payload->>'model'))
+          ))
         ORDER BY pending.created_at ASC
         LIMIT 1
         FOR UPDATE OF pending SKIP LOCKED
@@ -462,11 +476,20 @@ export async function handlePoll(req, res, opts = {}) {
         throw new Error('Agent server session expired during claim delivery');
       }
       const payload = typeof claim.payload === 'string' ? JSON.parse(claim.payload) : claim.payload;
-      const githubContext = await resolveGitHubContext(claim.repo);
+      const summaryWork = claim.claim_type === 'summary' ? await getClaimSummaryWork({ orgId: org_id, claimId: claim.id }) : null;
+      const githubContext = summaryWork ? null : await resolveGitHubContext(claim.repo);
       const credential = claim.claim_type === 'chat' && githubContext?.installation_id
         ? await getInstallationCredential(githubContext.installation_id) : null;
       const githubToken = claim.repo == null ? undefined : claim.claim_type === 'chat'
         ? credential?.token : await resolveGitHubToken(claim.repo, githubContext);
+      const reporting = await buildClaimReportingBootstrap({
+        orgId: org_id,
+        agentId: agent_id,
+        runnerSessionId: sessionId,
+        claimId: claim.id,
+        agentTokenId: req.tokenInfo.id,
+      });
+      if (summaryWork && !reporting) throw new CollabServiceError(409, 'summary_unavailable', 'Summary generation is unavailable.');
       if (githubContext?.installation_id) {
         try {
           const provider = getProvider({ provider: 'github', installation_id: githubContext.installation_id });
@@ -483,12 +506,15 @@ export async function handlePoll(req, res, opts = {}) {
           prNumber: claim.pr_number,
           attempt: claim.attempt,
           claim_id: claim.id,
-          ...(claim.claim_type === 'chat' ? { task_id: claim.task_id } : {}),
+          ...(['chat', 'summary'].includes(claim.claim_type) ? { task_id: claim.task_id } : {}),
+          ...(summaryWork ? { summary: { requestId: summaryWork.requestId, profile: summaryWork.profile, model: summaryWork.model,
+            prompt: summaryWork.prompt, timeoutMs: summaryWork.timeoutMs, reported: summaryWork.reported } } : {}),
           claim_type: claim.claim_type,
           claimType: claim.claim_type,
           agentType,
           githubToken,
           githubTokenExpiresAt: credential?.expiresAt.toISOString(),
+          ...(reporting ? { reporting: { bindingId: reporting.bindingId, credential: reporting.credential, captureKey: reporting.captureKey } } : {}),
         },
       });
     } finally {
@@ -575,10 +601,23 @@ export async function handleClaimResult(req, res) {
     try {
       activeClaim = await assertClaimOwner({ orgId: org_id, agentId: agent_id, sessionId, claimId });
     } catch (error) {
-      if ((status === 'cancelled' || status === 'failed') && error?.statusCode === 409) {
+      if (error?.statusCode === 409 && ['completed', 'cancelled', 'failed'].includes(status)) {
         const existing = await assertClaimReporter({ orgId: org_id, agentId: agent_id, sessionId, claimId });
+        if (existing.claim_type === 'summary' && existing.status === status && repo === null && pr_number === null &&
+          existing.attempt === attempt && verification === undefined && parsed.data.end_reason === undefined) {
+          if (status === 'completed' && !(await getClaimSummaryWork({ orgId: org_id, claimId })).reported) {
+            throw new CollabServiceError(409, 'summary_not_published', 'The generated summary has not been published.');
+          }
+          return res.json({ ok: true, claim_id: existing.id, status: existing.status, note: 'already_resolved' });
+        }
         if (existing.claim_type === 'chat' && existing.status === status && existing.repo === repo && existing.attempt === attempt && pr_number === null) {
           return res.json({ ok: true, claim_id: existing.id, status: existing.status, end_reason: existing.end_reason, note: 'already_resolved' });
+        }
+        if (['build','review_fix'].includes(existing.claim_type) && status === 'completed' && existing.status === status
+          && existing.repo === repo && existing.pr_number === pr_number && existing.attempt === attempt
+          && verification === undefined && parsed.data.end_reason === undefined
+          && await assertNativePullRequestCompletion({ orgId: org_id, claimId, replay: true })) {
+          return res.json({ ok: true, claim_id: existing.id, status: existing.status, note: 'already_resolved' });
         }
       }
       if (status === 'completed' && verification && error?.statusCode === 409) {
@@ -604,7 +643,9 @@ export async function handleClaimResult(req, res) {
       throw error;
     }
     if (activeClaim.claim_type === 'chat' && status === 'completed') return validationError(res);
-    if (activeClaim.claim_type !== 'chat' && (repo === null || parsed.data.end_reason !== undefined)) return validationError(res);
+    if (activeClaim.claim_type === 'summary') {
+      if (repo !== null || pr_number !== null || attempt !== activeClaim.attempt || parsed.data.end_reason !== undefined) return validationError(res);
+    } else if (activeClaim.claim_type !== 'chat' && (repo === null || parsed.data.end_reason !== undefined)) return validationError(res);
     if (activeClaim.claim_type === 'verify' && status === 'completed' && !verification) {
       return validationError(res);
     }
@@ -617,7 +658,13 @@ export async function handleClaimResult(req, res) {
       : status === 'failed'
         ? failClaimById
         : cancelClaimById;
-    const onFinalize = status === 'completed' && verification
+    const onFinalize = status === 'completed' && activeClaim.claim_type === 'summary'
+      ? async client => {
+          if (!(await getClaimSummaryWork({ orgId: org_id, claimId }, client)).reported) {
+            throw new CollabServiceError(409, 'summary_not_published', 'The generated summary has not been published.');
+          }
+        }
+      : status === 'completed' && verification
       ? async (client, completed) => {
           const inserted = await insertVerificationResultAtomic({
             orgId: org_id,
@@ -637,6 +684,8 @@ export async function handleClaimResult(req, res) {
           if (!inserted) throw new Error('Verification result is already finalized');
           return inserted;
         }
+      : status === 'completed' && ['build','review_fix'].includes(activeClaim.claim_type)
+      ? async client => { await assertNativePullRequestCompletion({ orgId: org_id, claimId }, client); }
       : null;
     const claim = await finalize(org_id, claimId, sessionId, activeClaim.claim_type === 'chat' ? parsed.data.end_reason ?? (status === 'failed' ? 'host_lost' : 'user') : onFinalize);
     if (!claim) {
@@ -680,6 +729,7 @@ export async function handleClaimResult(req, res) {
             await handleVerifyRedispatchExhausted(claim, { orgId: org_id });
           }
         } catch (err) {
+          if (claim.claim_type === 'summary') throw err;
           logger.error({
             msg: 'Failed to re-dispatch transient-failed claim',
             error: err.message,
@@ -688,6 +738,11 @@ export async function handleClaimResult(req, res) {
           });
         }
       }
+      return res.json({ ok: true, claim_id: claim.id, status: claim.status });
+    }
+
+    if (claim.claim_type === 'summary') {
+      audit('claim_result', { repo: null, data: { claimId: claim.id, attempt, status } });
       return res.json({ ok: true, claim_id: claim.id, status: claim.status });
     }
 
@@ -748,7 +803,7 @@ export async function handleClaimResult(req, res) {
         const headBranch = claim.payload?.branch ?? 'main';
         const headSha = claim.head_sha;
         const issueNumber = claim.payload?.issueNumber;
-        await dispatchReview({ owner, repo: repoName, prNumber: pr_number, ref: headBranch, headSha, attempt: attempt + 1, issueNumber });
+        await dispatchReview({ owner, repo: repoName, prNumber: pr_number, ref: headBranch, headSha, attempt: attempt + 1, issueNumber, parentClaimId: claim.id });
         logger.info({ msg: 'Triggered re-review after test_verify completion', repo, prNumber: pr_number, ref: headBranch, headSha });
       } catch (err) {
         logger.error({ msg: 'Failed to trigger re-review after test_verify', error: err.message, safeToContinue: true });
@@ -768,6 +823,9 @@ function interactionErrorResponse(error, res, operation) {
   logger.error({ msg: `Failed to ${operation}`, error: error.message });
   const ownershipResponse = ownershipErrorResponse(error, res);
   if (ownershipResponse) return ownershipResponse;
+  if (error instanceof CollabServiceError && [403, 404].includes(error.status)) {
+    return res.status(error.status).json({ error: 'Execution reporting is no longer available' });
+  }
   if (error.message === 'Claim event payload limit exceeded.') {
     return payloadTooLarge(res);
   }
@@ -795,7 +853,15 @@ export async function handleClaimEvents(req, res) {
   try {
     const result = await withClaimOwner(
       { orgId, agentId, sessionId, claimId },
-      (client) => appendClaimEvents({ orgId, claimId, events }, client),
+      async (client) => {
+        const accepted = await appendClaimEvents({ orgId, claimId, events }, client);
+        if (accepted.inserted > 0) {
+          await projectClaimEventReports({
+            orgId, claimId, runnerSessionId: sessionId, agentTokenId: req.tokenInfo.id, events: accepted.newEvents,
+          }, client);
+        }
+        return accepted;
+      },
     );
     return res.json({ ok: true, inserted: result.inserted, lastSeq: result.lastSeq });
   } catch (error) {

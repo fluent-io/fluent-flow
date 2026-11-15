@@ -3,6 +3,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { z } from 'zod';
 import * as db from '@fluent-flow/db';
 import logger from '../logger.js';
+import { linkClaimPullRequest } from '../engine/native-pull-requests.js';
 
 const uuid=z.string().uuid();
 const idempotencyKey=z.string().min(8).max(256);
@@ -24,13 +25,13 @@ function serverFor(context) {
     return result.task;
   };
   const run=async(runId)=>{
-    if(context.kind==='agent') {if(runId!==context.runId) throw new db.CollabServiceError(404,'not_found','Not found.');return db.getAgentReportingTask(context);}
+    if(context.kind==='agent') {if(context.source.kind!=='legacy'||runId!==context.source.runId) throw new db.CollabServiceError(404,'not_found','Not found.');return db.getAgentReportingTask(context);}
     const result=await db.getCollabRun(context.actor,runId);
     await task(result.run.taskId);
     return result;
   };
-  const register=(name,description,schema,callback)=>server.tool(name,description,schema,async(args)=>{
-    try {return text(await callback(args));}
+  const register=(name,description,schema,callback)=>server.tool(name,description,schema,async(args,extra)=>{
+    try {return text(await callback(args,extra));}
     catch(err){
       if(!(err instanceof db.CollabServiceError)&&!(err instanceof z.ZodError)) logger.error({msg:'Collaboration tool failed',tool:name,error:err.message});
       return {...text({error:{code:err instanceof db.CollabServiceError?err.code:'invalid_request',message:err instanceof db.CollabServiceError?err.message:'Unable to complete this request.'}}),isError:true};
@@ -55,12 +56,35 @@ function serverFor(context) {
     await run(rows[0].run_id);
     return db.submitSessionCommand({actor:human(),sessionId:args.sessionId,idempotencyKey:args.idempotencyKey,command:{kind:'prompt',text:args.text,behavior:args.behavior}});
   });
-  const reportContext=async(capability)=>{const scoped=agent(capability);const own=await task();return {taskId:own.id,runId:scoped.runId,sessionId:scoped.sessionId};};
+  const reportContext=async(capability)=>{const scoped=agent(capability);const own=await task();return {taskId:own.id,source:scoped.source};};
   register('collaboration_report_check','Report a check for the bound run and session; agent provenance is retained.',{checkId:uuid.optional(),name:z.string().min(1).max(200).optional(),command:z.string().max(4000).optional(),status:z.enum(['passed','failed','not_run']),commit:z.string().nullable().default(null),dirty:z.boolean().nullable().optional(),exitCode:z.number().int().nullable().default(null),outputArtifactId:uuid.nullable().optional()},async(args)=>db.recordCollabCheckReport({...args,...await reportContext('report.check'),provenance:'agent'}));
-  register('collaboration_add_artifact','Attach an internal artifact to the bound work.',{name:z.string().min(1).max(300),kind:z.enum(['file','url','text']),direction:z.enum(['input','output']).default('output'),reference:z.string().max(2000).nullable().optional(),content:z.string().max(2000000).nullable().optional(),mediaType:z.string().nullable().optional(),sizeBytes:z.number().int().min(0).nullable().optional(),sha256:z.string().nullable().optional()},async(args)=>db.recordCollabArtifactReport({...args,...await reportContext('report.artifact'),provenance:'agent'}));
+  register('collaboration_add_artifact','Attach an internal artifact to the bound work.',{name:z.string().min(1).max(300),kind:z.enum(['file','url','text']),direction:z.enum(['input','output']).default('output'),reference:z.string().max(2000).nullable().optional(),content:z.string().max(2000000).nullable().optional(),mediaType:z.string().nullable().optional(),sizeBytes:z.number().int().min(0).nullable().optional(),sha256:z.string().nullable().optional()},async(args,extra)=>{
+    const scoped=await reportContext('report.artifact');
+    if(scoped.source.kind==='claim'&&args.kind==='file'){
+      const verified=await db.verifyClaimCaptureProof({claimId:scoped.source.claimId,reportingBindingId:scoped.source.reportingBindingId,args,proof:extra?._meta?.['fluent-flow/file-capture']});
+      if(!verified.valid) throw new db.CollabServiceError(422,'capture_invalid','A captured file report needs a valid capture proof.');
+      return db.recordCollabArtifactReport({...args,...scoped,provenance:'agent',capture:verified.capture});
+    }
+    return db.recordCollabArtifactReport({...args,...scoped,provenance:'agent'});
+  });
   register('collaboration_propose_idea','Propose an idea without authorizing execution.',{title:z.string().min(1).max(300),body:z.string().max(20000)},async(args)=>db.recordCollabIdeaReport({...args,...await reportContext('report.idea')}));
   register('collaboration_report_plan','Save the bound session plan.',{items:z.array(z.object({text:z.string().min(1).max(500),status:z.enum(['pending','in_progress','completed'])})).min(1).max(50)},async(args)=>db.recordWorkpadPlanReport({...args,...await reportContext('report.progress')}));
   register('collaboration_report_progress','Report internal progress for the bound work session.',{text:z.string().min(1).max(1000),percent:z.number().min(0).max(100).nullable().default(null)},async(args)=>db.recordAgentProgress(agent('report.progress'),args));
+  register('collaboration_report_review','Publish the final native review and return its exact public GitHub marker.',db.nativeReviewVerdictSchema.shape,async(args)=>{
+    const scoped=await reportContext('report.progress');
+    if(scoped.source.kind!=='claim') denied();
+    return db.publishNativeReviewResult({taskId:scoped.taskId,claimId:scoped.source.claimId,reportingBindingId:scoped.source.reportingBindingId,result:args});
+  });
+  register('collaboration_report_workspace','Report signed owner workspace state.',{},async(_args,extra)=>{
+    const scoped=await reportContext('report.progress');
+    if(scoped.source.kind!=='claim') throw new db.CollabServiceError(404,'not_found','Not found.');
+    return db.recordClaimWorkspaceObservation({taskId:scoped.taskId,claimId:scoped.source.claimId,reportingBindingId:scoped.source.reportingBindingId,proof:extra?._meta?.['fluent-flow/workspace-observation']});
+  });
+  register('collaboration_link_pull_request','Associate the verified pull request with the bound build task.',{prNumber:z.number().int().positive().optional()},async(args)=>{
+    const scoped=await reportContext('report.progress');
+    if(scoped.source.kind!=='claim') denied();
+    return linkClaimPullRequest({taskId:scoped.taskId,claimId:scoped.source.claimId,reportingBindingId:scoped.source.reportingBindingId,prNumber:args.prNumber});
+  });
   register('collaboration_report_summary','Save a bound internal summary.',{body:z.string().min(1).max(100000),model:z.string().nullable().default(null),sourceEpoch:z.string().nullable().default(null),sourceSeq:z.string().nullable().default(null)},async(args)=>db.recordCollabSummaryReport({...args,...await reportContext('report.summary'),visibility:'internal'}));
   return server;
 }

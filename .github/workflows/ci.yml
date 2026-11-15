@@ -34,6 +34,7 @@ jobs:
       COLLAB_DB_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ff_db_test
       COLLAB_ROUTES_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ff_server_test
       COLLAB_CONNECTOR_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ff_connector_test
+      COLLAB_REPORTING_MCP_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/ff_reporting_mcp_test
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -63,7 +64,7 @@ jobs:
           (async () => {
             const client = new Client({ connectionString: 'postgres://postgres:postgres@127.0.0.1:5432/postgres' });
             await client.connect();
-            for (const db of ['ff_db_test', 'ff_server_test', 'ff_connector_test', 'ff_legacy_test', 'ff_auth_test', 'ff_browser_test']) {
+            for (const db of ['ff_db_test', 'ff_server_test', 'ff_connector_test', 'ff_legacy_test', 'ff_auth_test', 'ff_browser_test', 'ff_reporting_mcp_test']) {
               await client.query('CREATE DATABASE ' + db);
             }
             await client.end();

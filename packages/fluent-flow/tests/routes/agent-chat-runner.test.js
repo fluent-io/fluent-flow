@@ -73,10 +73,20 @@ describe('production chat runner over mounted HTTP and PostgreSQL', () => {
     const claimId = opened.data.claim.id;
     const query = async () => (await db.getPool().query('SELECT * FROM agent_claims WHERE id=$1', [claimId])).rows[0];
     let lostResponse = false;
+    let heartbeatDisconnected = false;
+    const pendingHeartbeats = new Set();
     const client = createClient({ serverUrl: base, token, fetch: async (url, options) => {
-      const response = await fetch(url, options);
-      if (ending === 'user' && url.endsWith('/claim') && response.ok && !lostResponse) { lostResponse = true; await response.text(); throw new Error('Test: response lost after persisted result'); }
-      return response;
+      const heartbeat = url.endsWith('/heartbeat');
+      if (heartbeat && heartbeatDisconnected) throw new Error('Test: heartbeat connection lost');
+      const request = fetch(url, options);
+      if (heartbeat) pendingHeartbeats.add(request);
+      try {
+        const response = await request;
+        if (ending === 'user' && url.endsWith('/claim') && response.ok && !lostResponse) { lostResponse = true; await response.text(); throw new Error('Test: response lost after persisted result'); }
+        return response;
+      } finally {
+        if (heartbeat) pendingHeartbeats.delete(request);
+      }
     } });
     const trace = join(root, `${ending}.jsonl`);
     const runner = createRunner({ client, log, cwd: join(root, ending), childEnvironment: { PATH: process.env.PATH },
@@ -104,6 +114,10 @@ describe('production chat runner over mounted HTTP and PostgreSQL', () => {
       if (ending === 'user') await collab(`/claim-executions/${claimId}/commands`, { kind: 'end_session', payload: {} });
       else {
         await waitFor(async () => (await db.getPool().query("SELECT * FROM agent_claim_events WHERE claim_id=$1 AND kind='state' AND payload->'raw'->>'state'='idle'", [claimId])).rows.length === 2);
+        if (ending === 'host_lost') {
+          heartbeatDisconnected = true;
+          await Promise.allSettled([...pendingHeartbeats]);
+        }
         await db.getPool().query(ending === 'idle' ? "UPDATE agent_claims SET last_activity_at=now()-interval '1 day' WHERE id=$1" : "UPDATE agent_claims SET expires_at=now()-interval '1 hour' WHERE id=$1", [claimId]);
         const { expireClaims } = await import('../../src/agents/claim-manager.js'); await expireClaims();
       }

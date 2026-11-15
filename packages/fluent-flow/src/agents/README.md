@@ -56,6 +56,13 @@ Claims track work assignments per review attempt.
 - `expireClaims()` — marks expired claims, sets sessions offline, sets `completedAt`. Re-dispatch is handled by the expiry worker (see below).
 - `getActiveClaim(orgId, repo, prNumber)` — latest pending/claimed claim
 
+Interaction mutations lock an authorized linked task before locking claim
+ownership, then recheck the owner. Canonical reporting follows the same
+task-before-claim order. Keep this order when adding event projections: a
+claim-first transaction can deadlock against a task report through task
+foreign-key checks. Chat activity triggers also update the claim, so replacing
+the owner lock with a shared lock is not sufficient.
+
 **`archivedAt` semantics:** Only set on explicit dismissal/cancellation (e.g. admin archive). Normal completion (`completed`/`failed`) and expiry use `completedAt` + `status` instead, so terminal claims remain visible in the default pipeline view (which filters `archived_at IS NULL`).
 
 ## Claim Lifecycle

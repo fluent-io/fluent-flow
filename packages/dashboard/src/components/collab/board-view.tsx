@@ -444,8 +444,10 @@ export function BoardView() {
         setNewSession(false); void refresh(); router.push(taskHref(searchParams.toString(),result.taskId,result.claim.id),{scroll:false});
       }}/> : null}
       <TaskDrawer taskId={selection.taskId} claimId={selection.claimId}
+        history={selection.runId?{runId:selection.runId,sessionId:selection.sessionId}:null}
         onClose={()=>router.replace(taskHref(searchParams.toString(),null),{scroll:false})}
-        onSelectClaim={id=>router.push(taskHref(searchParams.toString(),selection.taskId,id),{scroll:false})}/>
+        onSelectClaim={id=>router.push(taskHref(searchParams.toString(),selection.taskId,id),{scroll:false})}
+        onSelectHistory={history=>router.push(taskHref(searchParams.toString(),selection.taskId,null,history),{scroll:false})}/>
       {loading ? <p className="text-xs text-muted-foreground">Loading…</p> : null}
     </div>
   );

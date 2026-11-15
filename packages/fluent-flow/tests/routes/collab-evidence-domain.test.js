@@ -726,8 +726,7 @@ describe('A4 evidence domain slice 5: workpad plan snapshots and open questions'
 
     const plan = await db.recordWorkpadPlanReport({
       taskId: taskA1.id,
-      runId: runRows[0].id,
-      sessionId: sessionRows[0].id,
+      source: { kind: 'legacy', runId: runRows[0].id, sessionId: sessionRows[0].id },
       items: [
         { text: 'Scaffold component', status: 'completed' },
         { text: 'Wire styles', status: 'in_progress' },
@@ -742,8 +741,7 @@ describe('A4 evidence domain slice 5: workpad plan snapshots and open questions'
 
     const question = await db.recordOpenQuestionReport({
       taskId: taskA1.id,
-      runId: runRows[0].id,
-      sessionId: sessionRows[0].id,
+      source: { kind: 'legacy', runId: runRows[0].id, sessionId: sessionRows[0].id },
       text: 'Agent asks: which palette tokens?',
     });
     expect(question.provenance).toBe('agent');
@@ -1007,11 +1005,11 @@ describe('A4 evidence domain slice 7: usage dedupe and honest insights', () => {
   it('replaces cumulative snapshots for the same turn and never double-counts', async () => {
     const db = await import('@fluent-flow/db');
     await db.recordUsageSample({
-      runId, taskId: taskA1.id, sessionId: null, providerTurnId: 'turn-1',
+      source: { kind: 'legacy', runId, sessionId: null }, taskId: taskA1.id, providerTurnId: 'turn-1',
       tokensIn: 10, tokensOut: 5, costUsd: null, unavailableReason: null,
     });
     await db.recordUsageSample({
-      runId, taskId: taskA1.id, sessionId: null, providerTurnId: 'turn-1',
+      source: { kind: 'legacy', runId, sessionId: null }, taskId: taskA1.id, providerTurnId: 'turn-1',
       tokensIn: 20, tokensOut: 9, costUsd: null, unavailableReason: null,
     });
     const to = new Date(Date.now() + 10_000).toISOString();
@@ -1028,7 +1026,7 @@ describe('A4 evidence domain slice 7: usage dedupe and honest insights', () => {
   it('keeps null-only unsupported usage as unavailable with reason', async () => {
     const db = await import('@fluent-flow/db');
     await db.recordUsageSample({
-      runId, taskId: taskA1.id, sessionId: null, providerTurnId: 'turn-unsupported',
+      source: { kind: 'legacy', runId, sessionId: null }, taskId: taskA1.id, providerTurnId: 'turn-unsupported',
       tokensIn: null, tokensOut: null, costUsd: null, unavailableReason: 'provider does not expose usage',
     });
     const to = new Date(Date.now() + 10_000).toISOString();

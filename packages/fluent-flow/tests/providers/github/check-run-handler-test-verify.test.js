@@ -407,4 +407,12 @@ describe('handleCheckRun — green claim path (replaces test_verify)', () => {
     expect(mockCreateClaimWithRetry).not.toHaveBeenCalled();
     expect(mockDispatchReview).toHaveBeenCalledTimes(1);
   });
+  it('does not replace a failed verification lookup with a paid review', async () => {
+    mockClaimDispatch.mockResolvedValueOnce({ retry_count: 0, last_issues: [] });
+    mockGetPRsForCommit.mockResolvedValueOnce([{ number: 42, state: 'open', body: '', head: { ref: 'feature/x' } }]);
+    const failure = new Error('Fixture verification lookup failed');
+    mockDbExecute.mockRejectedValueOnce(failure);
+    await expect(handleCheckRun('test-org', 'test-repo', makePayload(), defaultConfig)).rejects.toThrow(failure);
+    expect(mockDispatchReview).not.toHaveBeenCalled();
+  });
 });

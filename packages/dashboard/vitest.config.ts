@@ -8,6 +8,10 @@ const collabDomTests = [
   'tests/collab/new-session.test.tsx',
   'tests/collab/start-work.test.tsx',
   'tests/collab/task-drawer.test.tsx',
+  'tests/collab/legacy-run-history.test.tsx',
+  'tests/collab/summary-settings.test.tsx',
+  'tests/collab/task-summaries.test.tsx',
+  'tests/collab/delivery-review.test.tsx',
 ];
 
 export default defineConfig({

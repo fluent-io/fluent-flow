@@ -8,7 +8,7 @@ import { sql } from 'drizzle-orm';
 import { db, getVerificationResultByClaim } from '@fluent-flow/db';
 import { audit } from '../../db/client.js';
 import { resolveOrgId } from '../../config/loader.js';
-import { createClaimWithRetry, getClaimById } from '../../agents/claim-manager.js';
+import { createClaim, createClaimWithRetry, getClaimById } from '../../agents/claim-manager.js';
 import { onClaimDispatched } from '../../engine/check-run.js';
 import { getProvider } from '../index.js';
 import logger from '../../logger.js';
@@ -42,17 +42,37 @@ function extractLinkedIssue(body) {
   return match ? parseInt(match[1], 10) : null;
 }
 
-export async function findRedClaimIdFromLatestReviewFix(orgId, repo, prNumber) {
+async function findLatestReviewFixSource(orgId, repo, prNumber, headSha) {
   const result = await db.execute(sql`
-    SELECT id, payload->'source_claim_id' AS source_claim_id
-    FROM agent_claims
-    WHERE org_id = ${orgId} AND repo = ${repo} AND pr_number = ${prNumber}
-      AND claim_type = 'review_fix' AND status = 'completed'
-    ORDER BY completed_at DESC
+    SELECT fix.id, fix.payload->'source_claim_id' AS source_claim_id
+    FROM agent_claims fix
+    LEFT JOIN collab_claim_executions execution ON execution.claim_id=fix.id
+    LEFT JOIN (
+      SELECT link.id,link.org_id,link.repo,link.pr_number,link.head_sha,producer.claim_id,current.root_claim_id
+      FROM collab_delivery_links link
+      JOIN collab_scoped_tokens producer ON producer.id=link.producer_binding_id
+      JOIN collab_claim_executions current ON current.claim_id=producer.claim_id
+      WHERE link.native_binding_id IS NOT NULL
+    ) native ON native.org_id=fix.org_id AND native.repo=fix.repo AND native.pr_number=fix.pr_number
+    WHERE fix.org_id=${orgId} AND fix.repo=${repo} AND fix.pr_number=${prNumber} AND fix.claim_type='review_fix'
+      AND ((native.id IS NULL AND fix.status='completed')
+        OR (execution.delivery_link_id=native.id AND execution.root_claim_id=native.root_claim_id
+          AND fix.status IN ('pending','claimed','completed')
+          AND EXISTS (
+            WITH RECURSIVE lineage(claim_id) AS (
+              SELECT fix.id
+              UNION
+              SELECT parent.parent_claim_id FROM collab_claim_executions parent
+              JOIN lineage ON lineage.claim_id=parent.claim_id WHERE parent.parent_claim_id IS NOT NULL
+            )
+            SELECT 1 FROM lineage WHERE claim_id=native.claim_id
+          )
+          AND (fix.status<>'completed' OR (fix.id=native.claim_id AND native.head_sha=${headSha}))))
+    ORDER BY CASE WHEN native.id IS NULL THEN fix.completed_at END DESC,fix.id DESC
     LIMIT 1
   `);
   const row = (result.rows ?? result)[0];
-  return row?.source_claim_id ?? null;
+  return row ?? null;
 }
 
 function isMatchingRedClaim(claim, { orgId, repo, prNumber }) {
@@ -79,9 +99,9 @@ function isUsableRedRecord(record, { orgId, repo, prNumber }) {
 }
 
 
-async function createGreenClaim({ orgId, repo, prNumber, headSha, branch, checkRun, config }, linkageResolver = findRedClaimIdFromLatestReviewFix) {
-  const redClaimId = await linkageResolver(orgId, repo, prNumber);
-  if (!redClaimId) return null;
+async function createGreenClaim({ orgId, repo, prNumber, headSha, branch, fix }) {
+  const redClaimId = Number(fix?.source_claim_id);
+  if (!Number.isSafeInteger(redClaimId) || redClaimId <= 0) return null;
 
   const redClaim = await getClaimById(orgId, redClaimId);
   if (!isMatchingRedClaim(redClaim, { orgId, repo, prNumber })) return null;
@@ -114,20 +134,12 @@ async function createGreenClaim({ orgId, repo, prNumber, headSha, branch, checkR
       repo,
       prNumber,
       claimType: 'verify',
+      parentClaimId: Number(fix.id),
       payload,
       headSha,
     },
     async (opts) => {
-      const insertResult = await db.execute(sql`
-        INSERT INTO agent_claims (org_id, repo, pr_number, attempt, claim_type, status, payload, head_sha)
-        VALUES (
-          ${opts.orgId}, ${opts.repo}, ${opts.prNumber}, ${opts.attempt},
-          ${opts.claimType}, 'pending', ${JSON.stringify(opts.payload)}::jsonb, ${opts.headSha}
-        )
-        ON CONFLICT DO NOTHING
-        RETURNING *
-      `);
-      const created = (insertResult.rows ?? insertResult)[0];
+      const created = await createClaim(opts);
       if (created) return created;
 
       const duplicateResult = await db.execute(sql`
@@ -327,16 +339,18 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
   }
 
   let resolvedOrgId = null;
+  let parentClaimId;
   try {
     resolvedOrgId = await resolveOrgId(owner, repoName);
+    const fix = await findLatestReviewFixSource(resolvedOrgId, repoKey, pr.number, checkRun.head_sha);
+    if (fix) parentClaimId = Number(fix.id);
     const greenClaim = await createGreenClaim({
       orgId: resolvedOrgId,
       repo: repoKey,
       prNumber: pr.number,
       headSha: checkRun.head_sha,
       branch: pr.head?.ref ?? null,
-      checkRun,
-      config,
+      fix,
     });
 
     if (greenClaim?.status === 'created') {
@@ -365,7 +379,8 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
 
     logger.info({ msg: 'No green claim created (no review_fix linkage or missing red record), falling back to review dispatch', repo: repoKey, prNumber: pr.number });
   } catch (err) {
-    logger.error({ msg: 'Failed to create green claim, falling back to review', error: err.message });
+    logger.error({ msg: 'Failed to create green claim', error: err.message });
+    throw err;
   }
 
   try {
@@ -373,6 +388,8 @@ async function handleCheckRunSuccess(owner, repoName, checkRun, config, ctx) {
       owner, repo: repoName, prNumber: pr.number,
       ref: pr.head?.ref ?? 'main', headSha: checkRun.head_sha, attempt, priorIssues, issueNumber,
       ctx,
+      githubCheckId: checkRun.id,
+      ...(parentClaimId !== undefined ? { parentClaimId } : {}),
     });
     logger.info({ msg: 'Review dispatched after CI pass', repo: repoKey, prNumber: pr.number, attempt, trigger: triggerCheck ?? 'all-checks' });
   } catch (err) {

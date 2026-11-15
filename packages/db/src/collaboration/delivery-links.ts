@@ -9,7 +9,7 @@ import type {CollabActor} from './auth.js';
 async function requireLinkScope(actor:CollabActor,taskId:string,write=false) {
   const principal=await requireCurrentPrincipal(actor);
   const {rows}=await getPool().query(`SELECT t.project_id,w.org_id FROM collab_tasks t JOIN collab_projects p ON p.id=t.project_id JOIN collab_workspaces w ON w.id=p.workspace_id WHERE t.id=$1`,[taskId]);
-  if(!rows.length||principal.userId===null) throw new CollabServiceError(404,'not_found','Not found.');
+  if(!rows.length||(write&&principal.userId===null)) throw new CollabServiceError(404,'not_found','Not found.');
   await authorize(actor,{projectId:rows[0].project_id},write?['task.write','internal.read']:['task.read','internal.read']);
   return {...rows[0],userId:principal.userId};
 }
@@ -20,8 +20,9 @@ async function requireRepo(scope:{project_id:string;org_id:string;userId:number}
       AND EXISTS(SELECT 1 FROM collab_project_host_mappings mapping WHERE mapping.project_id=$4 AND mapping.repository_key=repo.repo_full_name)`,[repo,scope.org_id,scope.userId,scope.project_id]);
   if(!rows.length) throw new CollabServiceError(404,'not_found','Not found.');
 }
-function dto(row:Record<string,any>) {
-  return {id:row.id,taskId:row.task_id,projectId:row.project_id,repo:row.repo,prNumber:row.pr_number,claimId:row.claim_id===null?null:Number(row.claim_id),createdAt:new Date(row.created_at).toISOString()};
+export function deliveryLinkView(row:Record<string,any>) {
+  return {id:row.id,taskId:row.task_id,projectId:row.project_id,repo:row.repo,prNumber:row.pr_number,claimId:row.claim_id===null?null:Number(row.claim_id),createdAt:new Date(row.created_at).toISOString(),
+    ...(row.native_binding_id ? {verified:true,producerClaimId:Number(row.producer_claim_id),branch:row.head_branch,headCommit:row.head_sha} : {})};
 }
 export async function createCollabDeliveryLink(input:{actor:CollabActor;taskId:string;repo:string;prNumber?:number|null;claimId?:number|null}) {
   const parsed=z.object({taskId:z.string().uuid(),repo:z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/).max(200),prNumber:z.number().int().positive().nullable().default(null),claimId:z.number().int().positive().nullable().default(null)}).refine(x=>x.prNumber!==null||x.claimId!==null).parse(input);
@@ -36,18 +37,23 @@ export async function createCollabDeliveryLink(input:{actor:CollabActor;taskId:s
       prNumber=rows[0].pr_number;
     }
     const existing=await tx.query(`SELECT * FROM collab_delivery_links WHERE task_id=$1 AND repo=$2 AND pr_number IS NOT DISTINCT FROM $3 AND claim_id IS NOT DISTINCT FROM $4`,[parsed.taskId,parsed.repo,prNumber,parsed.claimId===null?null:String(parsed.claimId)]);
-    if(existing.rows.length) return dto(existing.rows[0]);
+    if(existing.rows.length) return deliveryLinkView(existing.rows[0]);
     const {rows}=await tx.query(`INSERT INTO collab_delivery_links(task_id,project_id,repo,pr_number,claim_id,created_by_principal_id) VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,[parsed.taskId,scope.project_id,parsed.repo,prNumber,parsed.claimId===null?null:String(parsed.claimId),input.actor.principalId]);
-    return dto(rows[0]);
+    return deliveryLinkView(rows[0]);
   });
 }
 export async function listCollabDeliveryLinks(input:{actor:CollabActor;taskId:string}) {
   const taskId=z.string().uuid().parse(input.taskId);
   const scope=await requireLinkScope(input.actor,taskId);
-  const {rows}=await getPool().query(`SELECT link.* FROM collab_delivery_links link JOIN repos repo ON repo.repo_full_name=link.repo AND repo.org_id=$2
-    JOIN users actor ON actor.id=$3 WHERE link.task_id=$1
-      AND (actor.is_superadmin OR EXISTS(SELECT 1 FROM user_orgs m WHERE m.user_id=actor.id AND m.org_id=repo.org_id))
-      AND EXISTS(SELECT 1 FROM collab_project_host_mappings mapping WHERE mapping.project_id=link.project_id AND mapping.repository_key=link.repo)
-    ORDER BY link.created_at DESC,link.id DESC LIMIT 100`,[taskId,scope.org_id,scope.userId]);
-  return rows.map(dto);
+  const {rows}=await getPool().query(`SELECT link.*,producer.claim_id AS producer_claim_id
+    FROM collab_delivery_links link JOIN repos repo ON repo.repo_full_name=link.repo AND repo.org_id=$2
+    LEFT JOIN collab_scoped_tokens producer ON producer.id=link.producer_binding_id
+    WHERE link.task_id=$1 AND (
+      (link.native_binding_id IS NOT NULL AND link.org_id=$2)
+      OR ((EXISTS(SELECT 1 FROM users actor WHERE actor.id=$3 AND actor.is_superadmin)
+        OR EXISTS(SELECT 1 FROM user_orgs m WHERE m.user_id=$3 AND m.org_id=repo.org_id))
+        AND (EXISTS(SELECT 1 FROM collab_project_host_mappings mapping WHERE mapping.project_id=link.project_id AND mapping.repository_key=link.repo)
+          OR EXISTS(SELECT 1 FROM collab_projects project WHERE project.id=link.project_id AND project.linked_repo_full_name=link.repo)))
+    ) ORDER BY link.created_at DESC,link.id DESC LIMIT 100`,[taskId,scope.org_id,scope.userId]);
+  return rows.map(deliveryLinkView);
 }

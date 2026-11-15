@@ -2,6 +2,8 @@ import { z } from 'zod';
 import type { PoolClient } from 'pg';
 import {getPool} from '../pool.js';
 import {authorize} from './authorize.js';
+import {requireCurrentPrincipal} from './principals.js';
+import {assertLegacyExecutionOpen} from './execution-retirement.js';
 import type {CollabActor} from './auth.js';
 import {CollabServiceError} from './errors.js';
 import {withClientTransaction} from './tx.js';
@@ -17,8 +19,9 @@ export const chatDefaultsSchema=z.object({profileId:identifier.nullable(),model:
 const updateSchema=scopeSchema.extend({expectedVersion:z.number().int().positive(),executionMode:z.enum(['chat','connector']),defaultAgentId:z.string().min(1).max(200).nullable(),defaults:chatDefaultsSchema}).strict();
 export type ChatAgent={id:string;available:boolean;online:boolean;chatDisabled:boolean;effectiveChatSlots:number|null;profiles:z.infer<typeof profile>[];busyChat:number;busyWork:number;maxChatSlots:number|null};
 export type ProjectChatSettings={version:number;executionMode:'chat'|'connector';defaultAgentId:string|null;defaults:z.infer<typeof chatDefaultsSchema>;agents:ChatAgent[]};
+export type RunnerProfileCatalog={id:string;online:boolean;capacity:number|null;supportedClaimTypes:string[];profiles:z.infer<typeof profile>[];busyChat:number;busyWork:number;maxChatSlots:number|null};
 
-export async function readChatAgents(orgId:string,tx:Pick<PoolClient,'query'>=getPool()):Promise<ChatAgent[]> {
+export async function readRunnerProfileCatalogs(orgId:string,tx:Pick<PoolClient,'query'>=getPool()):Promise<RunnerProfileCatalog[]> {
  const {rows}=await tx.query(`SELECT a.id,a.max_chat_slots,s.session_meta,s.available,s.session_capacity,
    (SELECT count(*)::int FROM agent_claims c JOIN agent_sessions cs ON cs.id=c.session_id AND cs.org_id=c.org_id WHERE cs.agent_id=a.id AND c.org_id=a.org_id AND c.status='claimed' AND c.claim_type='chat') AS busy_chat,
    (SELECT count(*)::int FROM agent_claims c JOIN agent_sessions cs ON cs.id=c.session_id AND cs.org_id=c.org_id WHERE cs.agent_id=a.id AND c.org_id=a.org_id AND c.status='claimed' AND c.claim_type<>'chat') AS busy_work
@@ -31,14 +34,19 @@ export async function readChatAgents(orgId:string,tx:Pick<PoolClient,'query'>=ge
    FROM agent_sessions WHERE org_id=a.org_id AND agent_id=a.id ORDER BY available DESC NULLS LAST,last_seen_at DESC NULLS LAST,id DESC LIMIT 1
   ) s ON true WHERE a.org_id=$1 AND a.transport='long_poll' ORDER BY a.id`,[orgId]);
  return rows.map(row=>{
-  const online=Boolean(row.available);
   const parsed=catalog.safeParse(row.session_meta?.profiles);
-  const chatAdvertised=Array.isArray(row.session_meta?.supported_claim_types)&&row.session_meta.supported_claim_types.includes('chat');
-  const capacity=online?row.session_capacity??null:null;
-  const effectiveChatSlots=row.max_chat_slots===0?0:capacity===null?null:Math.min(row.max_chat_slots??capacity-1,capacity-1);
+  const supportedClaimTypes=Array.isArray(row.session_meta?.supported_claim_types)?row.session_meta.supported_claim_types.filter((value:unknown):value is string=>typeof value==='string'):[];
+  return {id:row.id,online:Boolean(row.available),capacity:row.available?row.session_capacity??null:null,supportedClaimTypes,profiles:parsed.success?parsed.data:[],busyChat:row.busy_chat,busyWork:row.busy_work,maxChatSlots:row.max_chat_slots};
+ });
+}
+
+export async function readChatAgents(orgId:string,tx:Pick<PoolClient,'query'>=getPool()):Promise<ChatAgent[]> {
+ const catalogs=await readRunnerProfileCatalogs(orgId,tx);
+ return catalogs.map(row=>{
+  const effectiveChatSlots=row.maxChatSlots===0?0:row.capacity===null?null:Math.min(row.maxChatSlots??row.capacity-1,row.capacity-1);
   const chatDisabled=effectiveChatSlots===0;
-  const catalogUsable=chatAdvertised&&parsed.success;
-  return {id:row.id,available:Boolean(online&&catalogUsable&&effectiveChatSlots!==null&&effectiveChatSlots>0),online,chatDisabled,effectiveChatSlots,profiles:catalogUsable&&!chatDisabled?parsed.data:[],busyChat:row.busy_chat,busyWork:row.busy_work,maxChatSlots:row.max_chat_slots};
+  const catalogUsable=row.supportedClaimTypes.includes('chat')&&row.profiles.length>0;
+  return {id:row.id,available:Boolean(row.online&&catalogUsable&&effectiveChatSlots!==null&&effectiveChatSlots>0),online:row.online,chatDisabled,effectiveChatSlots,profiles:catalogUsable&&!chatDisabled?row.profiles:[],busyChat:row.busyChat,busyWork:row.busyWork,maxChatSlots:row.maxChatSlots};
  });
 }
 
@@ -67,6 +75,10 @@ export async function updateProjectChatSettings(input:z.infer<typeof updateSchem
   await tx.query(`SELECT id FROM collab_projects WHERE id=$1 FOR UPDATE`,[parsed.projectId]);
   const current=await read(parsed.projectId,tx);
   if(current.version!==parsed.expectedVersion)throw new CollabServiceError(409,'version_conflict','This item changed. Reload defaults before saving.',{currentVersion:current.version});
+  if(parsed.executionMode==='connector'&&current.executionMode==='chat'){
+    await assertLegacyExecutionOpen(tx);
+    await requireCurrentPrincipal(parsed.actor,tx);
+  }
   validateChatSelection(current.agents,parsed.defaultAgentId,parsed.defaults);
   await tx.query(`UPDATE collab_projects SET execution_mode=$2,default_agent_id=$3,chat_execution_defaults=$4,version=version+1,updated_at=NOW() WHERE id=$1`,[parsed.projectId,parsed.executionMode,parsed.defaultAgentId,JSON.stringify(parsed.defaults)]);
   return read(parsed.projectId,tx);

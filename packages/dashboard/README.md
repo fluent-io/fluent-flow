@@ -15,7 +15,36 @@ Password sign-in for a GitHub-linked principal requires an already provisioned p
 - [Shared contracts](../../docs/plans/2026-10-19-collaborative-contracts.md) and [acceptance evidence/UAT](../../docs/plans/2026-10-19-collaborative-status.md).
 
 
-Workpad checks show source, command, commit, dirty/unknown capture state and history. Unknown or dirty evidence is stale. Delivery acceptance binds the exact reviewed delivery/run/HEAD/dirty/evidence revision. A changed criterion or question at the same ID clears the prior acknowledgment. File previews use a stored reference and an authorized connector read, capped at 512 KiB; text, allowed images and PDFs render safely, while unsupported files download. HTML/SVG are never executed. Summaries use configured profiles/models and a frozen source cursor; disabled summaries queue no model work. Usage displays per-metric coverage and preserves unknown values.
+Workpad checks show source, command, commit, dirty/unknown capture state and history. Unknown or dirty evidence is stale. Delivery acceptance binds the exact reviewed delivery/run/HEAD/dirty/evidence revision. A changed criterion or question at the same ID clears the prior acknowledgment. File previews use verified stored bytes for native reports and an authorized connector read for legacy references, capped at 512 KiB; text, allowed images and PDFs render safely, while unsupported files download. HTML/SVG are never executed. Summaries use configured profiles/models and a frozen source cursor; disabled summaries queue no model work. Usage displays per-metric coverage and preserves unknown values.
+
+Task drawers include read-only historical executions alongside native claim
+history. Original run/session links continue to work after verified archival;
+the legacy task URL redirects into the same board context. Historical output
+does not resume a model or certify completion. Current permissions govern
+transcript access, and permission loss clears the loaded transcript.
+
+Published agent progress is internal, separate from public execution status.
+The task drawer shows the reported percentage and source session without
+presenting either as verification. Current UI permissions mask private progress
+even when an older authorized task response arrives after access is revoked.
+
+Native file reports store verified bytes with their metadata, so authorized
+previews survive workspace cleanup without a connector. Legacy files still
+need their historical capture/read path. Both paths enforce the 512 KiB limit.
+Native usage totals use reported cumulative USD session cost; ACP context
+occupancy is not consumed input/output tokens. Missing token counts and
+non-USD costs stay unknown.
+
+Native summaries have separate project settings. Opening a claim or historical
+session exposes an explicit **Generate summary** action inside **Summaries**;
+viewing history or saving defaults never starts AI work. Generation freezes that
+source and the configured agent/profile/model, works on ordinary work capacity,
+and leaves the task lane unchanged. The newest published result is inline in the
+task drawer, with older bodies collapsed. Source links retain native or archived
+identity and frozen cursor. Internal results are never verification evidence or
+delivery approvals. Current authority masks cached bodies and aborts private
+in-flight reads on revocation. Pending summary work can be cancelled through its
+execution; it waits like ordinary unattended work, not presence-bound chat.
 
 For collaboration, configure `FF_COLLAB_API_URL` to the Express server base URL and give Express and Next the same server-only `FF_COLLAB_AUTH_SECRET`. Neither value belongs in a public Next variable. `NEXTAUTH_SECRET`, `NEXTAUTH_URL` and `DATABASE_URL` are also required. See [.env.example](.env.example). Password entry needs a privately shared project/client invitation; SMTP and GitHub accounts are unnecessary for invited users. GitHub sign-in still requires its approved OAuth app/callback credentials.
 

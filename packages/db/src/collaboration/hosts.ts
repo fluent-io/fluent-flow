@@ -1,8 +1,10 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { getPool } from '../pool.js';
+import { withClientTransaction } from './tx.js';
 import { CollabServiceError } from './errors.js';
 import { requireCurrentPrincipal } from './principals.js';
+import { assertLegacyExecutionOpen } from './execution-retirement.js';
 import { authorize, getProjectCapabilities } from './authorize.js';
 
 export async function isInternalAdmin(principalId: string): Promise<boolean> {
@@ -48,12 +50,16 @@ export async function createExecutionHost(input: {
   const input2 = createHostSchema.parse(input);
   await requireInternalAdmin(input2.actor);
   const token = `ffh_${randomBytes(24).toString('base64url')}`;
-  const { rows } = await getPool().query<{ id: string; name: string }>(
-    `INSERT INTO collab_hosts (name, token_hash, enrolled_by_principal_id)
-     VALUES ($1, $2, $3) RETURNING id, name`,
-    [input2.name, hashHostToken(token), input2.actor.principalId],
-  );
-  return { id: rows[0].id, name: rows[0].name, token };
+  const created = await withClientTransaction(async tx => {
+    await assertLegacyExecutionOpen(tx);
+    await requireCurrentPrincipal(input2.actor, tx);
+    return tx.query<{ id: string; name: string }>(
+      `INSERT INTO collab_hosts (name, token_hash, enrolled_by_principal_id)
+       VALUES ($1, $2, $3) RETURNING id, name`,
+      [input2.name, hashHostToken(token), input2.actor.principalId],
+    );
+  });
+  return { id: created.rows[0].id, name: created.rows[0].name, token };
 }
 
 async function assertHostAuthority(
@@ -180,13 +186,17 @@ export async function createProjectHostMapping(input: {
       'The default profile must be one of the allowlisted profiles.',
     );
   }
-  const { rows } = await getPool().query(
-    `INSERT INTO collab_project_host_mappings
-       (project_id, host_id, repository_key, base_ref, profile_ids, default_profile_id)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, project_id, host_id, repository_key, base_ref, profile_ids, default_profile_id, version`,
-    [input2.projectId, input2.hostId, input2.repositoryKey, input2.baseRef, input2.profileIds, defaultProfileId],
-  );
+  const { rows } = await withClientTransaction(async tx => {
+    await assertLegacyExecutionOpen(tx);
+    await requireCurrentPrincipal(input2.actor, tx);
+    return tx.query(
+      `INSERT INTO collab_project_host_mappings
+         (project_id, host_id, repository_key, base_ref, profile_ids, default_profile_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, project_id, host_id, repository_key, base_ref, profile_ids, default_profile_id, version`,
+      [input2.projectId, input2.hostId, input2.repositoryKey, input2.baseRef, input2.profileIds, defaultProfileId],
+    );
+  });
   const row = rows[0];
   return {
     id: row.id,

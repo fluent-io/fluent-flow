@@ -1,8 +1,9 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
-import { cancelOpenClaimInteractions, db, getPool, insertPendingClaim, schema } from '@fluent-flow/db';
+import { cancelOpenClaimInteractions, cancelInvalidNativePrReservations, CollabServiceError, db, getPool, insertPendingClaim, insertPullRequestPipelineClaim, linkSummaryClaimAttempt, schema } from '@fluent-flow/db';
 import { audit } from '../db/client.js';
 import { setSessionStatus } from './session-manager.js';
 import logger from '../logger.js';
+import { prepareNativePullRequestClaim } from '../engine/native-pull-requests.js';
 
 const { agentClaims } = schema;
 
@@ -71,15 +72,23 @@ async function freeSession(orgId, sessionId, agentId, targetStatus = 'online') {
  * @param {number} [opts.ttlMs] — kept for API compat but unused (pending claims have no expiry)
  * @param {string|null} [opts.headSha] — stored for re-dispatch check-run creation
  */
-export async function createClaim({ orgId, repo, prNumber, attempt, agentId, payload, claimType = 'review_fix', ttlMs = DEFAULT_CLAIM_TTL_MS, headSha = null }) {
-  const claim = await insertPendingClaim({
+export async function createClaim({ orgId, repo, prNumber, attempt, agentId, payload, claimType = 'review_fix', ttlMs = DEFAULT_CLAIM_TTL_MS, headSha = null, parentClaimId, githubCheckId }) {
+  const native = await prepareNativePullRequestClaim({ orgId, repo, prNumber, payload, headSha, parentClaimId, githubCheckId });
+  if (native?.stale) {
+    logger.info({ msg: 'Skipped stale native PR claim', orgId, repo, prNumber, headSha });
+    return null;
+  }
+  const insert = native ? insertPullRequestPipelineClaim : insertPendingClaim;
+  const claim = await insert({
     orgId,
     repo,
     prNumber,
     attempt,
     claimType,
-    payload,
-    headSha,
+    payload: native ? { ...payload, branch: native.branch } : payload,
+    headSha: native?.headSha ?? headSha,
+    ...(parentClaimId !== undefined ? { parentClaimId } : {}),
+    ...(githubCheckId !== undefined ? { githubCheckId } : {}),
   });
   if (!claim) {
     logger.info({ msg: 'Claim already exists, skipping', orgId, repo, prNumber, attempt, claimType });
@@ -118,16 +127,25 @@ export async function createFollowOnClaim({
     if (attempt !== undefined) {
       pendingClaim.attempt = attempt;
     }
+    if (claimType === 'summary') {
+      const parent = (await client.query(`SELECT task_id,target_agent_id,payload FROM agent_claims
+        WHERE id=$1 AND org_id=$2 AND claim_type='summary' AND repo IS NULL AND pr_number IS NULL`, [parentClaimId, orgId])).rows[0];
+      if (!parent || repo !== null || prNumber !== null) throw new CollabServiceError(409, 'summary_unavailable', 'The summary retry could not be queued.');
+      pendingClaim.taskId = parent.task_id;
+      pendingClaim.targetAgentId = parent.target_agent_id;
+      pendingClaim.payload = parent.payload;
+    }
     claim = await insertPendingClaim(pendingClaim, client);
     if (claim) {
       await client.query(
         `INSERT INTO collab_claim_executions
-           (task_id, project_id, claim_id, root_claim_id, created_by_principal_id)
-         SELECT task_id, project_id, $2, root_claim_id, created_by_principal_id
+           (task_id, project_id, claim_id, root_claim_id, created_by_principal_id, created_by_session_version, parent_claim_id, delivery_link_id)
+         SELECT task_id, project_id, $2, root_claim_id, created_by_principal_id, created_by_session_version, claim_id, delivery_link_id
          FROM collab_claim_executions
          WHERE claim_id = $1`,
         [parentClaimId, claim.id],
       );
+      if (claimType === 'summary') await linkSummaryClaimAttempt({ orgId, parentClaimId, claimId: claim.id }, client);
     }
     await client.query('COMMIT');
   } catch (error) {
@@ -296,6 +314,16 @@ export async function withClaimOwner(input, operation) {
   const client = await getPool().connect();
   try {
     await client.query('BEGIN');
+    await client.query(
+      `SELECT task.id FROM collab_tasks task
+       JOIN collab_claim_executions execution ON execution.task_id = task.id
+       JOIN agent_claims claim ON claim.id = execution.claim_id
+       JOIN agent_sessions session ON session.id = claim.session_id AND session.org_id = claim.org_id
+       WHERE claim.org_id = $1 AND session.agent_id = $2 AND claim.session_id = $3
+         AND claim.id = $4 AND claim.status = 'claimed'
+       FOR UPDATE OF task`,
+      [input.orgId, input.agentId, input.sessionId, input.claimId],
+    );
     await assertClaimOwner(input, client, 'update');
     const result = await operation(client);
     await client.query('COMMIT');
@@ -394,6 +422,7 @@ export async function redispatchClaim(claim) {
 export async function expireClaims() {
   const client = await getPool().connect();
   let claims;
+  let cancelledReservations = 0;
   try {
     await client.query('BEGIN');
     const result = await client.query(
@@ -419,6 +448,7 @@ export async function expireClaims() {
     for (const claim of claims) {
       await cancelOpenClaimInteractions({ orgId: claim.org_id, claimId: claim.id }, client);
     }
+    cancelledReservations = await cancelInvalidNativePrReservations(client);
     await client.query('COMMIT');
   } catch (error) {
     await client.query('ROLLBACK');
@@ -439,6 +469,7 @@ export async function expireClaims() {
     }
   }
   if (claims.length > 0) logger.info({ msg: 'Claims expired', count: claims.length });
+  if (cancelledReservations > 0) logger.info({ msg: 'Cancelled stale native PR reservations', count: cancelledReservations });
   return claims.map(toSnakeClaim);
 }
 

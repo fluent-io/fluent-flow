@@ -86,8 +86,8 @@ export async function appendClaimEvents(input: {
   orgId: string;
   claimId: number;
   events: Array<{ seq: number; kind: string; payload: unknown }>;
-}, executor?: QueryExecutor): Promise<{ inserted: number; lastSeq: number | null }> {
-  if (input.events.length === 0) return { inserted: 0, lastSeq: null };
+}, executor?: QueryExecutor): Promise<{ inserted: number; lastSeq: number | null; newEvents: typeof input.events }> {
+  if (input.events.length === 0) return { inserted: 0, lastSeq: null, newEvents: [] };
   return atomic(executor, async (client) => {
     await client.query(
       `SELECT pg_advisory_xact_lock(hashtext($1))`,
@@ -101,6 +101,7 @@ export async function appendClaimEvents(input: {
     );
     let payloadBytes = Number(existing.rows[0].payload_bytes);
     let inserted = 0;
+    const newEvents: typeof input.events = [];
     for (const event of input.events) {
       const serializedPayload = JSON.stringify(event.payload);
       const result = await client.query<{ inserted: boolean; payload_bytes: number }>(
@@ -118,13 +119,14 @@ export async function appendClaimEvents(input: {
       if (result.rows.length === 0) throw new Error('Interaction conflict.');
       if (result.rows[0].inserted) {
         inserted += 1;
+        newEvents.push(event);
         payloadBytes += result.rows[0].payload_bytes;
       }
     }
     if (payloadBytes > MAX_CLAIM_EVENT_BYTES) {
       throw new Error('Claim event payload limit exceeded.');
     }
-    return { inserted, lastSeq: Math.max(...input.events.map((event) => event.seq)) };
+    return { inserted, lastSeq: Math.max(...input.events.map((event) => event.seq)), newEvents };
   });
 }
 

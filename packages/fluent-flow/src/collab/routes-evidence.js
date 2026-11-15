@@ -246,6 +246,7 @@ export function registerEvidenceRoutes(router) {
         expectedVersion: req.body?.expectedVersion,
         title: req.body?.title,
         sessionId: req.body?.sessionId,
+        claimId: req.body?.claimId,
         idempotencyKey: req.headers['idempotency-key'],
       });
       res.status(result.replay ? 200 : 201).json({ data: result });

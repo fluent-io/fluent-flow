@@ -676,4 +676,72 @@ describe('A3 protocol over real HTTP (run start, connector loop, host truth)', (
       expect(unchanged.body.data.sessions.find(session=>session.id===sessionId).state).toBe('cancelled');
     }
   });
+
+  it('serves distinct historical run pages over HTTP', async () => {
+    const created = await collab('POST', `/projects/${projectId}/tasks`, { actor: manager, body: { title: 'Historical HTTP pages' } });
+    expect(created.status).toBe(201);
+    const id = created.body.data.id;
+    const { getPool } = await import('@fluent-flow/db');
+    const ids = [];
+    for (let index = 0; index < 3; index += 1) {
+      const current = await collab('GET', `/tasks/${id}`, { actor: manager });
+      const started = await collab('POST', `/tasks/${id}/runs`, {
+        actor: manager, headers: { 'idempotency-key': `history-http-${index}` },
+        body: { expectedVersion: current.body.data.version, profileId: 'ai3-coder' },
+      });
+      expect(started.status).toBe(202);
+      ids.push(started.body.data.run.id);
+      await getPool().query("UPDATE collab_runs SET state='cancelled' WHERE id=$1", [started.body.data.run.id]);
+    }
+    const first = await collab('GET', `/tasks/${id}/runs?limit=1`, { actor: manager });
+    expect(first.status).toBe(200);
+    expect(first.body.data.map(run => run.id)).toEqual([ids[2]]);
+    const second = await collab('GET', `/tasks/${id}/runs?limit=2&cursor=${first.body.nextCursor}`, { actor: manager });
+    expect(second.status).toBe(200);
+    expect(second.body.data.map(run => run.id)).toEqual([ids[1], ids[0]]);
+    expect(second.body.nextCursor).toBeNull();
+    expect((await collab('GET', `/tasks/${id}/runs?cursor=invalid`, { actor: manager })).status).toBe(400);
+  });
+
+  it('reads original historical sessions over HTTP after live records are retired without exposing private metadata', async () => {
+    const created = await collab('POST', `/projects/${projectId}/tasks`, { actor: manager, body: { title: 'Archived HTTP history' } });
+    const id = created.body.data.id;
+    const started = await collab('POST', `/tasks/${id}/runs`, {
+      actor: manager, headers: { 'idempotency-key': 'archived-http-history-start' },
+      body: { expectedVersion: created.body.data.version, profileId: 'ai3-coder' },
+    });
+    expect(started.status).toBe(202);
+    const { run, sessionId } = started.body.data;
+    const observed = await connectorCall('POST', '/observations', { ...connector, events: [
+      { eventId: 'archived-http-history-message', runId: run.id, sessionId, kind: 'timeline', observedAt: new Date().toISOString(), payload: { item: { type: 'assistant_message', text: 'The original feature design' } } },
+      { eventId: 'archived-http-history-ended', runId: run.id, sessionId, kind: 'state', observedAt: new Date().toISOString(), payload: { state: 'cancelled' } },
+    ] });
+    expect(observed.status).toBe(200);
+    const db = await import('@fluent-flow/db');
+    await db.getPool().query('UPDATE collab_runs SET workspace_id=$2 WHERE id=$1', [run.id, '/private/machine/history-canary']);
+    const root = `/tasks/${id}/execution-history`;
+    const publicHistory = await collab('GET', root, { actor: steerOnly });
+    expect(publicHistory.status).toBe(200);
+    expect(publicHistory.body.data.map(entry => entry.runId)).toEqual([run.id]);
+    expect(JSON.stringify(publicHistory.body)).not.toMatch(/history-canary|hostId|mappingId|profileId|sessionId/);
+    expect((await collab('GET', `${root}/${run.id}/sessions`, { actor: steerOnly })).status).toBe(403);
+    expect((await collab('GET', `${root}/${run.id}`, { actor: manager })).body.data.source).toEqual({ kind: 'legacy', runId: run.id });
+    const project = (await db.getPool().query('SELECT workspace_id FROM collab_projects WHERE id=$1', [projectId])).rows[0];
+    const archive = await db.captureLegacyRunArchive({ workspaceId: project.workspace_id, runId: run.id });
+    await db.getPool().query('UPDATE collab_execution_archives SET sealed_at=now() WHERE id=$1', [archive.id]);
+    for (const table of ['collab_connector_observations', 'collab_connector_commands', 'collab_scoped_tokens', 'collab_sessions']) {
+      await db.getPool().query(`DELETE FROM ${table} WHERE run_id=$1`, [run.id]);
+    }
+    await db.getPool().query('DELETE FROM collab_runs WHERE id=$1', [run.id]);
+    const archived = await collab('GET', `${root}/${run.id}`, { actor: manager });
+    expect(archived.status).toBe(200);
+    expect(archived.body.data.source).toEqual({ kind: 'archive', runId: run.id, archiveId: archive.id });
+    expect(JSON.stringify(archived.body)).not.toContain('history-canary');
+    const sessions = await collab('GET', `${root}/${run.id}/sessions`, { actor: manager });
+    expect(sessions.body.data.map(session => session.id)).toEqual([sessionId]);
+    const transcript = await collab('GET', `${root}/${run.id}/sessions/${sessionId}/timeline`, { actor: manager });
+    expect(transcript.status).toBe(200);
+    expect(transcript.body.data.map(entry => entry.payload.item.text)).toEqual(['The original feature design']);
+    expect((await collab('GET', `/tasks/${taskId}/execution-history/${run.id}/sessions/${sessionId}/timeline`, { actor: manager })).status).toBe(404);
+  });
 });

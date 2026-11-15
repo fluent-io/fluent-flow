@@ -77,7 +77,7 @@ async function insertPendingClaimWithExecutor(
   }
   const lockKey = `claim-attempt:${JSON.stringify([
     input.orgId,
-    input.claimType === 'chat' ? input.taskId : input.repo,
+    input.claimType === 'chat' || input.claimType === 'summary' ? input.taskId : input.repo,
     input.prNumber,
     input.claimType,
   ])}`;
@@ -87,10 +87,10 @@ async function insertPendingClaimWithExecutor(
       `SELECT COALESCE(MAX(attempt), 0) + 1 AS attempt
        FROM agent_claims
        WHERE org_id = $1
-         AND (CASE WHEN $4 = 'chat' THEN task_id::text = $2 ELSE repo = $2 END)
+         AND (CASE WHEN $4 IN ('chat','summary') THEN task_id::text = $2 ELSE repo = $2 END)
          AND pr_number IS NOT DISTINCT FROM $3
          AND claim_type = $4`,
-      [input.orgId, input.claimType === 'chat' ? input.taskId : input.repo, input.prNumber, input.claimType],
+      [input.orgId, input.claimType === 'chat' || input.claimType === 'summary' ? input.taskId : input.repo, input.prNumber, input.claimType],
     );
     const inserted = await insertAtAttempt(input, allocated.rows[0].attempt, executor);
     if (inserted !== null) return inserted;

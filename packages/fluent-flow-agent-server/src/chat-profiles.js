@@ -25,6 +25,27 @@ export function resolveChatProfile(profiles, work) {
   if (model != null && !profile.models.includes(model)) throw new Error('Unknown chat model');
   return { ...profile, model };
 }
+
+const summaryWorkSchema = z.object({
+  requestId: z.string().uuid(),
+  profile: id,
+  model: id.nullable(),
+  prompt: z.string().min(1),
+  timeoutMs: z.number().int().min(1).max(300_000),
+  reported: z.boolean(),
+}).strict();
+
+export function parseSummaryWork(input) {
+  return summaryWorkSchema.parse(input);
+}
+
+export function resolveSummaryProfile(profiles, summary) {
+  const profile = profiles.find((candidate) => candidate.id === summary.profile);
+  if (!profile) throw new Error('Unknown summary profile');
+  if (summary.model !== null && !profile.models.includes(summary.model)) throw new Error('Unknown summary model');
+  return { ...profile, model: summary.model };
+}
+
 export function advertisedChatProfiles(profiles) {
   return profiles.map(({ id: profileId, models, defaultModel }) => ({ id: profileId, models: [...models], ...(defaultModel && { default_model: defaultModel }) }));
 }

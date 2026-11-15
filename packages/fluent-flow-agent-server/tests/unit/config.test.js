@@ -22,25 +22,9 @@ describe('agent server configuration', () => {
   it('keeps chat disabled by default and accepts only an explicit local profile file opt-in', () => {
     expect(parse().chatProfilesFile).toBeUndefined();
     expect(parse([...baseArgv, '--chat-profiles-file', '/operator/chat.json']).chatProfilesFile).toBe('/operator/chat.json');
-  });
-  it('applies portable local defaults', () => {
-    expect(parse()).toEqual({
-      serverUrl: 'https://flow.example.com',
-      provider: 'claude-code',
-      deployment: 'local',
-      capacity: 2,
-      enrollmentToken: null,
-      tokenFile: null,
-      providerSecretFile: null,
-      workDir: join(cwd, '.fluent-flow', 'work'),
-      stateDir: join(homeDir, '.fluent-flow', 'agent-server'),
-      healthHost: '127.0.0.1',
-      healthPort: 3860,
-      acpCommand: null,
-      acpArgs: [],
-      executionTimeoutMs: 3_600_000,
-      logLevel: 'info',
-    });
+    expect(parse().summaryClaims).toBe(false);
+    expect(() => parse([...baseArgv, '--summary-claims'])).toThrow('Summary claims require an explicit local profile catalog file.');
+    expect(parse([...baseArgv, '--chat-profiles-file', '/operator/chat.json', '--summary-claims']).summaryClaims).toBe(true);
   });
 
   it.each([

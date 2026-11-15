@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { eq, isNull, and, ne, sql } from 'drizzle-orm';
-import { db, schema } from '@fluent-flow/db';
+import { db, schema, observeNativePullRequest } from '@fluent-flow/db';
 import { handleCheckRun } from '../providers/github/check-run-handler.js';
 import { audit } from '../db/client.js';
 import { resolveConfig, invalidateConfig } from '../config/loader.js';
@@ -164,6 +164,9 @@ async function handlePullRequest(owner, repo, payload, config) {
   const prNumber = pr.number;
   const issueNumber = extractLinkedIssue(pr.body);
   const repoKey = `${owner}/${repo}`;
+  if (['opened','reopened','synchronize'].includes(action) && pr.node_id && pr.head?.repo?.node_id && pr.base?.repo?.node_id) {
+    await observeNativePullRequest({ orgId: await resolveOrgId(owner, repo), repo: repoKey, pullRequest: pr });
+  }
 
   switch (action) {
     case 'opened':
@@ -345,7 +348,8 @@ async function handlePullRequestReview(owner, repo, payload, config) {
         prNumber,
         issueNumber,
         result,
-        reviewSha: pr.head.sha,
+        reviewSha: review.commit_id,
+        githubReviewNodeId: review.node_id,
         agentId,
         headBranch: pr.head.ref,
         ctx: reviewCtx,

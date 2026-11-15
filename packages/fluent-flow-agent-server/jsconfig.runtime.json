@@ -11,5 +11,5 @@
     "noImplicitAny": false,
     "types": ["node"]
   },
-  "include": ["src/chat-*.js", "src/acp/**/*.js", "src/runner.js", "src/server.js", "src/config.js"]
+  "include": ["src/chat-*.js", "src/reporting-*.js", "src/acp/**/*.js", "src/runner.js", "src/server.js", "src/config.js"]
 }

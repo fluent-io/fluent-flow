@@ -239,6 +239,83 @@
       "when": 1794380400000,
       "tag": "0033_claim_workspaces",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1794384000000,
+      "tag": "0034_execution_archives",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1794387600000,
+      "tag": "0035_claim_reporting",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1794391200000,
+      "tag": "0036_claim_workspace_state",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1794394800000,
+      "tag": "0037_claim_usage",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1794398400000,
+      "tag": "0038_claim_summaries",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1794402000000,
+      "tag": "0039_claim_delivery_review",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1794405600000,
+      "tag": "0040_native_pull_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1794409200000,
+      "tag": "0041_claim_review_results",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1794412800000,
+      "tag": "0042_claim_idea_conversions",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1794499200000,
+      "tag": "0043_execution_archive_references",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1794585600000,
+      "tag": "0044_legacy_execution_control",
+      "breakpoints": true
     }
   ]
 }

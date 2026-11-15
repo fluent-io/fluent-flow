@@ -56,7 +56,6 @@ import { cancelOpenClaimInteractions, db, insertPendingClaim } from '@fluent-flo
 import { setSessionStatus } from '../../src/agents/session-manager.js';
 import {
   assertClaimOwner,
-  withClaimOwner,
   cancelClaimById,
   completeClaimById,
   extendClaim,
@@ -156,90 +155,6 @@ describe('assertClaimOwner', () => {
   });
 });
 
-describe('withClaimOwner', () => {
-  it('holds one transaction and owner row lock across the interaction mutation', async () => {
-    state.client.query.mockImplementation(async (text, params) => {
-      const sql = String(text);
-      if (/^BEGIN$/i.test(sql)) {
-        state.order.push('BEGIN');
-        return { rows: [] };
-      }
-      if (/SELECT/i.test(sql) && /agent_claims/i.test(sql)) {
-        state.order.push('LOCK_OWNER');
-        expect(sql).toMatch(/FOR UPDATE/i);
-        expect(sql).toMatch(/agent_sessions/i);
-        expect(params).toEqual(expect.arrayContaining(['o1', 'a1', 3, 7]));
-        return { rows: [{ ...RAW_CLAIM, status: 'claimed' }] };
-      }
-      state.order.push(sql.trim().toUpperCase());
-      return { rows: [] };
-    });
-
-    const result = await withClaimOwner(
-      { orgId: 'o1', agentId: 'a1', sessionId: 3, claimId: 7 },
-      async (client) => {
-        expect(client).toBe(state.client);
-        state.order.push('MUTATION');
-        return 'stored';
-      },
-    );
-
-    expect(result).toBe('stored');
-    expect(state.order).toEqual(['BEGIN', 'LOCK_OWNER', 'MUTATION', 'COMMIT']);
-    expect(state.client.release).toHaveBeenCalledOnce();
-  });
-
-  it('rolls back and releases the owner lock when the interaction mutation fails', async () => {
-    state.client.query.mockImplementation(async (text) => {
-      const sql = String(text);
-      if (/SELECT/i.test(sql) && /agent_claims/i.test(sql)) {
-        state.order.push('LOCK_OWNER');
-        return { rows: [{ ...RAW_CLAIM, status: 'claimed' }] };
-      }
-      state.order.push(sql.trim().toUpperCase());
-      return { rows: [] };
-    });
-
-    await expect(withClaimOwner(
-      { orgId: 'o1', agentId: 'a1', sessionId: 3, claimId: 7 },
-      async (client) => {
-        expect(client).toBe(state.client);
-        state.order.push('MUTATION');
-        throw new Error('interaction write failed');
-      },
-    )).rejects.toThrow('interaction write failed');
-
-    expect(state.order).toEqual(['BEGIN', 'LOCK_OWNER', 'MUTATION', 'ROLLBACK']);
-    expect(state.client.release).toHaveBeenCalledOnce();
-  });
-
-  it.each([
-    [404, []],
-    [409, [{ id: 7 }]],
-  ])('rolls back and preserves generic %i ownership classification', async (statusCode, fallbackRows) => {
-    let selectCount = 0;
-    const mutation = vi.fn();
-    state.client.query.mockImplementation(async (text) => {
-      const sql = String(text);
-      if (/SELECT/i.test(sql) && /agent_claims/i.test(sql)) {
-        selectCount += 1;
-        state.order.push(selectCount === 1 ? 'LOCK_OWNER' : 'CLASSIFY_OWNER');
-        return { rows: selectCount === 1 ? [] : fallbackRows };
-      }
-      state.order.push(sql.trim().toUpperCase());
-      return { rows: [] };
-    });
-
-    await expect(withClaimOwner(
-      { orgId: 'o1', agentId: 'a1', sessionId: 3, claimId: 7 },
-      mutation,
-    )).rejects.toMatchObject({ statusCode });
-
-    expect(mutation).not.toHaveBeenCalled();
-    expect(state.order).toEqual(['BEGIN', 'LOCK_OWNER', 'CLASSIFY_OWNER', 'ROLLBACK']);
-    expect(state.client.release).toHaveBeenCalledOnce();
-  });
-});
 
 describe.each([
   ['completed', completeClaimById],

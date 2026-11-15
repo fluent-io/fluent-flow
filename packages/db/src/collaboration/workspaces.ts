@@ -12,6 +12,7 @@ import {
 import { SYSTEM_ROLE_PRESETS } from './capabilities.js';
 import type { CollabCapability } from './capabilities.js';
 import { requireCurrentPrincipal } from './principals.js';
+import { assertLegacyExecutionOpen } from './execution-retirement.js';
 import { withClientTransaction } from './tx.js';
 
 const bootstrapSchema = z.object({
@@ -399,6 +400,8 @@ const updateDefaultsSchema = z.object({
   }).strict(),
 });
 
+export const legacyExecutionDefaultsSchema = updateDefaultsSchema.shape.executionDefaults;
+
 export async function updateProjectExecutionDefaults(input: {
   actor: { principalId: string; sessionVersion: number };
   projectId: string;
@@ -408,6 +411,8 @@ export async function updateProjectExecutionDefaults(input: {
   const input2 = updateDefaultsSchema.parse(input);
   await authorize(input2.actor, { projectId: input2.projectId }, ['project.admin', 'internal.read']);
   return withClientTransaction(async tx => {
+  await assertLegacyExecutionOpen(tx);
+  await requireCurrentPrincipal(input2.actor, tx);
   const mapping = (await tx.query<{
     profile_ids: string[]; repository_key: string; revoked_at: Date | null;
     catalog: { repositories?: { key: string }[]; profiles?: { id: string; model?: string | null }[] } | null;
